@@ -1,0 +1,12 @@
+fastapi==0.95.2
+uvicorn[standard]==0.22.0
+requests==2.31.0
+redis==4.6.0
+pystray==0.21.0
+Pillow==10.1.0
+pyinstaller==5.12.0
+python-dateutil==2.8.2
+pywin32==305; platform_system == "Windows"
+# ZK device libraries (try both; your device likely works with one)
+pyzk==0.3.1
+zklib==0.2.8

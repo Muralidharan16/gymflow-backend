@@ -1,0 +1,13 @@
+fastapi>=0.95.0
+uvicorn[standard]
+SQLAlchemy>=1.4
+asyncpg
+python-dotenv
+python-jose[cryptography]
+passlib[bcrypt]
+redis>=4.2.0
+httpx
+pydantic
+alembic
+email-validator
+aiosqlite

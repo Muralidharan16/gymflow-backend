@@ -1,0 +1,17 @@
+{
+  "device_ip": "192.168.1.201",
+  "device_port": 4370,
+  "device_password": 0,
+  "device_id": "550e8400-e29b-41d4-a716-446655440001",
+  "bridge_token": "REPLACE_WITH_DEVICE_BRIDGE_TOKEN",
+  "gym_id": "REPLACE_WITH_GYM_UUID",
+  "server_url": "https://api.gymflow.in",
+  "redis_url": "redis://localhost:6379/0",
+  "local_http_port": 5000,
+  "poll_interval_seconds": 1,
+  "attendance_pull_seconds": 1,
+  "cache_db": "bridge_data.db",
+  "log_path": "bridge.log",
+  "members_sync_endpoint": "/devices/sync-members",
+  "auto_start": true
+}
