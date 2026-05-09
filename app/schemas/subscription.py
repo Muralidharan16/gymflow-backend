@@ -31,8 +31,11 @@ class SubscriptionBase(BaseModel):
     plan_id: uuid.UUID
     start_date: date
 
+from app.models.enums import SubscriptionStatus, PaymentMethod
+
 class SubscriptionCreate(SubscriptionBase):
-    payment_method: str # For internal use during atomic create
+    amount_paid: Decimal
+    payment_method: PaymentMethod
 
 class SubscriptionResponse(BaseModel):
     id: uuid.UUID

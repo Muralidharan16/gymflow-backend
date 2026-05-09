@@ -39,6 +39,16 @@ class MemberRepository(BaseRepository[Member]):
         result = await self.session.execute(q)
         return result.scalar_one()
 
+    async def get_last_member_uid(self, gym_id: uuid.UUID) -> str | None:
+        q = (
+            select(self.model.member_uid)
+            .where(self.model.gym_id == gym_id)
+            .order_by(self.model.created_at.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(q)
+        return result.scalar_one_or_none()
+
 class MeasurementRepository(BaseRepository[MemberMeasurement]):
     def __init__(self, session):
         super().__init__(MemberMeasurement, session)

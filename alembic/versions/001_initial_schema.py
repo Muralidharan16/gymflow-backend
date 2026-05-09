@@ -10,13 +10,11 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID, JSONB, TIMESTAMP
 
-# revision identifiers
 revision: str = "001_initial_schema"
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-# ---------- Enum type names ----------
 ENUM_TYPES = [
     ("orgtier", ["basic", "pro", "elite"]),
     ("staffrole", ["owner", "admin", "trainer", "receptionist"]),
@@ -35,14 +33,17 @@ ENUM_TYPES = [
 
 
 def upgrade() -> None:
-    # 1. Create enum types
+    # 0. Ensure uuid-ossp or pgcrypto for gen_random_uuid()
+    op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
+
+    # Create enums
     for name, values in ENUM_TYPES:
         sa.Enum(*values, name=name).create(op.get_bind(), checkfirst=True)
 
-    # 2. organizations
+    # 1. organizations
     op.create_table(
         "organizations",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("name", sa.String(), nullable=False),
         sa.Column("pan_number", sa.String(10), nullable=False),
         sa.Column("tier", sa.Enum("basic", "pro", "elite", name="orgtier", create_type=False), nullable=False, server_default="basic"),
@@ -53,10 +54,10 @@ def upgrade() -> None:
     )
     op.create_index("ix_organizations_pan", "organizations", ["pan_number"], unique=True)
 
-    # 3. gyms
+    # 2. gyms
     op.create_table(
         "gyms",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("org_id", UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False),
         sa.Column("name", sa.String(), nullable=False),
         sa.Column("gymu_id", sa.String(20), nullable=False),
@@ -70,10 +71,10 @@ def upgrade() -> None:
     op.create_index("ix_gyms_org_id", "gyms", ["org_id"])
     op.create_index("ix_gyms_gymu_id", "gyms", ["gymu_id"], unique=True)
 
-    # 4. branch_tax_settings
+    # 3. branch_tax_settings
     op.create_table(
         "branch_tax_settings",
-        sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("gst_number", sa.String(15), nullable=False),
         sa.Column("legal_name", sa.String(), nullable=False),
         sa.Column("gst_rate", sa.Numeric(5, 2), nullable=False, server_default="18.00"),
@@ -84,10 +85,10 @@ def upgrade() -> None:
     )
     op.create_index("ix_branch_tax_gst", "branch_tax_settings", ["gst_number"], unique=True)
 
-    # 5. gym_owners (staff)
+    # 4. gym_owners (staff)
     op.create_table(
         "gym_owners",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("org_id", UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False),
         sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="SET NULL"), nullable=True),
         sa.Column("name", sa.String(), nullable=False),
@@ -104,10 +105,10 @@ def upgrade() -> None:
     )
     op.create_index("ix_gym_owners_org_id", "gym_owners", ["org_id"])
 
-    # 6. members
+    # 5. members
     op.create_table(
         "members",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False),
         sa.Column("org_id", UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False),
         sa.Column("member_uid", sa.String(20), nullable=False),
@@ -145,10 +146,10 @@ def upgrade() -> None:
     op.create_index("ix_members_qr_token", "members", ["qr_token"], unique=True)
     op.create_index("ix_members_status", "members", ["status"])
 
-    # 7. member_measurements
+    # 6. member_measurements
     op.create_table(
         "member_measurements",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False),
         sa.Column("member_id", UUID(as_uuid=True), sa.ForeignKey("members.id", ondelete="CASCADE"), nullable=False),
         sa.Column("measured_on", sa.Date(), nullable=False),
@@ -162,10 +163,10 @@ def upgrade() -> None:
     )
     op.create_index("ix_measurements_member_date", "member_measurements", ["member_id", sa.text("measured_on DESC")])
 
-    # 8. subscription_plans
+    # 7. subscription_plans
     op.create_table(
         "subscription_plans",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False),
         sa.Column("name", sa.String(), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
@@ -179,10 +180,10 @@ def upgrade() -> None:
     )
     op.create_index("ix_subscription_plans_gym_id", "subscription_plans", ["gym_id"])
 
-    # 9. member_subscriptions
+    # 8. member_subscriptions
     op.create_table(
         "member_subscriptions",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False),
         sa.Column("member_id", UUID(as_uuid=True), sa.ForeignKey("members.id", ondelete="CASCADE"), nullable=False),
         sa.Column("plan_id", UUID(as_uuid=True), sa.ForeignKey("subscription_plans.id", ondelete="RESTRICT"), nullable=False),
@@ -206,10 +207,10 @@ def upgrade() -> None:
     op.create_index("ix_member_subs_end_date", "member_subscriptions", ["end_date"])
     op.create_index("ix_member_subs_gym_id", "member_subscriptions", ["gym_id"])
 
-    # 10. payments
+    # 9. payments
     op.create_table(
         "payments",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False),
         sa.Column("member_id", UUID(as_uuid=True), sa.ForeignKey("members.id", ondelete="SET NULL"), nullable=True),
         sa.Column("subscription_id", UUID(as_uuid=True), sa.ForeignKey("member_subscriptions.id", ondelete="SET NULL"), nullable=True),
@@ -232,10 +233,10 @@ def upgrade() -> None:
     op.create_index("ix_payments_member_id", "payments", ["member_id"])
     op.create_index("ix_payments_gym_date", "payments", ["gym_id", sa.text("payment_date DESC")])
 
-    # 11. invoices
+    # 10. invoices
     op.create_table(
         "invoices",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False),
         sa.Column("member_id", UUID(as_uuid=True), sa.ForeignKey("members.id", ondelete="SET NULL"), nullable=True),
         sa.Column("payment_id", UUID(as_uuid=True), sa.ForeignKey("payments.id", ondelete="SET NULL"), nullable=True),
@@ -257,10 +258,10 @@ def upgrade() -> None:
     op.create_index("ix_invoices_gym_id", "invoices", ["gym_id"])
     op.create_index("ix_invoices_member_id", "invoices", ["member_id"])
 
-    # 12. attendance_logs
+    # 11. attendance_logs
     op.create_table(
         "attendance_logs",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False),
         sa.Column("member_id", UUID(as_uuid=True), sa.ForeignKey("members.id", ondelete="SET NULL"), nullable=True),
         sa.Column("scan_time", TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
@@ -276,10 +277,10 @@ def upgrade() -> None:
     op.create_index("ix_attendance_member_id", "attendance_logs", ["member_id"])
     op.create_index("ix_attendance_scan_time", "attendance_logs", ["scan_time"])
 
-    # 13. member_freeze_logs
+    # 12. member_freeze_logs
     op.create_table(
         "member_freeze_logs",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False),
         sa.Column("member_id", UUID(as_uuid=True), sa.ForeignKey("members.id", ondelete="CASCADE"), nullable=False),
         sa.Column("subscription_id", UUID(as_uuid=True), sa.ForeignKey("member_subscriptions.id", ondelete="CASCADE"), nullable=False),
@@ -293,10 +294,10 @@ def upgrade() -> None:
     )
     op.create_index("ix_freeze_logs_member_sub", "member_freeze_logs", ["member_id", "subscription_id"])
 
-    # 14. import_logs
+    # 13. import_logs
     op.create_table(
         "import_logs",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False),
         sa.Column("imported_by", UUID(as_uuid=True), sa.ForeignKey("gym_owners.id", ondelete="CASCADE"), nullable=False),
         sa.Column("filename", sa.String(), nullable=False),
@@ -314,12 +315,11 @@ def upgrade() -> None:
     )
     op.create_index("ix_import_logs_gym_id", "import_logs", ["gym_id"])
 
-    # 15. Data migration
+    # Data migration: fix old payment status
     op.execute("UPDATE payments SET status='completed' WHERE status='success'")
 
 
 def downgrade() -> None:
-    # Drop tables in reverse dependency order
     op.drop_table("import_logs")
     op.drop_table("member_freeze_logs")
     op.drop_table("attendance_logs")
@@ -334,6 +334,5 @@ def downgrade() -> None:
     op.drop_table("gyms")
     op.drop_table("organizations")
 
-    # Drop enum types
     for name, _ in reversed(ENUM_TYPES):
         sa.Enum(name=name).drop(op.get_bind(), checkfirst=True)

@@ -18,6 +18,16 @@ class GymRepository(BaseRepository[Gym]):
         result = await self.session.execute(q)
         return result.scalar_one_or_none()
 
+    async def get_last_gymu_id(self, org_id: uuid.UUID) -> str | None:
+        q = (
+            select(self.model.gymu_id)
+            .where(self.model.org_id == org_id)
+            .order_by(self.model.created_at.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(q)
+        return result.scalar_one_or_none()
+
 class TaxRepository(BaseRepository[BranchTaxSettings]):
     def __init__(self, session):
         super().__init__(BranchTaxSettings, session)
