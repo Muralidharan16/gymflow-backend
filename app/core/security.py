@@ -1,78 +1,135 @@
 import uuid
-import functools
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional
-from fastapi import HTTPException, status, Request
-from jose import JWTError, jwt  # noqa: F401
-from passlib.context import CryptContext
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, Any
+
+import jwt
+from jwt.exceptions import PyJWTError
+
 from app.core.config import settings
-from app.models.enums import StaffRole
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
-
-
-def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+from app.core.exceptions import SecurityError, InvalidTokenError, ExpiredTokenError
 
 
 def create_access_token(payload: dict) -> str:
+    """
+    Create JWT access token.
+    
+    Args:
+        payload: Dictionary with claims (e.g., {"sub": staff_id, "org_id": ..., "gym_id": ...})
+    
+    Returns:
+        Encoded JWT string
+    """
     data = payload.copy()
-    data["exp"] = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
-    )
+    data["exp"] = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     data["type"] = "access"
     data["jti"] = str(uuid.uuid4())
     return jwt.encode(data, settings.SECRET_KEY, algorithm="HS256")
 
 
-def create_refresh_token(payload: dict, family_id: Optional[str] = None) -> str:
+def create_refresh_token(payload: dict, family_id: str = None) -> str:
+    """
+    Create JWT refresh token with family ID for token rotation.
+    
+    Args:
+        payload: Dictionary with claims (e.g., {"sub": staff_id})
+        family_id: Optional family identifier for token rotation. If None, generates new UUID.
+    
+    Returns:
+        Encoded JWT string
+    """
     data = payload.copy()
-    data["exp"] = datetime.now(timezone.utc) + timedelta(
-        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
-    )
+    data["exp"] = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     data["type"] = "refresh"
     data["jti"] = str(uuid.uuid4())
-    data["f_id"] = family_id or str(uuid.uuid4())  # Family ID for rotation tracking
+    data["f_id"] = family_id or str(uuid.uuid4())
     return jwt.encode(data, settings.SECRET_KEY, algorithm="HS256")
 
 
-def decode_token(token: str) -> dict:
-    return jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
-
-
-def role_required(allowed_roles: List[StaffRole]):
+def decode_token(token: str) -> Dict[str, Any]:
     """
-    Decorator to enforce RBAC on FastAPI endpoints.
-    Requires TenantMiddleware to have already injected request.state context.
+    Decode and validate JWT token.
+    
+    Args:
+        token: JWT string
+    
+    Returns:
+        Dictionary of claims
+    
+    Raises:
+        InvalidTokenError: If token is malformed or invalid
+        ExpiredTokenError: If token has expired
     """
-    def decorator(func):
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            # Extract request from kwargs (FastAPI injects it if type-hinted)
-            request = kwargs.get("request")
-            if not request:
-                # Fallback to searching args
-                for arg in args:
-                    if isinstance(arg, Request):
-                        request = arg
-                        break
-            
-            if not request:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="RBAC decorator requires Request object"
-                )
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=["HS256"],
+            options={"verify_exp": True}
+        )
+        return payload
+    except jwt.ExpiredSignatureError as e:
+        raise ExpiredTokenError("Token has expired") from e
+    except PyJWTError as e:
+        raise InvalidTokenError(f"Invalid token: {str(e)}") from e
 
-            user_role = getattr(request.state, "role", None)
-            if not user_role or user_role not in [role.value for role in allowed_roles]:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Not enough permissions"
-                )
-            return await func(*args, **kwargs)
-        return wrapper
-    return decorator
+
+def verify_token(token: str, expected_type: str = "access") -> Dict[str, Any]:
+    """
+    Decode token and verify its type matches expected.
+    
+    Args:
+        token: JWT string
+        expected_type: Either "access" or "refresh"
+    
+    Returns:
+        Verified claims
+    
+    Raises:
+        InvalidTokenError: If type mismatch or token invalid
+    """
+    payload = decode_token(token)
+    if payload.get("type") != expected_type:
+        raise InvalidTokenError(f"Expected {expected_type} token, got {payload.get('type')}")
+    return payload
+
+
+def get_token_family_id(refresh_token: str) -> str:
+    """
+    Extract family_id from refresh token.
+    
+    Args:
+        refresh_token: Valid refresh token
+    
+    Returns:
+        family_id string
+    
+    Raises:
+        InvalidTokenError: If token lacks f_id claim
+    """
+    payload = decode_token(refresh_token)
+    if payload.get("type") != "refresh":
+        raise InvalidTokenError("Not a refresh token")
+    f_id = payload.get("f_id")
+    if not f_id:
+        raise InvalidTokenError("Refresh token missing family_id claim")
+    return f_id
+
+
+def get_token_jti(token: str) -> str:
+    """
+    Extract jti (JWT ID) from any token.
+    
+    Args:
+        token: JWT string
+    
+    Returns:
+        jti string
+    
+    Raises:
+        InvalidTokenError: If token lacks jti claim
+    """
+    payload = decode_token(token)
+    jti = payload.get("jti")
+    if not jti:
+        raise InvalidTokenError("Token missing jti claim")
+    return jti

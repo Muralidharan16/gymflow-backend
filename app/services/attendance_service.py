@@ -1,134 +1,237 @@
-import uuid
-import json
-import logging
-from datetime import date
-from fastapi import HTTPException, status
-from app.models.attendance import AttendanceLog
-from app.models.enums import (
-    CheckInMethod, AttendanceDenialReason,
-    SubscriptionStatus
-)
+from datetime import datetime, date, timezone
+from typing import List, Optional, Tuple
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.exceptions import NotFoundError, ValidationError, SubscriptionNotActive
+from app.models.attendance import AttendanceLog, CheckInMethod
+from app.models.member_subscription import SubscriptionStatus
 from app.repositories.attendance_repo import AttendanceRepository
 from app.repositories.member_repo import MemberRepository
 from app.repositories.subscription_repo import SubscriptionRepository
-from app.schemas.attendance import AccessCheckResponse
-from app.core.redis import redis_client
+from app.services.member_service import MemberService
+from app.core.logging import logger
 
-logger = logging.getLogger(__name__)
 
 class AttendanceService:
-    def __init__(
-        self,
-        attendance_repo: AttendanceRepository,
-        member_repo: MemberRepository,
-        sub_repo: SubscriptionRepository,
-    ):
-        self.attendance_repo = attendance_repo
-        self.member_repo = member_repo
-        self.sub_repo = sub_repo
+    """Service for member check-in/out and attendance tracking."""
 
-    async def check_access(self, gym_id: uuid.UUID, uid: str) -> AccessCheckResponse:
-        """
-        Enterprise-grade access check.
-        1. Redis Lookup (Fast Path)
-        2. DB Lookup (Tenant-scoped)
-        3. Subscription Validation
-        4. Cache Warming
-        """
-        # Step 1: Redis lookup (scoping cache key by gym_id to prevent cross-tenant collisions)
-        cache_key = f"access:{gym_id}:{uid}"
-        cached = await redis_client.get(cache_key)
-        if cached:
-            return AccessCheckResponse(**json.loads(cached))
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.attendance_repo = AttendanceRepository(session)
+        self.member_repo = MemberRepository(session)
+        self.subscription_repo = SubscriptionRepository(session)
 
-        # Step 2: DB lookup (strictly scoped to gym_id)
-        member = await self.member_repo.get_by_any_uid(uid, gym_id)
+    async def check_access(self, member_uid: str) -> AttendanceLog:
+        """
+        Check member access via QR code scan.
+        Creates attendance log with granted=true if subscription active.
+        
+        Args:
+            member_uid: Member's unique UID from QR code
+            
+        Returns:
+            AttendanceLog with access result
+            
+        Raises:
+            NotFoundError: If member not found
+            SubscriptionNotActive: If no active subscription
+        """
+        member = await self.member_repo.get_by_uid_active(member_uid)
         if not member:
-            await self._log_denial(
-                gym_id=gym_id,
-                member_id=None,
-                reason=AttendanceDenialReason.not_found,
-                method=CheckInMethod.door_lock
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, 
-                detail={"granted": False, "reason": "not_found"}
-            )
-
-        # Step 3: Subscription check
-        sub = await self.sub_repo.get_active_for_member(member.id, gym_id)
-        if not sub:
-            await self._log_denial(
-                gym_id=gym_id,
-                member_id=member.id,
-                reason=AttendanceDenialReason.no_active_subscription,
-                method=CheckInMethod.door_lock
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, 
-                detail={"granted": False, "reason": "no_active_subscription"}
-            )
-
-        if sub.status == SubscriptionStatus.frozen:
-            await self._log_denial(
-                gym_id=gym_id,
-                member_id=member.id,
-                reason=AttendanceDenialReason.account_frozen,
-                method=CheckInMethod.door_lock
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, 
-                detail={"granted": False, "reason": "account_frozen"}
-            )
-
-        if sub.end_date < date.today():
-            await self._log_denial(
-                gym_id=gym_id,
-                member_id=member.id,
-                reason=AttendanceDenialReason.subscription_expired,
-                method=CheckInMethod.door_lock
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, 
-                detail={"granted": False, "reason": "subscription_expired"}
-            )
-
-        # Step 4: Grant access & Warm Cache
-        result_data = {
-            "granted": True,
-            "member_name": member.name,
-            "gym_id": str(gym_id),
-            "end_date": str(sub.end_date)
-        }
+            raise NotFoundError(f"Member with UID {member_uid} not found")
         
-        # Cache for 12 hours
-        await redis_client.setex(cache_key, 43200, json.dumps(result_data))
-
-        # Log successful attendance
-        await self.attendance_repo.create(AttendanceLog(
-            gym_id=gym_id,
+        # Check active subscription
+        active_sub = await self.subscription_repo.get_active_for_member(member.id, member.gym_id)
+        if not active_sub:
+            raise SubscriptionNotActive(f"Member {member.name} has no active subscription")
+        
+        # Create attendance log
+        log = AttendanceLog(
             member_id=member.id,
-            check_in_method=CheckInMethod.door_lock,
-            access_granted=True
-        ))
+            gym_id=member.gym_id,
+            check_in_time=datetime.now(timezone.utc),
+            method=CheckInMethod.QR,
+            granted=True,
+            notes="QR access granted"
+        )
         
-        return AccessCheckResponse(**result_data)
+        created = await self.attendance_repo.create(log)
+        await self.session.commit()
+        
+        # Update member's last_check_in
+        member.last_check_in = datetime.now(timezone.utc)
+        await self.member_repo.update(member)
+        await self.session.commit()
+        
+        logger.info(f"QR access granted for member {member.name} at gym {member.gym_id}")
+        return created
 
-    async def _log_denial(
-        self, 
-        gym_id: uuid.UUID, 
-        member_id: uuid.UUID | None,
-        reason: AttendanceDenialReason, 
-        method: CheckInMethod
-    ) -> None:
-        """Log access denial for audit and troubleshooting."""
-        try:
-            await self.attendance_repo.create(AttendanceLog(
-                gym_id=gym_id,
-                member_id=member_id,
-                check_in_method=method,
-                access_granted=False,
-                denial_reason=reason
-            ))
-        except Exception as e:
-            logger.error(f"Failed to log attendance denial: {e}")
+    async def manual_checkin(
+        self,
+        gym_id: UUID,
+        member_id: UUID,
+        method: CheckInMethod,
+        staff_id: UUID
+    ) -> AttendanceLog:
+        """
+        Manual check-in by staff.
+        
+        Args:
+            gym_id: Gym UUID
+            member_id: Member UUID
+            method: Check-in method (MANUAL, CARD, etc.)
+            staff_id: Staff UUID performing check-in
+            
+        Returns:
+            Created AttendanceLog
+            
+        Raises:
+            NotFoundError: If member not found in gym
+            SubscriptionNotActive: If member has no active subscription
+        """
+        member = await self.member_repo.get_by_id_active(member_id, gym_id)
+        if not member:
+            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}")
+        
+        # Check active subscription
+        active_sub = await self.subscription_repo.get_active_for_member(member_id, gym_id)
+        if not active_sub:
+            raise SubscriptionNotActive(f"Member {member.name} has no active subscription")
+        
+        # Check if already checked in (no checkout)
+        open_log = await self.attendance_repo.get_active_checkin(member_id, gym_id)
+        if open_log:
+            raise ValidationError(
+                f"Member {member.name} already checked in at {open_log.check_in_time}",
+                error_code="VALIDATION_ERROR"
+            )
+        
+        log = AttendanceLog(
+            member_id=member_id,
+            gym_id=gym_id,
+            check_in_time=datetime.now(timezone.utc),
+            method=method,
+            granted=True,
+            checked_in_by=staff_id,
+            notes="Manual check-in by staff"
+        )
+        
+        created = await self.attendance_repo.create(log)
+        await self.session.commit()
+        
+        # Update member's last_check_in
+        member.last_check_in = datetime.now(timezone.utc)
+        await self.member_repo.update(member)
+        await self.session.commit()
+        
+        logger.info(f"Manual check-in for member {member.name} by staff {staff_id}")
+        return created
+
+    async def checkout(
+        self,
+        gym_id: UUID,
+        log_id: UUID
+    ) -> AttendanceLog:
+        """
+        Record check-out time for an attendance log.
+        
+        Args:
+            gym_id: Gym UUID (for scoping)
+            log_id: Attendance log UUID
+            
+        Returns:
+            Updated AttendanceLog
+            
+        Raises:
+            NotFoundError: If log not found or already checked out
+        """
+        log = await self.attendance_repo.get_by_id(log_id, gym_id)
+        if not log:
+            raise NotFoundError(f"Attendance log {log_id} not found in gym {gym_id}")
+        
+        if log.check_out_time:
+            raise ValidationError(f"Already checked out at {log.check_out_time}", error_code="VALIDATION_ERROR")
+        
+        log.check_out_time = datetime.now(timezone.utc)
+        updated = await self.attendance_repo.update(log)
+        await self.session.commit()
+        
+        logger.info(f"Check-out recorded for log {log_id}")
+        return updated
+
+    async def list_logs(
+        self,
+        gym_id: UUID,
+        date_filter: Optional[date] = None,
+        member_id: Optional[UUID] = None,
+        granted: Optional[bool] = None,
+        page: int = 1,
+        size: int = 10
+    ) -> Tuple[List[AttendanceLog], int]:
+        """
+        List attendance logs with pagination and filters.
+        
+        Returns:
+            Tuple of (list of logs, total count)
+        """
+        filters = {
+            "date": date_filter,
+            "member_id": member_id,
+            "granted": granted
+        }
+        return await self.attendance_repo.list_paginated(gym_id, filters, page, size)
+
+    async def member_history(
+        self,
+        member_id: UUID,
+        gym_id: UUID,
+        page: int = 1,
+        size: int = 10
+    ) -> Tuple[List[AttendanceLog], int]:
+        """
+        Get attendance history for a specific member.
+        
+        Args:
+            member_id: Member UUID
+            gym_id: Gym UUID (for scoping)
+            page: Page number
+            size: Items per page
+            
+        Returns:
+            Tuple of (list of logs, total count)
+            
+        Raises:
+            NotFoundError: If member not found in gym
+        """
+        # Verify member exists
+        member = await self.member_repo.get_by_id_active(member_id, gym_id)
+        if not member:
+            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}")
+        
+        return await self.attendance_repo.member_history(member_id, gym_id, page, size)
+
+    async def get_today_checkins(self, gym_id: UUID) -> List[AttendanceLog]:
+        """Get all granted check-ins for today."""
+        return await self.attendance_repo.get_today_checkins(gym_id)
+
+    async def get_attendance_summary(
+        self,
+        gym_id: UUID,
+        start_date: date,
+        end_date: date
+    ) -> dict:
+        """
+        Get attendance summary for reports.
+        
+        Returns:
+            Dict with total_checkins, unique_members, average_daily
+        """
+        return await self.attendance_repo.get_attendance_summary(gym_id, start_date, end_date)
+
+    async def get_attendance_heatmap(self, gym_id: UUID, days: int = 30) -> List[dict]:
+        """
+        Get attendance distribution by hour for last N days.
+        """
+        return await self.attendance_repo.get_attendance_heatmap(gym_id, days)
