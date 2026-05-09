@@ -1,22 +1,14 @@
-from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, Literal
+from pydantic import BaseModel, EmailStr, ConfigDict
+import uuid
 from datetime import datetime
+from app.models.enums import StaffRole
 
-class RegisterRequest(BaseModel):
-    org_name: str = Field(..., min_length=2, max_length=255)
-    owner_name: str = Field(..., min_length=2, max_length=255)
+class SignupRequest(BaseModel):
+    org_name: str
+    owner_name: str
     email: EmailStr
-    password: str = Field(..., min_length=8, max_length=128)
-    branch_name: str = Field(..., min_length=2, max_length=255)
-
-class RegisterResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    refresh_token: str
-    expires_at: datetime
-    org_id: str
-    branch_id: str
-    staff_id: str
+    password: str
+    pan_number: str
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -24,9 +16,15 @@ class LoginRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
-    refresh_token: Optional[str]
-    expires_at: Optional[datetime]
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+class StaffResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    email: EmailStr
+    role: StaffRole
+    model_config = ConfigDict(from_attributes=True)

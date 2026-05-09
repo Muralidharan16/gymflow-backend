@@ -1,34 +1,39 @@
-from pydantic import BaseModel, Field
-from typing import Optional, Literal
-from datetime import date, datetime
+from pydantic import BaseModel, ConfigDict
+import uuid
+from datetime import datetime
+from decimal import Decimal
+from typing import Optional
+from app.models.enums import PaymentMethod, PaymentType, PaymentStatus, InvoiceStatus, InvoiceType
 
+class PaymentBase(BaseModel):
+    amount: Decimal
+    discount_amount: Decimal = Decimal("0")
+    payment_method: PaymentMethod
+    payment_type: PaymentType
+    notes: Optional[str] = None
 
-class PaymentCreateRequest(BaseModel):
-    member_id: str
-    plan_id: str
-    amount: float = Field(..., gt=0)
-    payment_method: Literal['cash', 'upi', 'card', 'bank_transfer']
-    payment_source: Literal['frontend', 'admin_panel', 'auto_renewal', 'offline_cash', 'imported'] = 'admin_panel'
-    renewal_type: Literal['new_join', 'renewal', 'upgrade', 'downgrade', 'transfer'] = 'new_join'
+class PaymentCreate(PaymentBase):
+    member_id: uuid.UUID
+    subscription_id: Optional[uuid.UUID] = None
 
-
-class PaymentResponse(BaseModel):
-    status: str
-    payment_id: Optional[str] = None
-    subscription_id: Optional[str] = None
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-
-
-class PaymentRead(BaseModel):
-    id: str
-    org_id: str
-    member_id: Optional[str] = None
-    amount: float
-    payment_method: str
-    payment_source: str
-    status: str
+class PaymentResponse(PaymentBase):
+    id: uuid.UUID
+    gym_id: uuid.UUID
+    status: PaymentStatus
     payment_date: datetime
+    transaction_reference: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
 
-    class Config:
-        from_attributes = True
+class InvoiceResponse(BaseModel):
+    id: uuid.UUID
+    invoice_number: str
+    subtotal: Decimal
+    discount_amount: Decimal
+    tax_amount: Decimal
+    tax_rate: Decimal
+    total_amount: Decimal
+    invoice_type: InvoiceType
+    status: InvoiceStatus
+    pdf_url: Optional[str] = None
+    issued_at: datetime
+    model_config = ConfigDict(from_attributes=True)

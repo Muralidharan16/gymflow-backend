@@ -1,1 +1,1 @@
-"""GymFlow backend package"""
+# App package

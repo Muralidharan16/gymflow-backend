@@ -1,24 +1,52 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+import uuid
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Optional
-from datetime import date
+from app.models.enums import SubscriptionStatus
 
+class PlanBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    duration_days: int
+    price: Decimal
+    max_freeze_days: int = 0
+    features: dict = {}
 
-class SubscriptionCreate(BaseModel):
-    member_id: str
-    plan_id: str
-    start_date: Optional[date] = None
+class PlanCreate(PlanBase):
+    pass
 
+class PlanUpdate(PlanBase):
+    name: Optional[str] = None
+    duration_days: Optional[int] = None
+    price: Optional[Decimal] = None
 
-class SubscriptionRenew(BaseModel):
-    renewal_plan_id: Optional[str] = None
+class PlanResponse(PlanBase):
+    id: uuid.UUID
+    gym_id: uuid.UUID
+    is_active: bool
+    model_config = ConfigDict(from_attributes=True)
 
+class SubscriptionBase(BaseModel):
+    plan_id: uuid.UUID
+    start_date: date
 
-class ExpiringMember(BaseModel):
-    member_id: str
-    member_name: str
-    member_uid: str
-    phone: Optional[str] = None
+class SubscriptionCreate(SubscriptionBase):
+    payment_method: str # For internal use during atomic create
+
+class SubscriptionResponse(BaseModel):
+    id: uuid.UUID
+    member_id: uuid.UUID
+    plan_id: uuid.UUID
+    start_date: date
     end_date: date
+    status: SubscriptionStatus
+    total_freeze_days: int
+    model_config = ConfigDict(from_attributes=True)
 
-    class Config:
-        from_attributes = True
+class FreezeRequest(BaseModel):
+    days: int
+    reason: str
+
+class CancelRequest(BaseModel):
+    reason: str

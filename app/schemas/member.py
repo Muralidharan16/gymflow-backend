@@ -1,39 +1,54 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr
+import uuid
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Optional
-from datetime import datetime
+from app.models.enums import MemberStatus
 
-
-class MemberCreate(BaseModel):
-    home_branch_id: str
-    name: str = Field(..., min_length=1, max_length=255)
-    phone: Optional[str] = None
-    email: Optional[EmailStr] = None
-    photo_url: Optional[str] = None
+class MeasurementBase(BaseModel):
+    measured_on: date
+    weight_kg: Optional[Decimal] = None
+    height_cm: Optional[Decimal] = None
+    body_fat_pct: Optional[Decimal] = None
     notes: Optional[str] = None
 
+class MeasurementCreate(MeasurementBase):
+    pass
 
-class MemberUpdate(BaseModel):
-    name: Optional[str] = None
-    phone: Optional[str] = None
-    email: Optional[EmailStr] = None
-    photo_url: Optional[str] = None
-    notes: Optional[str] = None
-    is_active: Optional[bool] = None
+class MeasurementResponse(MeasurementBase):
+    id: uuid.UUID
+    member_id: uuid.UUID
+    recorded_by: Optional[uuid.UUID] = None
+    model_config = ConfigDict(from_attributes=True)
 
-
-class MemberRead(BaseModel):
-    id: str
-    org_id: str
-    home_branch_id: str
-    member_uid: str
+class MemberBase(BaseModel):
     name: str
     phone: Optional[str] = None
-    email: Optional[str] = None
-    fingerprint_id: Optional[str] = None
-    photo_url: Optional[str] = None
-    status: str
+    email: Optional[EmailStr] = None
+    date_of_birth: Optional[date] = None
+    gender: Optional[str] = None
+    blood_group: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
+    address: Optional[str] = None
+    height_cm: Optional[Decimal] = None
+    weight_kg: Optional[Decimal] = None
+    notes: Optional[str] = None
+
+class MemberCreate(MemberBase):
+    pass
+
+class MemberUpdate(MemberBase):
+    name: Optional[str] = None
+    status: Optional[MemberStatus] = None
+
+class MemberResponse(MemberBase):
+    id: uuid.UUID
+    gym_id: uuid.UUID
+    org_id: uuid.UUID
+    member_uid: str
+    qr_token: Optional[str] = None
+    status: MemberStatus
     is_active: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
