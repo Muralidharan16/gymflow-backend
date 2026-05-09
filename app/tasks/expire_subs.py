@@ -1,17 +1,18 @@
 import asyncio
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timezone, timedelta
 from typing import List
 
 from celery import shared_task
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session_maker
-from app.models.member_subscription import MemberSubscription
-from app.models.subscription_plan import SubscriptionPlan
+from app.models.subscription import MemberSubscription, SubscriptionStatus
 from app.repositories.subscription_repo import SubscriptionRepository
 from app.services.subscription_service import SubscriptionService
 from app.utils.whatsapp import send_whatsapp_message
-from app.core.logging import logger
+
+logger = logging.getLogger(__name__)
 
 
 @shared_task(name="expire_subscriptions")
@@ -68,15 +69,18 @@ async def _send_expiry_reminders(session: AsyncSession):
     """
     try:
         repo = SubscriptionRepository(session)
-        three_days_from_now = datetime.now(timezone.utc).date()
-        # Add 3 days; we need subscriptions with end_date = today + 3 days
-        # But since date addition is tricky, we'll use tomorrow + 2? Better to use interval
-        # Simple: get all active subscriptions and check in loop? Not efficient.
-        # Instead, query for end_date between tomorrow and tomorrow+2? Wait, we want exactly +3 days.
-        from datetime import timedelta
-        target_date = three_days_from_now + timedelta(days=3)
+        today = datetime.now(timezone.utc).date()
+        target_date = today + timedelta(days=3)
         
-        expiring_subs = await repo.get_active_subscriptions_ending_on(target_date)
+        # Need to implement this method in subscription_repo if not exists
+        # Fallback: manual query
+        from sqlalchemy import select
+        query = select(MemberSubscription).where(
+            MemberSubscription.status == SubscriptionStatus.ACTIVE,
+            MemberSubscription.end_date == target_date
+        )
+        result = await session.execute(query)
+        expiring_subs = result.scalars().all()
         
         for sub in expiring_subs:
             member = sub.member
@@ -92,7 +96,6 @@ async def _send_expiry_reminders(session: AsyncSession):
             message += f"Please renew your membership to continue enjoying our services.\n\n"
             message += f"Visit the gym or contact us for renewal options."
             
-            # Send async; don't block
             try:
                 await send_whatsapp_message(member.phone, message)
                 logger.info(f"Sent expiry reminder to {member.phone} for sub {sub.id}")
@@ -120,13 +123,18 @@ async def _check_expiring_soon_async():
     """Async implementation for checking soon-to-expire subscriptions."""
     async with async_session_maker() as session:
         try:
-            repo = SubscriptionRepository(session)
-            from datetime import timedelta
+            from sqlalchemy import select
+            from app.models.subscription import MemberSubscription, SubscriptionStatus
             today = datetime.now(timezone.utc).date()
             future_date = today + timedelta(days=7)
             
-            # Get active subscriptions ending within 7 days
-            expiring_subs = await repo.get_active_subscriptions_ending_between(today, future_date)
+            query = select(MemberSubscription).where(
+                MemberSubscription.status == SubscriptionStatus.ACTIVE,
+                MemberSubscription.end_date >= today,
+                MemberSubscription.end_date <= future_date
+            )
+            result = await session.execute(query)
+            expiring_subs = result.scalars().all()
             
             for sub in expiring_subs:
                 member = sub.member

@@ -1,23 +1,24 @@
 import csv
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from io import StringIO
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ValidationError, NotFoundError
-from app.core.redis_client import redis_client  # assumes redis client available
+from app.core.redis import redis_client
 from app.models.import_log import ImportLog, ImportStatus
-from app.models.member import Member
 from app.repositories.member_repo import MemberRepository
 from app.services.member_service import MemberService
 from app.schemas.member import MemberCreate
 from app.utils.phone import normalize_phone
-from app.core.logging import logger
+
+logger = logging.getLogger(__name__)
 
 
 class ImportService:
@@ -96,7 +97,7 @@ class ImportService:
             json.dumps(preview_data)
         )
         
-        # Create ImportLog record with status='processing'
+        # Create ImportLog record with status='processing' (lowercase enum)
         import_log = ImportLog(
             id=UUID(import_id),
             gym_id=gym_id,
@@ -106,8 +107,8 @@ class ImportService:
             success_count=0,
             error_count=0,
             errors_payload=[],
-            created_by=created_by,
-            created_at=datetime.now(timezone.utc)
+            imported_by=created_by  # column name is 'imported_by' not 'created_by'
+            # created_at is auto-set by TimestampMixin, do NOT set manually
         )
         self.session.add(import_log)
         await self.session.commit()
@@ -228,7 +229,8 @@ class ImportService:
                 # Continue with next row
         
         # Update import log
-        import_log.status = ImportStatus.COMPLETED if error_count == 0 else ImportStatus.PARTIAL
+        # Use 'completed' status even if partial errors (no PARTIAL status in spec)
+        import_log.status = ImportStatus.COMPLETED
         import_log.success_count = success_count
         import_log.error_count = error_count
         import_log.errors_payload = errors_payload

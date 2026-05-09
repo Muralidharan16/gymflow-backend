@@ -1,7 +1,9 @@
+import logging
+import uuid
 from datetime import datetime, date, timezone
 from typing import List, Optional, Tuple
-from uuid import UUID
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,8 +12,9 @@ from app.models.member import Member, MemberStatus, MemberMeasurement
 from app.repositories.member_repo import MemberRepository
 from app.schemas.member import MemberCreate, MemberUpdate, MeasurementCreate
 from app.utils.phone import normalize_phone
-from app.utils.qr import generate_qr_token
-from app.core.logging import logger
+from app.utils.qr import generate_qr_png  # keep for QR PNG generation, but token generation is done inline
+
+logger = logging.getLogger(__name__)
 
 
 class MemberService:
@@ -46,7 +49,7 @@ class MemberService:
         """
         member = await self.member_repo.get_by_id_active(member_id, gym_id)
         if not member:
-            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}")
+            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}", error_code="NOT_FOUND")
         return member
 
     async def get_member_by_uid(self, member_uid: str) -> Member:
@@ -58,7 +61,7 @@ class MemberService:
         """
         member = await self.member_repo.get_by_uid_active(member_uid)
         if not member:
-            raise NotFoundError(f"Member with UID {member_uid} not found")
+            raise NotFoundError(f"Member with UID {member_uid} not found", error_code="NOT_FOUND")
         return member
 
     async def create_member(
@@ -99,8 +102,8 @@ class MemberService:
         # This can be implemented based on gym settings
         # For now, assume no limit or implement via settings
         
-        # Generate unique QR token
-        qr_token = await generate_qr_token()
+        # Generate unique QR token (short UUID string, not full UUID)
+        qr_token = str(uuid.uuid4()).replace("-", "")[:16]
         
         member = Member(
             gym_id=gym_id,
@@ -201,7 +204,7 @@ class MemberService:
         """
         deleted = await self.member_repo.soft_delete(member_id, gym_id)
         if not deleted:
-            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}")
+            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}", error_code="NOT_FOUND")
         await self.session.commit()
         logger.info(f"Soft deleted member {member_id}")
 
@@ -220,7 +223,7 @@ class MemberService:
         """
         member = await self.get_member_by_uid(member_uid)
         # Generate QR code PNG from member's qr_token
-        from app.utils.qr import generate_qr_png
+        # Use generate_qr_png which takes content string and returns bytes
         return await generate_qr_png(member.qr_token)
 
     # === Measurements ===

@@ -1,16 +1,19 @@
 import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 from celery import shared_task
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session_maker
 from app.models.member import Member
-from app.models.member_subscription import MemberSubscription
+from app.models.subscription import MemberSubscription, SubscriptionStatus
 from app.repositories.member_repo import MemberRepository
 from app.repositories.subscription_repo import SubscriptionRepository
 from app.utils.whatsapp import send_whatsapp_message
-from app.core.logging import logger
+
+logger = logging.getLogger(__name__)
 
 
 @shared_task(name="send_daily_reminders")
@@ -59,12 +62,14 @@ async def _send_expired_reminders(session):
     for sub in expired_subs:
         member = sub.member
         if not member or not member.phone:
+            if member:
+                logger.warning(f"Member {member.id} has no phone, skipping expired reminder")
             continue
         
         # Skip if already sent reminder for this subscription today (track in separate table? 
         # For simplicity, we can check if member has any active subscription now)
         # Avoid spamming: only send if no active subscription exists
-        has_active = await repo.has_active_subscription(member.id)
+        has_active = await repo.has_active_subscription(member.id, member.gym_id)
         if has_active:
             continue
         
@@ -96,6 +101,8 @@ async def _send_frozen_expiry_reminders(session):
     for sub in frozen_subs:
         member = sub.member
         if not member or not member.phone:
+            if member:
+                logger.warning(f"Member {member.id} has no phone, skipping frozen expiry reminder")
             continue
         
         plan = sub.plan
@@ -118,7 +125,6 @@ async def _send_frozen_expiry_reminders(session):
 async def _send_inactivity_reminders(session):
     """Send reminders to members who haven't checked in for 7+ days."""
     member_repo = MemberRepository(session)
-    from datetime import timedelta
     seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
     
     # Get members with no attendance in last 7 days AND active subscription
@@ -126,6 +132,7 @@ async def _send_inactivity_reminders(session):
     
     for member in inactive_members:
         if not member.phone:
+            logger.warning(f"Member {member.id} has no phone, skipping inactivity reminder")
             continue
         
         message = f"🏋️ *Doers Gym - We Miss You!*\n\n"
@@ -165,6 +172,7 @@ async def _send_birthday_wishes_async():
             
             for member in birthday_members:
                 if not member.phone:
+                    logger.warning(f"Member {member.id} has no phone, skipping birthday wish")
                     continue
                 
                 message = f"🎂 *Happy Birthday, {member.name}!* 🎉\n\n"

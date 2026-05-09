@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 from decimal import Decimal
 from typing import List, Optional, Tuple
@@ -5,13 +6,15 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import NotFoundError, ValidationError
-from app.models.payment import Payment, PaymentStatus, PaymentMethod, PaymentType
-from app.models.invoice import Invoice
-from app.repositories.payment_repo import PaymentRepository
+from app.models.payment import Payment, PaymentStatus, PaymentMethod, PaymentType, Invoice
+from app.repositories.payment_repo import PaymentRepository, InvoiceRepository
 from app.repositories.subscription_repo import SubscriptionRepository
+from app.repositories.member_repo import MemberRepository
+from app.repositories.gym_repo import GymRepository
 from app.services.invoice_service import InvoiceService
-from app.core.logging import logger
+from app.core.exceptions import NotFoundError, ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 class PaymentService:
@@ -21,6 +24,8 @@ class PaymentService:
         self.session = session
         self.payment_repo = PaymentRepository(session)
         self.subscription_repo = SubscriptionRepository(session)
+        self.member_repo = MemberRepository(session)
+        self.gym_repo = GymRepository(session)
 
     async def create_payment(
         self,
@@ -51,22 +56,16 @@ class PaymentService:
         Returns:
             Created Payment object
         """
-        from app.repositories.member_repo import MemberRepository
-        from app.repositories.gym_repo import GymRepository
-        
-        member_repo = MemberRepository(self.session)
-        gym_repo = GymRepository(self.session)
-        
         # Verify member exists in this gym
-        member = await member_repo.get_by_id_active(member_id, gym_id)
+        member = await self.member_repo.get_by_id_active(member_id, gym_id)
         if not member:
-            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}")
+            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}", error_code="NOT_FOUND")
         
-        # Verify subscription if provided
+        # Verify subscription if provided (now requires gym_id)
         if subscription_id:
-            sub = await self.subscription_repo.get_by_id(subscription_id)
+            sub = await self.subscription_repo.get_by_id(subscription_id, gym_id)
             if not sub or sub.member_id != member_id:
-                raise NotFoundError(f"Subscription {subscription_id} not found for member {member_id}")
+                raise NotFoundError(f"Subscription {subscription_id} not found for member {member_id}", error_code="NOT_FOUND")
         
         # Create payment
         payment = Payment(
@@ -74,7 +73,7 @@ class PaymentService:
             member_id=member_id,
             subscription_id=subscription_id,
             amount=amount,
-            method=method,
+            payment_method=method,  # Note: field is payment_method
             type=type,
             reference_number=reference_number,
             notes=notes,
@@ -89,9 +88,10 @@ class PaymentService:
         # Generate invoice for completed payment
         if created.status == PaymentStatus.COMPLETED:
             try:
-                gym = await gym_repo.get_by_id(gym_id)
+                gym = await self.gym_repo.get_by_id(gym_id)
+                invoice_repo = InvoiceRepository(self.session)
                 invoice_service = InvoiceService(
-                    invoice_repo=__import__('app.repositories.invoice_repo', fromlist=['InvoiceRepository']).InvoiceRepository(self.session),
+                    invoice_repo=invoice_repo,
                     session=self.session
                 )
                 await invoice_service.create_invoice_for_payment(
@@ -124,7 +124,7 @@ class PaymentService:
         """
         payment = await self.payment_repo.get_by_id_and_gym(payment_id, gym_id)
         if not payment:
-            raise NotFoundError(f"Payment {payment_id} not found in gym {gym_id}")
+            raise NotFoundError(f"Payment {payment_id} not found in gym {gym_id}", error_code="NOT_FOUND")
         return payment
 
     async def list_payments(
@@ -175,7 +175,7 @@ class PaymentService:
         payment = await self.get_payment(payment_id, gym_id)
         invoice = await self.payment_repo.get_invoice_for_payment(payment_id)
         if not invoice:
-            raise NotFoundError(f"No invoice found for payment {payment_id}")
+            raise NotFoundError(f"No invoice found for payment {payment_id}", error_code="NOT_FOUND")
         return invoice
 
     async def get_payment_summary_by_method(

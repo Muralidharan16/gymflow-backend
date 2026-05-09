@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from decimal import Decimal
-from typing import List, Dict
+from typing import List, Optional
+from datetime import date
 
 class DashboardResponse(BaseModel):
     total_revenue_month: Decimal
@@ -9,17 +10,26 @@ class DashboardResponse(BaseModel):
     expired_month: int
     churn_rate: float
 
-class CollectionReport(BaseModel):
-    date_from: str
-    date_to: str
-    total_amount: Decimal
-    breakdown: Dict[str, Decimal]
-
-class ExpiringMember(BaseModel):
+class ExpiringMemberResponse(BaseModel):
+    member_id: str
     member_name: str
-    phone: str
+    phone: Optional[str] = None
     plan_name: str
-    end_date: str
+    end_date: date
+    days_remaining: Optional[int] = None  # Added for convenience
 
-class ExpiringMembersResponse(BaseModel):
-    members: List[ExpiringMember]
+class HourlyCount(BaseModel):
+    hour: int
+    count: int
+
+class AttendanceHeatmapResponse(BaseModel):
+    data: List[HourlyCount]
+
+class CollectionSummaryResponse(BaseModel):
+    method: str
+    total_amount: Decimal
+    count: int
+
+# Keep old names as aliases for backward compat
+CollectionReport = CollectionSummaryResponse
+ExpiringMembersResponse = ExpiringMemberResponse

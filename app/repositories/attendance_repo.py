@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.attendance import AttendanceLog, CheckInMethod
-from app.repositories.base_repo import BaseRepository
+from app.repositories.base import BaseRepository
 
 
 class AttendanceRepository(BaseRepository[AttendanceLog]):

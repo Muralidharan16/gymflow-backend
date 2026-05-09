@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.member import Member, MemberMeasurement, MemberStatus
-from app.models.member_subscription import MemberSubscription, SubscriptionStatus
-from app.repositories.base_repo import BaseRepository
+from app.models.subscription import MemberSubscription, SubscriptionStatus
+from app.repositories.base import BaseRepository
 
 
 class MemberRepository(BaseRepository[Member]):
@@ -18,9 +18,15 @@ class MemberRepository(BaseRepository[Member]):
         super().__init__(Member, session)
 
     # Core CRUD methods
-    async def get_by_id(self, member_id: UUID) -> Optional[Member]:
-        """Get member by ID."""
-        return await self.session.get(Member, member_id)
+    async def get_by_id(self, member_id: UUID, gym_id: UUID) -> Optional[Member]:
+        """Get member by ID scoped to gym."""
+        query = select(Member).where(
+            Member.id == member_id,
+            Member.gym_id == gym_id,
+            Member.is_active == True
+        )
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
 
     async def get_by_id_active(self, member_id: UUID, gym_id: UUID) -> Optional[Member]:
         """Get active member by ID and gym."""

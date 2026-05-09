@@ -5,7 +5,7 @@ from sqlalchemy import select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.gym import Gym, BranchTaxSettings
-from app.repositories.base_repo import BaseRepository
+from app.repositories.base import BaseRepository
 
 
 class GymRepository(BaseRepository[Gym]):

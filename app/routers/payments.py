@@ -13,7 +13,7 @@ from app.schemas.common import Response, PaginatedResponse, MessageResponse
 from app.schemas.payment import PaymentResponse, PaymentCreate, InvoiceResponse
 from app.services.payment_service import PaymentService
 from app.services.invoice_service import InvoiceService
-from app.repositories.invoice_repo import InvoiceRepository
+from app.repositories.payment_repo import InvoiceRepository  # FIXED: was invoice_repo
 from app.core.exceptions import NotFoundError, ValidationError
 
 router = APIRouter(prefix="/gyms/{gym_id}/payments", tags=["Payments"])
@@ -48,7 +48,7 @@ async def record_payment(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"message": str(e), "error_code": "NOT_FOUND"}
+            detail={"message": str(e), "error_code": e.error_code}
         )
     except ValidationError as e:
         await db.rollback()

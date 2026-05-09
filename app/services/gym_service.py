@@ -1,3 +1,4 @@
+import logging
 from typing import List, Optional
 from uuid import UUID
 
@@ -8,6 +9,8 @@ from app.models.gym import Gym, BranchTaxSettings
 from app.repositories.gym_repo import GymRepository
 from app.schemas.gym import GymCreate, GymUpdate, TaxConfigCreate
 from app.utils.rate_limit import check_branch_limit
+
+logger = logging.getLogger(__name__)
 
 
 class GymService:
@@ -39,7 +42,7 @@ class GymService:
         """
         gym = await self.gym_repo.get_by_id_and_org(gym_id, org_id)
         if not gym:
-            raise NotFoundError(f"Branch {gym_id} not found in organization {org_id}")
+            raise NotFoundError(f"Branch {gym_id} not found in organization {org_id}", error_code="NOT_FOUND")
         return gym
 
     async def create_branch(self, org_id: UUID, data: GymCreate, created_by: UUID) -> Gym:
@@ -124,7 +127,7 @@ class GymService:
         """
         deleted = await self.gym_repo.soft_delete(gym_id, org_id)
         if not deleted:
-            raise NotFoundError(f"Branch {gym_id} not found or already deleted")
+            raise NotFoundError(f"Branch {gym_id} not found or already deleted", error_code="NOT_FOUND")
 
     # === Tax Configuration ===
 
@@ -177,7 +180,7 @@ class GymService:
         """
         deactivated = await self.gym_repo.deactivate_tax_config(gym_id)
         if not deactivated:
-            raise NotFoundError(f"No active tax configuration found for gym {gym_id}")
+            raise NotFoundError(f"No active tax configuration found for gym {gym_id}", error_code="NOT_FOUND")
 
     async def get_tax_config_history(self, gym_id: UUID) -> List[BranchTaxSettings]:
         """Get all tax configurations (history) for a gym."""

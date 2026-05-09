@@ -6,9 +6,8 @@ from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.member_subscription import MemberSubscription, SubscriptionStatus
-from app.models.subscription_plan import SubscriptionPlan
-from app.repositories.base_repo import BaseRepository
+from app.models.subscription import MemberSubscription, SubscriptionStatus, SubscriptionPlan
+from app.repositories.base import BaseRepository
 
 
 class SubscriptionRepository(BaseRepository[MemberSubscription]):
@@ -18,10 +17,17 @@ class SubscriptionRepository(BaseRepository[MemberSubscription]):
         super().__init__(MemberSubscription, session)
 
     # === Core CRUD ===
-    async def get_by_id(self, sub_id: UUID) -> Optional[MemberSubscription]:
-        """Get subscription by ID with eager loading of member and plan."""
+    async def get_by_id(self, sub_id: UUID, gym_id: UUID) -> Optional[MemberSubscription]:
+        """
+        Get subscription by ID, scoped to gym.
+        
+        Args:
+            sub_id: Subscription UUID
+            gym_id: Gym UUID for access control
+        """
         query = select(MemberSubscription).where(
-            MemberSubscription.id == sub_id
+            MemberSubscription.id == sub_id,
+            MemberSubscription.gym_id == gym_id
         ).options(
             selectinload(MemberSubscription.member),
             selectinload(MemberSubscription.plan),
@@ -67,10 +73,11 @@ class SubscriptionRepository(BaseRepository[MemberSubscription]):
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
-    async def has_active_subscription(self, member_id: UUID) -> bool:
+    async def has_active_subscription(self, member_id: UUID, gym_id: UUID) -> bool:
         """Check if member has any active subscription."""
         query = select(func.count()).select_from(MemberSubscription).where(
             MemberSubscription.member_id == member_id,
+            MemberSubscription.gym_id == gym_id,
             MemberSubscription.status == SubscriptionStatus.ACTIVE,
             MemberSubscription.end_date >= date.today()
         )
@@ -79,7 +86,11 @@ class SubscriptionRepository(BaseRepository[MemberSubscription]):
 
     # === Expiry-related queries ===
     async def get_expired_active_subscriptions(self, cutoff_date: date) -> List[MemberSubscription]:
-        """Get active subscriptions that have end_date < cutoff_date."""
+        """
+        Get active subscriptions that have end_date < cutoff_date.
+        Note: This method typically should be scoped by gym_id, but called from task that may need all gyms.
+        For cross-gym tasks, no gym_id filter.
+        """
         query = select(MemberSubscription).where(
             MemberSubscription.status == SubscriptionStatus.ACTIVE,
             MemberSubscription.end_date < cutoff_date

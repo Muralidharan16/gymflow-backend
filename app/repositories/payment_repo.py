@@ -1,15 +1,14 @@
 from datetime import date, datetime
+from decimal import Decimal
 from typing import List, Optional, Tuple
 from uuid import UUID
-from decimal import Decimal
 
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.payment import Payment, PaymentStatus, PaymentMethod, PaymentType
-from app.models.invoice import Invoice
-from app.repositories.base_repo import BaseRepository
+from app.models.payment import Payment, PaymentStatus, PaymentMethod, PaymentType, Invoice
+from app.repositories.base import BaseRepository
 
 
 class PaymentRepository(BaseRepository[Payment]):
@@ -67,19 +66,6 @@ class PaymentRepository(BaseRepository[Payment]):
     ) -> Tuple[List[Payment], int]:
         """
         List payments with filters and pagination.
-        
-        Args:
-            gym_id: Gym UUID
-            date_from: Start date (YYYY-MM-DD)
-            date_to: End date (YYYY-MM-DD)
-            method: Payment method filter
-            type: Payment type filter
-            status: Payment status filter
-            page: Page number (1-indexed)
-            size: Items per page
-            
-        Returns:
-            Tuple of (list of payments, total count)
         """
         offset = (page - 1) * size
         
@@ -95,9 +81,9 @@ class PaymentRepository(BaseRepository[Payment]):
             to_dt = datetime.combine(date_to, datetime.max.time())
             query = query.where(Payment.payment_date <= to_dt)
         
-        # Apply other filters
+        # Apply other filters - NOTE: column name is 'payment_method' not 'method'
         if method:
-            query = query.where(Payment.method == method)
+            query = query.where(Payment.payment_method == method)
         
         if type:
             query = query.where(Payment.type == type)
@@ -133,17 +119,12 @@ class PaymentRepository(BaseRepository[Payment]):
         date_from: date,
         date_to: date
     ) -> List[dict]:
-        """
-        Get payment summary grouped by payment method for reports.
-        
-        Returns:
-            List of dicts with method, total_amount, count
-        """
+        """Get payment summary grouped by payment method for reports."""
         from_dt = datetime.combine(date_from, datetime.min.time())
         to_dt = datetime.combine(date_to, datetime.max.time())
         
         query = select(
-            Payment.method,
+            Payment.payment_method,
             func.sum(Payment.amount).label('total_amount'),
             func.count().label('count')
         ).where(
@@ -151,15 +132,15 @@ class PaymentRepository(BaseRepository[Payment]):
             Payment.status == PaymentStatus.COMPLETED,
             Payment.payment_date >= from_dt,
             Payment.payment_date <= to_dt
-        ).group_by(Payment.method)
+        ).group_by(Payment.payment_method)
         
         result = await self.session.execute(query)
         rows = result.all()
         
         return [
             {
-                "method": row.method.value if row.method else None,
-                "total_amount": float(row.total_amount) if row.total_amount else 0.0,
+                "method": row.payment_method.value if row.payment_method else None,
+                "total_amount": Decimal(str(row.total_amount)) if row.total_amount else Decimal('0'),
                 "count": row.count
             }
             for row in rows
@@ -192,3 +173,52 @@ class PaymentRepository(BaseRepository[Payment]):
         ).order_by(Payment.payment_date)
         result = await self.session.execute(query)
         return result.scalars().all()
+
+
+# ========== InvoiceRepository ==========
+
+class InvoiceRepository:
+    """Repository for Invoice operations (stored in payment.py models)."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_by_payment(self, payment_id: UUID) -> Optional[Invoice]:
+        """Get invoice by payment ID."""
+        query = select(Invoice).where(Invoice.payment_id == payment_id)
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+
+    async def get_by_id_and_gym(self, invoice_id: UUID, gym_id: UUID) -> Optional[Invoice]:
+        """Get invoice by ID scoped to gym."""
+        query = select(Invoice).where(Invoice.id == invoice_id, Invoice.gym_id == gym_id)
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+
+    async def next_sequence_for_gym(self, gym_id: UUID) -> int:
+        """Get next invoice sequence number for a gym."""
+        query = select(func.count()).where(Invoice.gym_id == gym_id)
+        result = await self.session.execute(query)
+        return (result.scalar() or 0) + 1
+
+    async def create(self, invoice: Invoice) -> Invoice:
+        """Create a new invoice."""
+        self.session.add(invoice)
+        await self.session.flush()
+        return invoice
+
+    async def update(self, invoice: Invoice) -> Invoice:
+        """Update an existing invoice."""
+        await self.session.merge(invoice)
+        await self.session.flush()
+        return invoice
+
+    async def void(self, invoice_id: UUID, gym_id: UUID) -> None:
+        """Void an invoice (soft delete)."""
+        from app.models.enums import InvoiceStatus
+        query = select(Invoice).where(Invoice.id == invoice_id, Invoice.gym_id == gym_id)
+        result = await self.session.execute(query)
+        invoice = result.scalar_one_or_none()
+        if invoice:
+            invoice.status = InvoiceStatus.VOID
+            await self.session.flush()

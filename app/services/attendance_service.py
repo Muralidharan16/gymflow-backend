@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, date, timezone
 from typing import List, Optional, Tuple
 from uuid import UUID
@@ -11,7 +12,8 @@ from app.repositories.attendance_repo import AttendanceRepository
 from app.repositories.member_repo import MemberRepository
 from app.repositories.subscription_repo import SubscriptionRepository
 from app.services.member_service import MemberService
-from app.core.logging import logger
+
+logger = logging.getLogger(__name__)
 
 
 class AttendanceService:
@@ -40,12 +42,12 @@ class AttendanceService:
         """
         member = await self.member_repo.get_by_uid_active(member_uid)
         if not member:
-            raise NotFoundError(f"Member with UID {member_uid} not found")
+            raise NotFoundError(f"Member with UID {member_uid} not found", error_code="NOT_FOUND")
         
         # Check active subscription
         active_sub = await self.subscription_repo.get_active_for_member(member.id, member.gym_id)
         if not active_sub:
-            raise SubscriptionNotActive(f"Member {member.name} has no active subscription")
+            raise SubscriptionNotActive(f"Member {member.name} has no active subscription", error_code="SUBSCRIPTION_NOT_ACTIVE")
         
         # Create attendance log
         log = AttendanceLog(
@@ -93,12 +95,12 @@ class AttendanceService:
         """
         member = await self.member_repo.get_by_id_active(member_id, gym_id)
         if not member:
-            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}")
+            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}", error_code="NOT_FOUND")
         
         # Check active subscription
         active_sub = await self.subscription_repo.get_active_for_member(member_id, gym_id)
         if not active_sub:
-            raise SubscriptionNotActive(f"Member {member.name} has no active subscription")
+            raise SubscriptionNotActive(f"Member {member.name} has no active subscription", error_code="SUBSCRIPTION_NOT_ACTIVE")
         
         # Check if already checked in (no checkout)
         open_log = await self.attendance_repo.get_active_checkin(member_id, gym_id)
@@ -149,7 +151,7 @@ class AttendanceService:
         """
         log = await self.attendance_repo.get_by_id(log_id, gym_id)
         if not log:
-            raise NotFoundError(f"Attendance log {log_id} not found in gym {gym_id}")
+            raise NotFoundError(f"Attendance log {log_id} not found in gym {gym_id}", error_code="NOT_FOUND")
         
         if log.check_out_time:
             raise ValidationError(f"Already checked out at {log.check_out_time}", error_code="VALIDATION_ERROR")
@@ -208,7 +210,7 @@ class AttendanceService:
         # Verify member exists
         member = await self.member_repo.get_by_id_active(member_id, gym_id)
         if not member:
-            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}")
+            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}", error_code="NOT_FOUND")
         
         return await self.attendance_repo.member_history(member_id, gym_id, page, size)
 
