@@ -11,14 +11,13 @@ class SubscriptionCreate(BaseModel):
 
 class SubscriptionRenew(BaseModel):
     renewal_plan_id: Optional[str] = None
-    payment_id: Optional[str] = None
 
 
 class ExpiringMember(BaseModel):
     member_id: str
     member_name: str
-    phone: Optional[str]
-    email: Optional[str]
+    member_uid: str
+    phone: Optional[str] = None
     end_date: date
 
     class Config:

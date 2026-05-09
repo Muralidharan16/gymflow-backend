@@ -40,12 +40,32 @@ async def publish_channel(channel: str, message: dict) -> int:
         return 0
 
 
+import time
+import asyncio
+
+_fallback_rate_limits = {}
+_fallback_lock = asyncio.Lock()
+
+
 async def rate_limit(key: str, limit: int, period_seconds: int = 60) -> bool:
-    """Simple fixed-window rate limiting using Redis INCR and EXPIRE. Returns True if under limit (or Redis unavailable)."""
+    """Simple fixed-window rate limiting using Redis INCR and EXPIRE. Falls back to in-memory if Redis unavailable."""
     global redis_client, redis_available
     if not redis_available or redis_client is None:
-        logger.debug(f"Redis unavailable, skipping rate limit for {key}")
-        return True  # Allow request if Redis not available
+        logger.debug(f"Redis unavailable, using in-memory rate limit for {key}")
+        now = time.time()
+        async with _fallback_lock:
+            # Cleanup old keys to prevent memory leak
+            keys_to_delete = [k for k, v in _fallback_rate_limits.items() if v[1] < now]
+            for k in keys_to_delete:
+                del _fallback_rate_limits[k]
+                
+            if key not in _fallback_rate_limits:
+                _fallback_rate_limits[key] = [1, now + period_seconds]
+                return True
+            else:
+                _fallback_rate_limits[key][0] += 1
+                return _fallback_rate_limits[key][0] <= limit
+
     try:
         count = await redis_client.incr(key)
         if count == 1:

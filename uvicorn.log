@@ -1,0 +1,26 @@
+INFO:     Will watch for changes in these directories: ['/home/jeevashri/gymflow-backend']
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [91875] using WatchFiles
+INFO:     Started server process [91878]
+INFO:     Waiting for application startup.
+Redis connection failed: Error 111 connecting to localhost:6379. Connection refused.. Running without Redis (rate limiting and pub/sub disabled)
+INFO:     Application startup complete.
+INFO:     127.0.0.1:43752 - "POST /auth/register HTTP/1.1" 201 Created
+WARNING:  WatchFiles detected changes in 'app/routers/auth.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [91878]
+INFO:     Started server process [91899]
+INFO:     Waiting for application startup.
+Redis connection failed: Error 111 connecting to localhost:6379. Connection refused.. Running without Redis (rate limiting and pub/sub disabled)
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'tests/test_auth_register.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [91899]
+INFO:     Started server process [91991]
+INFO:     Waiting for application startup.
+Redis connection failed: Error 111 connecting to localhost:6379. Connection refused.. Running without Redis (rate limiting and pub/sub disabled)
+INFO:     Application startup complete.

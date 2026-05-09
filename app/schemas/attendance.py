@@ -3,14 +3,13 @@ from typing import Optional
 from datetime import datetime
 
 
-class AccessVerifyRequest(BaseModel):
+class AccessScanRequest(BaseModel):
     fingerprint_id: str
-    device_id: str
 
 
-class AccessVerifyResponse(BaseModel):
-    allowed: bool
-    member_id: Optional[str]
-    member_name: Optional[str]
-    subscription_end: Optional[datetime]
-    reason: Optional[str]
+class AccessScanResponse(BaseModel):
+    access_granted: bool
+    reason: str
+    member_name: Optional[str] = None
+    member_uid: Optional[str] = None
+    subscription_end: Optional[str] = None

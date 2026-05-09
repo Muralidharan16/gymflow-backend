@@ -1,34 +1,52 @@
-from fastapi import APIRouter, Header, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
-from ..schemas.attendance import AccessVerifyRequest, AccessVerifyResponse
-from ..services.access_control import verify_and_process_access
-from ..redis_client import rate_limit, redis_client
-from ..config import settings
+from ..routers.devices import verify_device
+from ..models.models import Device, GymBranch
+from ..schemas.attendance import AccessScanRequest, AccessScanResponse
+from ..services.attendance import process_attendance_scan
+from ..redis_client import rate_limit
+from sqlalchemy import select
 
 router = APIRouter(prefix="/access", tags=["access"])
 
 
-@router.post('/verify', response_model=AccessVerifyResponse)
-async def access_verify(payload: AccessVerifyRequest, x_bridge_token: str | None = Header(None), db: AsyncSession = Depends(get_db)):
-    if not x_bridge_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Missing bridge token')
-
-    # rate limit per bridge token
-    key = f"rate:access:{x_bridge_token}"
-    allowed = await rate_limit(key, limit=int(settings.RATE_LIMIT_PER_MINUTE), period_seconds=60)
+@router.post('/scan', response_model=AccessScanResponse)
+async def scan_fingerprint(
+    payload: AccessScanRequest,
+    device: Device = Depends(verify_device),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Hardware fingerprint scan endpoint.
+    
+    Security: Device authenticates via X-Device-UID + X-Api-Key headers.
+    The branch_id and org_id are derived from the device, NOT from the request body.
+    This prevents spoofing — hardware cannot claim to be at a different branch.
+    """
+    # Rate limit per device to prevent abuse (generous: 120/min for rush hour)
+    key = f"rate:access:{device.device_uid}"
+    allowed = await rate_limit(key, limit=120, period_seconds=60)
     if not allowed:
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail='Rate limit exceeded')
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Rate limit exceeded")
 
-    try:
-        result = await verify_and_process_access(db, redis_client, x_bridge_token, payload.device_id, payload.fingerprint_id)
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+    # Derive org_id from device's branch
+    branch_stmt = select(GymBranch.org_id).where(GymBranch.id == device.branch_id)
+    branch_res = await db.execute(branch_stmt)
+    org_id = branch_res.scalar_one()
 
-    return AccessVerifyResponse(
-        allowed=bool(result.get('allowed')),
-        member_id=result.get('member_id'),
-        member_name=result.get('member_name'),
-        subscription_end=result.get('subscription_end'),
-        reason=result.get('reason')
+    result = await process_attendance_scan(
+        db=db,
+        org_id=str(org_id),
+        branch_id=str(device.branch_id),
+        fingerprint_id=payload.fingerprint_id,
+        device_id=str(device.id),
+    )
+
+    return AccessScanResponse(
+        access_granted=result["access_granted"],
+        reason=result["reason"],
+        member_name=result.get("member_name"),
+        member_uid=result.get("member_uid"),
+        subscription_end=result.get("subscription_end"),
     )
