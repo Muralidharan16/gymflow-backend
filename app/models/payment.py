@@ -67,9 +67,8 @@ class Payment(Base, TimestampMixin):
     )
 
     __table_args__ = (
-        Index("ix_payments_gym_id", "gym_id"),
-        Index("ix_payments_member_id", "member_id"),
-        Index("ix_payments_gym_date", "gym_id", payment_date.desc()),
+        Index("ix_payments_gym_member", "gym_id", "member_id"),
+        Index("ix_payments_gym_date_status", "gym_id", payment_date.desc(), "status"),
     )
 
 
@@ -128,6 +127,6 @@ class Invoice(Base, TimestampMixin):
 
     __table_args__ = (
         Index("ix_invoices_invoice_number", "invoice_number", unique=True),
-        Index("ix_invoices_gym_id", "gym_id"),
-        Index("ix_invoices_member_id", "member_id"),
+        Index("ix_invoices_gym_member", "gym_id", "member_id"),
+        Index("ix_invoices_gym_issued_at", "gym_id", issued_at.desc()),
     )

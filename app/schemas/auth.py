@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr, ConfigDict
 import uuid
 from datetime import datetime
+from typing import Optional
 from app.models.enums import StaffRole
 
 class SignupRequest(BaseModel):
@@ -13,6 +14,8 @@ class SignupRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    device_id: Optional[str] = None
+    device_name: Optional[str] = None
 
 class TokenResponse(BaseModel):
     access_token: str

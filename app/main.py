@@ -1,7 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.core.middleware import TenantMiddleware
+from app.core.middleware import (
+    TenantMiddleware, 
+    SecurityHeadersMiddleware, 
+    CorrelationIdMiddleware, 
+    RateLimitMiddleware,
+    IdempotencyMiddleware
+)
 from app.routers import auth, gyms, members, subscriptions, payments, attendance, reports, imports
 
 app = FastAPI(title="Doers Gym SaaS", version="1.0.0")
@@ -21,7 +27,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Tenant context middleware
+# Middlewares (Order matters: Bottom to Top)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(IdempotencyMiddleware)
 app.add_middleware(TenantMiddleware)
 
 # Include routers

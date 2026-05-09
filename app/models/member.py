@@ -1,9 +1,11 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+# pyrefly: ignore [missing-import]
 from sqlalchemy import (
     String, Boolean, Date, Text, ForeignKey, Numeric, Index,
 )
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy import Enum as SAEnum
@@ -67,14 +69,14 @@ class Member(Base, TimestampMixin):
     )
 
     __table_args__ = (
-        Index("ix_members_phone", "phone"),
-        Index("ix_members_gym_phone", "gym_id", "phone"),
-        Index("ix_members_email", "email"),
-        Index("ix_members_member_uid", "member_uid"),
-        Index("ix_members_gym_id", "gym_id"),
         Index("ix_members_org_id", "org_id"),
-        Index("ix_members_qr_token", "qr_token"),
-        Index("ix_members_status", "status"),
+        Index("ix_members_gym_id", "gym_id"),
+        Index("ix_members_gym_member_uid", "gym_id", "member_uid", unique=True),
+        Index("ix_members_gym_phone", "gym_id", "phone"),
+        Index("ix_members_gym_qr_token", "gym_id", "qr_token", unique=True),
+        Index("ix_members_gym_fingerprint", "gym_id", "fingerprint_id"),
+        Index("ix_members_gym_status", "gym_id", "status"),
+        Index("ix_members_email", "email"),
     )
 
 

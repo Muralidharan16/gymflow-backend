@@ -36,17 +36,13 @@ def upgrade() -> None:
     # 0. Ensure uuid-ossp or pgcrypto for gen_random_uuid()
     op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
 
-    # Create enums
-    for name, values in ENUM_TYPES:
-        sa.Enum(*values, name=name).create(op.get_bind(), checkfirst=True)
-
     # 1. organizations
     op.create_table(
         "organizations",
         sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("name", sa.String(), nullable=False),
         sa.Column("pan_number", sa.String(10), nullable=False),
-        sa.Column("tier", sa.Enum("basic", "pro", "elite", name="orgtier", create_type=False), nullable=False, server_default="basic"),
+        sa.Column("tier", sa.Enum("basic", "pro", "elite", name="orgtier"), nullable=False, server_default="basic"),
         sa.Column("facility_type", sa.String(30), nullable=False, server_default="gym"),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("created_at", TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
@@ -95,7 +91,7 @@ def upgrade() -> None:
         sa.Column("email", sa.String(), nullable=False),
         sa.Column("password_hash", sa.String(), nullable=False),
         sa.Column("phone", sa.String(20), nullable=True),
-        sa.Column("role", sa.Enum("owner", "admin", "trainer", "receptionist", name="staffrole", create_type=False), nullable=False, server_default="admin"),
+        sa.Column("role", sa.Enum("owner", "admin", "trainer", "receptionist", name="staffrole"), nullable=False, server_default="admin"),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("is_verified", sa.Boolean(), nullable=False, server_default=sa.text("false")),
         sa.Column("last_login", TIMESTAMP(timezone=True), nullable=True),
@@ -126,7 +122,7 @@ def upgrade() -> None:
         sa.Column("fingerprint_id", sa.String(), nullable=True),
         sa.Column("photo_url", sa.String(), nullable=True),
         sa.Column("qr_token", sa.String(), nullable=True),
-        sa.Column("status", sa.Enum("active", "inactive", "frozen", "expired", "blocked", name="memberstatus", create_type=False), nullable=False, server_default="active"),
+        sa.Column("status", sa.Enum("active", "inactive", "frozen", "expired", "blocked", name="memberstatus"), nullable=False, server_default="active"),
         sa.Column("source", sa.String(30), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("is_migrated", sa.Boolean(), nullable=False, server_default=sa.text("false")),
@@ -193,7 +189,7 @@ def upgrade() -> None:
         sa.Column("freeze_start_date", sa.Date(), nullable=True),
         sa.Column("freeze_end_date", sa.Date(), nullable=True),
         sa.Column("total_freeze_days", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("status", sa.Enum("active", "expired", "frozen", "cancelled", "pending", name="subscriptionstatus", create_type=False), nullable=False, server_default="active"),
+        sa.Column("status", sa.Enum("active", "expired", "frozen", "cancelled", "pending", name="subscriptionstatus"), nullable=False, server_default="active"),
         sa.Column("reminder_sent", sa.Boolean(), nullable=False, server_default=sa.text("false")),
         sa.Column("mandate_id", UUID(as_uuid=True), nullable=True),
         sa.Column("notes", sa.Text(), nullable=True),
@@ -217,9 +213,9 @@ def upgrade() -> None:
         sa.Column("collected_by", UUID(as_uuid=True), sa.ForeignKey("gym_owners.id", ondelete="SET NULL"), nullable=True),
         sa.Column("amount", sa.Numeric(12, 2), nullable=False),
         sa.Column("discount_amount", sa.Numeric(12, 2), nullable=False, server_default="0"),
-        sa.Column("payment_method", sa.Enum("cash", "upi", "card", "bank_transfer", "cheque", "online", name="paymentmethod", create_type=False), nullable=False),
-        sa.Column("payment_type", sa.Enum("subscription", "registration", "addon", "penalty", "refund", name="paymenttype", create_type=False), nullable=False),
-        sa.Column("status", sa.Enum("pending", "completed", "failed", "refunded", name="paymentstatus", create_type=False), nullable=False),
+        sa.Column("payment_method", sa.Enum("cash", "upi", "card", "bank_transfer", "cheque", "online", name="paymentmethod"), nullable=False),
+        sa.Column("payment_type", sa.Enum("subscription", "registration", "addon", "penalty", "refund", name="paymenttype"), nullable=False),
+        sa.Column("status", sa.Enum("pending", "completed", "failed", "refunded", name="paymentstatus"), nullable=False),
         sa.Column("transaction_reference", sa.String(), nullable=True),
         sa.Column("razorpay_id", sa.String(), nullable=True),
         sa.Column("notes", sa.String(), nullable=True),
@@ -247,8 +243,8 @@ def upgrade() -> None:
         sa.Column("tax_amount", sa.Numeric(12, 2), nullable=False, server_default="0"),
         sa.Column("tax_rate", sa.Numeric(5, 2), nullable=False, server_default="0"),
         sa.Column("total_amount", sa.Numeric(12, 2), nullable=False),
-        sa.Column("invoice_type", sa.Enum("bill_of_supply", "tax_invoice", name="invoicetype", create_type=False), nullable=False, server_default="bill_of_supply"),
-        sa.Column("status", sa.Enum("draft", "issued", "paid", "void", name="invoicestatus", create_type=False), nullable=False, server_default="issued"),
+        sa.Column("invoice_type", sa.Enum("bill_of_supply", "tax_invoice", name="invoicetype"), nullable=False, server_default="bill_of_supply"),
+        sa.Column("status", sa.Enum("draft", "issued", "paid", "void", name="invoicestatus"), nullable=False, server_default="issued"),
         sa.Column("pdf_url", sa.String(), nullable=True),
         sa.Column("issued_at", TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("created_at", TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
@@ -266,9 +262,9 @@ def upgrade() -> None:
         sa.Column("member_id", UUID(as_uuid=True), sa.ForeignKey("members.id", ondelete="SET NULL"), nullable=True),
         sa.Column("scan_time", TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("check_out_time", TIMESTAMP(timezone=True), nullable=True),
-        sa.Column("check_in_method", sa.Enum("qr", "fingerprint", "manual", "rfid", "face", "door_lock", name="checkinmethod", create_type=False), nullable=False),
+        sa.Column("check_in_method", sa.Enum("qr", "fingerprint", "manual", "rfid", "face", "door_lock", name="checkinmethod"), nullable=False),
         sa.Column("access_granted", sa.Boolean(), nullable=False),
-        sa.Column("denial_reason", sa.Enum("subscription_expired", "no_active_subscription", "account_frozen", "not_found", name="attendancedenialreason", create_type=False), nullable=True),
+        sa.Column("denial_reason", sa.Enum("subscription_expired", "no_active_subscription", "account_frozen", "not_found", name="attendancedenialreason"), nullable=True),
         sa.Column("created_at", TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
     )
@@ -288,7 +284,7 @@ def upgrade() -> None:
         sa.Column("freeze_start", sa.Date(), nullable=False),
         sa.Column("freeze_end", sa.Date(), nullable=True),
         sa.Column("reason", sa.Text(), nullable=True),
-        sa.Column("status", sa.Enum("requested", "active", "completed", "cancelled", name="freezestatus", create_type=False), nullable=False, server_default="requested"),
+        sa.Column("status", sa.Enum("requested", "active", "completed", "cancelled", name="freezestatus"), nullable=False, server_default="requested"),
         sa.Column("created_at", TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", TIMESTAMP(timezone=True), server_default=sa.text("now()"), nullable=False),
     )
@@ -301,7 +297,7 @@ def upgrade() -> None:
         sa.Column("gym_id", UUID(as_uuid=True), sa.ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False),
         sa.Column("imported_by", UUID(as_uuid=True), sa.ForeignKey("gym_owners.id", ondelete="CASCADE"), nullable=False),
         sa.Column("filename", sa.String(), nullable=False),
-        sa.Column("status", sa.Enum("processing", "completed", "failed", name="importstatus", create_type=False), nullable=False, server_default="processing"),
+        sa.Column("status", sa.Enum("processing", "completed", "failed", name="importstatus"), nullable=False, server_default="processing"),
         sa.Column("total_rows", sa.Integer(), nullable=True),
         sa.Column("success_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("skipped_count", sa.Integer(), nullable=False, server_default="0"),
@@ -315,8 +311,8 @@ def upgrade() -> None:
     )
     op.create_index("ix_import_logs_gym_id", "import_logs", ["gym_id"])
 
-    # Data migration: fix old payment status
-    op.execute("UPDATE payments SET status='completed' WHERE status='success'")
+    # Data migration: fix old payment status (Not needed for fresh DB)
+    # op.execute("UPDATE payments SET status='completed' WHERE status='success'")
 
 
 def downgrade() -> None:

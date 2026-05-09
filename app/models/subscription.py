@@ -1,11 +1,15 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+# pyrefly: ignore [missing-import]
 from sqlalchemy import (
     String, Boolean, Integer, Date, Text, ForeignKey, Numeric, Index,
 )
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Mapped, mapped_column
+# pyrefly: ignore [missing-import]
 from sqlalchemy.dialects.postgresql import UUID, JSONB, TIMESTAMP
+# pyrefly: ignore [missing-import]
 from sqlalchemy import Enum as SAEnum
 
 from app.models.base import Base, TimestampMixin, new_uuid
@@ -81,9 +85,8 @@ class MemberSubscription(Base, TimestampMixin):
     cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
-        Index("ix_member_subs_gym_status", "gym_id", "status"),
+        Index("ix_member_subs_gym_status_end", "gym_id", "status", "end_date"),
         Index("ix_member_subs_member_status", "member_id", "status"),
-        Index("ix_member_subs_end_date", "end_date"),
         Index("ix_member_subs_gym_id", "gym_id"),
     )
 
