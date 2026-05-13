@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError, ValidationError, SubscriptionNotActive
 from app.models.attendance import AttendanceLog, CheckInMethod
-from app.models.member_subscription import SubscriptionStatus
+from app.models.enums import SubscriptionStatus
 from app.repositories.attendance_repo import AttendanceRepository
 from app.repositories.member_repo import MemberRepository
 from app.repositories.subscription_repo import SubscriptionRepository

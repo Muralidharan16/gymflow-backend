@@ -10,6 +10,9 @@ class AttendanceBase(BaseModel):
 class AttendanceCreate(AttendanceBase):
     member_id: uuid.UUID
 
+class CheckInRequest(BaseModel):
+    member_id: uuid.UUID
+
 class AttendanceResponse(AttendanceBase):
     id: uuid.UUID
     gym_id: uuid.UUID

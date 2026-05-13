@@ -9,10 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_active_staff
-from app.models.staff import Staff
+from app.core.deps import Staff
 from app.models.gym import Gym
 from app.models.member import Member
-from app.models.member_subscription import MemberSubscription, SubscriptionStatus
+from app.models.subscription import MemberSubscription
+from app.models.enums import SubscriptionStatus
 from app.models.payment import Payment, PaymentStatus, PaymentMethod
 from app.models.attendance import AttendanceLog
 from app.schemas.common import Response

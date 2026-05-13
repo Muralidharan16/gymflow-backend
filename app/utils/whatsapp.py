@@ -37,3 +37,16 @@ async def send_whatsapp_document(phone: str, doc_url: str, filename: str) -> boo
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.post(BASE_URL, headers=HEADERS, json=payload)
         return r.status_code == 200
+
+async def send_whatsapp_message(phone: str, message: str) -> bool:
+    """Send a plain text WhatsApp message."""
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": f"91{phone}",
+        "type": "text",
+        "text": {"body": message}
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.post(BASE_URL, headers=HEADERS, json=payload)
+        return r.status_code == 200
+

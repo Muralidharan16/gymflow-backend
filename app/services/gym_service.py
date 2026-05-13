@@ -8,7 +8,9 @@ from app.core.exceptions import NotFoundError, ValidationError
 from app.models.gym import Gym, BranchTaxSettings
 from app.repositories.gym_repo import GymRepository
 from app.schemas.gym import GymCreate, GymUpdate, TaxConfigCreate
-from app.utils.rate_limit import check_branch_limit
+from app.models.organization import Organization
+from app.models.enums import TIER_LIMITS
+from sqlalchemy import select, func
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +62,24 @@ class GymService:
         Raises:
             ValidationError: If branch limit exceeded
         """
-        # Check branch limit for this organization
-        if not await check_branch_limit(org_id):
-            raise ValidationError("Branch limit exceeded for this organization", error_code="BRANCH_LIMIT_EXCEEDED")
+        # Get organization tier
+        org_result = await self.session.execute(select(Organization).where(Organization.id == org_id))
+        org = org_result.scalar_one_or_none()
+        if not org:
+            raise NotFoundError(f"Organization {org_id} not found", error_code="ORG_NOT_FOUND")
+
+        # Count active branches
+        count_result = await self.session.execute(
+            select(func.count()).select_from(Gym).where(Gym.org_id == org_id, Gym.is_active == True)
+        )
+        current_branches = count_result.scalar() or 0
+
+        limit = TIER_LIMITS[org.tier]["max_branches"]
+        if current_branches >= limit:
+            raise ValidationError(
+                f"Your {org.tier.value} plan allows {limit} branches. Upgrade to add more.",
+                error_code="BRANCH_LIMIT_EXCEEDED"
+            )
         
         gym = Gym(
             org_id=org_id,

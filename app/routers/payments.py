@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_active_staff, require_gym_access
-from app.models.staff import Staff
+from app.core.deps import Staff
 from app.models.payment import PaymentMethod, PaymentType, PaymentStatus
 from app.schemas.common import Response, PaginatedResponse, MessageResponse
 from app.schemas.payment import PaymentResponse, PaymentCreate, InvoiceResponse

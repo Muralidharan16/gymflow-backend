@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_active_staff, require_gym_access
-from app.models.staff import Staff
+from app.core.deps import Staff
 from app.schemas.common import Response, PaginatedResponse, MessageResponse
 from app.schemas.imports import (
     ImportPreviewResponse, ImportConfirmRequest, ImportLogResponse

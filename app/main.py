@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.middleware import (
@@ -12,13 +13,29 @@ from app.routers import auth, gyms, members, subscriptions, payments, attendance
 
 app = FastAPI(title="Doers Gym SaaS", version="1.0.0")
 
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Something went wrong. Please try again."},
+    )
+
 # CORS configuration
 origins = [
     "http://localhost:3000",
     "http://localhost:5173",
+    "http://localhost:5174",
     "http://localhost:8000",
 ]
 
+# Middlewares (Order matters: Bottom is Outermost, Top is Innermost)
+app.add_middleware(TenantMiddleware)
+app.add_middleware(IdempotencyMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS must be outermost to catch all errors and add headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -26,13 +43,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Middlewares (Order matters: Bottom to Top)
-app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(CorrelationIdMiddleware)
-app.add_middleware(RateLimitMiddleware)
-app.add_middleware(IdempotencyMiddleware)
-app.add_middleware(TenantMiddleware)
 
 # Include routers
 app.include_router(auth.router)

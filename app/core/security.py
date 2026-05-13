@@ -1,9 +1,11 @@
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
+from passlib.context import CryptContext
 
-import jwt
-from jwt.exceptions import PyJWTError
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+
+from jose import jwt, JWTError, ExpiredSignatureError
 
 from app.core.config import settings
 from app.core.exceptions import SecurityError, InvalidTokenError, ExpiredTokenError
@@ -26,7 +28,7 @@ def create_access_token(payload: dict) -> str:
     return jwt.encode(data, settings.SECRET_KEY, algorithm="HS256")
 
 
-def create_refresh_token(payload: dict, family_id: str = None) -> str:
+def create_refresh_token(payload: dict, family_id: Optional[str] = None) -> str:
     """
     Create JWT refresh token with family ID for token rotation.
     
@@ -67,9 +69,9 @@ def decode_token(token: str) -> Dict[str, Any]:
             options={"verify_exp": True}
         )
         return payload
-    except jwt.ExpiredSignatureError as e:
-        raise ExpiredTokenError("Token has expired") from e
-    except PyJWTError as e:
+    except ExpiredSignatureError:
+        raise ExpiredTokenError("Token has expired")
+    except JWTError as e:
         raise InvalidTokenError(f"Invalid token: {str(e)}") from e
 
 
@@ -133,3 +135,9 @@ def get_token_jti(token: str) -> str:
     if not jti:
         raise InvalidTokenError("Token missing jti claim")
     return jti
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)

@@ -9,12 +9,14 @@ class OrgTier(str, enum.Enum):
 
 class FacilityType(str, enum.Enum):
     gym = "gym"
-    calisthenics = "calisthenics"
-    yoga = "yoga"
+    yoga_studio = "yoga_studio"
+    crossfit_box = "crossfit_box"
+    swimming_pool = "swimming_pool"
     martial_arts = "martial_arts"
-    dance = "dance"
-    swimming = "swimming"
-    crossfit = "crossfit"
+    dance_studio = "dance_studio"
+    sports_academy = "sports_academy"
+    multi_sport = "multi_sport"
+    others = "others"
 
 
 class StaffRole(str, enum.Enum):

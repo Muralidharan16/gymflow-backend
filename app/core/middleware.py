@@ -10,6 +10,7 @@ from app.utils.rate_limit import RateLimiter
 
 EXEMPT_PATHS = {
     "/auth/signup",
+    "/auth/register",
     "/auth/login",
     "/auth/refresh",
     "/docs",
@@ -24,7 +25,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        response.headers["Content-Security-Policy"] = "default-src 'self'"
+        # Allow Swagger UI scripts and styles
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://fastapi.tiangolo.com;"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return response
 
@@ -87,6 +89,9 @@ class TenantMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if request.url.path == "/" or request.url.path.startswith("/check-access/"):
+            return await call_next(request)
+
+        if request.method == "OPTIONS":
             return await call_next(request)
 
         auth = request.headers.get("Authorization", "")

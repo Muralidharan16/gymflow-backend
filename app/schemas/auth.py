@@ -1,15 +1,29 @@
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 import uuid
+import re
 from datetime import datetime
 from typing import Optional
-from app.models.enums import StaffRole
+from app.models.enums import StaffRole, FacilityType
 
 class SignupRequest(BaseModel):
     org_name: str
     owner_name: str
     email: EmailStr
     password: str
-    pan_number: str
+    facility_type: FacilityType
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long")
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+            raise ValueError("Password must contain at least one special character")
+        return v
 
 class LoginRequest(BaseModel):
     email: EmailStr

@@ -7,10 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_active_staff, require_gym_access
-from app.models.staff import Staff
+from app.core.deps import Staff
 from app.models.attendance import CheckInMethod
 from app.schemas.common import Response, PaginatedResponse, MessageResponse
-from app.schemas.attendance import AttendanceLogResponse, CheckInRequest
+from app.schemas.attendance import AttendanceResponse, CheckInRequest
 from app.services.attendance_service import AttendanceService
 from app.core.exceptions import NotFoundError, ValidationError, SubscriptionNotActive
 
@@ -32,7 +32,7 @@ async def check_access(
     try:
         log = await service.check_access(uid)
         await db.commit()
-        return Response(data=AttendanceLogResponse.model_validate(log))
+        return Response(data=AttendanceResponse.model_validate(log))
     except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -45,7 +45,7 @@ async def check_access(
         )
 
 
-@router.post("/gyms/{gym_id}/attendance", response_model=Response[AttendanceLogResponse])
+@router.post("/gyms/{gym_id}/attendance", response_model=Response[AttendanceResponse])
 async def manual_checkin(
     gym_id: UUID,
     data: CheckInRequest,
@@ -64,7 +64,7 @@ async def manual_checkin(
             staff_id=current_staff.id
         )
         await db.commit()
-        return Response(data=AttendanceLogResponse.model_validate(log))
+        return Response(data=AttendanceResponse.model_validate(log))
     except NotFoundError as e:
         await db.rollback()
         raise HTTPException(
@@ -85,7 +85,7 @@ async def manual_checkin(
         )
 
 
-@router.post("/gyms/{gym_id}/attendance/{log_id}/checkout", response_model=Response[AttendanceLogResponse])
+@router.post("/gyms/{gym_id}/attendance/{log_id}/checkout", response_model=Response[AttendanceResponse])
 async def checkout(
     gym_id: UUID,
     log_id: UUID,
@@ -99,7 +99,7 @@ async def checkout(
     try:
         log = await service.checkout(gym_id, log_id)
         await db.commit()
-        return Response(data=AttendanceLogResponse.model_validate(log))
+        return Response(data=AttendanceResponse.model_validate(log))
     except NotFoundError as e:
         await db.rollback()
         raise HTTPException(
@@ -114,7 +114,7 @@ async def checkout(
         )
 
 
-@router.get("/gyms/{gym_id}/attendance", response_model=PaginatedResponse[AttendanceLogResponse])
+@router.get("/gyms/{gym_id}/attendance", response_model=PaginatedResponse[AttendanceResponse])
 async def list_attendance_logs(
     gym_id: UUID,
     date_filter: Optional[date] = Query(None, description="Filter by date (YYYY-MM-DD)"),
@@ -138,14 +138,14 @@ async def list_attendance_logs(
         size=size
     )
     return PaginatedResponse(
-        data=[AttendanceLogResponse.model_validate(log) for log in logs],
+        data=[AttendanceResponse.model_validate(log) for log in logs],
         page=page,
         size=size,
         total=total
     )
 
 
-@router.get("/members/{member_id}/attendance", response_model=PaginatedResponse[AttendanceLogResponse])
+@router.get("/members/{member_id}/attendance", response_model=PaginatedResponse[AttendanceResponse])
 async def member_attendance_history(
     member_id: UUID,
     gym_id: UUID = Query(..., description="Gym ID for scoping"),
@@ -166,7 +166,7 @@ async def member_attendance_history(
             size=size
         )
         return PaginatedResponse(
-            data=[AttendanceLogResponse.model_validate(log) for log in logs],
+            data=[AttendanceResponse.model_validate(log) for log in logs],
             page=page,
             size=size,
             total=total

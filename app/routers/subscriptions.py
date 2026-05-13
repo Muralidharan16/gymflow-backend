@@ -6,11 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_active_staff, require_gym_access
-from app.models.staff import Staff
+from app.core.deps import Staff
 from app.schemas.common import Response, PaginatedResponse, MessageResponse
 from app.schemas.subscription import (
-    SubscriptionPlanResponse, SubscriptionPlanCreate, SubscriptionPlanUpdate,
-    MemberSubscriptionResponse, SubscriptionAssignRequest, CancelRequest
+    PlanResponse, PlanCreate, PlanUpdate,
+    SubscriptionResponse, SubscriptionCreate, CancelRequest
 )
 from app.services.subscription_service import SubscriptionService
 from app.services.plan_service import PlanService  # assuming exists or will be wired
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/gyms/{gym_id}", tags=["Subscriptions"])
 
 # ========== Plan Management ==========
 
-@router.get("/plans", response_model=Response[List[SubscriptionPlanResponse]])
+@router.get("/plans", response_model=Response[List[PlanResponse]])
 async def list_plans(
     gym_id: UUID,
     current_staff: Staff = Depends(require_gym_access),
@@ -32,13 +32,13 @@ async def list_plans(
     """
     service = PlanService(db)
     plans = await service.list_plans(gym_id, active_only=True)
-    return Response(data=[SubscriptionPlanResponse.model_validate(p) for p in plans])
+    return Response(data=[PlanResponse.model_validate(p) for p in plans])
 
 
-@router.post("/plans", response_model=Response[SubscriptionPlanResponse])
+@router.post("/plans", response_model=Response[PlanResponse])
 async def create_plan(
     gym_id: UUID,
-    data: SubscriptionPlanCreate,
+    data: PlanCreate,
     current_staff: Staff = Depends(require_gym_access),
     db: AsyncSession = Depends(get_db)
 ):
@@ -49,7 +49,7 @@ async def create_plan(
     try:
         plan = await service.create_plan(gym_id, data, current_staff.id)
         await db.commit()
-        return Response(data=SubscriptionPlanResponse.model_validate(plan))
+        return Response(data=PlanResponse.model_validate(plan))
     except ValidationError as e:
         await db.rollback()
         raise HTTPException(
@@ -58,11 +58,11 @@ async def create_plan(
         )
 
 
-@router.put("/plans/{plan_id}", response_model=Response[SubscriptionPlanResponse])
+@router.put("/plans/{plan_id}", response_model=Response[PlanResponse])
 async def update_plan(
     gym_id: UUID,
     plan_id: UUID,
-    data: SubscriptionPlanUpdate,
+    data: PlanUpdate,
     current_staff: Staff = Depends(require_gym_access),
     db: AsyncSession = Depends(get_db)
 ):
@@ -73,7 +73,7 @@ async def update_plan(
     try:
         plan = await service.update_plan(gym_id, plan_id, data, current_staff.id)
         await db.commit()
-        return Response(data=SubscriptionPlanResponse.model_validate(plan))
+        return Response(data=PlanResponse.model_validate(plan))
     except NotFoundError as e:
         await db.rollback()
         raise HTTPException(
@@ -88,7 +88,7 @@ async def update_plan(
         )
 
 
-@router.patch("/plans/{plan_id}/toggle", response_model=Response[SubscriptionPlanResponse])
+@router.patch("/plans/{plan_id}/toggle", response_model=Response[PlanResponse])
 async def toggle_plan_active(
     gym_id: UUID,
     plan_id: UUID,
@@ -102,7 +102,7 @@ async def toggle_plan_active(
     try:
         plan = await service.toggle_plan_active(gym_id, plan_id, current_staff.id)
         await db.commit()
-        return Response(data=SubscriptionPlanResponse.model_validate(plan))
+        return Response(data=PlanResponse.model_validate(plan))
     except NotFoundError as e:
         await db.rollback()
         raise HTTPException(
@@ -113,11 +113,11 @@ async def toggle_plan_active(
 
 # ========== Member Subscriptions ==========
 
-@router.post("/members/{member_id}/subscriptions", response_model=Response[MemberSubscriptionResponse])
+@router.post("/members/{member_id}/subscriptions", response_model=Response[SubscriptionResponse])
 async def assign_plan_to_member(
     gym_id: UUID,
     member_id: UUID,
-    data: SubscriptionAssignRequest,
+    data: SubscriptionCreate,
     current_staff: Staff = Depends(require_gym_access),
     db: AsyncSession = Depends(get_db)
 ):
@@ -136,7 +136,7 @@ async def assign_plan_to_member(
             created_by=current_staff.id
         )
         await db.commit()
-        return Response(data=MemberSubscriptionResponse.model_validate(subscription))
+        return Response(data=SubscriptionResponse.model_validate(subscription))
     except NotFoundError as e:
         await db.rollback()
         raise HTTPException(
@@ -151,7 +151,7 @@ async def assign_plan_to_member(
         )
 
 
-@router.get("/members/{member_id}/subscriptions", response_model=Response[List[MemberSubscriptionResponse]])
+@router.get("/members/{member_id}/subscriptions", response_model=Response[List[SubscriptionResponse]])
 async def get_member_subscription_history(
     gym_id: UUID,
     member_id: UUID,
@@ -164,7 +164,7 @@ async def get_member_subscription_history(
     service = SubscriptionService(db)
     try:
         subscriptions = await service.get_member_subscription_history(member_id, gym_id)
-        return Response(data=[MemberSubscriptionResponse.model_validate(s) for s in subscriptions])
+        return Response(data=[SubscriptionResponse.model_validate(s) for s in subscriptions])
     except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -172,7 +172,7 @@ async def get_member_subscription_history(
         )
 
 
-@router.get("/members/{member_id}/subscriptions/active", response_model=Response[MemberSubscriptionResponse])
+@router.get("/members/{member_id}/subscriptions/active", response_model=Response[SubscriptionResponse])
 async def get_active_subscription(
     gym_id: UUID,
     member_id: UUID,
@@ -190,7 +190,7 @@ async def get_active_subscription(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"message": "No active subscription found", "error_code": "NOT_FOUND"}
             )
-        return Response(data=MemberSubscriptionResponse.model_validate(subscription))
+        return Response(data=SubscriptionResponse.model_validate(subscription))
     except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -200,7 +200,7 @@ async def get_active_subscription(
 
 # ========== Subscription Actions ==========
 
-@router.post("/subscriptions/{sub_id}/freeze", response_model=Response[MemberSubscriptionResponse])
+@router.post("/subscriptions/{sub_id}/freeze", response_model=Response[SubscriptionResponse])
 async def freeze_subscription(
     sub_id: UUID,
     gym_id: UUID,
@@ -214,7 +214,7 @@ async def freeze_subscription(
     try:
         subscription = await service.freeze_subscription(gym_id, sub_id, current_staff.id)
         await db.commit()
-        return Response(data=MemberSubscriptionResponse.model_validate(subscription))
+        return Response(data=SubscriptionResponse.model_validate(subscription))
     except NotFoundError as e:
         await db.rollback()
         raise HTTPException(
@@ -229,7 +229,7 @@ async def freeze_subscription(
         )
 
 
-@router.post("/subscriptions/{sub_id}/unfreeze", response_model=Response[MemberSubscriptionResponse])
+@router.post("/subscriptions/{sub_id}/unfreeze", response_model=Response[SubscriptionResponse])
 async def unfreeze_subscription(
     sub_id: UUID,
     gym_id: UUID,
@@ -243,7 +243,7 @@ async def unfreeze_subscription(
     try:
         subscription = await service.unfreeze_subscription(gym_id, sub_id, current_staff.id)
         await db.commit()
-        return Response(data=MemberSubscriptionResponse.model_validate(subscription))
+        return Response(data=SubscriptionResponse.model_validate(subscription))
     except NotFoundError as e:
         await db.rollback()
         raise HTTPException(
@@ -258,7 +258,7 @@ async def unfreeze_subscription(
         )
 
 
-@router.post("/subscriptions/{sub_id}/cancel", response_model=Response[MemberSubscriptionResponse])
+@router.post("/subscriptions/{sub_id}/cancel", response_model=Response[SubscriptionResponse])
 async def cancel_subscription(
     sub_id: UUID,
     gym_id: UUID,
@@ -273,7 +273,7 @@ async def cancel_subscription(
     try:
         subscription = await service.cancel_subscription(gym_id, sub_id, data.reason, current_staff.id)
         await db.commit()
-        return Response(data=MemberSubscriptionResponse.model_validate(subscription))
+        return Response(data=SubscriptionResponse.model_validate(subscription))
     except NotFoundError as e:
         await db.rollback()
         raise HTTPException(

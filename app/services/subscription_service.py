@@ -10,7 +10,7 @@ from app.models.enums import (
     SubscriptionStatus, FreezeStatus, MemberStatus,
     PaymentMethod, PaymentType, PaymentStatus
 )
-from app.repositories.subscription_repo import SubscriptionRepository, PlanRepository, FreezeLogRepository
+from app.repositories.subscription_repo import SubscriptionRepository
 from app.repositories.member_repo import MemberRepository
 from app.repositories.payment_repo import PaymentRepository, InvoiceRepository
 from app.services.invoice_service import InvoiceService
@@ -22,16 +22,12 @@ class SubscriptionService:
     def __init__(
         self,
         sub_repo: SubscriptionRepository,
-        plan_repo: PlanRepository,
-        freeze_repo: FreezeLogRepository,
         member_repo: MemberRepository,
         payment_repo: PaymentRepository,
         invoice_repo: InvoiceRepository,
         session
     ):
         self.sub_repo = sub_repo
-        self.plan_repo = plan_repo
-        self.freeze_repo = freeze_repo
         self.member_repo = member_repo
         self.payment_repo = payment_repo
         self.invoice_repo = invoice_repo
@@ -51,7 +47,7 @@ class SubscriptionService:
         Assign a subscription plan to a member.
         Atomic operation: Subscription -> Payment -> Invoice.
         """
-        plan = await self.plan_repo.get_by_id(plan_id, gym_id)
+        plan = await self.sub_repo.get_plan_by_id_and_gym(plan_id, gym_id)
         if not plan:
             raise HTTPException(status_code=404, detail="Plan not found")
 
@@ -121,7 +117,7 @@ class SubscriptionService:
         if not sub or sub.status != SubscriptionStatus.active:
             raise HTTPException(status_code=400, detail="Subscription not active or not found")
 
-        plan = await self.plan_repo.get_by_id(sub.plan_id, gym_id)
+        plan = await self.sub_repo.get_plan_by_id_and_gym(sub.plan_id, gym_id)
         if sub.total_freeze_days + days_requested > plan.max_freeze_days:
             raise HTTPException(status_code=400, detail="Max freeze days exceeded for this plan")
 
@@ -144,7 +140,8 @@ class SubscriptionService:
                 reason=reason,
                 status=FreezeStatus.active
             )
-            await self.freeze_repo.create(freeze_log)
+            self.session.add(freeze_log)
+            await self.session.flush()
 
         await self._invalidate_cache(member)
 
@@ -167,11 +164,19 @@ class SubscriptionService:
             member.status = MemberStatus.active
             await self.member_repo.update(member)
 
-            freeze_log = await self.freeze_repo.get_active_for_subscription(sub.id, gym_id)
+            from sqlalchemy import select
+            result = await self.session.execute(
+                select(MemberFreezeLog).where(
+                    MemberFreezeLog.subscription_id == sub.id,
+                    MemberFreezeLog.gym_id == gym_id,
+                    MemberFreezeLog.status == FreezeStatus.active
+                )
+            )
+            freeze_log = result.scalar_one_or_none()
             if freeze_log:
                 freeze_log.status = FreezeStatus.completed
                 freeze_log.freeze_end = date.today()
-                await self.freeze_repo.update(freeze_log)
+                await self.session.flush()
 
         await self._invalidate_cache(member)
 

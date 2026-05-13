@@ -20,21 +20,24 @@ class AuthService:
 
     async def signup(self, data: SignupRequest) -> TokenResponse:
         """Atomic signup flow: Org -> Gym -> Owner."""
-        async with self.session.begin():
-            # Check if email exists
-            q = select(GymOwner).where(GymOwner.email == data.email)
-            existing = await self.session.execute(q)
-            if existing.scalar_one_or_none():
-                raise HTTPException(status_code=400, detail="Email already registered")
+        # 1. Check if email exists (Check BEFORE creating any record)
+        q = select(GymOwner).where(GymOwner.email == data.email)
+        existing = await self.session.execute(q)
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Email already exists")
 
+        async with self.session.begin():
+            # Create Organization
             org = Organization(
                 name=data.org_name,
-                pan_number=data.pan_number,
-                tier=OrgTier.basic
+                facility_type=data.facility_type,
+                tier=OrgTier.basic,
+                pan_number=None # Collected later
             )
             self.session.add(org)
             await self.session.flush()
 
+            # Create Main Gym
             gym = Gym(
                 org_id=org.id,
                 name=f"{data.org_name} - Main",
@@ -43,6 +46,7 @@ class AuthService:
             self.session.add(gym)
             await self.session.flush()
 
+            # Create Owner
             owner = GymOwner(
                 org_id=org.id,
                 gym_id=gym.id,
@@ -66,7 +70,7 @@ class AuthService:
                 refresh_token=create_refresh_token(payload)
             )
 
-            # Track session family for logout_all and rotation tracking
+            # Track session family for rotation tracking
             new_refresh_payload = decode_token(tokens.refresh_token)
             family_id = new_refresh_payload["f_id"]
             await redis_client.sadd(f"user_sessions:{str(owner.id)}", family_id)
