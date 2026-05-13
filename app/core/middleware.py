@@ -13,6 +13,8 @@ EXEMPT_PATHS = {
     "/auth/register",
     "/auth/login",
     "/auth/refresh",
+    "/auth/verify",
+    "/auth/resend-verification",
     "/docs",
     "/openapi.json",
     "/redoc",

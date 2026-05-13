@@ -8,6 +8,8 @@ from sqlalchemy import Enum as SAEnum
 from app.models.base import Base, TimestampMixin, new_uuid
 
 
+from app.models.enums import FacilityType
+
 class Gym(Base, TimestampMixin):
     __tablename__ = "gyms"
 
@@ -20,6 +22,11 @@ class Gym(Base, TimestampMixin):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
+    facility_type: Mapped[FacilityType] = mapped_column(
+        SAEnum(FacilityType, name="facilitytype", create_constraint=False),
+        nullable=False,
+        default=FacilityType.gym,
+    )
     gymu_id: Mapped[str] = mapped_column(
         String(20), unique=True, nullable=False, index=True
     )

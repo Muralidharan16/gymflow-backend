@@ -1,7 +1,10 @@
 import uuid
 from typing import Optional
-from fastapi import Request, HTTPException, Depends
+from fastapi import Request, HTTPException, Depends, status
 from pydantic import BaseModel
+from app.core.database import get_db
+from app.services.trial_service import TrialService
+from sqlalchemy.ext.asyncio import AsyncSession
 
 class Staff(BaseModel):
     id: uuid.UUID
@@ -37,4 +40,38 @@ async def require_gym_access(
 ) -> Staff:
     if staff.gym_id is not None and staff.gym_id != gym_id:
         raise HTTPException(status_code=403, detail="Access denied to this branch")
+    return staff
+
+async def require_trial_active(
+    request: Request,
+    staff: Staff = Depends(get_current_active_staff),
+    db: AsyncSession = Depends(get_db)
+) -> Staff:
+    """
+    Enforces trial locking logic:
+    - Hard Lock: 403 Forbidden
+    - Soft Lock: Block non-GET methods
+    """
+    trial_service = TrialService(db)
+    status_data = await trial_service.get_trial_status(str(staff.org_id))
+    
+    # 1. Hard Lock Check
+    if status_data.get("is_hard_locked"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "HARD_LOCKED", "message": "Your account is hard-locked. Please subscribe to continue."}
+        )
+    
+    # 2. Soft Lock Check (Read-Only)
+    if status_data.get("is_soft_locked"):
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "SOFT_LOCKED", "message": "Your trial has expired. Account is in read-only mode."}
+            )
+        # Inject header for frontend awareness
+        # Note: In FastAPI, adding headers to response from a dependency 
+        # is tricky, usually handled in middleware. 
+        # But we can at least return the staff and the caller can use it.
+    
     return staff

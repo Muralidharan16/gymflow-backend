@@ -21,6 +21,8 @@ class SignupRequest(BaseModel):
             raise ValueError("Password must contain at least one uppercase letter")
         if not re.search(r"[a-z]", v):
             raise ValueError("Password must contain at least one lowercase letter")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one number")
         if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
             raise ValueError("Password must contain at least one special character")
         return v
@@ -35,6 +37,7 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    onboarding_completed: bool = False
 
 class RefreshRequest(BaseModel):
     refresh_token: str

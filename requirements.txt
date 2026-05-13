@@ -16,3 +16,4 @@ qrcode[pil]
 Pillow
 email-validator
 python-multipart
+resend==2.0.0

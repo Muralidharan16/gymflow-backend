@@ -11,40 +11,41 @@ from app.core.config import settings
 from app.core.exceptions import SecurityError, InvalidTokenError, ExpiredTokenError
 
 
-def create_access_token(payload: dict) -> str:
+import secrets
+import hashlib
+
+def generate_magic_token() -> str:
+    """Generate 64-char URL-safe string."""
+    return secrets.token_urlsafe(48)
+
+def hash_token(token: str) -> str:
+    """SHA256 hash for storage."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+def create_access_token(owner_id: str, org_id: str, email: str) -> str:
     """
-    Create JWT access token.
-    
-    Args:
-        payload: Dictionary with claims (e.g., {"sub": staff_id, "org_id": ..., "gym_id": ...})
-    
-    Returns:
-        Encoded JWT string
+    Create JWT access token as per spec.
     """
-    data = payload.copy()
-    data["exp"] = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    data["type"] = "access"
-    data["jti"] = str(uuid.uuid4())
-    return jwt.encode(data, settings.SECRET_KEY, algorithm="HS256")
+    payload = {
+        "sub": str(owner_id),
+        "org_id": str(org_id),
+        "email": email,
+        "type": "access",
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=15)
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
 
 
-def create_refresh_token(payload: dict, family_id: Optional[str] = None) -> str:
+def create_refresh_token(owner_id: str) -> str:
     """
-    Create JWT refresh token with family ID for token rotation.
-    
-    Args:
-        payload: Dictionary with claims (e.g., {"sub": staff_id})
-        family_id: Optional family identifier for token rotation. If None, generates new UUID.
-    
-    Returns:
-        Encoded JWT string
+    Create JWT refresh token as per spec.
     """
-    data = payload.copy()
-    data["exp"] = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    data["type"] = "refresh"
-    data["jti"] = str(uuid.uuid4())
-    data["f_id"] = family_id or str(uuid.uuid4())
-    return jwt.encode(data, settings.SECRET_KEY, algorithm="HS256")
+    payload = {
+        "sub": str(owner_id),
+        "type": "refresh",
+        "exp": datetime.now(timezone.utc) + timedelta(days=7)
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
 
 
 def decode_token(token: str) -> Dict[str, Any]:
