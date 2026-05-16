@@ -9,12 +9,16 @@ from app.core.database import get_db
 from app.core.deps import get_current_active_staff, require_gym_access
 from app.core.deps import Staff
 from app.models.payment import PaymentMethod, PaymentType, PaymentStatus
+from app.models.audit import AuditLog
 from app.schemas.common import Response, PaginatedResponse, MessageResponse
 from app.schemas.payment import PaymentResponse, PaymentCreate, InvoiceResponse
 from app.services.payment_service import PaymentService
 from app.services.invoice_service import InvoiceService
 from app.repositories.payment_repo import InvoiceRepository  # FIXED: was invoice_repo
 from app.core.exceptions import NotFoundError, ValidationError
+
+import logging
+logger = logging.getLogger("doers.payments")
 
 router = APIRouter(prefix="/gyms/{gym_id}/payments", tags=["Payments"])
 
@@ -43,6 +47,26 @@ async def record_payment(
             created_by=current_staff.id
         )
         await db.commit()
+
+        # ── Audit log ──
+        try:
+            audit = AuditLog(
+                user_id=current_staff.id,
+                action="payment.created",
+                metadata_json={
+                    "entity_type": "payment",
+                    "entity_id": str(payment.id),
+                    "amount": str(payment.amount),
+                    "method": payment.payment_method.value
+                        if hasattr(payment, "payment_method") and payment.payment_method
+                        else "unknown",
+                },
+            )
+            db.add(audit)
+            await db.commit()
+        except Exception:
+            logger.warning("Failed to write audit log for payment %s", payment.id, exc_info=True)
+
         return Response(data=PaymentResponse.model_validate(payment))
     except NotFoundError as e:
         await db.rollback()

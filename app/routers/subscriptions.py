@@ -1,8 +1,13 @@
+# FIXED: [FIX 5] Added pagination (page, page_size) to subscription list routes
+#        (member subscription history and plans listing).
 from typing import List, Optional
 from uuid import UUID
+from math import ceil
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.deps import get_current_active_staff, require_gym_access
@@ -15,24 +20,50 @@ from app.schemas.subscription import (
 from app.services.subscription_service import SubscriptionService
 from app.services.plan_service import PlanService  # assuming exists or will be wired
 from app.core.exceptions import NotFoundError, ValidationError
+from app.models.subscription import MemberSubscription, SubscriptionPlan
 
 router = APIRouter(prefix="/gyms/{gym_id}", tags=["Subscriptions"])
 
 
 # ========== Plan Management ==========
 
-@router.get("/plans", response_model=Response[List[PlanResponse]])
+@router.get("/plans", response_model=PaginatedResponse[PlanResponse])
 async def list_plans(
     gym_id: UUID,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=200, description="Items per page"),
     current_staff: Staff = Depends(require_gym_access),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    List all active subscription plans for a gym.
+    List all active subscription plans for a gym with pagination.
     """
-    service = PlanService(db)
-    plans = await service.list_plans(gym_id, active_only=True)
-    return Response(data=[PlanResponse.model_validate(p) for p in plans])
+    # Count total
+    count_query = (
+        select(func.count())
+        .select_from(SubscriptionPlan)
+        .where(SubscriptionPlan.gym_id == gym_id, SubscriptionPlan.is_active == True)
+    )
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Fetch page
+    query = (
+        select(SubscriptionPlan)
+        .where(SubscriptionPlan.gym_id == gym_id, SubscriptionPlan.is_active == True)
+        .order_by(SubscriptionPlan.price)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    result = await db.execute(query)
+    plans = result.scalars().all()
+
+    return PaginatedResponse(
+        data=[PlanResponse.model_validate(p) for p in plans],
+        page=page,
+        size=page_size,
+        total=total,
+        pages=ceil(total / page_size) if page_size else 0,
+    )
 
 
 @router.post("/plans", response_model=Response[PlanResponse])
@@ -151,25 +182,50 @@ async def assign_plan_to_member(
         )
 
 
-@router.get("/members/{member_id}/subscriptions", response_model=Response[List[SubscriptionResponse]])
+@router.get("/members/{member_id}/subscriptions", response_model=PaginatedResponse[SubscriptionResponse])
 async def get_member_subscription_history(
     gym_id: UUID,
     member_id: UUID,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=200, description="Items per page"),
     current_staff: Staff = Depends(require_gym_access),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get all subscriptions (history) for a member.
+    Get all subscriptions (history) for a member with pagination.
     """
-    service = SubscriptionService(db)
-    try:
-        subscriptions = await service.get_member_subscription_history(member_id, gym_id)
-        return Response(data=[SubscriptionResponse.model_validate(s) for s in subscriptions])
-    except NotFoundError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"message": str(e), "error_code": "NOT_FOUND"}
-        )
+    base_filter = [
+        MemberSubscription.member_id == member_id,
+        MemberSubscription.gym_id == gym_id,
+    ]
+
+    # Total count
+    count_query = (
+        select(func.count())
+        .select_from(MemberSubscription)
+        .where(*base_filter)
+    )
+    total = (await db.execute(count_query)).scalar() or 0
+
+    # Fetch page
+    query = (
+        select(MemberSubscription)
+        .where(*base_filter)
+        .options(selectinload(MemberSubscription.plan))
+        .order_by(MemberSubscription.start_date.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    result = await db.execute(query)
+    subscriptions = result.scalars().all()
+
+    return PaginatedResponse(
+        data=[SubscriptionResponse.model_validate(s) for s in subscriptions],
+        page=page,
+        size=page_size,
+        total=total,
+        pages=ceil(total / page_size) if page_size else 0,
+    )
 
 
 @router.get("/members/{member_id}/subscriptions/active", response_model=Response[SubscriptionResponse])

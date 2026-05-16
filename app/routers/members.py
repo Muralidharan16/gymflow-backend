@@ -1,3 +1,4 @@
+# FIXED: [FIX 5] Standardized pagination params (page, page_size) on member list route.
 from typing import Optional
 from uuid import UUID
 
@@ -22,7 +23,7 @@ async def list_members(
     status: Optional[MemberStatus] = Query(None, description="Filter by member status"),
     search: Optional[str] = Query(None, description="Search by name or phone"),
     page: int = Query(1, ge=1, description="Page number"),
-    size: int = Query(10, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=200, description="Items per page"),
     current_staff: Staff = Depends(require_gym_access),
     db: AsyncSession = Depends(get_db)
 ):
@@ -35,13 +36,15 @@ async def list_members(
         status=status,
         search_term=search,
         page=page,
-        size=size
+        size=page_size
     )
+    from math import ceil
     return PaginatedResponse(
         data=[MemberResponse.model_validate(m) for m in members],
         page=page,
-        size=size,
-        total=total
+        size=page_size,
+        total=total,
+        pages=ceil(total / page_size) if page_size else 0,
     )
 
 

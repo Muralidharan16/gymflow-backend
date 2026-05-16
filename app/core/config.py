@@ -1,4 +1,7 @@
+# FIXED: [FIX 4] Added CORS_ORIGINS setting with model_validator for comma-separated .env parsing.
 import os
+from typing import List
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +22,9 @@ class Settings(BaseSettings):
     # ── URLs ───────────────────────────────────────
     BACKEND_BASE_URL: str = "http://localhost:8000"
     FRONTEND_URL: str = "http://localhost:3000"
+
+    # ── CORS ───────────────────────────────────────
+    CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
     # ── Email ──────────────────────────────────────
     MAIL_PROVIDER: str = "smtp"          # "smtp" | "resend"
@@ -42,6 +48,17 @@ class Settings(BaseSettings):
     # ── App ────────────────────────────────────────
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "info"
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_cors_origins(cls, values: dict) -> dict:
+        """Parse CORS_ORIGINS from a comma-separated string in .env."""
+        raw = values.get("CORS_ORIGINS")
+        if isinstance(raw, str):
+            values["CORS_ORIGINS"] = [
+                origin.strip() for origin in raw.split(",") if origin.strip()
+            ]
+        return values
 
     @property
     def is_production(self) -> bool:

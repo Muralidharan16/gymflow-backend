@@ -1,10 +1,13 @@
+# FIXED: [FIX 2] Populate email from member.email in expiring response.
+# FIXED: [FIX 3] Refactored /reports/collections to pivot by payment method per day
+#        using func.sum(case(...)) pattern. Returns {date, cash, upi, card, total, count}.
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select, func, and_, extract
+from sqlalchemy import select, func, and_, extract, case, cast, Date
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -13,8 +16,8 @@ from app.core.deps import Staff
 from app.models.gym import Gym
 from app.models.member import Member
 from app.models.subscription import MemberSubscription
-from app.models.enums import SubscriptionStatus
-from app.models.payment import Payment, PaymentStatus, PaymentMethod
+from app.models.enums import SubscriptionStatus, PaymentMethod
+from app.models.payment import Payment, PaymentStatus
 from app.models.attendance import AttendanceLog
 from app.schemas.common import Response
 from app.schemas.reports import (
@@ -84,7 +87,6 @@ async def get_dashboard(
     new_members = new_result.scalar() or 0
     
     # 4. Expired subscriptions this month (status=expired AND end_date this month)
-    # Note: We count subscriptions, not members, as per spec
     expired_query = select(func.count(MemberSubscription.id)).where(
         MemberSubscription.gym_id.in_(gym_ids),
         MemberSubscription.status == SubscriptionStatus.EXPIRED,
@@ -94,15 +96,46 @@ async def get_dashboard(
     expired_result = await db.execute(expired_query)
     expired_count = expired_result.scalar() or 0
     
-    # 5. Churn rate: (expired_month / (active_members + expired_month)) * 100
-    denominator = active_members + expired_count
-    churn_rate = round((expired_count / denominator) * 100, 2) if denominator > 0 else 0.0
+    # 5. Accurate churn: members who expired this month AND have NO active sub today.
+    #    Set A = distinct member_ids with an EXPIRED sub where end_date is this month
+    set_a_query = (
+        select(MemberSubscription.member_id)
+        .where(
+            MemberSubscription.gym_id.in_(gym_ids),
+            MemberSubscription.status == SubscriptionStatus.EXPIRED,
+            MemberSubscription.end_date >= first_of_month,
+            MemberSubscription.end_date <= today,
+        )
+        .distinct()
+    )
+    #    Set B = distinct member_ids with an ACTIVE sub ending >= today
+    set_b_query = (
+        select(MemberSubscription.member_id)
+        .where(
+            MemberSubscription.gym_id.in_(gym_ids),
+            MemberSubscription.status == SubscriptionStatus.ACTIVE,
+            MemberSubscription.end_date >= today,
+        )
+        .distinct()
+    )
+
+    set_a_result = await db.execute(set_a_query)
+    expired_member_ids = {row[0] for row in set_a_result.all()}
+
+    set_b_result = await db.execute(set_b_query)
+    active_member_ids = {row[0] for row in set_b_result.all()}
+
+    churned_member_ids = expired_member_ids - active_member_ids
+    churned_count = len(churned_member_ids)
+
+    churn_rate = round((churned_count / max(active_members, 1)) * 100, 2)
     
     return Response(data=DashboardResponse(
         total_revenue_month=total_revenue,
         active_members=active_members,
         new_members_month=new_members,
         expired_month=expired_count,
+        churned_members=churned_count,
         churn_rate=churn_rate
     ))
 
@@ -152,7 +185,7 @@ async def get_expiring_subscriptions(
             member_id=member.id,
             member_name=member.name,
             phone=member.phone,
-            subscription_id=sub.id,
+            email=member.email,
             plan_name=sub.plan.name if sub.plan else "Unknown",
             end_date=sub.end_date,
             days_remaining=(sub.end_date - today).days
@@ -170,7 +203,8 @@ async def get_collections_summary(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get payment collections grouped by payment method within date range.
+    Get payment collections pivoted by payment method per day within date range.
+    Returns one row per date: {date, cash, upi, card, total, count}.
     """
     if date_from > date_to:
         raise HTTPException(status_code=400, detail="date_from must be <= date_to")
@@ -187,35 +221,54 @@ async def get_collections_summary(
     if not gym_ids:
         return Response(data=[])
     
-    # Query sum and count grouped by payment method
+    # Datetime boundaries
     from_dt = datetime.combine(date_from, datetime.min.time())
     to_dt = datetime.combine(date_to, datetime.max.time())
-    
+
+    # Cast payment_date to DATE for grouping
+    payment_day = cast(Payment.payment_date, Date).label("payment_day")
+
+    # Pivot sums per payment method using func.sum(case(...))
+    cash_sum = func.coalesce(
+        func.sum(case((Payment.payment_method == PaymentMethod.cash, Payment.amount), else_=Decimal("0"))),
+        Decimal("0"),
+    ).label("cash")
+    upi_sum = func.coalesce(
+        func.sum(case((Payment.payment_method == PaymentMethod.upi, Payment.amount), else_=Decimal("0"))),
+        Decimal("0"),
+    ).label("upi")
+    card_sum = func.coalesce(
+        func.sum(case((Payment.payment_method == PaymentMethod.card, Payment.amount), else_=Decimal("0"))),
+        Decimal("0"),
+    ).label("card")
+    total_sum = func.coalesce(func.sum(Payment.amount), Decimal("0")).label("total")
+    count_col = func.count().label("count")
+
     query = (
-        select(
-            Payment.method,
-            func.sum(Payment.amount).label("total"),
-            func.count().label("count")
-        )
+        select(payment_day, cash_sum, upi_sum, card_sum, total_sum, count_col)
         .where(
             Payment.gym_id.in_(gym_ids),
-            Payment.status == PaymentStatus.COMPLETED,
+            Payment.status == PaymentStatus.completed,
             Payment.payment_date >= from_dt,
-            Payment.payment_date <= to_dt
+            Payment.payment_date <= to_dt,
         )
-        .group_by(Payment.method)
+        .group_by(payment_day)
+        .order_by(payment_day)
     )
     result = await db.execute(query)
     rows = result.all()
-    
-    collections = []
-    for row in rows:
-        method = row.method
-        collections.append(CollectionSummaryResponse(
-            payment_method=method.value if method else "UNKNOWN",
-            total_amount=row.total or Decimal('0'),
-            count=row.count or 0
-        ))
+
+    collections = [
+        CollectionSummaryResponse(
+            date=row.payment_day,
+            cash=row.cash,
+            upi=row.upi,
+            card=row.card,
+            total=row.total,
+            count=row.count,
+        )
+        for row in rows
+    ]
     
     return Response(data=collections)
 
