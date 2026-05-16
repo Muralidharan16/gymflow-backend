@@ -134,11 +134,14 @@ async def _send_via_smtp(
     msg.attach(MIMEText(html, "html"))
 
     try:
+        logger.info("SMTP | connecting to %s:%s...", settings.MAIL_SERVER, settings.MAIL_PORT)
         with smtplib.SMTP(settings.MAIL_SERVER, settings.MAIL_PORT, timeout=10) as server:
             server.ehlo()
             server.starttls()
+            server.ehlo()
             server.login(settings.MAIL_USERNAME, settings.MAIL_PASSWORD)
             server.sendmail(settings.MAIL_FROM, [to_email], msg.as_string())
+            server.quit()
 
         logger.info("SMTP | verification email sent → %s", to_email)
         return True

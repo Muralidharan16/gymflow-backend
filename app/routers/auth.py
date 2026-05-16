@@ -11,11 +11,14 @@ from app.core.config import settings
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 def set_auth_cookies(response: FastApiResponse, tokens: TokenResponse):
+    # Determine if we are in production
+    is_prod = settings.ENVIRONMENT == "production"
+    
     response.set_cookie(
         key="access_token",
         value=tokens.access_token,
         httponly=True,
-        secure=True,
+        secure=is_prod, # False for local dev
         samesite="lax",
         max_age=15 * 60
     )
@@ -23,7 +26,7 @@ def set_auth_cookies(response: FastApiResponse, tokens: TokenResponse):
         key="refresh_token",
         value=tokens.refresh_token,
         httponly=True,
-        secure=True,
+        secure=is_prod, # False for local dev
         samesite="lax",
         max_age=7 * 24 * 60 * 60
     )
@@ -66,9 +69,50 @@ async def verify(token: str, db: AsyncSession = Depends(get_db)):
     db.add(db_rt)
     await db.commit()
     
-    response = RedirectResponse(url=f"{settings.FRONTEND_URL}/onboarding")
-    set_auth_cookies(response, TokenResponse(access_token=access_token, refresh_token=refresh_token))
+    # --- CROSS-DEVICE SYNC ---
+    # Store tokens in Redis so the Laptop can "pick them up"
+    from app.core.redis import get_redis_utils
+    import json
+    redis_utils = get_redis_utils()
+    sync_data = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "onboarding_completed": owner.onboarding_completed
+    }
+    await redis_utils.client.setex(f"signup:sync:{owner.email}", 300, json.dumps(sync_data))
+    
+    # Redirect to a simple success message page instead of onboarding
+    response = RedirectResponse(url=f"{settings.FRONTEND_URL}/auth/verify-success")
+    set_auth_cookies(response, TokenResponse(
+        access_token=access_token, 
+        refresh_token=refresh_token,
+        onboarding_completed=owner.onboarding_completed
+    ))
     return response
+
+@router.get("/signup-status")
+async def get_signup_status(email: str, response: FastApiResponse):
+    """
+    Endpoint for the Laptop to poll. 
+    If verified on another device, returns tokens and deletes the flag.
+    """
+    from app.core.redis import get_redis_utils
+    import json
+    redis_utils = get_redis_utils()
+    
+    sync_data_raw = await redis_utils.client.get(f"signup:sync:{email}")
+    if not sync_data_raw:
+        return {"status": "pending"}
+    
+    sync_data = json.loads(sync_data_raw)
+    
+    # Auto-login the Laptop by setting cookies
+    set_auth_cookies(response, TokenResponse(**sync_data))
+    
+    # One-time pick-up: delete the sync flag
+    await redis_utils.client.delete(f"signup:sync:{email}")
+    
+    return {"status": "verified", "onboarding_completed": sync_data["onboarding_completed"]}
 
 @router.post("/resend-verification")
 async def resend_verification(request: Request, data: dict, db: AsyncSession = Depends(get_db)):

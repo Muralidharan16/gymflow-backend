@@ -9,11 +9,11 @@ class PincodeLookupResponse(BaseModel):
     district: str
 
 class OnboardingCompleteRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(populate_by_name=True)
     
-    phone: str = Field(..., pattern=r"^\+91[6-9]\d{9}$")
-    address_line1: str = Field(..., min_length=5)
-    address_line2: Optional[str] = None
+    phone: str = Field(..., pattern=r"^(\+91)?[6-9]\d{9}$")
+    address_line1: str = Field(..., min_length=3, alias="address_line_1")
+    address_line2: Optional[str] = Field(None, alias="address_line_2")
     city: str
     state: str
     pincode: str = Field(..., pattern=r"^[1-9][0-9]{5}$")

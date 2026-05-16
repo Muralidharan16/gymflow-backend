@@ -90,32 +90,20 @@ class RedisUtils:
     async def getdel_or_null(self, key: str) -> Optional[str]:
         """
         Atomically GET and DELETE a single key.
-        Returns the string value or None if not present.
-
-        Uses GETDEL if available; otherwise uses a Lua fallback.
+        Guarantees one-time use of tokens.
         """
-        # Try native GETDEL first (Redis >= 6.2)
-        try:
-            # Some redis clients expose getdel; if not, AttributeError
-            getdel = getattr(self._redis, "getdel", None)
-            if callable(getdel):
-                val = await getdel(key)
-                return val
-        except Exception:
-            # Fall through to Lua fallback
-            logger.debug("GETDEL native call failed or unavailable; using Lua fallback", exc_info=True)
-
-        # Lua fallback
         try:
             await self._ensure_scripts_loaded()
             if self._getdel_script:
                 val = await self._redis.evalsha(self._getdel_script, 1, key)
             else:
                 val = await self._redis.eval(_LUA_GETDEL, 1, key)
+            
+            if val is not None and isinstance(val, bytes):
+                return val.decode("utf-8")
             return val
         except Exception:
             logger.exception("getdel_or_null failed for key=%s", key)
-            # On Redis error, raise so caller can handle (avoid silent failures)
             raise
 
     async def get_and_delete_pending_and_email(self, pending_key: str, email_key: str) -> Optional[str]:

@@ -22,7 +22,7 @@ def hash_token(token: str) -> str:
     """SHA256 hash for storage."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-def create_access_token(owner_id: str, org_id: str, email: str) -> str:
+def create_access_token(owner_id: str, org_id: str, email: str, role: str = "owner") -> str:
     """
     Create JWT access token as per spec.
     """
@@ -30,7 +30,9 @@ def create_access_token(owner_id: str, org_id: str, email: str) -> str:
         "sub": str(owner_id),
         "org_id": str(org_id),
         "email": email,
+        "role": role,
         "type": "access",
+        "jti": str(uuid.uuid4()),
         "exp": datetime.now(timezone.utc) + timedelta(minutes=15)
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")

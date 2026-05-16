@@ -15,7 +15,34 @@ from app.routers import auth, gyms, members, subscriptions, payments, attendance
 # Redis lifecycle helpers (ensure app/core/redis.py implements these)
 from app.core.redis import init_redis, close_redis
 
+import logging.config
+
 app = FastAPI(title="Doers Gym SaaS", version="1.0.0")
+
+# --- UNIFIED LOGGING ---
+LOGGING_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+        },
+    },
+    "loggers": {
+        "doers": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
+logging.config.dictConfig(LOGGING_CONFIG)
 
 
 @app.exception_handler(Exception)
@@ -32,6 +59,10 @@ origins = [
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:8000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    "http://127.0.0.1:8000",
 ]
 
 
@@ -42,11 +73,10 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
-# CORS must be outermost to catch all errors and add headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    allow_credentials=True, # THIS MUST BE TRUE FOR COOKIES
     allow_methods=["*"],
     allow_headers=["*"],
 )

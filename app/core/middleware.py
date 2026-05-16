@@ -3,7 +3,7 @@ import time
 import json
 from fastapi import Request, HTTPException, status
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 from app.core.security import decode_token
 from app.core.redis import redis_client
 from app.utils.rate_limit import RateLimiter
@@ -15,6 +15,9 @@ EXEMPT_PATHS = {
     "/auth/refresh",
     "/auth/verify",
     "/auth/resend-verification",
+    "/onboarding/pincode",
+    "/onboarding/status",
+    "/onboarding/complete",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -50,7 +53,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         ip = request.client.host if request.client else "127.0.0.1"
         if request.url.path == "/auth/login":
             if not await self.login_limiter.is_allowed(ip):
-                raise HTTPException(status_code=429, detail="Too many login attempts.")
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many login attempts."}
+                )
         return await call_next(request)
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):
@@ -97,27 +103,46 @@ class TenantMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Missing Authorization header")
+        token = None
+        
+        if auth.startswith("Bearer "):
+            token = auth.split(" ")[1]
+        else:
+            # Fallback to cookie for easier frontend integration
+            token = request.cookies.get("access_token")
 
-        token = auth.split(" ")[1]
+        if not token:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Missing Authentication (Header or Cookie)"}
+            )
+
         try:
             payload = decode_token(token)
         except Exception:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid token"}
+            )
 
         jti = payload.get("jti")
         family_id = payload.get("f_id")
         
         if jti and await redis_client.get(f"blacklist:{jti}"):
-            raise HTTPException(status_code=401, detail="Token revoked")
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Token revoked"}
+            )
         
         if family_id and await redis_client.get(f"family_revoked:{family_id}"):
-            raise HTTPException(status_code=401, detail="Session revoked")
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Session revoked"}
+            )
 
-        request.state.staff_id = payload["sub"]
-        request.state.org_id = payload["org_id"]
+        request.state.staff_id = payload.get("sub")
+        request.state.org_id = payload.get("org_id")
         request.state.gym_id = payload.get("gym_id")
-        request.state.role = payload["role"]
+        request.state.role = payload.get("role")
         
         return await call_next(request)

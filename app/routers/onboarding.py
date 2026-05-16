@@ -1,4 +1,5 @@
 # app/routers/onboarding.py
+from typing import Optional
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
@@ -15,16 +16,22 @@ from jose import JWTError
 from fastapi import HTTPException
 
 router = APIRouter(prefix="/onboarding", tags=["Onboarding"])
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
 
-async def get_current_owner_id(token: str = Depends(oauth2_scheme)) -> str:
+async def get_current_owner_id(request: Request, token: Optional[str] = Depends(oauth2_scheme)) -> str:
+    if not token:
+        token = request.cookies.get("access_token")
+    
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+        
     try:
         payload = decode_token(token)
         owner_id = payload.get("sub")
         if not owner_id:
             raise HTTPException(status_code=401, detail="Invalid token")
         return owner_id
-    except JWTError:
+    except Exception:
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 
 @router.get("/pincode/{pincode}", response_model=PincodeLookupResponse)
