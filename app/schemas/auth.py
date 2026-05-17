@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
+from pydantic import BaseModel, EmailStr, ConfigDict, field_validator, Field
 import uuid
 import re
 from datetime import datetime
@@ -6,7 +6,7 @@ from typing import Optional
 from app.models.enums import StaffRole, FacilityType
 
 class SignupRequest(BaseModel):
-    org_name: str
+    org_name: str = Field(..., min_length=2, max_length=100)
     owner_name: str
     email: EmailStr
     password: str

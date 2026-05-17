@@ -81,6 +81,17 @@ class GymService:
                 error_code="BRANCH_LIMIT_EXCEEDED"
             )
         
+        # ENFORCEMENT: 2nd branch or more requires a registration number
+        if current_branches >= 1:
+            from app.models.organization import OrganizationRegistration
+            reg_check_q = select(OrganizationRegistration).where(OrganizationRegistration.org_id == org_id)
+            reg_check_res = await self.session.execute(reg_check_q)
+            if not reg_check_res.scalar_one_or_none():
+                raise ValidationError(
+                    "A Business Registration Number (PAN, VAT, or local Business ID) is required to add more than one branch. Please update your profile.",
+                    error_code="REGISTRATION_REQUIRED"
+                )
+        
         gym = Gym(
             org_id=org_id,
             name=data.name,
@@ -173,14 +184,22 @@ class GymService:
         # Deactivate current active config
         await self.gym_repo.deactivate_tax_config(gym_id)
         
+        # Encrypt and Mask
+        from app.utils.encryption import encrypt_data, mask_id_number
+        encrypted_id = encrypt_data(data.tax_id)
+        masked_id = mask_id_number(data.tax_id)
+
         # Create new config
         config = BranchTaxSettings(
             gym_id=gym_id,
-            gst_percentage=data.gst_percentage,
-            cgst_percentage=data.cgst_percentage,
-            sgst_percentage=data.sgst_percentage,
+            tax_type=data.tax_type,
+            tax_id_encrypted=encrypted_id,
+            tax_id_masked=masked_id,
+            legal_name=data.legal_name,
+            gst_rate=data.gst_rate,
+            sac_code=data.sac_code,
+            filing_frequency=data.filing_frequency,
             is_active=True,
-            created_by=created_by,
             updated_by=created_by
         )
         return await self.gym_repo.create_tax_config(config)

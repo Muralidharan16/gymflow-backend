@@ -5,7 +5,7 @@ import logging
 from fastapi import HTTPException, status
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
 from app.models.organization import Organization
-from app.models.gym import Gym
+from app.models.gym import Gym, FacilityType
 from app.models.auth import Owner, RefreshToken
 from app.models.enums import StaffRole, OrgTier
 from app.schemas.auth import SignupRequest, LoginRequest, TokenResponse, RefreshRequest
@@ -15,6 +15,7 @@ from app.core.redis import get_redis_utils
 from app.utils.email_utils import send_verification_email
 import secrets
 import hashlib
+from app.utils.slug import generate_slug
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +129,22 @@ class AuthService:
         try:
             async with self.session.begin_nested():
                 # a. Create Organization
+                base_slug = generate_slug(data["org_name"])
+                
+                # Check for slug collision
+                slug = base_slug
+                counter = 1
+                while True:
+                    slug_exists_q = select(Organization).where(Organization.slug == slug)
+                    slug_exists_res = await self.session.execute(slug_exists_q)
+                    if not slug_exists_res.scalar_one_or_none():
+                        break
+                    slug = f"{base_slug}-{counter}"
+                    counter += 1
+
                 org = Organization(
-                    name=data["org_name"]
+                    name=data["org_name"],
+                    slug=slug
                 )
                 self.session.add(org)
                 await self.session.flush()  # get org.id
@@ -141,6 +156,13 @@ class AuthService:
                     facility_type=data["facility_type"],
                     gymu_id=f"GYM-{str(uuid.uuid4())[:8].upper()}"
                 )
+                # Link to FacilityType reference table
+                facility_type_q = select(FacilityType).where(FacilityType.system_name == data["facility_type"])
+                facility_type_res = await self.session.execute(facility_type_q)
+                primary_type = facility_type_res.scalar_one_or_none()
+                if primary_type:
+                    gym.facility_types.append(primary_type)
+                    
                 self.session.add(gym)
 
                 # c. Create Owner

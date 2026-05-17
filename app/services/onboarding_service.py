@@ -64,6 +64,18 @@ class OnboardingService:
                 org.state = data.state
                 org.pincode = data.pincode
                 org.profile_completed = True
+                
+                # Update Branding
+                if data.tagline:
+                    org.tagline = data.tagline
+                if data.description:
+                    org.description = data.description
+                if data.year_established:
+                    org.year_established = data.year_established
+                if data.website_url:
+                    org.website_url = data.website_url
+                if data.social_links:
+                    org.social_links = data.social_links
 
                 # b. Update Owner
                 owner.onboarding_completed = True

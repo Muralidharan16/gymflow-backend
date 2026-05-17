@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, status, Request, Response as FastApiResponse, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from app.models.auth import Owner
 from app.core.database import get_db
 from app.schemas.auth import SignupRequest, LoginRequest, TokenResponse, RefreshRequest
 from app.schemas.common import Response
@@ -112,7 +114,17 @@ async def get_signup_status(email: str, response: FastApiResponse):
     # One-time pick-up: delete the sync flag
     await redis_utils.client.delete(f"signup:sync:{email}")
     
-    return {"status": "verified", "onboarding_completed": sync_data["onboarding_completed"]}
+    return {
+        "status": "verified", 
+        "onboarding_completed": sync_data["onboarding_completed"],
+        "access_token": sync_data["access_token"],
+        "refresh_token": sync_data["refresh_token"],
+        "user": {
+            "email": email,
+            "id": sync_data.get("sub"),
+            "name": sync_data.get("name")
+        }
+    }
 
 @router.post("/resend-verification")
 async def resend_verification(request: Request, data: dict, db: AsyncSession = Depends(get_db)):
@@ -127,8 +139,23 @@ async def resend_verification(request: Request, data: dict, db: AsyncSession = D
 async def login(response: FastApiResponse, data: LoginRequest, db: AsyncSession = Depends(get_db)):
     service = AuthService(db)
     tokens = await service.login(data)
+    
+    # Get user details for response
+    result = await db.execute(select(Owner).where(Owner.email == data.email))
+    owner = result.scalar_one()
+
     set_auth_cookies(response, tokens)
-    return {"status": "success", "message": "Login successful"}
+    
+    return {
+        "user": {
+            "id": str(owner.id),
+            "email": owner.email,
+            "name": owner.owner_name
+        },
+        "access_token": tokens.access_token,
+        "refresh_token": tokens.refresh_token,
+        "onboarding_completed": owner.onboarding_completed
+    }
 
 @router.post("/refresh")
 async def refresh(request: Request, response: FastApiResponse, db: AsyncSession = Depends(get_db)):

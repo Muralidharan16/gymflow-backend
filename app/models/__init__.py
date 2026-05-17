@@ -1,7 +1,7 @@
 # Import all models for Alembic auto-detection
 from app.models.base import Base  # noqa: F401
 from app.models.organization import Organization  # noqa: F401
-from app.models.gym import Gym, BranchTaxSettings  # noqa: F401
+from app.models.gym import Gym, BranchTaxSettings, FacilityType  # noqa: F401
 from app.models.staff import GymOwner  # noqa: F401
 from app.models.auth import Owner, RefreshToken  # noqa: F401
 from app.models.member import Member, MemberMeasurement  # noqa: F401

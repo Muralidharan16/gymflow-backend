@@ -15,7 +15,7 @@ from app.core.middleware import (
     RateLimitMiddleware,
     IdempotencyMiddleware,
 )
-from app.routers import auth, gyms, members, subscriptions, payments, attendance, reports, imports, onboarding
+from app.routers import auth, gyms, members, subscriptions, payments, attendance, reports, imports, onboarding, organizations
 
 # Redis lifecycle helpers (ensure app/core/redis.py implements these)
 from app.core.redis import init_redis, close_redis
@@ -80,7 +80,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,  # THIS MUST BE TRUE FOR COOKIES
     allow_methods=["*"],
     allow_headers=["*"],
@@ -97,6 +97,7 @@ app.include_router(attendance.router)
 app.include_router(reports.router)
 app.include_router(imports.router)
 app.include_router(onboarding.router)
+app.include_router(organizations.router)
 
 
 @app.get("/")

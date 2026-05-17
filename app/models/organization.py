@@ -1,14 +1,14 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import String, Boolean, Index, text, Text
+from sqlalchemy import String, Boolean, Index, text, Text, SMALLINT, CheckConstraint, extract, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import UUID, TIMESTAMP
+from sqlalchemy.dialects.postgresql import UUID, TIMESTAMP, JSONB
 from sqlalchemy import Enum as SAEnum
 
 from typing import Optional
 from app.models.base import Base, TimestampMixin, new_uuid
-from app.models.enums import OrgTier, FacilityType
+from app.models.enums import OrgTier
 
 
 class Organization(Base, TimestampMixin):
@@ -17,16 +17,24 @@ class Organization(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=new_uuid
     )
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    pan_number: Mapped[Optional[str]] = mapped_column(
-        String(10), unique=True, nullable=True, index=True
-    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    slug: Mapped[str] = mapped_column(String(120), unique=True, nullable=True, index=True)
     tier: Mapped[OrgTier] = mapped_column(
         SAEnum(OrgTier, name="orgtier", create_constraint=False),
         nullable=False,
         default=OrgTier.basic,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    
+    # Branding
+    tagline: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    year_established: Mapped[Optional[int]] = mapped_column(SMALLINT, nullable=True)
+    
+    # Online Presence
+    website_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    website_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("FALSE"), nullable=False)
+    social_links: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'"), nullable=False)
     
     # Address and Profile
     phone: Mapped[Optional[str]] = mapped_column(String(15), nullable=True) # E.164 format +91XXXXXXXXXX
@@ -39,5 +47,34 @@ class Organization(Base, TimestampMixin):
     profile_completed: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), default=False, nullable=False)
 
     __table_args__ = (
-        Index("ix_organizations_pan", "pan_number"),
+        CheckConstraint(
+            "year_established >= 1800 AND year_established <= EXTRACT(YEAR FROM CURRENT_DATE)",
+            name="check_year_established"
+        ),
+    )
+
+class OrganizationRegistration(Base, TimestampMixin):
+    __tablename__ = "organization_registrations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    
+    id_type: Mapped[str] = mapped_column(String(20), nullable=False)        # 'PAN', 'VAT', 'EIN', 'GST'
+    id_number_encrypted: Mapped[str] = mapped_column(Text, nullable=False)   # AES-256 Encrypted
+    id_number_masked: Mapped[str] = mapped_column(String(20), nullable=False)  # 'XXXXXX1234'
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)     # 'IN', 'US'
+    entity_type: Mapped[Optional[str]] = mapped_column(String(1), nullable=True) # PAN 4th char: 'P', 'C', 'F'
+    
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_org_reg_org_id", "org_id"),
+        UniqueConstraint("country_code", "id_type", "id_number_encrypted", name="uix_org_reg_type_country"),
     )
