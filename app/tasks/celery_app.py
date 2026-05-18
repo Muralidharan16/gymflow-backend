@@ -26,6 +26,10 @@ app.conf.update(
             "task": "app.tasks.daily_digest.run",
             "schedule": crontab(hour=8, minute=30),
         },
+        "orphan-logo-cleanup": {
+            "task": "app.tasks.logos.cleanup_orphaned_logos",
+            "schedule": crontab(minute=0, hour="*/6"),
+        },
     },
 )
 

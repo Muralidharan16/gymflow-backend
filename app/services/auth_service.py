@@ -144,7 +144,8 @@ class AuthService:
 
                 org = Organization(
                     name=data["org_name"],
-                    slug=slug
+                    slug=slug,
+                    business_type=data["facility_type"]
                 )
                 self.session.add(org)
                 await self.session.flush()  # get org.id

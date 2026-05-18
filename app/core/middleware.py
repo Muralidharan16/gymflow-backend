@@ -22,6 +22,7 @@ EXEMPT_PATHS = {
     "/docs",
     "/openapi.json",
     "/redoc",
+    "/organizations/mock-s3/upload",
 }
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

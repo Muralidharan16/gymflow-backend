@@ -18,7 +18,9 @@ celery_app.conf.update(
     # Ensure tasks are acknowledged only after completion
     task_acks_late=True,
     # Limit concurrency for DB-heavy tasks
-    worker_prefetch_multiplier=1
+    worker_prefetch_multiplier=1,
+    # Enable eager execution in development for synchronous inline Celery processing
+    task_always_eager=(settings.ENVIRONMENT == "development")
 )
 
 # Automatic Task Discovery

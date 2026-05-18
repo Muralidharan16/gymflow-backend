@@ -9,7 +9,13 @@ from sqlalchemy import Enum as SAEnum
 from typing import Optional
 from app.models.base import Base, TimestampMixin, new_uuid
 from app.models.enums import OrgTier
+import enum
 
+class AssetStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    ready = "ready"
+    failed = "failed"
 
 class Organization(Base, TimestampMixin):
     __tablename__ = "organizations"
@@ -24,6 +30,7 @@ class Organization(Base, TimestampMixin):
         nullable=False,
         default=OrgTier.basic,
     )
+    business_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     
     # Branding
@@ -42,9 +49,35 @@ class Organization(Base, TimestampMixin):
     address_line2: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     state: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    document_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    verification_status: Mapped[str] = mapped_column(String(20), server_default=text("'pending'"), default="pending", nullable=False)
     pincode: Mapped[Optional[str]] = mapped_column(String(6), nullable=True)
     country: Mapped[str] = mapped_column(String(60), server_default=text("'India'"), default="India", nullable=False)
     profile_completed: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), default=False, nullable=False)
+
+    # Logo fields
+    logo_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    logo_thumb_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    logo_medium_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    logo_full_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    logo_meta: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    logo_status: Mapped[Optional[AssetStatus]] = mapped_column(
+        SAEnum(AssetStatus, name="asset_status_enum", create_constraint=False), nullable=True
+    )
+    logo_updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    logo_updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    # Cover fields
+    cover_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    cover_mobile_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    cover_tablet_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    cover_desktop_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    cover_meta: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    cover_status: Mapped[Optional[AssetStatus]] = mapped_column(
+        SAEnum(AssetStatus, name="asset_status_enum", create_constraint=False), nullable=True
+    )
+    cover_updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    cover_updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -78,3 +111,19 @@ class OrganizationRegistration(Base, TimestampMixin):
         Index("ix_org_reg_org_id", "org_id"),
         UniqueConstraint("country_code", "id_type", "id_number_encrypted", name="uix_org_reg_type_country"),
     )
+
+class OrganizationAssetAudit(Base, TimestampMixin):
+    __tablename__ = "organization_asset_audit"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    asset_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'logo'"), default="logo")
+    old_s3_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    new_s3_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    action: Mapped[str] = mapped_column(String(50), nullable=False)
+    action_detail: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

@@ -41,3 +41,5 @@ try:
 except Exception as e:
     import logging
     logging.warning(f"Sync database engine could not be initialized (likely missing psycopg2): {e}")
+
+SessionLocal = SyncSessionLocal

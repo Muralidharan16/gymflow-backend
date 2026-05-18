@@ -53,6 +53,13 @@ class ResilientRedis:
     - Catches Redis errors and returns safe defaults so the app continues
     """
 
+    def pipeline(self, transaction: bool = True, shard_hint: Optional[str] = None):
+        """
+        Return a pipeline object from the underlying Redis client.
+        This is explicitly defined to avoid static analysis tools confusing it with a dynamic coroutine.
+        """
+        return get_redis_utils().client.pipeline(transaction=transaction, shard_hint=shard_hint)
+
     def __getattr__(self, name):
         # Resolve the real client attribute lazily to avoid import-time issues
         def _get_attr():

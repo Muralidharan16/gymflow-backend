@@ -2,10 +2,13 @@
 #        with a single @asynccontextmanager lifespan function.
 # FIXED: [FIX 4] Moved hardcoded CORS origins to settings.CORS_ORIGINS.
 # app/main.py
+from app.core.celery_app import celery_app
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+import os
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.middleware import (
@@ -15,7 +18,7 @@ from app.core.middleware import (
     RateLimitMiddleware,
     IdempotencyMiddleware,
 )
-from app.routers import auth, gyms, members, subscriptions, payments, attendance, reports, imports, onboarding, organizations
+from app.routers import auth, gyms, members, subscriptions, payments, attendance, reports, imports, onboarding, organizations, assets
 
 # Redis lifecycle helpers (ensure app/core/redis.py implements these)
 from app.core.redis import init_redis, close_redis
@@ -26,9 +29,8 @@ import logging.config
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage startup and shutdown lifecycle events."""
-    # ── Startup ──
     await init_redis()
-    # add other startup tasks here if needed
+    print(f"=== DIAGNOSTIC: STARTING APP WITH CELERY_BROKER_URL = {settings.CELERY_BROKER_URL} ===")
     yield
     # ── Shutdown ──
     await close_redis()
@@ -87,6 +89,11 @@ app.add_middleware(
 )
 
 
+# Mount local file system storage directory under /static in development
+storage_dir = os.path.join(os.getcwd(), "storage", settings.S3_BUCKET_NAME)
+os.makedirs(storage_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=storage_dir), name="static")
+
 # Include routers
 app.include_router(auth.router)
 app.include_router(gyms.router)
@@ -98,6 +105,7 @@ app.include_router(reports.router)
 app.include_router(imports.router)
 app.include_router(onboarding.router)
 app.include_router(organizations.router)
+app.include_router(assets.router)
 
 
 @app.get("/")

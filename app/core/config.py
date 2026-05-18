@@ -1,5 +1,6 @@
 import os
 from typing import List
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,6 +47,13 @@ class Settings(BaseSettings):
     # ── App ────────────────────────────────────────
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "info"
+
+    # ── Storage (S3) ───────────────────────────────
+    AWS_ACCESS_KEY_ID: str = Field(..., alias="AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY: str = Field(..., alias="AWS_SECRET_ACCESS_KEY")
+    AWS_REGION_NAME: str = "us-east-1"
+    S3_BUCKET_NAME: str = "gymflow-local-bucket"
+    CDN_BASE_URL: str = "https://cdn.gymflow.local"
 
     # ── Properties ─────────────────────────────────
     @property

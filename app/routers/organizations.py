@@ -1,14 +1,22 @@
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.database import get_db
 from app.core.deps import require_org_admin, Staff
 from app.models.organization import OrganizationRegistration, Organization
-from app.schemas.organization import RegistrationCreate, RegistrationResponse, OrganizationProfileResponse, OrganizationUpdate
+from app.schemas.organization import (
+    RegistrationCreate, RegistrationResponse, OrganizationProfileResponse, OrganizationUpdate,
+    LogoUploadUrlResponse, LogoConfirmRequest, LogoStatusResponse
+)
 from app.schemas.common import Response
-from app.utils.encryption import encrypt_data, mask_id_number
+from app.utils.encryption import encrypt_data, mask_id_number, decrypt_data
+import uuid
+from app.utils.s3 import get_s3_client
+from app.core.config import settings
+from app.tasks.logos import process_org_logo
+from app.core.deps import get_current_active_staff
 
 router = APIRouter(prefix="/organizations", tags=["Organizations"])
 
@@ -78,15 +86,38 @@ async def get_org_profile(
     reg_res = await db.execute(reg_q)
     registrations = reg_res.scalars().all()
 
+    business_id = None
+    gst_number = None
+    pan_number = None
+    for r in registrations:
+        if r.id_type == "BUSINESS_ID":
+            business_id = decrypt_data(r.id_number_encrypted)
+        elif r.id_type == "GST":
+            gst_number = decrypt_data(r.id_number_encrypted)
+        elif r.id_type == "PAN":
+            pan_number = decrypt_data(r.id_number_encrypted)
+
     return Response(data=OrganizationProfileResponse(
         id=org.id,
         name=org.name,
+        business_type=org.business_type,
         tagline=org.tagline,
         description=org.description,
         year_established=org.year_established,
         website_url=org.website_url,
         social_links=org.social_links,
-        registrations=[RegistrationResponse.model_validate(r, from_attributes=True) for r in registrations]
+        registrations=[RegistrationResponse.model_validate(r, from_attributes=True) for r in registrations],
+        business_id=business_id,
+        gst_number=gst_number,
+        pan_number=pan_number,
+        logo_status=org.logo_status.value if org.logo_status else None,
+        logo_thumb_url=f"{settings.CDN_BASE_URL}/{org.logo_thumb_key}" if org.logo_thumb_key else None,
+        logo_medium_url=f"{settings.CDN_BASE_URL}/{org.logo_medium_key}" if org.logo_medium_key else None,
+        logo_full_url=f"{settings.CDN_BASE_URL}/{org.logo_full_key}" if org.logo_full_key else None,
+        cover_status=org.cover_status.value if org.cover_status else None,
+        cover_mobile_url=f"{settings.CDN_BASE_URL}/{org.cover_mobile_key}" if org.cover_mobile_key else None,
+        cover_tablet_url=f"{settings.CDN_BASE_URL}/{org.cover_tablet_key}" if org.cover_tablet_key else None,
+        cover_desktop_url=f"{settings.CDN_BASE_URL}/{org.cover_desktop_key}" if org.cover_desktop_key else None
     ))
 
 @router.patch("/profile", response_model=Response[OrganizationProfileResponse])
@@ -107,24 +138,93 @@ async def update_org_profile(
 
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
+    
+    # Extract registration fields
+    reg_updates = {}
+    if "business_id" in update_data:
+        reg_updates["BUSINESS_ID"] = update_data.pop("business_id")
+    if "gst_number" in update_data:
+        reg_updates["GST"] = update_data.pop("gst_number")
+    if "pan_number" in update_data:
+        reg_updates["PAN"] = update_data.pop("pan_number")
+
     for key, value in update_data.items():
         setattr(org, key, value)
     
     await db.commit()
+    
+    # Process registrations
+    if reg_updates:
+        for id_type, id_number in reg_updates.items():
+            if not id_number:
+                continue
+                
+            q_reg = select(OrganizationRegistration).where(
+                OrganizationRegistration.org_id == org.id,
+                OrganizationRegistration.id_type == id_type
+            )
+            res_reg = await db.execute(q_reg)
+            reg = res_reg.scalar_one_or_none()
+            
+            encrypted_id = encrypt_data(id_number)
+            masked_id = mask_id_number(id_number)
+            
+            if reg:
+                reg.id_number_encrypted = encrypted_id
+                reg.id_number_masked = masked_id
+            else:
+                country_code = "IN" if id_type in ["GST", "PAN"] else "US"
+                entity_type = id_number[3].upper() if id_type == "PAN" and len(id_number) >= 4 else None
+                new_reg = OrganizationRegistration(
+                    org_id=org.id,
+                    id_type=id_type,
+                    id_number_encrypted=encrypted_id,
+                    id_number_masked=masked_id,
+                    country_code=country_code,
+                    entity_type=entity_type
+                )
+                db.add(new_reg)
+        await db.commit()
+
     await db.refresh(org)
 
     # Get registrations for response
     reg_q = select(OrganizationRegistration).where(OrganizationRegistration.org_id == org.id)
     reg_res = await db.execute(reg_q)
     registrations = reg_res.scalars().all()
+    
+    business_id = None
+    gst_number = None
+    pan_number = None
+    for r in registrations:
+        if r.id_type == "BUSINESS_ID":
+            business_id = decrypt_data(r.id_number_encrypted)
+        elif r.id_type == "GST":
+            gst_number = decrypt_data(r.id_number_encrypted)
+        elif r.id_type == "PAN":
+            pan_number = decrypt_data(r.id_number_encrypted)
 
     return Response(data=OrganizationProfileResponse(
         id=org.id,
         name=org.name,
+        business_type=org.business_type,
         tagline=org.tagline,
         description=org.description,
         year_established=org.year_established,
         website_url=org.website_url,
         social_links=org.social_links,
-        registrations=[RegistrationResponse.model_validate(r, from_attributes=True) for r in registrations]
+        registrations=[RegistrationResponse.model_validate(r, from_attributes=True) for r in registrations],
+        business_id=business_id,
+        gst_number=gst_number,
+        pan_number=pan_number,
+        logo_status=org.logo_status.value if org.logo_status else None,
+        logo_thumb_url=f"{settings.CDN_BASE_URL}/{org.logo_thumb_key}" if org.logo_thumb_key else None,
+        logo_medium_url=f"{settings.CDN_BASE_URL}/{org.logo_medium_key}" if org.logo_medium_key else None,
+        logo_full_url=f"{settings.CDN_BASE_URL}/{org.logo_full_key}" if org.logo_full_key else None,
+        cover_status=org.cover_status.value if org.cover_status else None,
+        cover_mobile_url=f"{settings.CDN_BASE_URL}/{org.cover_mobile_key}" if org.cover_mobile_key else None,
+        cover_tablet_url=f"{settings.CDN_BASE_URL}/{org.cover_tablet_key}" if org.cover_tablet_key else None,
+        cover_desktop_url=f"{settings.CDN_BASE_URL}/{org.cover_desktop_key}" if org.cover_desktop_key else None
     ))
+
+
