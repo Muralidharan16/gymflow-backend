@@ -15,3 +15,11 @@ from app.models.attendance import AttendanceLog  # noqa: F401
 from app.models.import_log import ImportLog  # noqa: F401
 from app.models.trial import TrialSubscription  # noqa: F401
 from app.models.audit import AuditLog  # noqa: F401
+from app.models.address import (  # noqa: F401
+    OrganizationAddress, MemberAddress, BranchGeolocationState,
+    BranchAddressHistory, BranchAddressAuditLog, BranchGeocodeAttempt, AddressChangeOutbox
+)
+from app.models.notification import Notification  # noqa: F401
+from app.models.org_branch import OrgBranch, OrgBranchState, AllowedBranchTransition, BranchAuditLog, ActiveOrgBranch, BranchNameTranslation  # noqa: F401
+
+

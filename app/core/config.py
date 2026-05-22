@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     WA_TEMPLATE_REMINDER: str = "member_renewal_reminder"
     WA_TEMPLATE_DIGEST: str = "daily_digest_notification"
 
+    # ── Google Maps ────────────────────────────────
+    GOOGLE_MAPS_SERVER_API_KEY: str = ""
+
     # ── App ────────────────────────────────────────
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "info"

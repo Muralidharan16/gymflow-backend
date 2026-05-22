@@ -121,9 +121,11 @@ class Invoice(Base, TimestampMixin):
         nullable=False,
     )
     pdf_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    billing_address_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     issued_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False
     )
+
 
     __table_args__ = (
         Index("ix_invoices_invoice_number", "invoice_number", unique=True),

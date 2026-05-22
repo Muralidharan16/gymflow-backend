@@ -22,7 +22,21 @@ def hash_token(token: str) -> str:
     """SHA256 hash for storage."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
+# =====================================================================
+# SECURITY COMPLIANCE POLICY: JWT TOKEN STRUCTURE
+# ---------------------------------------------------------------------
+# Addresses are never serialized into tokens. Doing so introduces high risks 
+# of stale location bindings, vertical authorization escalation, and leaks of 
+# customer PII in plain client-readable formats. 
+# Address data is always fetched fresh from the DB per request via RLS-scoped sessions.
+# =====================================================================
+SECURITY_POLICY = {
+    "token_payload_minimalist": True,
+    "address_exclusion": "Addresses are never serialized into tokens. Address data is always fetched fresh from DB per request via RLS-scoped session."
+}
+
 def create_access_token(owner_id: str, org_id: str, email: str, role: str = "owner") -> str:
+
     """
     Create JWT access token as per spec.
     """

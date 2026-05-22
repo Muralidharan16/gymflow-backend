@@ -3,3 +3,4 @@ from app.repositories.member_repo import MemberRepository
 from app.repositories.subscription_repo import SubscriptionRepository
 from app.repositories.payment_repo import PaymentRepository, InvoiceRepository
 from app.repositories.attendance_repo import AttendanceRepository
+from app.repositories.branch_repo import BranchRepository

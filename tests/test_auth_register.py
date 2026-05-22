@@ -1,45 +1,75 @@
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete
 from typing import AsyncGenerator
 import sys
 import os
+import uuid
+import hashlib
+from unittest.mock import patch
 
 # Ensure app is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.main import app
-from app.database import Base, get_db
-from app.models.models import Gym, GymOwner, EmailVerificationToken
-from passlib.context import CryptContext
-
-# Use an in-memory SQLite database for testing
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-
-test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-TestingSessionLocal = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
-
-async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with TestingSessionLocal() as session:
-        yield session
-
-app.dependency_overrides[get_db] = override_get_db
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-import uuid
-from app.redis_client import _fallback_rate_limits
+from app.models.auth import Owner, RefreshToken
+from app.models.gym import Gym
+from app.models.organization import Organization
+from app.core.database import AsyncSessionLocal, get_db
+from app.core.redis import init_redis, get_redis_utils
 
 @pytest_asyncio.fixture(autouse=True)
-async def prepare_database():
-    """Create all tables before each test and drop them after."""
-    _fallback_rate_limits.clear()
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def cleanup_database_and_redis():
+    """Flush Redis and clean up Postgres test data before and after each test."""
+    from app.core.redis import init_redis, get_redis_utils, close_redis
+    await close_redis()
+    await init_redis()
+    redis_utils = get_redis_utils()
+    await redis_utils.client.flushdb()
+
+    async with AsyncSessionLocal() as session:
+        test_emails = [
+            "arjun@example.com",
+            "duplicate@example.com",
+            "weak@example.com",
+            "rate@example.com",
+            "fail@example.com",
+            "login@example.com",
+            "locked@example.com"
+        ]
+        
+        # Get org_ids of owners we are about to delete
+        stmt = select(Owner.org_id).where(Owner.email.in_(test_emails))
+        res = await session.execute(stmt)
+        org_ids = res.scalars().all()
+        
+        # Delete refresh tokens
+        await session.execute(delete(RefreshToken).where(RefreshToken.owner_id.in_(
+            select(Owner.id).where(Owner.email.in_(test_emails))
+        )))
+        
+        # Delete owners
+        await session.execute(delete(Owner).where(Owner.email.in_(test_emails)))
+        
+        # Delete gyms
+        if org_ids:
+            await session.execute(delete(Gym).where(Gym.org_id.in_(org_ids)))
+            await session.execute(delete(Organization).where(Organization.id.in_(org_ids)))
+            
+        # Delete any dangling test organizations by name
+        stmt_orgs = select(Organization.id).where(Organization.name.in_(["Fit Core", "Gym A", "Gym B", "Gym C", "Gym Rate Limit", "Fail Gym"]))
+        res_orgs = await session.execute(stmt_orgs)
+        dangling_org_ids = res_orgs.scalars().all()
+        if dangling_org_ids:
+            await session.execute(delete(Gym).where(Gym.org_id.in_(dangling_org_ids)))
+            await session.execute(delete(Organization).where(Organization.id.in_(dangling_org_ids)))
+
+        await session.commit()
+
     yield
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+    await close_redis()
 
 @pytest_asyncio.fixture
 async def client():
@@ -47,134 +77,214 @@ async def client():
         yield ac
 
 @pytest.mark.asyncio
-async def test_register_happy_path(client):
+async def test_signup_happy_path(client):
     payload = {
-        "gym_name": "  Fit Core  ",
-        "phone": "9876543210",
-        "city": "Mumbai",
-        "plan": "growth",
-        "owner_name": "  Arjun   Singh ",
-        "email": " ARJUN@example.com ",
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+    
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        response = await client.post("/auth/signup", json=payload)
+        assert response.status_code == 200
+        assert response.json()["status"] == "success"
+        assert "Verification email sent" in response.json()["message"]
+        
+        # Ensure email was sent and token was generated
+        assert mock_send.called
+        raw_token = mock_send.call_args[1]["raw_token"]
+        assert raw_token is not None
+
+        # Verify Redis has the pending signup entry
+        redis_utils = get_redis_utils()
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        pending_data = await redis_utils.get_json(f"signup:pending:{token_hash}")
+        assert pending_data is not None
+        assert pending_data["email"] == "arjun@example.com"
+        assert pending_data["org_name"] == "Fit Core"
+
+@pytest.mark.asyncio
+async def test_signup_weak_password(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "short",
+        "facility_type": "gym"
+    }
+    response = await client.post("/auth/signup", json=payload)
+    assert response.status_code == 422
+
+@pytest.mark.asyncio
+async def test_signup_missing_field(client):
+    payload = {
+        "org_name": "Fit Core",
+        "email": "arjun@example.com",
         "password": "StrongPassword123!"
     }
+    response = await client.post("/auth/signup", json=payload)
+    assert response.status_code == 422
+
+@pytest.mark.asyncio
+async def test_signup_rate_limit(client):
+    # Loop to hit the IP rate limit of 5 requests per 10 minutes
+    # Note: Use different emails so we don't hit the anti-enumeration early success return
+    for i in range(5):
+        payload = {
+            "org_name": f"Gym Rate Limit {i}",
+            "owner_name": "Rate Limiter",
+            "email": f"rate{i}@example.com",
+            "password": "StrongPassword123!",
+            "facility_type": "gym"
+        }
+        with patch("app.services.auth_service.send_verification_email", return_value=True):
+            resp = await client.post("/auth/signup", json=payload)
+            assert resp.status_code == 200
+
+    # The 6th request should hit the rate limit
+    payload = {
+        "org_name": "Gym Rate Limit 5",
+        "owner_name": "Rate Limiter",
+        "email": "rate5@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+    resp_rate_limited = await client.post("/auth/signup", json=payload)
+    assert resp_rate_limited.status_code == 429
+    assert "Too many signup attempts" in resp_rate_limited.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_verify_happy_path(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
     
-    response = await client.post("/auth/register", json=payload)
-    assert response.status_code == 201
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        
+        # Verify the signup using the token
+        verify_resp = await client.get(f"/auth/verify?token={raw_token}", follow_redirects=False)
+        assert verify_resp.status_code == 307
+        assert "verify-success" in verify_resp.headers["location"]
+        
+        # Verify Postgres DB contains the newly created organization and owner
+        async with AsyncSessionLocal() as session:
+            stmt_owner = select(Owner).where(Owner.email == "arjun@example.com")
+            res_owner = await session.execute(stmt_owner)
+            owner = res_owner.scalar_one_or_none()
+            assert owner is not None
+            assert owner.owner_name == "Arjun Singh"
+            assert owner.email_verified is True
+            
+            stmt_org = select(Organization).where(Organization.id == owner.org_id)
+            res_org = await session.execute(stmt_org)
+            org = res_org.scalar_one_or_none()
+            assert org is not None
+            assert org.name == "Fit Core"
+            
+            stmt_gym = select(Gym).where(Gym.org_id == org.id)
+            res_gym = await session.execute(stmt_gym)
+            gym = res_gym.scalar_one_or_none()
+            assert gym is not None
+            assert gym.name == "Fit Core"
+
+@pytest.mark.asyncio
+async def test_verify_invalid_token(client):
+    verify_resp = await client.get("/auth/verify?token=invalidtoken", follow_redirects=False)
+    assert verify_resp.status_code == 307
+    assert "verify-failed" in verify_resp.headers["location"]
+
+@pytest.mark.asyncio
+async def test_login_happy_path(client):
+    # 1. Signup and Verify
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
     
-    data = response.json()
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
+        
+    # 2. Login
+    login_payload = {
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!"
+    }
+    login_resp = await client.post("/auth/login", json=login_payload)
+    assert login_resp.status_code == 200
+    
+    data = login_resp.json()
     assert "access_token" in data
     assert "refresh_token" in data
-    assert "gym_id" in data
-    assert "owner_id" in data
+    assert data["user"]["email"] == "arjun@example.com"
     
-    # Verify DB rows
-    async with TestingSessionLocal() as session:
-        gym = await session.get(Gym, uuid.UUID(data["gym_id"]))
-        assert gym is not None
-        assert gym.name == "Fit Core"
-        assert gym.city == "Mumbai"
-        
-        owner = await session.get(GymOwner, uuid.UUID(data["owner_id"]))
-        assert owner is not None
-        assert owner.name == "Arjun Singh"
-        assert owner.email == "arjun@example.com"
-        assert pwd_context.verify("StrongPassword123!", owner.password_hash)
-        
-        # Verify Token
-        from sqlalchemy import select
-        token_stmt = select(EmailVerificationToken).where(EmailVerificationToken.owner_id == owner.id)
-        token_res = await session.execute(token_stmt)
-        token = token_res.scalars().first()
-        assert token is not None
+    # Check that cookies were set
+    assert "access_token" in login_resp.cookies
+    assert "refresh_token" in login_resp.cookies
 
 @pytest.mark.asyncio
-async def test_register_duplicate_email(client):
+async def test_login_invalid_credentials(client):
+    # 1. Signup and Verify
     payload = {
-        "gym_name": "Gym A",
-        "phone": "123456789",
-        "city": "Delhi",
-        "plan": "starter",
-        "owner_name": "John",
-        "email": "duplicate@example.com",
-        "password": "Password123"
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
     }
     
-    # First registration
-    resp1 = await client.post("/auth/register", json=payload)
-    assert resp1.status_code == 201
-    
-    # Second registration with same email
-    resp2 = await client.post("/auth/register", json=payload)
-    assert resp2.status_code == 409
-    assert "An account with this email already exists" in resp2.json()["detail"]
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
+
+    # 2. Login with wrong password
+    login_payload = {
+        "email": "arjun@example.com",
+        "password": "WrongPassword!"
+    }
+    login_resp = await client.post("/auth/login", json=login_payload)
+    assert login_resp.status_code == 401
+    assert "attempts remaining" in login_resp.json()["detail"]
 
 @pytest.mark.asyncio
-async def test_register_weak_password(client):
+async def test_login_account_locked(client):
+    # 1. Signup and Verify
     payload = {
-        "gym_name": "Gym B",
-        "phone": "123456789",
-        "city": "Delhi",
-        "plan": "starter",
-        "owner_name": "John",
-        "email": "weak@example.com",
-        "password": "short"
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
     }
     
-    response = await client.post("/auth/register", json=payload)
-    assert response.status_code == 422
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
 
-@pytest.mark.asyncio
-async def test_register_missing_field(client):
-    payload = {
-        "gym_name": "Gym C",
-        "email": "missing@example.com",
-        "password": "Password123"
+    # 2. Perform 5 failed login attempts
+    login_payload = {
+        "email": "arjun@example.com",
+        "password": "WrongPassword!"
     }
-    
-    response = await client.post("/auth/register", json=payload)
-    assert response.status_code == 422
+    for _ in range(4):
+        resp = await client.post("/auth/login", json=login_payload)
+        assert resp.status_code == 401
 
-@pytest.mark.asyncio
-async def test_register_rate_limit(client):
-    payload = {
-        "gym_name": "Gym Rate Limit",
-        "phone": "123456789",
-        "city": "Delhi",
-        "plan": "starter",
-        "owner_name": "Rate Limiter",
-        "email": "rate@example.com",
-        "password": "Password123"
-    }
-    
-    # 5 allowed requests (first 4 will 201 or 409, we just care they don't 429)
-    for _ in range(5):
-        resp = await client.post("/auth/register", json=payload)
-        assert resp.status_code in [201, 409]
-        
-    # 6th request should hit rate limit
-    resp_rate_limited = await client.post("/auth/register", json=payload)
-    assert resp_rate_limited.status_code == 429
-    assert "Too many registration attempts" in resp_rate_limited.json()["detail"]
-
-@pytest.mark.asyncio
-async def test_register_db_failure_no_leak(client, monkeypatch):
-    payload = {
-        "gym_name": "Fail Gym",
-        "phone": "123456789",
-        "city": "Delhi",
-        "plan": "starter",
-        "owner_name": "Fail Owner",
-        "email": "fail@example.com",
-        "password": "Password123"
-    }
-    
-    # Mock db.execute to raise Exception
-    async def mock_execute(*args, **kwargs):
-        raise Exception("Raw database error that should not leak")
-    
-    # We patch AsyncSession.execute
-    monkeypatch.setattr("sqlalchemy.ext.asyncio.AsyncSession.execute", mock_execute)
-    
-    response = await client.post("/auth/register", json=payload)
-    assert response.status_code == 500
-    assert response.json()["detail"] == "Registration failed due to a server error. Please try again."
+    # The 5th failed attempt should trigger the account lock
+    resp_lock = await client.post("/auth/login", json=login_payload)
+    assert resp_lock.status_code == 429
+    assert "Account locked" in resp_lock.json()["detail"]

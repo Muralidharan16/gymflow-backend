@@ -96,6 +96,25 @@ class InvoiceService:
         # Generate invoice number
         invoice_number = await self._generate_invoice_number(gym.id)
 
+        # Fetch the organization's primary address to snapshot
+        from app.models.address import OrganizationAddress
+        addr_stmt = (
+            select(OrganizationAddress)
+            .where(OrganizationAddress.org_id == gym.org_id)
+            .where(OrganizationAddress.is_primary == True)
+            .where(OrganizationAddress.deleted_at.is_(None))
+        )
+        addr_res = await self.session.execute(addr_stmt)
+        primary_addr = addr_res.scalar_one_or_none()
+        
+        snapshot_dict = None
+        if primary_addr:
+            from app.services.address_service import capture_address_snapshot
+            try:
+                snapshot_dict = await capture_address_snapshot(primary_addr.id, self.session)
+            except Exception as e:
+                logger.error(f"Failed to capture address snapshot for organization {gym.org_id}: {str(e)}")
+
         # Create invoice
         invoice = Invoice(
             invoice_number=invoice_number,
@@ -114,7 +133,8 @@ class InvoiceService:
             total_amount=total_amount,
             status=InvoiceStatus.PAID,
             payment_date=payment.payment_date or datetime.now(timezone.utc),
-            created_by=payment.created_by
+            created_by=payment.created_by,
+            billing_address_snapshot=snapshot_dict
         )
 
         created = await self.invoice_repo.create(invoice)

@@ -1,0 +1,147 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0
+rootdir: /home/jeevashri/gymflow-backend
+plugins: anyio-4.13.0, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/test_branch_management.py F                                        [100%]
+
+=================================== FAILURES ===================================
+______________________ test_rls_isolation_across_tenants _______________________
+tests/test_branch_management.py:195: in test_rls_isolation_across_tenants
+    assert branch is None
+E   assert <app.models.org_branch.ActiveOrgBranch object at 0x73bb769c4c20> is None
+---------------------------- Captured stdout setup -----------------------------
+2026-05-22 18:55:57,187 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-05-22 18:55:57,187 INFO sqlalchemy.engine.Engine 
+            DO $$
+            BEGIN
+              IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'test_rls_role') THEN
+                CREATE ROLE test_rls_role;
+              END IF;
+            END
+            $$;
+        
+2026-05-22 18:55:57,187 INFO sqlalchemy.engine.Engine [generated in 0.00013s] ()
+2026-05-22 18:55:57,189 INFO sqlalchemy.engine.Engine GRANT USAGE ON SCHEMA public TO test_rls_role
+2026-05-22 18:55:57,189 INFO sqlalchemy.engine.Engine [generated in 0.00009s] ()
+2026-05-22 18:55:57,190 INFO sqlalchemy.engine.Engine GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO test_rls_role
+2026-05-22 18:55:57,190 INFO sqlalchemy.engine.Engine [generated in 0.00007s] ()
+2026-05-22 18:55:57,191 INFO sqlalchemy.engine.Engine GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO test_rls_role
+2026-05-22 18:55:57,191 INFO sqlalchemy.engine.Engine [generated in 0.00007s] ()
+2026-05-22 18:55:57,191 INFO sqlalchemy.engine.Engine COMMIT
+2026-05-22 18:55:57,229 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-05-22 18:55:57,232 INFO sqlalchemy.engine.Engine INSERT INTO organizations (id, name, slug, tier, business_type, is_active, max_branches, tagline, description, year_established, website_url, website_verified, social_links, phone, address_line1, address_line2, city, state, document_url, verification_status, pincode, country, profile_completed, logo_key, logo_thumb_key, logo_medium_key, logo_full_key, logo_status, logo_updated_at, logo_updated_by, cover_key, cover_mobile_key, cover_tablet_key, cover_desktop_key, cover_status, cover_updated_at, cover_updated_by) VALUES ($1::UUID, $2::VARCHAR, $3::VARCHAR, $4::orgtier, $5::VARCHAR, $6::BOOLEAN, $7::INTEGER, $8::VARCHAR, $9::VARCHAR, $10::SMALLINT, $11::VARCHAR, $12::BOOLEAN, $13::JSONB, $14::VARCHAR, $15::VARCHAR, $16::VARCHAR, $17::VARCHAR, $18::VARCHAR, $19::VARCHAR, $20::VARCHAR, $21::VARCHAR, $22::VARCHAR, $23::BOOLEAN, $24::VARCHAR, $25::VARCHAR, $26::VARCHAR, $27::VARCHAR, $28::asset_status_enum, $29::TIMESTAMP WITH TIME ZONE, $30::UUID, $31::VARCHAR, $32::VARCHAR, $33::VARCHAR, $34::VARCHAR, $35::asset_status_enum, $36::TIMESTAMP WITH TIME ZONE, $37::UUID) RETURNING organizations.created_at, organizations.updated_at
+2026-05-22 18:55:57,232 INFO sqlalchemy.engine.Engine [generated in 0.00028s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), 'Test Enterprise Org', None, 'basic', None, True, 2, None, None, None, None, False, '{}', None, None, None, None, None, None, 'pending', None, 'India', False, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+2026-05-22 18:55:57,240 INFO sqlalchemy.engine.Engine INSERT INTO gym_owners (id, org_id, gym_id, name, email, password_hash, phone, role, is_active, is_verified, last_login) VALUES ($1::UUID, $2::UUID, $3::UUID, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR, $7::VARCHAR, $8::staffrole, $9::BOOLEAN, $10::BOOLEA ... 335 characters truncated ... $33::TIMESTAMP WITH TIME ZONE) RETURNING gym_owners.created_at, gym_owners.updated_at, gym_owners.id
+2026-05-22 18:55:57,240 INFO sqlalchemy.engine.Engine [generated in 0.00010s (insertmanyvalues) 1/1 (ordered)] (UUID('6105134a-e6f3-4da8-a9d2-f96c51431334'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), None, 'Test Owner', 'owner@test.com', 'hash', None, 'owner', True, True, None, UUID('30332d43-8ac5-491a-a7cb-7e01230a3dcf'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), None, 'Test Admin', 'admin@test.com', 'hash', None, 'admin', True, True, None, UUID('b00650dd-66af-4925-b39a-69222315cd7f'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), None, 'Test Trainer', 'trainer@test.com', 'hash', None, 'trainer', True, True, None)
+2026-05-22 18:55:57,244 INFO sqlalchemy.engine.Engine COMMIT
+------------------------------ Captured log setup ------------------------------
+INFO     sqlalchemy.engine.Engine:base.py:2710 BEGIN (implicit)
+INFO     sqlalchemy.engine.Engine:base.py:1846 
+            DO $$
+            BEGIN
+              IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'test_rls_role') THEN
+                CREATE ROLE test_rls_role;
+              END IF;
+            END
+            $$;
+        
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00013s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 GRANT USAGE ON SCHEMA public TO test_rls_role
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00009s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO test_rls_role
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00007s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO test_rls_role
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00007s] ()
+INFO     sqlalchemy.engine.Engine:base.py:2716 COMMIT
+INFO     sqlalchemy.engine.Engine:base.py:2710 BEGIN (implicit)
+INFO     sqlalchemy.engine.Engine:base.py:1846 INSERT INTO organizations (id, name, slug, tier, business_type, is_active, max_branches, tagline, description, year_established, website_url, website_verified, social_links, phone, address_line1, address_line2, city, state, document_url, verification_status, pincode, country, profile_completed, logo_key, logo_thumb_key, logo_medium_key, logo_full_key, logo_status, logo_updated_at, logo_updated_by, cover_key, cover_mobile_key, cover_tablet_key, cover_desktop_key, cover_status, cover_updated_at, cover_updated_by) VALUES ($1::UUID, $2::VARCHAR, $3::VARCHAR, $4::orgtier, $5::VARCHAR, $6::BOOLEAN, $7::INTEGER, $8::VARCHAR, $9::VARCHAR, $10::SMALLINT, $11::VARCHAR, $12::BOOLEAN, $13::JSONB, $14::VARCHAR, $15::VARCHAR, $16::VARCHAR, $17::VARCHAR, $18::VARCHAR, $19::VARCHAR, $20::VARCHAR, $21::VARCHAR, $22::VARCHAR, $23::BOOLEAN, $24::VARCHAR, $25::VARCHAR, $26::VARCHAR, $27::VARCHAR, $28::asset_status_enum, $29::TIMESTAMP WITH TIME ZONE, $30::UUID, $31::VARCHAR, $32::VARCHAR, $33::VARCHAR, $34::VARCHAR, $35::asset_status_enum, $36::TIMESTAMP WITH TIME ZONE, $37::UUID) RETURNING organizations.created_at, organizations.updated_at
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00028s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), 'Test Enterprise Org', None, 'basic', None, True, 2, None, None, None, None, False, '{}', None, None, None, None, None, None, 'pending', None, 'India', False, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+INFO     sqlalchemy.engine.Engine:base.py:1844 INSERT INTO gym_owners (id, org_id, gym_id, name, email, password_hash, phone, role, is_active, is_verified, last_login) VALUES ($1::UUID, $2::UUID, $3::UUID, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR, $7::VARCHAR, $8::staffrole, $9::BOOLEAN, $10::BOOLEA ... 335 characters truncated ... $33::TIMESTAMP WITH TIME ZONE) RETURNING gym_owners.created_at, gym_owners.updated_at, gym_owners.id
+INFO     sqlalchemy.engine.Engine:base.py:1844 [generated in 0.00010s (insertmanyvalues) 1/1 (ordered)] (UUID('6105134a-e6f3-4da8-a9d2-f96c51431334'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), None, 'Test Owner', 'owner@test.com', 'hash', None, 'owner', True, True, None, UUID('30332d43-8ac5-491a-a7cb-7e01230a3dcf'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), None, 'Test Admin', 'admin@test.com', 'hash', None, 'admin', True, True, None, UUID('b00650dd-66af-4925-b39a-69222315cd7f'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), None, 'Test Trainer', 'trainer@test.com', 'hash', None, 'trainer', True, True, None)
+INFO     sqlalchemy.engine.Engine:base.py:2716 COMMIT
+----------------------------- Captured stdout call -----------------------------
+2026-05-22 18:55:57,264 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-05-22 18:55:57,265 INFO sqlalchemy.engine.Engine SET ROLE test_rls_role
+2026-05-22 18:55:57,265 INFO sqlalchemy.engine.Engine [generated in 0.00011s] ()
+2026-05-22 18:55:57,266 INFO sqlalchemy.engine.Engine SELECT pg_catalog.set_config('app.current_org_id', $1, true)
+2026-05-22 18:55:57,266 INFO sqlalchemy.engine.Engine [generated in 0.00016s] ('189cf6ad-dae1-4744-b54b-500b209fc4ff',)
+2026-05-22 18:55:57,267 INFO sqlalchemy.engine.Engine SELECT pg_catalog.set_config('app.current_user_id', $1, true)
+2026-05-22 18:55:57,267 INFO sqlalchemy.engine.Engine [generated in 0.00015s] ('6105134a-e6f3-4da8-a9d2-f96c51431334',)
+2026-05-22 18:55:57,269 INFO sqlalchemy.engine.Engine INSERT INTO org_branches (id, org_id, branch_name, branch_code, internal_slug, timezone, currency_code, region_code, country_code, address_id, created_by) VALUES ($1::UUID, $2::UUID, $3::VARCHAR, $4::VARCHAR, $5, $6::VARCHAR, $7::VARCHAR, $8::VARCHAR, $9::VARCHAR, $10::UUID, $11::UUID) RETURNING org_branches.search_normalized_name, org_branches.created_at, org_branches.updated_at
+2026-05-22 18:55:57,270 INFO sqlalchemy.engine.Engine [generated in 0.00020s] (UUID('aae3abf3-c08c-4ed7-b64f-08883c56f17c'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), 'Branch Org A', 'A-01', 'a-01', 'UTC', 'USD', None, None, None, None)
+2026-05-22 18:55:57,281 INFO sqlalchemy.engine.Engine INSERT INTO org_branch_state (branch_id, org_id, branch_status, is_primary, is_active, is_public, version, search_logical_clock, search_epoch_ulid, deleted_at, archived_at, purged_at) VALUES ($1::UUID, $2::UUID, $3::VARCHAR, $4::BOOLEAN, $5::BOOLEAN, $6::BOOLEAN, $7::BIGINT, $8::BIGINT, $9::VARCHAR, $10::TIMESTAMP WITH TIME ZONE, $11::TIMESTAMP WITH TIME ZONE, $12::TIMESTAMP WITH TIME ZONE) RETURNING org_branch_state.updated_at
+2026-05-22 18:55:57,281 INFO sqlalchemy.engine.Engine [generated in 0.00025s] (UUID('aae3abf3-c08c-4ed7-b64f-08883c56f17c'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), 'active', False, True, True, 1, 0, '01AN4V07BY79KA1307SR1XF31A', None, None, None)
+2026-05-22 18:55:57,283 INFO sqlalchemy.engine.Engine COMMIT
+2026-05-22 18:55:57,305 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-05-22 18:55:57,305 INFO sqlalchemy.engine.Engine SET ROLE test_rls_role
+2026-05-22 18:55:57,305 INFO sqlalchemy.engine.Engine [cached since 0.04085s ago] ()
+2026-05-22 18:55:57,306 INFO sqlalchemy.engine.Engine SELECT pg_catalog.set_config('app.current_org_id', $1, true)
+2026-05-22 18:55:57,306 INFO sqlalchemy.engine.Engine [cached since 0.04057s ago] ('56c217f3-1e60-43ec-b678-db15c3c8a13f',)
+2026-05-22 18:55:57,307 INFO sqlalchemy.engine.Engine SELECT pg_catalog.set_config('app.current_user_id', $1, true)
+2026-05-22 18:55:57,307 INFO sqlalchemy.engine.Engine [cached since 0.04005s ago] ('b52259a8-a58e-4b11-9bdd-ef55bcad747e',)
+2026-05-22 18:55:57,309 INFO sqlalchemy.engine.Engine SELECT v_active_org_branches.id, v_active_org_branches.org_id, v_active_org_branches.branch_name, v_active_org_branches.branch_code, v_active_org_branches.internal_slug, v_active_org_branches.timezone, v_active_org_branches.currency_code, v_active_org_branches.region_code, v_active_org_branches.country_code, v_active_org_branches.created_by, v_active_org_branches.created_at, v_active_org_branches.updated_at, v_active_org_branches.branch_status, v_active_org_branches.is_primary, v_active_org_branches.is_active, v_active_org_branches.is_public, v_active_org_branches.version, v_active_org_branches.state_updated_at 
+FROM v_active_org_branches 
+WHERE v_active_org_branches.id = $1::UUID AND v_active_org_branches.org_id = $2::UUID
+2026-05-22 18:55:57,309 INFO sqlalchemy.engine.Engine [generated in 0.00011s] (UUID('aae3abf3-c08c-4ed7-b64f-08883c56f17c'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'))
+2026-05-22 18:55:57,316 INFO sqlalchemy.engine.Engine ROLLBACK
+------------------------------ Captured log call -------------------------------
+INFO     sqlalchemy.engine.Engine:base.py:2710 BEGIN (implicit)
+INFO     sqlalchemy.engine.Engine:base.py:1846 SET ROLE test_rls_role
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00011s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 SELECT pg_catalog.set_config('app.current_org_id', $1, true)
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00016s] ('189cf6ad-dae1-4744-b54b-500b209fc4ff',)
+INFO     sqlalchemy.engine.Engine:base.py:1846 SELECT pg_catalog.set_config('app.current_user_id', $1, true)
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00015s] ('6105134a-e6f3-4da8-a9d2-f96c51431334',)
+INFO     sqlalchemy.engine.Engine:base.py:1846 INSERT INTO org_branches (id, org_id, branch_name, branch_code, internal_slug, timezone, currency_code, region_code, country_code, address_id, created_by) VALUES ($1::UUID, $2::UUID, $3::VARCHAR, $4::VARCHAR, $5, $6::VARCHAR, $7::VARCHAR, $8::VARCHAR, $9::VARCHAR, $10::UUID, $11::UUID) RETURNING org_branches.search_normalized_name, org_branches.created_at, org_branches.updated_at
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00020s] (UUID('aae3abf3-c08c-4ed7-b64f-08883c56f17c'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), 'Branch Org A', 'A-01', 'a-01', 'UTC', 'USD', None, None, None, None)
+INFO     sqlalchemy.engine.Engine:base.py:1846 INSERT INTO org_branch_state (branch_id, org_id, branch_status, is_primary, is_active, is_public, version, search_logical_clock, search_epoch_ulid, deleted_at, archived_at, purged_at) VALUES ($1::UUID, $2::UUID, $3::VARCHAR, $4::BOOLEAN, $5::BOOLEAN, $6::BOOLEAN, $7::BIGINT, $8::BIGINT, $9::VARCHAR, $10::TIMESTAMP WITH TIME ZONE, $11::TIMESTAMP WITH TIME ZONE, $12::TIMESTAMP WITH TIME ZONE) RETURNING org_branch_state.updated_at
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00025s] (UUID('aae3abf3-c08c-4ed7-b64f-08883c56f17c'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'), 'active', False, True, True, 1, 0, '01AN4V07BY79KA1307SR1XF31A', None, None, None)
+INFO     sqlalchemy.engine.Engine:base.py:2716 COMMIT
+INFO     sqlalchemy.engine.Engine:base.py:2710 BEGIN (implicit)
+INFO     sqlalchemy.engine.Engine:base.py:1846 SET ROLE test_rls_role
+INFO     sqlalchemy.engine.Engine:base.py:1846 [cached since 0.04085s ago] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 SELECT pg_catalog.set_config('app.current_org_id', $1, true)
+INFO     sqlalchemy.engine.Engine:base.py:1846 [cached since 0.04057s ago] ('56c217f3-1e60-43ec-b678-db15c3c8a13f',)
+INFO     sqlalchemy.engine.Engine:base.py:1846 SELECT pg_catalog.set_config('app.current_user_id', $1, true)
+INFO     sqlalchemy.engine.Engine:base.py:1846 [cached since 0.04005s ago] ('b52259a8-a58e-4b11-9bdd-ef55bcad747e',)
+INFO     sqlalchemy.engine.Engine:base.py:1846 SELECT v_active_org_branches.id, v_active_org_branches.org_id, v_active_org_branches.branch_name, v_active_org_branches.branch_code, v_active_org_branches.internal_slug, v_active_org_branches.timezone, v_active_org_branches.currency_code, v_active_org_branches.region_code, v_active_org_branches.country_code, v_active_org_branches.created_by, v_active_org_branches.created_at, v_active_org_branches.updated_at, v_active_org_branches.branch_status, v_active_org_branches.is_primary, v_active_org_branches.is_active, v_active_org_branches.is_public, v_active_org_branches.version, v_active_org_branches.state_updated_at 
+FROM v_active_org_branches 
+WHERE v_active_org_branches.id = $1::UUID AND v_active_org_branches.org_id = $2::UUID
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00011s] (UUID('aae3abf3-c08c-4ed7-b64f-08883c56f17c'), UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'))
+INFO     sqlalchemy.engine.Engine:base.py:2713 ROLLBACK
+--------------------------- Captured stdout teardown ---------------------------
+2026-05-22 18:55:57,357 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-05-22 18:55:57,357 INFO sqlalchemy.engine.Engine RESET ROLE
+2026-05-22 18:55:57,357 INFO sqlalchemy.engine.Engine [generated in 0.00011s] ()
+2026-05-22 18:55:57,358 INFO sqlalchemy.engine.Engine DELETE FROM branch_audit_log WHERE org_id = $1
+2026-05-22 18:55:57,358 INFO sqlalchemy.engine.Engine [generated in 0.00011s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'),)
+2026-05-22 18:55:57,359 INFO sqlalchemy.engine.Engine DELETE FROM org_branch_state WHERE org_id = $1
+2026-05-22 18:55:57,359 INFO sqlalchemy.engine.Engine [generated in 0.00010s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'),)
+2026-05-22 18:55:57,360 INFO sqlalchemy.engine.Engine DELETE FROM org_branches WHERE org_id = $1
+2026-05-22 18:55:57,360 INFO sqlalchemy.engine.Engine [generated in 0.00009s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'),)
+2026-05-22 18:55:57,361 INFO sqlalchemy.engine.Engine DELETE FROM gym_owners WHERE org_id = $1
+2026-05-22 18:55:57,361 INFO sqlalchemy.engine.Engine [generated in 0.00008s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'),)
+2026-05-22 18:55:57,363 INFO sqlalchemy.engine.Engine DELETE FROM organizations WHERE id = $1
+2026-05-22 18:55:57,363 INFO sqlalchemy.engine.Engine [generated in 0.00009s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'),)
+2026-05-22 18:55:57,365 INFO sqlalchemy.engine.Engine COMMIT
+---------------------------- Captured log teardown -----------------------------
+INFO     sqlalchemy.engine.Engine:base.py:2710 BEGIN (implicit)
+INFO     sqlalchemy.engine.Engine:base.py:1846 RESET ROLE
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00011s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 DELETE FROM branch_audit_log WHERE org_id = $1
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00011s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'),)
+INFO     sqlalchemy.engine.Engine:base.py:1846 DELETE FROM org_branch_state WHERE org_id = $1
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00010s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'),)
+INFO     sqlalchemy.engine.Engine:base.py:1846 DELETE FROM org_branches WHERE org_id = $1
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00009s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'),)
+INFO     sqlalchemy.engine.Engine:base.py:1846 DELETE FROM gym_owners WHERE org_id = $1
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00008s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'),)
+INFO     sqlalchemy.engine.Engine:base.py:1846 DELETE FROM organizations WHERE id = $1
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00009s] (UUID('189cf6ad-dae1-4744-b54b-500b209fc4ff'),)
+INFO     sqlalchemy.engine.Engine:base.py:2716 COMMIT
+=========================== short test summary info ============================
+FAILED tests/test_branch_management.py::test_rls_isolation_across_tenants - a...
+============================== 1 failed in 0.41s ===============================

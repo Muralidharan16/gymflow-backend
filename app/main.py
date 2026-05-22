@@ -1,100 +1,135 @@
-# FIXED: [FIX 1] Replaced deprecated @app.on_event("startup")/@app.on_event("shutdown")
-#        with a single @asynccontextmanager lifespan function.
-# FIXED: [FIX 4] Moved hardcoded CORS origins to settings.CORS_ORIGINS.
-# app/main.py
-from app.core.celery_app import celery_app
-from contextlib import asynccontextmanager
+"""
+app/main.py
+============
+FastAPI application entrypoint for the Doers SaaS platform.
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
-import os
-from fastapi.middleware.cors import CORSMiddleware
-from app.core.config import settings
-from app.core.middleware import (
-    TenantMiddleware,
-    SecurityHeadersMiddleware,
-    CorrelationIdMiddleware,
-    RateLimitMiddleware,
-    IdempotencyMiddleware,
-)
-from app.routers import auth, gyms, members, subscriptions, payments, attendance, reports, imports, onboarding, organizations, assets
+Middleware order (add_middleware is applied bottom-to-top, so innermost first):
+  TenantMiddleware            ← innermost (runs last on request, first on response)
+  IdempotencyMiddleware
+  AdaptiveWriteThrottler
+  RedisRateLimiterMiddleware
+  OpenTelemetryTraceMiddleware
+  CorrelationIdMiddleware
+  SecurityHeadersMiddleware   ← outermost
+  CORSMiddleware              ← very outermost
+"""
 
-# Redis lifecycle helpers (ensure app/core/redis.py implements these)
-from app.core.redis import init_redis, close_redis
+from __future__ import annotations
 
 import logging.config
+import os
+from contextlib import asynccontextmanager
 
+import sentry_sdk
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manage startup and shutdown lifecycle events."""
-    await init_redis()
-    print(f"=== DIAGNOSTIC: STARTING APP WITH CELERY_BROKER_URL = {settings.CELERY_BROKER_URL} ===")
-    yield
-    # ── Shutdown ──
-    await close_redis()
-    # add other shutdown tasks here if needed
+from app.core.config import settings
+from app.core.middleware import (
+    AdaptiveWriteThrottler,
+    CorrelationIdMiddleware,
+    IdempotencyMiddleware,
+    OpenTelemetryTraceMiddleware,
+    RedisRateLimiterMiddleware,
+    SecurityHeadersMiddleware,
+    TenantMiddleware,
+)
+from app.core.redis import close_redis, init_redis
+from app.core.supervisor import platform_lifespan
+from app.core.telemetry import sentry_before_send
 
+if os.environ.get("SENTRY_DSN"):
+    sentry_sdk.init(dsn=os.environ["SENTRY_DSN"], before_send=sentry_before_send)
 
-app = FastAPI(title="Doers Gym SaaS", version="1.0.0", lifespan=lifespan)
+from app.routers import (
+    address,
+    assets,
+    attendance,
+    auth,
+    gyms,
+    imports,
+    members,
+    onboarding,
+    organizations,
+    payments,
+    reports,
+    subscriptions,
+)
 
-# --- UNIFIED LOGGING ---
+# ─────────────────────────────────────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────────────────────────────────────
+
 LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        "default": {
-            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        },
+        "default": {"format": "%(asctime)s %(name)s %(levelname)s %(message)s"},
     },
-    "handlers": {
-        "console": {
-            "class": "logging.StreamHandler",
-            "formatter": "default",
-        },
-    },
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "default"}},
     "loggers": {
-        "doers": {
-            "handlers": ["console"],
-            "level": "INFO",
-            "propagate": False,
-        },
+        "doers": {"handlers": ["console"], "level": settings.LOG_LEVEL.upper(), "propagate": False},
     },
 }
 logging.config.dictConfig(LOGGING_CONFIG)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Lifespan
+# ─────────────────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_redis()
+    async with platform_lifespan():
+        yield
+    await close_redis()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Application
+# ─────────────────────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="Doers Gym SaaS",
+    version="2.0.0",
+    description="Enterprise multi-tenant fitness platform",
+    lifespan=lifespan,
+)
+
+# ── Exception handler ──────────────────────────────────────────────────────
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Something went wrong. Please try again."},
-    )
+    return JSONResponse(status_code=500, content={"detail": "An unexpected error occurred."})
 
+# ── Middleware (bottom = innermost, top = outermost for request flow) ──────
+# Registration order is reversed — last added is outermost.
 
-# Middlewares (Order matters: Bottom is Outermost, Top is Innermost)
 app.add_middleware(TenantMiddleware)
 app.add_middleware(IdempotencyMiddleware)
-app.add_middleware(RateLimitMiddleware)
+app.add_middleware(AdaptiveWriteThrottler)
+app.add_middleware(RedisRateLimiterMiddleware)
+app.add_middleware(OpenTelemetryTraceMiddleware)
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
-    allow_credentials=True,  # THIS MUST BE TRUE FOR COOKIES
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ── Static storage ─────────────────────────────────────────────────────────
 
-# Mount local file system storage directory under /static in development
 storage_dir = os.path.join(os.getcwd(), "storage", settings.S3_BUCKET_NAME)
 os.makedirs(storage_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=storage_dir), name="static")
 
-# Include routers
+# ── Routers ────────────────────────────────────────────────────────────────
+
 app.include_router(auth.router)
 app.include_router(gyms.router)
 app.include_router(members.router)
@@ -106,28 +141,46 @@ app.include_router(imports.router)
 app.include_router(onboarding.router)
 app.include_router(organizations.router)
 app.include_router(assets.router)
+app.include_router(address.router)
+app.include_router(address.org_address_router)
+app.include_router(address.member_address_router)
 
+# ── Health probe ──────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
-    return {"message": "Welcome to Doers Gym SaaS API"}
+    return {"message": "Doers SaaS API v2.0 — Enterprise Edition"}
+
+
+@app.get("/_system/preStop")
+async def system_pre_stop():
+    from app.core.drain import drain_coordinator
+    # Triggers draining sequence (readiness check will start failing, blocks until requests complete)
+    await drain_coordinator.trigger_drain()
+    return {"status": "drained"}
 
 
 @app.get("/health")
 async def health_check():
-    """
-    Liveness + readiness probe.
-    Checks DB connectivity (SELECT 1) and Redis ping.
-    Returns HTTP 503 if either dependency is unreachable.
-    """
     from sqlalchemy import text as sa_text
     from app.core.database import AsyncSessionLocal
     from app.core.redis import redis_client
+    from app.core.drain import drain_coordinator
 
-    db_ok = False
-    redis_ok = False
+    db_ok = redis_ok = False
 
-    # ── DB check ──
+    # Return degraded immediately if pod is draining
+    if not drain_coordinator.is_healthy:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "draining",
+                "db": False,
+                "redis": False,
+                "version": "2.0.0",
+            }
+        )
+
     try:
         async with AsyncSessionLocal() as session:
             await session.execute(sa_text("SELECT 1"))
@@ -135,21 +188,17 @@ async def health_check():
     except Exception:
         pass
 
-    # ── Redis check ──
     try:
-        pong = await redis_client.ping()
-        redis_ok = bool(pong)
+        redis_ok = bool(await redis_client.ping())
     except Exception:
         pass
 
     payload = {
-        "status": "healthy" if (db_ok and redis_ok) else "degraded",
-        "db": db_ok,
-        "redis": redis_ok,
-        "version": "1.0.0",
+        "status":  "healthy" if (db_ok and redis_ok) else "degraded",
+        "db":      db_ok,
+        "redis":   redis_ok,
+        "version": "2.0.0",
     }
-
     if not (db_ok and redis_ok):
         return JSONResponse(status_code=503, content=payload)
-
     return payload
