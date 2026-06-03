@@ -6,7 +6,8 @@ from fastapi import HTTPException, status
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
 from app.models.organization import Organization
 from app.models.gym import Gym, FacilityType
-from app.models.auth import Owner, RefreshToken
+from app.models.auth import Owner
+from app.models.auth_session import AuthSession, AuthSessionFamily
 from app.models.enums import StaffRole, OrgTier
 from app.schemas.auth import SignupRequest, LoginRequest, TokenResponse, RefreshRequest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -303,12 +304,22 @@ class AuthService:
 
         # 7. Store refresh token hash in DB
         rt_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-        db_rt = RefreshToken(
-            owner_id=owner.id,
-            token_hash=rt_hash,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=7)
+        
+        family = AuthSessionFamily(
+            org_id=owner.org_id,
+            user_id=owner.id
         )
-        self.session.add(db_rt)
+        self.session.add(family)
+        await self.session.flush()
+
+        auth_session = AuthSession(
+            user_id=owner.id,
+            org_id=owner.org_id,
+            token_family_id=family.id,
+            refresh_token_hash=rt_hash,
+            token_version_snapshot=1
+        )
+        self.session.add(auth_session)
         await self.session.commit()
 
         return TokenResponse(
@@ -321,19 +332,37 @@ class AuthService:
         """Implements refresh token rotation as per spec."""
         rt_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
 
-        q = select(RefreshToken).where(
-            RefreshToken.token_hash == rt_hash,
-            RefreshToken.is_revoked == False,
-            RefreshToken.expires_at > datetime.now(timezone.utc)
+        q = select(AuthSession).where(
+            AuthSession.refresh_token_hash == rt_hash,
+            AuthSession.revoked_at.is_(None)
         )
         result = await self.session.execute(q)
         db_rt = result.scalar_one_or_none()
 
         if not db_rt:
+            # Check for token reuse
+            q_any = select(AuthSession).where(AuthSession.refresh_token_hash == rt_hash)
+            result_any = await self.session.execute(q_any)
+            reused_session = result_any.scalar_one_or_none()
+            if reused_session:
+                q_family = select(AuthSessionFamily).where(AuthSessionFamily.id == reused_session.token_family_id)
+                res_fam = await self.session.execute(q_family)
+                family = res_fam.scalar_one()
+                family.revoked_at = datetime.now(timezone.utc)
+                reused_session.reuse_detected_at = datetime.now(timezone.utc)
+                await self.session.commit()
+                raise HTTPException(status_code=401, detail="Session compromised. Please login again.")
+                
             raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
+        q_family = select(AuthSessionFamily).where(AuthSessionFamily.id == db_rt.token_family_id)
+        res_fam = await self.session.execute(q_family)
+        family = res_fam.scalar_one()
+        if family.revoked_at:
+             raise HTTPException(status_code=401, detail="Session revoked")
+
         # Get owner data for new access token
-        q_owner = select(Owner).where(Owner.id == db_rt.owner_id)
+        q_owner = select(Owner).where(Owner.id == db_rt.user_id)
         owner_result = await self.session.execute(q_owner)
         owner = owner_result.scalar_one_or_none()
 
@@ -347,13 +376,19 @@ class AuthService:
 
         # FIX: same pattern — use begin_nested() since SELECT above opened a transaction
         async with self.session.begin_nested():
-            db_rt.is_revoked = True
-            new_db_rt = RefreshToken(
-                owner_id=owner.id,
-                token_hash=new_rt_hash,
-                expires_at=datetime.now(timezone.utc) + timedelta(days=7)
+            db_rt.revoked_at = datetime.now(timezone.utc)
+            
+            new_db_rt = AuthSession(
+                user_id=owner.id,
+                org_id=owner.org_id,
+                token_family_id=family.id,
+                parent_session_id=db_rt.id,
+                refresh_token_hash=new_rt_hash,
+                token_version_snapshot=db_rt.token_version_snapshot + 1
             )
             self.session.add(new_db_rt)
+            await self.session.flush()
+            db_rt.replaced_by_session_id = new_db_rt.id
 
         await self.session.commit()
 

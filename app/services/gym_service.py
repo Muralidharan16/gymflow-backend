@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import List, Optional
 from uuid import UUID
 
@@ -95,12 +96,11 @@ class GymService:
         gym = Gym(
             org_id=org_id,
             name=data.name,
+            gymu_id=data.internal_code or f"BR-{str(uuid.uuid4())[:6].upper()}",
             address=data.address,
             city=data.city,
             phone=data.phone,
-            is_active=True,
-            created_by=created_by,
-            updated_by=created_by
+            is_active=True
         )
         return await self.gym_repo.create(gym)
 
@@ -137,8 +137,6 @@ class GymService:
             gym.city = data.city
         if data.phone is not None:
             gym.phone = data.phone
-        
-        gym.updated_by = updated_by
         
         return await self.gym_repo.update(gym)
 
@@ -199,8 +197,7 @@ class GymService:
             gst_rate=data.gst_rate,
             sac_code=data.sac_code,
             filing_frequency=data.filing_frequency,
-            is_active=True,
-            updated_by=created_by
+            is_active=True
         )
         return await self.gym_repo.create_tax_config(config)
 

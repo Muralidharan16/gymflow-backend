@@ -48,6 +48,10 @@ from app.routers import (
     assets,
     attendance,
     auth,
+    branch_contacts,
+    branch_lifecycle,
+    branch_operating_hours,
+    geo,
     gyms,
     imports,
     members,
@@ -55,8 +59,10 @@ from app.routers import (
     organizations,
     payments,
     reports,
+    staff_roles,
     subscriptions,
 )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -131,6 +137,7 @@ app.mount("/static", StaticFiles(directory=storage_dir), name="static")
 # ── Routers ────────────────────────────────────────────────────────────────
 
 app.include_router(auth.router)
+app.include_router(branch_contacts.router)
 app.include_router(gyms.router)
 app.include_router(members.router)
 app.include_router(subscriptions.router)
@@ -144,6 +151,11 @@ app.include_router(assets.router)
 app.include_router(address.router)
 app.include_router(address.org_address_router)
 app.include_router(address.member_address_router)
+app.include_router(staff_roles.router)
+app.include_router(branch_operating_hours.router)
+app.include_router(branch_lifecycle.router)
+app.include_router(geo.router)
+
 
 # ── Health probe ──────────────────────────────────────────────────────────
 

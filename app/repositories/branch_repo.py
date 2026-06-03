@@ -7,7 +7,7 @@ from sqlalchemy import select, update as sql_update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.org_branch import OrgBranch, OrgBranchState, ActiveOrgBranch, BranchAuditLog
+from app.models.org_branch import OrgBranch, OrgBranchState, ActiveOrgBranch
 
 
 class BranchRepository:
@@ -65,13 +65,7 @@ class BranchRepository:
         await self.session.flush()
         return branch
 
-    async def save_audit_log(self, audit_log: BranchAuditLog) -> BranchAuditLog:
-        """
-        Persists a branch audit log row.
-        """
-        self.session.add(audit_log)
-        await self.session.flush()
-        return audit_log
+
 
     async def soft_delete(self, branch_id: UUID, org_id: UUID, actor_id: UUID, reason: str) -> bool:
         """
@@ -94,17 +88,11 @@ class BranchRepository:
         state.deleted_at = datetime.now(timezone.utc)
         state.branch_status = "pending_deletion"
         state.is_active = False
+        state.status = "permanently_closed"
+        state.status_reason = reason
+        state.status_changed_by = None
 
-        # Add audit trail entry within the same transaction context
-        audit_log = BranchAuditLog(
-            branch_id=branch_id,
-            org_id=org_id,
-            actor_id=actor_id,
-            action="soft_deleted",
-            reason=reason,
-            diff={"status": "pending_deletion", "is_active": False}
-        )
-        self.session.add(audit_log)
+        # Audit trail must now be handled via AuditService by the caller.
         
         await self.session.flush()
         return True

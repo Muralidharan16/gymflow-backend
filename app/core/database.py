@@ -48,6 +48,8 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
+async_session_maker = AsyncSessionLocal
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Session context initializer

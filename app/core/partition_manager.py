@@ -30,6 +30,7 @@ logger = logging.getLogger("doers.partition_manager")
 _MANAGED_TABLES = frozenset({
     "event_outbox",
     "idempotency_store",
+    "auth_sessions",
 })
 
 # Partition name pattern — strictly validated before any DDL

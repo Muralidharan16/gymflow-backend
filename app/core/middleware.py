@@ -356,6 +356,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
         request.state.org_id   = payload.get("org_id")
         request.state.gym_id   = payload.get("gym_id")
         request.state.role     = payload.get("role")
+        request.state.branch_ids = payload.get("branch_ids", [])
 
         return await call_next(request)
 

@@ -1,30 +1,34 @@
 # app/routers/onboarding.py
 from typing import Optional
-from fastapi import APIRouter, Depends, Request, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.database import get_db
-from app.core.security import decode_token
-from app.schemas.onboarding import (
-    OnboardingCompleteRequest, 
-    PincodeLookupResponse, 
-    OnboardingStatusResponse
-)
-from app.services.onboarding_service import OnboardingService
-from app.services.pincode_service import PincodeService
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError
-from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.core.redis import redis_client
+from app.core.security import decode_token
+from app.repositories.geo_repository import GeoRepository
+from app.schemas.onboarding import (
+    OnboardingCompleteRequest,
+    OnboardingStatusResponse,
+    PincodeLookupResponse,
+)
+from app.services.geo_service import GeoService
+from app.services.onboarding_service import OnboardingService
 
 router = APIRouter(prefix="/onboarding", tags=["Onboarding"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
 
-async def get_current_owner_id(request: Request, token: Optional[str] = Depends(oauth2_scheme)) -> str:
+
+async def get_current_owner_id(
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme),
+) -> str:
     if not token:
         token = request.cookies.get("access_token")
-    
     if not token:
         raise HTTPException(status_code=401, detail="Authentication required")
-        
     try:
         payload = decode_token(token)
         owner_id = payload.get("sub")
@@ -34,39 +38,62 @@ async def get_current_owner_id(request: Request, token: Optional[str] = Depends(
     except Exception:
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 
+
 @router.get("/pincode/{pincode}", response_model=PincodeLookupResponse)
-async def pincode_lookup(pincode: str):
+async def pincode_lookup(
+    pincode: str,
+    country: str = Query(default="IN", min_length=2, max_length=2),
+    db: AsyncSession = Depends(get_db),
+):
     """
-    Look up address details by 6-digit Indian pincode.
+    Look up city and state by pincode using the self-hosted geo database.
+    No external API calls. Supports multiple countries via ?country= param.
+    Default country: IN (India).
+    Returns 404 if pincode not found — caller should allow manual city/state entry.
     """
-    service = PincodeService()
-    return await service.lookup(pincode)
+    repo = GeoRepository(db)
+    service = GeoService(repo, redis_client)
+    results = await service.lookup_postal_code(country.upper(), pincode)
+
+    if not results:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Pincode {pincode} not found. Please enter city and state manually.",
+        )
+
+    first = results[0]
+    return PincodeLookupResponse(
+        city=first.city_name,
+        state=first.subdivision_name,
+        district=first.city_name,
+    )
+
 
 @router.post("/complete", status_code=status.HTTP_200_OK)
 async def complete_onboarding(
     request: Request,
     data: OnboardingCompleteRequest,
     db: AsyncSession = Depends(get_db),
-    owner_id: str = Depends(get_current_owner_id)
+    owner_id: str = Depends(get_current_owner_id),
 ):
     """
     Submit onboarding details to activate the account and start the free trial.
     """
     service = OnboardingService(db)
-    ip_address = request.client.host
+    ip_address = request.client.host if request.client else "127.0.0.1"
     user_agent = request.headers.get("user-agent", "")
-    
     return await service.complete_onboarding(
-        owner_id=owner_id, 
-        data=data, 
-        ip_address=ip_address, 
-        user_agent=user_agent
+        owner_id=owner_id,
+        data=data,
+        ip_address=ip_address,
+        user_agent=user_agent,
     )
+
 
 @router.get("/status", response_model=OnboardingStatusResponse)
 async def get_onboarding_status(
     db: AsyncSession = Depends(get_db),
-    owner_id: str = Depends(get_current_owner_id)
+    owner_id: str = Depends(get_current_owner_id),
 ):
     """
     Retrieve current onboarding and trial status.

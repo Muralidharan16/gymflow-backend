@@ -8,7 +8,8 @@ from sqlalchemy.exc import DBAPIError, InternalError
 from app.models.organization import Organization
 from app.models.staff import GymOwner
 from app.models.enums import StaffRole
-from app.models.org_branch import OrgBranch, OrgBranchState, ActiveOrgBranch, BranchAuditLog
+from app.models.org_branch import OrgBranch, OrgBranchState, ActiveOrgBranch
+from app.models.branch_audit import BranchAuditLog
 from app.repositories.branch_repo import BranchRepository
 from app.core.database import AsyncSessionLocal
 
@@ -96,7 +97,7 @@ async def test_setup():
     async with AsyncSessionLocal() as clean_session:
         # Ensure role is reset to superuser before running cleanup commands
         await clean_session.execute(text("RESET ROLE"))
-        await clean_session.execute(text("DELETE FROM branch_audit_log WHERE org_id = :oid"), {"oid": org_id})
+        await clean_session.execute(text("TRUNCATE TABLE branch_audit_log CASCADE;"))
         await clean_session.execute(text("DELETE FROM org_branch_state WHERE org_id = :oid"), {"oid": org_id})
         await clean_session.execute(text("DELETE FROM org_branches WHERE org_id = :oid"), {"oid": org_id})
         await clean_session.execute(text("DELETE FROM gym_owners WHERE org_id = :oid"), {"oid": org_id})

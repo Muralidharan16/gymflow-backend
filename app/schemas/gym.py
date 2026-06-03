@@ -26,6 +26,7 @@ class TaxConfigResponse(BaseModel):
 
 class GymBase(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
+    internal_code: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
     phone: Optional[str] = None
@@ -33,8 +34,11 @@ class GymBase(BaseModel):
 class GymCreate(GymBase):
     pass
 
-class GymUpdate(GymBase):
-    name: Optional[str] = None
+class GymUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=100)
+    address: Optional[str] = None
+    city: Optional[str] = None
+    phone: Optional[str] = None
 
 class GymResponse(GymBase):
     id: uuid.UUID

@@ -36,7 +36,7 @@ def set_auth_cookies(response: FastApiResponse, tokens: TokenResponse):
 @router.post("/signup")
 async def signup(request: Request, data: SignupRequest, db: AsyncSession = Depends(get_db)):
     service = AuthService(db)
-    client_ip = request.client.host
+    client_ip = request.client.host if request.client else "127.0.0.1"
     result = await service.signup(data, client_ip)
     return result
 
@@ -56,17 +56,27 @@ async def verify(token: str, db: AsyncSession = Depends(get_db)):
     from app.core.security import create_access_token, create_refresh_token
     import hashlib
     from datetime import datetime, timezone, timedelta
-    from app.models.auth import RefreshToken
+    from app.models.auth_session import AuthSession, AuthSessionFamily
 
     access_token = create_access_token(owner.id, org.id, owner.email)
     refresh_token = create_refresh_token(owner.id)
     
     # Store refresh token
     rt_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-    db_rt = RefreshToken(
-        owner_id=owner.id,
-        token_hash=rt_hash,
-        expires_at=datetime.now(timezone.utc) + timedelta(days=7)
+    
+    family = AuthSessionFamily(
+        org_id=org.id,
+        user_id=owner.id
+    )
+    db.add(family)
+    await db.flush()
+
+    db_rt = AuthSession(
+        user_id=owner.id,
+        org_id=org.id,
+        token_family_id=family.id,
+        refresh_token_hash=rt_hash,
+        token_version_snapshot=1
     )
     db.add(db_rt)
     await db.commit()
@@ -79,7 +89,10 @@ async def verify(token: str, db: AsyncSession = Depends(get_db)):
     sync_data = {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "onboarding_completed": owner.onboarding_completed
+        "onboarding_completed": owner.onboarding_completed,
+        "sub": str(owner.id),
+        "name": owner.owner_name,
+        "organizationName": org.name if org else "Studio Owner"
     }
     await redis_utils.client.setex(f"signup:sync:{owner.email}", 300, json.dumps(sync_data))
     
@@ -109,7 +122,11 @@ async def get_signup_status(email: str, response: FastApiResponse):
     sync_data = json.loads(sync_data_raw)
     
     # Auto-login the Laptop by setting cookies
-    set_auth_cookies(response, TokenResponse(**sync_data))
+    set_auth_cookies(response, TokenResponse(
+        access_token=sync_data["access_token"],
+        refresh_token=sync_data["refresh_token"],
+        onboarding_completed=sync_data["onboarding_completed"]
+    ))
     
     # One-time pick-up: delete the sync flag
     await redis_utils.client.delete(f"signup:sync:{email}")
@@ -122,7 +139,8 @@ async def get_signup_status(email: str, response: FastApiResponse):
         "user": {
             "email": email,
             "id": sync_data.get("sub"),
-            "name": sync_data.get("name")
+            "name": sync_data.get("name"),
+            "organizationName": sync_data.get("organizationName")
         }
     }
 
@@ -144,13 +162,19 @@ async def login(response: FastApiResponse, data: LoginRequest, db: AsyncSession 
     result = await db.execute(select(Owner).where(Owner.email == data.email))
     owner = result.scalar_one()
 
+    from app.models.organization import Organization
+    org_result = await db.execute(select(Organization).where(Organization.id == owner.org_id))
+    org = org_result.scalar_one_or_none()
+    org_name = org.name if org else "Studio Owner"
+
     set_auth_cookies(response, tokens)
     
     return {
         "user": {
             "id": str(owner.id),
             "email": owner.email,
-            "name": owner.owner_name
+            "name": owner.owner_name,
+            "organizationName": org_name
         },
         "access_token": tokens.access_token,
         "refresh_token": tokens.refresh_token,
@@ -176,3 +200,28 @@ async def refresh(request: Request, response: FastApiResponse, db: AsyncSession 
     tokens = await service.refresh_token(refresh_token)
     set_auth_cookies(response, tokens)
     return {"status": "success", "message": "Token refreshed"}
+
+from app.core.deps import get_current_active_staff, Staff
+
+@router.get("/me")
+async def get_me(
+    current_staff: Staff = Depends(get_current_active_staff),
+    db: AsyncSession = Depends(get_db)
+):
+    # Fetch owner details
+    result = await db.execute(select(Owner).where(Owner.id == current_staff.id))
+    owner = result.scalar_one_or_none()
+    if not owner:
+        raise HTTPException(status_code=404, detail="Owner not found")
+        
+    from app.models.organization import Organization
+    org_result = await db.execute(select(Organization).where(Organization.id == owner.org_id))
+    org = org_result.scalar_one_or_none()
+    org_name = org.name if org else "Studio Owner"
+    
+    return {
+        "id": str(owner.id),
+        "email": owner.email,
+        "name": owner.owner_name,
+        "organizationName": org_name
+    }

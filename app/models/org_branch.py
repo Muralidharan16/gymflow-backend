@@ -102,6 +102,30 @@ class OrgBranchState(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("TRUE"), default=True, nullable=False)
     is_public: Mapped[bool] = mapped_column(Boolean, server_default=text("TRUE"), default=True, nullable=False)
     
+    # Branch Lifecycle Control Plane (v18.0) additions
+    status: Mapped[str] = mapped_column(String, server_default=text("'active'"), default="active", nullable=False)
+    is_operational: Mapped[bool] = mapped_column(Boolean, server_default=text("TRUE"), default=True, nullable=False)
+    status_changed_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("clock_timestamp()"), nullable=False)
+    status_changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    status_reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    transition_source: Mapped[str] = mapped_column(String(50), server_default=text("'api'"), default="api", nullable=False)
+    scheduled_transition_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    scheduled_transition_to: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    lifecycle_transition_in_progress: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), default=False, nullable=False)
+    saga_last_checkpoint: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    saga_compensation_strategy: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    watchdog_recovered_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    watchdog_recovery_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    search_visibility_version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    search_last_synced_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    search_sync_failed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    reconciliation_claimed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    reconciliation_claimed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    worm_archive_uri: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    worm_archive_checksum: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    worm_archive_verified_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    worm_archive_status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    
     version: Mapped[int] = mapped_column(BigInteger, server_default=text("1"), default=1, nullable=False)
     search_logical_clock: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), default=0, nullable=False)
     search_epoch_ulid: Mapped[str] = mapped_column(String(26), nullable=False)
@@ -129,37 +153,7 @@ class OrgBranchState(Base):
     )
 
 
-class BranchAuditLog(Base):
-    __tablename__ = "branch_audit_log"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=new_uuid
-    )
-    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    actor_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        nullable=False
-    )
-    action: Mapped[str] = mapped_column(String, nullable=False)
-    reason: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    diff: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False
-    )
-
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["branch_id", "org_id"],
-            ["org_branches.id", "org_branches.org_id"],
-            name="fk_audit_branch"
-        ),
-        CheckConstraint(
-            "action NOT IN ('soft_deleted', 'archived', 'purged') OR "
-            "(reason IS NOT NULL AND length(trim(reason)) >= 5)",
-            name="chk_reason_on_destructive"
-        ),
-    )
 
 
 class ActiveOrgBranch(Base):

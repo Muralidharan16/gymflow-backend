@@ -30,6 +30,26 @@ app.conf.update(
             "task": "app.tasks.logos.cleanup_orphaned_logos",
             "schedule": crontab(minute=0, hour="*/6"),
         },
+        "provision-audit-partition": {
+            "task": "app.tasks.branch_hours_partition.run",
+            "schedule": crontab(day_of_month="25", hour=2, minute=0),
+        },
+        "poll-outbox": {
+            "task": "app.tasks.outbox_poller.run",
+            "schedule": crontab(minute="*"),
+        },
+        "poll-branch-outbox": {
+            "task": "app.tasks.branch_outbox_poller.run",
+            "schedule": crontab(minute="*"),
+        },
+        "watchdog-sweep": {
+            "task": "app.tasks.branch_lifecycle_sweeps.watchdog",
+            "schedule": crontab(minute="*/5"),
+        },
+        "reconciliation-sweep": {
+            "task": "app.tasks.branch_lifecycle_sweeps.reconciliation",
+            "schedule": crontab(minute="*/15"),
+        },
     },
 )
 

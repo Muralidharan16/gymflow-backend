@@ -81,9 +81,9 @@ class OnboardingService:
                 owner.onboarding_completed = True
                 owner.onboarding_completed_at = datetime.now(timezone.utc)
 
-                # c. Initialize Free Trial (Asia/Kolkata)
-                now_ist = datetime.now(IST)
-                trial_start = now_ist
+                # c. Initialize Free Trial — UTC canonical timestamps
+                now_utc = datetime.now(timezone.utc)
+                trial_start = now_utc
                 trial_end = trial_start + timedelta(days=7)
                 grace_end = trial_start + timedelta(days=10)
                 hard_lock_at = trial_start + timedelta(days=11)
@@ -98,7 +98,140 @@ class OnboardingService:
                 )
                 self.session.add(trial)
 
-                # d. Audit Log
+                # e. Auto-Create First Principal Branch
+                from app.models.org_branch import OrgBranch, OrgBranchState
+                from app.models.address import OrganizationAddress
+                from app.models.gym import Gym
+                import uuid
+                import time
+                
+                branch_id = uuid.uuid4()
+                
+                branch = OrgBranch(
+                    id=branch_id,
+                    org_id=org.id,
+                    branch_name=f"{org.name} Principal",
+                    branch_code="PRNC-01",
+                    internal_slug=f"{org.name.lower().replace(' ', '-')}-principal",
+                    timezone="Asia/Kolkata",
+                    currency_code="INR",
+                    country_code="IN",
+                    address_id=None,
+                    created_by=owner.id
+                )
+                self.session.add(branch)
+                await self.session.flush() # Persist branch to satisfy FK check on address
+
+                # Create the OrganizationAddress record referencing branch_id
+                org_address = OrganizationAddress(
+                    org_id=org.id,
+                    branch_id=branch_id,
+                    address_type="physical",
+                    address_line1=f"enc:{data.address_line1}",
+                    address_line2=data.address_line2,
+                    city=data.city,
+                    state_province=data.state,
+                    postal_code=data.pincode,
+                    country_code="IN",
+                    is_primary=True,
+                    effective_from=datetime.now(timezone.utc)
+                )
+                self.session.add(org_address)
+                await self.session.flush() # Persist address to get org_address.id
+
+                # Link address_id back to branch
+                branch.address_id = org_address.id
+
+                # Set transaction-local GUCs consumed by RLS and audit triggers
+                from sqlalchemy import text
+                await self.session.execute(
+                    text("SELECT pg_catalog.set_config('app.current_org_id', :org_id, true)"),
+                    {"org_id": str(org.id)}
+                )
+                await self.session.execute(
+                    text("SELECT pg_catalog.set_config('app.current_user_id', :user_id, true)"),
+                    {"user_id": str(owner.id)}
+                )
+
+                # Create real contacts in branch_contacts table
+                from app.schemas.branch_contacts import BranchContactORM, ContactKind, VisibilityScope, normalize_phone, normalize_email
+
+                try:
+                    phone_e164, normalized_digits, display_format = normalize_phone(data.phone, "IN")
+                except Exception:
+                    phone_e164, normalized_digits, display_format = f"+91{data.phone}", data.phone, data.phone
+
+                phone_contact = BranchContactORM(
+                    id=uuid.uuid4(),
+                    org_id=org.id,
+                    branch_id=branch_id,
+                    contact_kind=ContactKind.PHONE,
+                    phone_e164=phone_e164,
+                    normalized_digits=normalized_digits,
+                    display_format=display_format,
+                    country_code="IN",
+                    contact_label="Main",
+                    visibility_scope=VisibilityScope.PUBLIC,
+                    channel_capabilities={"whatsapp": True, "sms": True, "voice": True, "fax": False},
+                    is_primary=True,
+                    is_active=True,
+                    created_at=datetime.now(timezone.utc),
+                    created_by=owner.id,
+                    updated_at=datetime.now(timezone.utc)
+                )
+
+                try:
+                    email_raw, email_normalized = normalize_email(owner.email)
+                except Exception:
+                    email_raw, email_normalized = owner.email, owner.email.lower()
+
+                email_contact = BranchContactORM(
+                    id=uuid.uuid4(),
+                    org_id=org.id,
+                    branch_id=branch_id,
+                    contact_kind=ContactKind.EMAIL,
+                    email_raw=email_raw,
+                    email_normalized=email_normalized,
+                    contact_label="Main",
+                    visibility_scope=VisibilityScope.PUBLIC,
+                    channel_capabilities={"whatsapp": False, "sms": False, "voice": False, "fax": False},
+                    is_primary=True,
+                    is_active=True,
+                    created_at=datetime.now(timezone.utc),
+                    created_by=owner.id,
+                    updated_at=datetime.now(timezone.utc)
+                )
+
+                self.session.add(phone_contact)
+                self.session.add(email_contact)
+
+                # Mock ULID for search_epoch_ulid (26 chars)
+                mock_ulid = str(uuid.uuid4()).replace("-", "").upper()[:26]
+                
+                branch_state = OrgBranchState(
+                    branch_id=branch_id,
+                    org_id=org.id,
+                    branch_status="active",
+                    is_primary=True,
+                    is_active=True,
+                    is_public=True,
+                    status="active",
+                    is_operational=True,
+                    search_epoch_ulid=mock_ulid
+                )
+                
+                self.session.add(branch_state)
+
+                # Sync with the legacy Gym record so the UI branch selector can list it with address
+                gym_q = select(Gym).where(Gym.org_id == org.id)
+                gym_res = await self.session.execute(gym_q)
+                gym = gym_res.scalar_one_or_none()
+                if gym:
+                    gym.address = f"{data.address_line1}, {data.address_line2}" if data.address_line2 else data.address_line1
+                    gym.city = data.city
+                    gym.phone = data.phone
+
+                # f. Audit Log
                 audit = AuditLog(
                     user_id=owner.id,
                     organization_id=org.id,
@@ -144,7 +277,8 @@ class OnboardingService:
         trial_result = await self.session.execute(trial_q)
         trial = trial_result.scalar_one_or_none()
 
-        now_ist = datetime.now(IST)
+        now_utc = datetime.now(timezone.utc)
+        now_ist = now_utc.astimezone(IST)  # display-only conversion — not a canonical write
         days_remaining = 0
         if trial:
             days_remaining = max(0, (trial.trial_end.astimezone(IST).date() - now_ist.date()).days)

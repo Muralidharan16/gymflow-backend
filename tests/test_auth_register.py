@@ -14,7 +14,8 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.main import app
-from app.models.auth import Owner, RefreshToken
+from app.models.auth import Owner
+from app.models.auth_session import AuthSession, AuthSessionFamily
 from app.models.gym import Gym
 from app.models.organization import Organization
 from app.core.database import AsyncSessionLocal, get_db
@@ -45,8 +46,12 @@ async def cleanup_database_and_redis():
         res = await session.execute(stmt)
         org_ids = res.scalars().all()
         
-        # Delete refresh tokens
-        await session.execute(delete(RefreshToken).where(RefreshToken.owner_id.in_(
+        # Delete auth sessions and families
+        await session.execute(delete(AuthSession).where(AuthSession.user_id.in_(
+            select(Owner.id).where(Owner.email.in_(test_emails))
+        )))
+        
+        await session.execute(delete(AuthSessionFamily).where(AuthSessionFamily.user_id.in_(
             select(Owner.id).where(Owner.email.in_(test_emails))
         )))
         

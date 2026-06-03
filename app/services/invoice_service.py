@@ -231,7 +231,7 @@ class InvoiceService:
             tax_amount=invoice.total_tax,
             total_amount=invoice.total_amount,
             invoice_type="tax_invoice" if invoice.gst_percentage > 0 else "bill_of_supply",
-            issued_at=invoice.payment_date.strftime("%Y-%m-%d %H:%M:%S") if invoice.payment_date else datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            issued_at=invoice.payment_date.strftime("%Y-%m-%d %H:%M:%S") if invoice.payment_date else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             gst_number=getattr(invoice.gym, "gst_number", None),
             sac_code="996319"
         )

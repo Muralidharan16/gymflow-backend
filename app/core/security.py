@@ -35,7 +35,7 @@ SECURITY_POLICY = {
     "address_exclusion": "Addresses are never serialized into tokens. Address data is always fetched fresh from DB per request via RLS-scoped session."
 }
 
-def create_access_token(owner_id: str, org_id: str, email: str, role: str = "owner") -> str:
+def create_access_token(owner_id: str, org_id: str, email: str, role: str = "owner", branch_ids: list[str] = None) -> str:
 
     """
     Create JWT access token as per spec.
@@ -45,6 +45,7 @@ def create_access_token(owner_id: str, org_id: str, email: str, role: str = "own
         "org_id": str(org_id),
         "email": email,
         "role": role,
+        "branch_ids": branch_ids or [],
         "type": "access",
         "jti": str(uuid.uuid4()),
         "exp": datetime.now(timezone.utc) + timedelta(minutes=15)
