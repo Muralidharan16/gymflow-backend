@@ -90,6 +90,17 @@ class ChannelCapabilities(BaseModel):
         serialization_alias="fax",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def parse_json_string(cls, data):
+        if isinstance(data, str):
+            import json
+            try:
+                return json.loads(data)
+            except json.JSONDecodeError:
+                pass
+        return data
+
     @field_validator(
         "whatsapp_enabled", "sms_enabled", "voice_enabled", "fax_enabled",
         mode="before"
@@ -99,10 +110,13 @@ class ChannelCapabilities(BaseModel):
         if v is None:
             return False
         if not isinstance(v, bool):
+            # Also handle string 'true'/'false' if parsed weirdly
+            if isinstance(v, str):
+                return v.lower() == 'true'
             raise ValueError("Channel capabilities must be boolean")
         return v
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 class BranchContactBase(BaseModel):
@@ -280,6 +294,17 @@ class BranchContactAuditEvent(BaseModel):
     user_agent: Optional[str] = None
     change_reason: Optional[str] = None
 
+    @field_validator("changed_fields", mode="before")
+    @classmethod
+    def parse_changed_fields(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            import json
+            try:
+                return json.loads(v)
+            except Exception:
+                pass
+        return v
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -311,7 +336,7 @@ def normalize_phone(
     try:
         # Parse with country code hint if provided. A non-E.164 national number
         # cannot be parsed without a region, so default to US for legacy callers.
-        parse_region = country_code or (None if phone_number.strip().startswith("+") else "US")
+        parse_region = country_code or (None if phone_number.strip().startswith("+") else "IN")
         parsed = phonenumbers.parse(phone_number, parse_region)
         
         # Validate
@@ -405,7 +430,7 @@ class BranchContactORM(Base):
     __tablename__ = "branch_contacts"
     __table_args__ = {"schema": "public"}
     
-    id = Column(SQLAlchemyUUID(as_uuid=True), primary_key=True)
+    id = Column(SQLAlchemyUUID(as_uuid=True), primary_key=True, server_default=FetchedValue())
     org_id = Column(SQLAlchemyUUID(as_uuid=True), nullable=False, index=True)
     branch_id = Column(SQLAlchemyUUID(as_uuid=True), nullable=False, index=True)
     
@@ -457,9 +482,9 @@ class BranchContactORM(Base):
         )
     )
     
-    created_at = Column(TIMESTAMP(timezone=True))
+    created_at = Column(TIMESTAMP(timezone=True), server_default=FetchedValue())
     created_by = Column(SQLAlchemyUUID(as_uuid=True))
-    updated_at = Column(TIMESTAMP(timezone=True))
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=FetchedValue())
     updated_by = Column(SQLAlchemyUUID(as_uuid=True))
     deleted_at = Column(TIMESTAMP(timezone=True))
     deleted_by = Column(SQLAlchemyUUID(as_uuid=True))

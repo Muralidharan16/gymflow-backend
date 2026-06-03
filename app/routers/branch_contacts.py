@@ -90,6 +90,8 @@ async def validate_branch_ownership(
     
     Prevents cross-org branch-contact injection attacks.
     """
+    await set_session_context(session, org_id=current_org_id)
+    
     stmt = select(OrgBranchORM).where(
         and_(
             OrgBranchORM.id == branch_id,
@@ -137,8 +139,8 @@ async def create_contact(
     branch_id: UUID = Path(...),
     current_user_id: UUID = Depends(get_current_user),
     current_org_id: UUID = Depends(get_current_org_id),
-    request_id: UUID = Header(..., alias="X-Request-ID"),
-    ip_address: str = Header(..., alias="X-Forwarded-For"),
+    request_id: Optional[UUID] = Header(None, alias="X-Request-ID"),
+    ip_address: Optional[str] = Header(None, alias="X-Forwarded-For"),
     user_agent: Optional[str] = Header(None),
     branch: OrgBranchORM = Depends(validate_branch_ownership),
     session: AsyncSession = Depends(get_db_session),
@@ -161,7 +163,7 @@ async def create_contact(
                 phone_e164=phone_e164,
                 normalized_digits=normalized_digits,
                 display_format=display_format or contact.display_format,
-                country_code=contact.country_code or "US",  # Auto-detected
+                country_code=contact.country_code or "IN",  # Auto-detected
                 contact_label=contact.contact_label,
                 visibility_scope=contact.visibility_scope,
                 channel_capabilities=contact.channel_capabilities.model_dump(by_alias=True),
@@ -295,6 +297,8 @@ async def get_contact(
     session: AsyncSession = Depends(get_db_session),
 ):
     """Get a single contact by ID"""
+    await set_session_context(session, org_id=current_org_id)
+    
     stmt = select(BranchContactORM).where(
         and_(
             BranchContactORM.id == contact_id,
@@ -348,12 +352,14 @@ async def update_contact(
     contact_id: UUID = Path(...),
     current_user_id: UUID = Depends(get_current_user),
     current_org_id: UUID = Depends(get_current_org_id),
-    request_id: UUID = Header(..., alias="X-Request-ID"),
+    request_id: Optional[UUID] = Header(None, alias="X-Request-ID"),
     branch: OrgBranchORM = Depends(validate_branch_ownership),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Update contact with normalization + retry logic"""
     try:
+        await set_session_context(session, org_id=current_org_id)
+        
         stmt = select(BranchContactORM).where(
             and_(
                 BranchContactORM.id == contact_id,
@@ -438,11 +444,13 @@ async def delete_contact(
     contact_id: UUID = Path(...),
     current_user_id: UUID = Depends(get_current_user),
     current_org_id: UUID = Depends(get_current_org_id),
-    request_id: UUID = Header(..., alias="X-Request-ID"),
+    request_id: Optional[UUID] = Header(None, alias="X-Request-ID"),
     branch: OrgBranchORM = Depends(validate_branch_ownership),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Soft-delete contact"""
+    await set_session_context(session, org_id=current_org_id)
+    
     stmt = select(BranchContactORM).where(
         and_(
             BranchContactORM.id == contact_id,
@@ -506,7 +514,7 @@ async def promote_to_primary(
     contact_id: UUID = Path(...),
     current_user_id: UUID = Depends(get_current_user),
     current_org_id: UUID = Depends(get_current_org_id),
-    request_id: UUID = Header(..., alias="X-Request-ID"),
+    request_id: Optional[UUID] = Header(None, alias="X-Request-ID"),
     branch: OrgBranchORM = Depends(validate_branch_ownership),
     session: AsyncSession = Depends(get_db_session),
 ):
@@ -516,6 +524,8 @@ async def promote_to_primary(
     Uses hashtextextended() advisory lock on branch_id for deterministic
     lock ordering and deadlock prevention.
     """
+    await set_session_context(session, org_id=current_org_id)
+    
     stmt = select(BranchContactORM).where(
         and_(
             BranchContactORM.id == contact_id,
@@ -557,24 +567,30 @@ async def promote_to_primary(
                 {"branch_id": str(branch_id)},
             )
             
-            # Demote current primary (if exists)
+            # Demote current primary and promote new primary in a SINGLE statement
+            # to prevent statement-level DB triggers from auto-promoting during intermediate states
             await session.execute(
                 text("""
                     UPDATE public.branch_contacts
-                    SET is_primary = FALSE
+                    SET 
+                        is_primary = CASE WHEN id = :contact_id THEN TRUE ELSE FALSE END,
+                        is_active = CASE WHEN id = :contact_id THEN TRUE ELSE is_active END
                     WHERE branch_id = :branch_id
                       AND contact_kind = CAST(:contact_kind AS public.contact_kind_enum)
-                      AND is_primary = TRUE
+                      AND (is_primary = TRUE OR id = :contact_id)
                       AND deleted_at IS NULL;
                 """),
-                {"branch_id": branch_id, "contact_kind": req.contact_kind.value},
+                {
+                    "branch_id": str(branch_id), 
+                    "contact_kind": req.contact_kind.value,
+                    "contact_id": str(contact_id)
+                },
             )
             
-            # Promote specified contact
+            # Update local object for response
             contact.is_primary = True
-            contact.is_active = True  # Ensure active
+            contact.is_active = True
             
-            await session.merge(contact)
             await session.commit()
         
         return BranchContactResponse.model_validate(contact)
@@ -608,6 +624,17 @@ async def get_audit_trail(
     Includes: who changed it, when, what changed, why (if provided).
     """
     await set_session_context(session, org_id=current_org_id)
+    
+    # Verify contact belongs to this branch and org
+    contact_stmt = select(BranchContactORM).where(
+        and_(
+            BranchContactORM.id == contact_id,
+            BranchContactORM.branch_id == branch_id,
+            BranchContactORM.org_id == current_org_id,
+        )
+    )
+    if not await session.scalar(contact_stmt):
+        raise HTTPException(status_code=404, detail="Contact not found in this branch")
 
     stmt = select(BranchContactAuditORM).where(
         and_(

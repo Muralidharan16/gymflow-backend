@@ -51,11 +51,11 @@ class TestPhoneNormalization:
         assert phone_e164 == "+919876543210"
         assert digits == "9876543210"
 
-    def test_auto_detect_us_from_10_digit(self):
-        """Auto-detect US country code from 10-digit number."""
-        phone_e164, digits, display = normalize_phone("2125550123", None)
-        # Should default to US if no country code
-        assert phone_e164 == "+12125550123"
+    def test_auto_detect_in_from_10_digit(self):
+        """Auto-detect IN country code from 10-digit number."""
+        phone_e164, digits, display = normalize_phone("9876543210", None)
+        # Should default to IN if no country code
+        assert phone_e164 == "+919876543210"
 
     def test_phone_with_plus_prefix(self):
         """Handle phone already in E.164 format."""
@@ -66,12 +66,17 @@ class TestPhoneNormalization:
     def test_invalid_phone_raises_error(self):
         """Reject invalid phone numbers."""
         with pytest.raises(ValueError):
-            normalize_phone("invalid", "US")
+            normalize_phone("invalid", "IN")
+
+    def test_invalid_short_indian_phone(self):
+        """Reject invalid short Indian phone number."""
+        with pytest.raises(ValueError):
+            normalize_phone("12345", "IN")
 
     def test_phone_bounds_enforcement(self):
         """Enforce reasonable phone length bounds."""
         # E.164 should be max ~15 digits + 1 for + = 16 chars
-        phone_e164, digits, display = normalize_phone("+12125550123", None)
+        phone_e164, digits, display = normalize_phone("+919876543210", None)
         assert len(phone_e164) <= 16
 
 
@@ -131,8 +136,8 @@ class TestPhoneContactXOR:
     def test_phone_contact_valid(self):
         """Create valid phone contact."""
         contact = BranchContactCreatePhone(
-            phone_number="2125550123",
-            country_code="US",
+            phone_number="9876543210",
+            country_code="IN",
             contact_label="Main",
             visibility_scope=VisibilityScope.PUBLIC,
         )
@@ -143,8 +148,8 @@ class TestPhoneContactXOR:
         """Phone contact cannot have email_address."""
         with pytest.raises(ValidationError):
             BranchContactCreatePhone(
-                phone_number="2125550123",
-                country_code="US",
+                phone_number="9876543210",
+                country_code="IN",
                 email_address="test@example.com",  # NOT ALLOWED
                 contact_label="Main",
             )
@@ -164,8 +169,19 @@ class TestPhoneContactXOR:
         with pytest.raises(ValidationError):
             BranchContactCreateEmail(
                 email_address="test@example.com",
-                phone_number="2125550123",  # NOT ALLOWED
+                phone_number="9876543210",  # NOT ALLOWED
                 contact_label="Support",
+            )
+
+    def test_whatsapp_not_a_contact_kind(self):
+        """Contact kind only allows phone/email, whatsapp must fail."""
+        with pytest.raises(ValidationError):
+            BranchContactCreatePhone(
+                phone_number="9876543210",
+                country_code="IN",
+                contact_label="Whatsapp",
+                visibility_scope=VisibilityScope.PUBLIC,
+                contact_kind="whatsapp"  # NOT ALLOWED
             )
 
 
@@ -230,6 +246,19 @@ class TestChannelCapabilities:
         assert isinstance(jsonb_data, dict)
         assert "whatsapp_enabled" in jsonb_data
 
+    def test_unknown_capabilities_rejected(self):
+        """Unknown channel capability keys are rejected."""
+        with pytest.raises(ValidationError):
+            ChannelCapabilities(
+                whatsapp_enabled=True,
+                telegram_enabled=True,  # NOT ALLOWED
+            )
+
+    def test_whatsapp_only_in_capabilities(self):
+        """Ensure whatsapp is tested via capabilities."""
+        caps = ChannelCapabilities(whatsapp=True)
+        assert caps.whatsapp_enabled is True
+
 
 class TestBranchContactResponse:
     """Test response models with read-only fields."""
@@ -241,9 +270,9 @@ class TestBranchContactResponse:
             org_id=uuid4(),
             branch_id=uuid4(),
             contact_kind=ContactKind.PHONE,
-            phone_e164="+12125550123",
-            normalized_digits="2125550123",
-            display_format="(212) 555-0123",
+            phone_e164="+919876543210",
+            normalized_digits="9876543210",
+            display_format="098765 43210",
             contact_label="Main",
             visibility_scope=VisibilityScope.PUBLIC,
             is_primary=True,
@@ -255,7 +284,7 @@ class TestBranchContactResponse:
             deleted_at=None,
             deleted_by=None,
         )
-        assert response.phone_e164 == "+12125550123"
+        assert response.phone_e164 == "+919876543210"
         assert response.contact_kind == ContactKind.PHONE
 
 
@@ -265,8 +294,8 @@ class TestValidationIntegration:
     def test_create_phone_contact_full_flow(self):
         """Complete phone contact creation with normalization."""
         contact = BranchContactCreatePhone(
-            phone_number="(212) 555-0123",
-            country_code="US",
+            phone_number="9876543210",
+            country_code="IN",
             contact_label="Main Reception",
             visibility_scope=VisibilityScope.PUBLIC,
             channel_capabilities=ChannelCapabilities(
@@ -306,8 +335,8 @@ class TestValidationIntegration:
         
         for scope in scopes:
             contact = BranchContactCreatePhone(
-                phone_number="2125550123",
-                country_code="US",
+                phone_number="9876543210",
+                country_code="IN",
                 contact_label=f"Test {scope}",
                 visibility_scope=scope,
             )

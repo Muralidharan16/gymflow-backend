@@ -993,6 +993,7 @@ def downgrade():
     op.execute("DROP TYPE IF EXISTS public.audit_action_enum CASCADE;")
     op.execute("DROP TYPE IF EXISTS public.verification_method_enum CASCADE;")
 
-    # Drop role
-    op.execute("DROP OWNED BY app_rls_executor;")
-    op.execute("DROP ROLE IF EXISTS app_rls_executor;")
+    # Drop role (Safer behavior: do not drop shared roles as they may be used by later migrations)
+    # op.execute("DROP OWNED BY app_rls_executor;")
+    # op.execute("DROP ROLE IF EXISTS app_rls_executor;")
+    # op.execute("DROP ROLE IF EXISTS app_user;")

@@ -69,7 +69,7 @@ class RedisUtils:
 
     async def close(self) -> None:
         try:
-            await self._redis.close()
+            await self._redis.aclose()
             await self._redis.connection_pool.disconnect()
         except Exception:
             logger.exception("Error closing Redis connection")
