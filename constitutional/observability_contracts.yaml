@@ -1,0 +1,94 @@
+# =============================================================================
+# OBSERVABILITY CONTRACTS — Constitutional Enforcement Spec v1
+# =============================================================================
+# Classifies observability signals by deterministic requirement level.
+# Prevents the monitoring layer from becoming an ungoverned truth source.
+#
+# Grounded in existing infrastructure:
+#   - app/observability/branch_contacts_queries.py (18 queries, 9 sections)
+#   - scripts/governance_validation.py (12 runtime DB checks)
+# =============================================================================
+
+version: "1.0"
+
+signal_classification:
+
+  metrics:
+    deterministic_required: false
+    retention: "90 days"
+    examples:
+      - "Lock contention counts (LOCK_WAITS_QUERY)"
+      - "Write throughput (BRANCH_CONTACTS_WRITE_LOAD)"
+      - "Index bloat ratios (INDEX_BLOAT_CHECK)"
+      - "Audit insert rate (AUDIT_INSERT_RATE)"
+      - "Partition sizes (PARTITION_SIZES)"
+    rationale: "Approximate values acceptable for operational dashboards"
+
+  operational_logs:
+    deterministic_required: false
+    retention: "30 days"
+    examples:
+      - "Request latency traces"
+      - "Cache hit/miss events in geo_service.py"
+      - "Celery task execution logs"
+
+  replay_evidence:
+    deterministic_required: true
+    retention: "permanent"
+    serialization: "canonical_serialization.yaml"
+    immutability: "append-only, content-addressed by SHA256"
+    examples:
+      - "Replay snapshot hashes (tests/corpora/manifests/*.sha256)"
+      - "Corpus seed data fingerprints"
+    rationale: "Replay equivalence requires bit-exact reproducibility"
+
+  invariant_evidence:
+    deterministic_required: true
+    retention: "permanent"
+    examples:
+      - "Purity scan results per commit"
+      - "Schema validation verdicts"
+      - "Dependency lockfile verification results"
+      - "Enforcement integrity check results"
+    rationale: "Constitutional gate verdicts must be reproducible"
+
+  audit_evidence:
+    deterministic_required: true
+    retention: "permanent"
+    immutability: "append-only"
+    examples:
+      - "Emergency override records"
+      - "Constitutional amendment log"
+      - "Spec version transitions"
+    existing_enforcement: |
+      Audit immutability is already enforced by:
+        - trg_prevent_audit_update trigger (governance_validation.py Check 9)
+        - trg_prevent_soft_delete_resurrection trigger (Check 8)
+    rationale: "Audit integrity is foundational to institutional trust"
+
+  governance_runtime_checks:
+    deterministic_required: true
+    retention: "365 days"
+    source: "scripts/governance_validation.py"
+    checks:
+      - "SECURITY_DEFINER_OWNERSHIP"
+      - "PUBLIC_EXECUTE_REVOCATION"
+      - "SEARCH_PATH_HARDENING"
+      - "TABLE_OWNERSHIP_DRIFT"
+      - "TIMESTAMP_INDEX_DETECTION"
+      - "RLS_FORCE_ENFORCEMENT"
+      - "CONSTRAINT_VALIDATION"
+      - "SOFT_DELETE_RESURRECTION"
+      - "AUDIT_APPEND_ONLY"
+      - "PRIMARY_CONTACT_TRIGGERS"
+      - "ADVISORY_LOCK_FUNCTION"
+      - "INDEX_COVERAGE"
+    rationale: "Runtime governance verdicts feed incident detection"
+
+evidence_lineage:
+  replay_evidence:
+    - "corpus_version → seed_data_hash → replay_output_hash → verdict"
+  invariant_evidence:
+    - "commit_sha → gate_name → scan_result → verdict"
+  audit_evidence:
+    - "event_id → timestamp → actor → action → affected_spec_version"

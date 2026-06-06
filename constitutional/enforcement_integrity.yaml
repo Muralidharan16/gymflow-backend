@@ -1,0 +1,55 @@
+# =============================================================================
+# ENFORCEMENT INTEGRITY — Constitutional Enforcement Spec v1
+# =============================================================================
+# Governs mutations to enforcement engines themselves.
+# Closes the "who governs the governors" gap.
+#
+# Any change to a critical module triggers enhanced review workflow
+# via SHA256 hash comparison in CI Gate 9.
+# =============================================================================
+
+version: "1.0"
+
+critical_modules:
+  - path: "geo_constitutional_enforcement/purity_scanner.py"
+    role: "Deterministic purity enforcement via AST analysis"
+
+  - path: "geo_constitutional_enforcement/schema_validator.py"
+    role: "Epoch-aware schema mutation governance"
+
+  - path: "geo_constitutional_enforcement/replay_validator.py"
+    role: "Replay equivalence certification"
+
+  - path: "geo_constitutional_enforcement/dependency_governance.py"
+    role: "Dependency lockfile verification"
+
+  - path: "geo_constitutional_enforcement/canonical_serializer.py"
+    role: "Deterministic serialization for replay hashing"
+
+  - path: "geo_constitutional_enforcement/drift_detector.py"
+    role: "Model-vs-registry semantic drift detection"
+
+  - path: "geo_constitutional_enforcement/complexity_auditor.py"
+    role: "Governance budget and performance budget enforcement"
+
+  - path: "geo_constitutional_enforcement/enforcement_integrity_checker.py"
+    role: "Self-referential integrity verification (this module's guardian)"
+
+mutation_policy:
+  any_change_requires:
+    - "Constitutional amendment in decision_archive/"
+    - "Dual review (2 approvers, not 1)"
+    - "Replay recertification (full corpus re-run)"
+    - "All constitutional tests must pass before AND after"
+
+  forbidden_without_epoch_upgrade:
+    - "Replay hashing algorithm changes"
+    - "Canonical serialization rule changes"
+    - "Purity violation category additions/removals"
+    - "Budget threshold modifications"
+
+  detection_mechanism: |
+    CI Gate 9 computes SHA256 of each critical module.
+    Any hash change triggers the enhanced review workflow.
+    Hash manifest stored in constitutional/enforcement_module_hashes.sha256.
+    This file is frozen via --freeze and verified on every CI run.

@@ -1,0 +1,48 @@
+# =============================================================================
+# RUNTIME FINGERPRINT — Constitutional Enforcement Spec v1
+# =============================================================================
+# Pins the complete runtime environment for replay reproducibility.
+# Initially advisory — becomes enforced when replay corpus exceeds
+# 1000 operations.
+#
+# Grounded in actual infrastructure:
+#   - Dockerfile: python:3.12-slim
+#   - docker-compose.yml: postgres:16, redis:7-alpine
+#   - requirements.txt: cryptography>=42.0
+# =============================================================================
+
+version: "1.0"
+
+enforcement_level: "advisory"    # → "enforced" in future epoch
+
+python:
+  version_minimum: "3.12"
+  version_pinned: "3.12"         # Matches Dockerfile: python:3.12-slim
+
+docker:
+  base_image: "python:3.12-slim"
+  base_image_digest: null         # Populate during first bootstrap
+  digest_verification: "advisory"
+
+postgresql:
+  image: "postgres:16"           # Matches docker-compose.yml
+  image_digest: null             # Populate during first bootstrap
+
+redis:
+  image: "redis:7-alpine"       # Matches docker-compose.yml
+  image_digest: null
+
+os_packages:
+  # Critical for cryptographic determinism (app/core/crypto.py L34)
+  libssl: { minimum: "3.0" }
+  # Critical for PostgreSQL client (Dockerfile apt-get: libpq-dev)
+  libpq: { minimum: "15" }
+
+verification_procedure: |
+  During bootstrap (Step 1), record actual digests:
+    docker inspect --format='{{.RepoDigests}}' python:3.12-slim
+    docker inspect --format='{{.RepoDigests}}' postgres:16
+    docker inspect --format='{{.RepoDigests}}' redis:7-alpine
+  During replay, compare recorded digests against current environment.
+  Advisory mode: log warnings on mismatch.
+  Enforced mode: block replay on mismatch.

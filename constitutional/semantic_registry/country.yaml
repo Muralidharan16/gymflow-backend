@@ -1,0 +1,49 @@
+# =============================================================================
+# SEMANTIC REGISTRY: Country — Derived from app/models/geo.py::Country (L9-37)
+# =============================================================================
+
+term: "country"
+source_model: "app/models/geo.py::Country"
+table: "countries"
+
+primary_key: { name: "id", type: "SmallInteger" }
+
+identity_fields:
+  - { name: "iso2", type: "String(2)", unique: true, nullable: false }
+  - { name: "iso3", type: "String(3)", unique: true, nullable: false }
+
+required_fields:
+  - { name: "name", type: "Text", nullable: false }
+  - { name: "normalized_name", type: "Text", nullable: false }
+  - { name: "status", type: "geo_record_status", nullable: false, default: "active" }
+
+optional_fields:
+  - { name: "phone_code", type: "Text" }
+  - { name: "currency_code", type: "String(3)" }
+  - { name: "timezone", type: "Text" }
+  - { name: "deactivated_at", type: "DateTime(timezone=True)" }
+  - { name: "deactivation_reason", type: "Text" }
+  - { name: "postal_code_regex", type: "Text" }
+  - { name: "postal_code_min_length", type: "SmallInteger" }
+  - { name: "postal_code_max_length", type: "SmallInteger" }
+  - { name: "supports_postal_lookup", type: "Boolean", default: true }
+  - { name: "ui_config", type: "JSONB" }
+  - { name: "source_priority", type: "SmallInteger", default: 100 }
+  - { name: "confidence_score", type: "SmallInteger", default: 100 }
+
+timestamp_fields:
+  - { name: "created_at", type: "DateTime(timezone=True)", server_default: true }
+  - { name: "updated_at", type: "DateTime(timezone=True)", server_default: true }
+
+relationships:
+  - { name: "subdivisions", target: "Subdivision", back_populates: "country", cascade: "none" }
+
+status_enum: "geo_record_status"
+allowed_states: ["active", "deprecated", "historical", "pending_validation"]
+
+invariants:
+  - "iso2 is immutable after promotion to active"
+  - "iso3 is immutable after promotion to active"
+  - "status transitions: pending_validation→active, active→deprecated→historical"
+  - "deactivated_at must be set when status != 'active'"
+  - "normalized_name = casefold(name), not locale-dependent lower()"

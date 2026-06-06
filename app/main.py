@@ -39,6 +39,7 @@ from app.core.middleware import (
 from app.core.redis import close_redis, init_redis
 from app.core.supervisor import platform_lifespan
 from app.core.telemetry import sentry_before_send
+from app.tasks.branch_hours_partition import ensure_audit_partitions
 
 if os.environ.get("SENTRY_DSN"):
     sentry_sdk.init(dsn=os.environ["SENTRY_DSN"], before_send=sentry_before_send)
@@ -88,6 +89,7 @@ logging.config.dictConfig(LOGGING_CONFIG)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_redis()
+    await ensure_audit_partitions()
     async with platform_lifespan():
         yield
     await close_redis()

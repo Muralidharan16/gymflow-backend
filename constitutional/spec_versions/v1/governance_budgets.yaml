@@ -1,0 +1,89 @@
+# =============================================================================
+# GOVERNANCE COMPLEXITY BUDGETS — Constitutional Enforcement Spec v1
+# =============================================================================
+# Anti-entropy mechanism. Caps governance complexity to prevent the system
+# from growing faster than institutional understanding.
+# =============================================================================
+
+version: "1.0"
+
+budgets:
+  invariants:
+    max_rules: 32
+    current: 9    # 3 country + 3 city + 3 geo_record_status invariants
+    limit_action: "Deprecate old invariant before adding new"
+
+  replay_modes:
+    allowed_modes: 2   # "strict" (current) + "fallback" (previous epoch)
+    current: 0         # Not yet implemented (Phase 3)
+
+  operational_states:
+    max_states: 8
+    current: 4         # active, deprecated, historical, pending_validation
+
+  compatibility_epochs:
+    max_active: 3      # current, current-1, migration
+    current: 1         # v1 only
+
+  nondeterminism_boundaries:
+    max_modules: 6
+    current: 4         # concurrency, crypto, db_retry, geocoding
+
+  semantic_registry_terms:
+    max_terms: 24
+    current: 5         # country, subdivision, city, postal_code, geo_record_status
+
+  enforcement_exemptions:
+    max_per_file: 5
+    current_max: 2     # topology.py has 2 exemptions (highest)
+
+  spec_versions:
+    max_active: 5      # Retain last 5 spec versions bindable to replay
+    current: 1         # v1 only
+    retention: "permanent"
+
+  emergency_overrides:
+    max_active: 2
+    max_per_quarter: 6
+    mandatory_review_after: 3
+
+  observability_evidence_types:
+    max_deterministic: 4
+    current: 4         # replay, invariant, audit, governance_runtime
+
+  constitutional_test_categories:
+    max_categories: 9
+    current: 9         # purity, replay, semantic, invariants, migrations,
+                       # topology, compatibility, recovery, emergency
+
+# Performance budgets — prevents governance from becoming operationally parasitic
+performance_budgets:
+  purity_scan:
+    max_seconds: 15
+    escalation: "If exceeded, profile scanner — do NOT add skip rules"
+  schema_validation:
+    max_seconds: 10
+  dependency_verification:
+    max_seconds: 5
+  semantic_drift_check:
+    max_seconds: 10
+  replay_validation:
+    max_minutes: 10
+    escalation: "If exceeded, optimize corpus — do NOT reduce coverage"
+  constitutional_tests:
+    max_minutes: 15
+  enforcement_integrity:
+    max_seconds: 5
+  full_bootstrap:
+    max_minutes: 30
+
+  total_ci_constitutional_overhead:
+    max_minutes: 20
+    escalation: |
+      If total exceeds 20 minutes, trigger architecture review.
+      Resolution MUST be optimization, never governance reduction.
+
+  monitoring:
+    measure_at: "every CI run"
+    alert_threshold: "80% of budget"
+    alert_action: "Create optimization ticket before budget is exceeded"

@@ -121,7 +121,12 @@ def emit_branch_hours_outbox_event(mapper, connection, target):
     if isinstance(target, OrganizationOperatingHours):
         # We need to notify all branches of this org
         res = connection.execute(
-            text("SELECT id FROM public.org_branches WHERE org_id = :org_id AND deleted_at IS NULL"),
+            text("""
+                SELECT b.id 
+                FROM public.org_branches b 
+                JOIN public.org_branch_state s ON b.id = s.branch_id 
+                WHERE b.org_id = :org_id AND s.deleted_at IS NULL
+            """),
             {"org_id": target.org_id}
         )
         branch_ids = [row[0] for row in res]
@@ -138,6 +143,7 @@ def emit_branch_hours_outbox_event(mapper, connection, target):
             text("""
                 INSERT INTO public.transactional_outbox (event_type, payload, dedupe_key)
                 VALUES (:evt, :pay, :dedupe)
+                ON CONFLICT (event_type, dedupe_key) DO NOTHING
             """),
             {
                 "evt": "branch_hours.changed",

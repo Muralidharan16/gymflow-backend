@@ -1,0 +1,40 @@
+# =============================================================================
+# SEMANTIC REGISTRY: City — Derived from app/models/geo.py::City (L68-87)
+# =============================================================================
+
+term: "city"
+source_model: "app/models/geo.py::City"
+table: "cities"
+
+primary_key: { name: "id", type: "BigInteger" }
+
+foreign_keys:
+  - { name: "country_id", type: "SmallInteger", references: "countries.id", on_delete: "RESTRICT", nullable: false }
+  - { name: "subdivision_id", type: "BigInteger", nullable: false }
+
+required_fields:
+  - { name: "name", type: "Text", nullable: false }
+  - { name: "normalized_name", type: "Text", nullable: false }
+  - { name: "status", type: "geo_record_status", nullable: false, default: "active" }
+
+optional_fields:
+  - { name: "latitude", type: "Numeric(9,6)" }
+  - { name: "longitude", type: "Numeric(9,6)" }
+  - { name: "timezone", type: "Text" }
+  - { name: "valid_from", type: "Date" }
+  - { name: "valid_until", type: "Date" }
+
+timestamp_fields:
+  - { name: "created_at", type: "DateTime(timezone=True)", server_default: true }
+  - { name: "updated_at", type: "DateTime(timezone=True)", server_default: true }
+
+relationships:
+  - { name: "subdivision", target: "Subdivision", back_populates: "cities" }
+
+status_enum: "geo_record_status"
+
+invariants:
+  - "subdivision_id must reference an active subdivision"
+  - "status transitions follow geo_record_status state machine"
+  - "normalized_name = casefold(name), not locale-dependent lower()"
+  - "latitude/longitude use Numeric(9,6) — never Float"

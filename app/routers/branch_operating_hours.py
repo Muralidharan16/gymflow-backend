@@ -42,6 +42,25 @@ async def get_branch_hours_projection(
     return projection
 
 
+@router.get("/branches/{branch_id}/hours", response_model=List[BranchOperatingHoursResponse])
+async def get_branch_operating_hours(
+    branch_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    staff: Staff = Depends(get_current_active_staff)
+):
+    """
+    Returns the standard weekly operating hours for a specific branch.
+    Includes active (non-deleted) records only.
+    """
+    stmt = select(BranchOperatingHours).where(
+        BranchOperatingHours.branch_id == branch_id,
+        BranchOperatingHours.deleted_at.is_(None)
+    ).order_by(BranchOperatingHours.day_of_week, BranchOperatingHours.slot_index)
+    
+    hours = (await db.scalars(stmt)).all()
+    return hours
+
+
 @router.put("/branches/{branch_id}/hours")
 async def update_branch_operating_hours(
     branch_id: uuid.UUID,
@@ -82,6 +101,25 @@ async def update_branch_operating_hours(
     return {"status": "success", "message": "Branch standard hours updated"}
 
 
+@router.get("/branches/{branch_id}/special-hours", response_model=List[BranchSpecialHoursResponse])
+async def get_branch_special_hours(
+    branch_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    staff: Staff = Depends(get_current_active_staff)
+):
+    """
+    Returns the special exception hours for a specific branch.
+    Includes active (non-deleted) records only.
+    """
+    stmt = select(BranchSpecialHours).where(
+        BranchSpecialHours.branch_id == branch_id,
+        BranchSpecialHours.deleted_at.is_(None)
+    ).order_by(BranchSpecialHours.special_date, BranchSpecialHours.open_time)
+    
+    hours = (await db.scalars(stmt)).all()
+    return hours
+
+
 @router.put("/branches/{branch_id}/special-hours")
 async def update_branch_special_hours(
     branch_id: uuid.UUID,
@@ -91,19 +129,17 @@ async def update_branch_special_hours(
 ):
     """
     Sets special holiday/exception hours.
-    To allow for clean overlap handling, this bulk replaces any existing active special hours for the provided dates.
+    To allow for clean overlap handling, this bulk replaces ALL existing active special hours for the branch.
     """
+    # Soft delete all existing active special hours for this branch
+    stmt_del = update(BranchSpecialHours).where(
+        BranchSpecialHours.branch_id == branch_id,
+        BranchSpecialHours.deleted_at.is_(None)
+    ).values(deleted_at=datetime.now(timezone.utc), updated_by=staff.id)
+    await db.execute(stmt_del)
+    
+    # Insert new
     if payload.schedules:
-        dates = [s.special_date for s in payload.schedules]
-        # Soft delete existing on these dates
-        stmt_del = update(BranchSpecialHours).where(
-            BranchSpecialHours.branch_id == branch_id,
-            BranchSpecialHours.special_date.in_(dates),
-            BranchSpecialHours.deleted_at.is_(None)
-        ).values(deleted_at=datetime.now(timezone.utc), updated_by=staff.id)
-        await db.execute(stmt_del)
-        
-        # Insert new
         db.add_all([
             BranchSpecialHours(
                 branch_id=branch_id,
@@ -120,6 +156,25 @@ async def update_branch_special_hours(
     
     await db.commit()
     return {"status": "success", "message": "Branch special hours updated"}
+
+
+@router.get("/organizations/hours", response_model=List[OrganizationOperatingHoursResponse])
+async def get_organization_operating_hours(
+    db: AsyncSession = Depends(get_db),
+    staff: Staff = Depends(get_current_active_staff)
+):
+    """
+    Returns the organization-wide default operating hours.
+    Includes active (non-deleted) records only.
+    """
+    org_id = staff.org_id
+    stmt = select(OrganizationOperatingHours).where(
+        OrganizationOperatingHours.org_id == org_id,
+        OrganizationOperatingHours.deleted_at.is_(None)
+    ).order_by(OrganizationOperatingHours.day_of_week, OrganizationOperatingHours.slot_index)
+    
+    hours = (await db.scalars(stmt)).all()
+    return hours
 
 
 @router.put("/organizations/hours")
