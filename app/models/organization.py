@@ -33,6 +33,7 @@ class Organization(Base, TimestampMixin):
     business_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     max_branches: Mapped[int] = mapped_column(Integer, default=10, server_default=text("10"), nullable=False)
+    default_currency_code: Mapped[str] = mapped_column(String(3), server_default=text("'INR'"), default="INR", nullable=False)
     
     # Branding
     tagline: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
