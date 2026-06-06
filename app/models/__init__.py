@@ -44,3 +44,4 @@ from app.models.branch_lifecycle import (  # noqa: F401
 )
 
 from app.models.membership_plan import MembershipPlan, PlanStatus, DurationUnit  # noqa: F401
+from app.models.organization_counter import OrganizationCounter  # noqa: F401

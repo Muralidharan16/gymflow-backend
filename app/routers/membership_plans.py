@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, text
 
 from app.core.database import get_db
 from app.core.deps import get_current_active_staff, require_org_admin, Staff
@@ -25,10 +25,15 @@ def clean_slug(slug: str) -> str:
     return cleaned[:6].upper()
 
 async def get_next_sequence_for_org(db: AsyncSession, org_id: uuid.UUID) -> int:
-    query = select(func.count()).where(MembershipPlan.org_id == org_id)
-    result = await db.execute(query)
-    count = result.scalar() or 0
-    return count + 1
+    query = text("""
+        INSERT INTO organization_counters (id, org_id, counter_key, current_value)
+        VALUES (:id, :org_id, 'membership_plan', 1)
+        ON CONFLICT (org_id, counter_key)
+        DO UPDATE SET current_value = organization_counters.current_value + 1
+        RETURNING current_value;
+    """)
+    result = await db.execute(query, {"id": uuid.uuid4(), "org_id": org_id})
+    return result.scalar()
 
 @router.post("", response_model=MembershipPlanResponse, status_code=status.HTTP_201_CREATED)
 async def create_membership_plan(

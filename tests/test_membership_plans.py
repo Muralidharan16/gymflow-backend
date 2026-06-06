@@ -2,6 +2,7 @@ import pytest
 import pytest_asyncio
 import uuid
 from httpx import AsyncClient, ASGITransport
+import asyncio
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import text
 from decimal import Decimal
@@ -20,6 +21,7 @@ async def cleanup_database():
         await session.execute(text("RESET ROLE"))
         await session.execute(text("SET session_replication_role = 'replica'"))
         await session.execute(text("DELETE FROM membership_plans;"))
+        await session.execute(text("DELETE FROM organization_counters;"))
         await session.execute(text("DELETE FROM org_branch_state;"))
         await session.execute(text("DELETE FROM org_branches;"))
         await session.execute(text("DELETE FROM owners;"))
@@ -233,3 +235,34 @@ async def test_membership_plans_api(client, test_data):
     # 16. org isolation: org A cannot access org B plans
     res = await client.get(f"/membership-plans/{plan1_id}", headers=headers2)
     assert res.status_code == 404
+
+    # 17. Sequence starts at 1 for Org 2
+    res = await client.post("/membership-plans", json={
+        "name": "Org 2 Plan",
+        "price": 100,
+        "duration_value": 1,
+        "duration_unit": "months"
+    }, headers=headers2)
+    assert res.status_code == 201
+    plan_org2 = res.json()
+    assert plan_org2["plan_code"].endswith("-001")
+    assert plan_org2["currency"] == "USD"
+
+    # 18. Concurrent plan creation generates unique codes
+    async def create_plan(i):
+        return await client.post("/membership-plans", json={
+            "name": f"Concurrent {i}",
+            "price": 50,
+            "duration_value": 1,
+            "duration_unit": "months"
+        }, headers=headers1)
+
+    tasks = [create_plan(i) for i in range(10)]
+    responses = await asyncio.gather(*tasks)
+    
+    codes = set()
+    for response in responses:
+        assert response.status_code == 201
+        codes.add(response.json()["plan_code"])
+        
+    assert len(codes) == 10
