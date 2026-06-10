@@ -24,6 +24,7 @@ class MeasurementResponse(MeasurementBase):
 class MemberBase(BaseModel):
     name: str
     phone: Optional[str] = None
+    home_branch_id: Optional[uuid.UUID] = None
     email: Optional[EmailStr] = None
     date_of_birth: Optional[date] = None
     gender: Optional[str] = None
@@ -36,7 +37,7 @@ class MemberBase(BaseModel):
     notes: Optional[str] = None
 
 class MemberCreate(MemberBase):
-    pass
+    phone: str
 
 class MemberUpdate(MemberBase):
     name: Optional[str] = None
@@ -44,7 +45,7 @@ class MemberUpdate(MemberBase):
 
 class MemberResponse(MemberBase):
     id: uuid.UUID
-    gym_id: uuid.UUID
+    gym_id: Optional[uuid.UUID] = None
     org_id: uuid.UUID
     member_uid: str
     qr_token: Optional[str] = None

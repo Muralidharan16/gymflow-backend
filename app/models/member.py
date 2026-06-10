@@ -20,15 +20,20 @@ class Member(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=new_uuid
     )
-    gym_id: Mapped[uuid.UUID] = mapped_column(
+    gym_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("gyms.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    home_branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("org_branches.id", ondelete="SET NULL"),
+        nullable=True,
     )
     member_uid: Mapped[str] = mapped_column(
         String(20), unique=True, nullable=False
@@ -59,17 +64,17 @@ class Member(Base, TimestampMixin):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("gym_owners.id", ondelete="SET NULL"),
         nullable=True,
     )
     updated_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("gym_owners.id", ondelete="SET NULL"),
         nullable=True,
     )
 
     __table_args__ = (
         Index("ix_members_org_id", "org_id"),
+        Index("ix_members_org_branch_id", "org_id", "home_branch_id"),
+        Index("ix_members_org_status", "org_id", "status"),
         Index("ix_members_gym_id", "gym_id"),
         Index("ix_members_gym_member_uid", "gym_id", "member_uid", unique=True),
         Index("ix_members_gym_phone", "gym_id", "phone"),

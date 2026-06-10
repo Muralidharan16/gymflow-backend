@@ -13,8 +13,10 @@ from app.schemas.common import Response, PaginatedResponse, MessageResponse
 from app.schemas.member import MemberResponse, MemberCreate, MemberUpdate, MeasurementResponse, MeasurementCreate
 from app.services.member_service import MemberService
 from app.core.exceptions import NotFoundError, ValidationError, MemberLimitExceeded
+from app.core.deps import require_org_admin
 
-router = APIRouter(prefix="/gyms/{gym_id}/members", tags=["Members"])
+router = APIRouter(prefix="/gyms/{gym_id}/members", tags=["Members (Legacy)"])
+modern_router = APIRouter(prefix="/organizations/{org_id}/members", tags=["Members"])
 
 
 @router.get("", response_model=PaginatedResponse[MemberResponse])
@@ -211,6 +213,148 @@ async def get_member_qr_code(
         png_bytes = await service.get_member_qr_png(member_uid)
         return Response(content=png_bytes, media_type="image/png")
     except NotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"message": str(e), "error_code": "NOT_FOUND"}
+        )
+
+# === Modern Org-Scoped Routes ===
+
+@modern_router.get("", response_model=PaginatedResponse[MemberResponse])
+async def list_members_org(
+    org_id: UUID,
+    home_branch_id: Optional[UUID] = Query(None, description="Filter by home branch"),
+    status: Optional[MemberStatus] = Query(None, description="Filter by member status"),
+    search: Optional[str] = Query(None, description="Search by name or phone"),
+    is_active: bool = Query(True, description="Filter by active status"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=200, description="Items per page"),
+    staff: Staff = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List members in an organization with pagination and filtering.
+    """
+    if staff.org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        
+    service = MemberService(db)
+    members, total = await service.list_members_org(
+        org_id=org_id,
+        home_branch_id=home_branch_id,
+        status=status,
+        search_term=search,
+        is_active=is_active,
+        page=page,
+        size=page_size
+    )
+    from math import ceil
+    return PaginatedResponse(
+        data=[MemberResponse.model_validate(m) for m in members],
+        page=page,
+        size=page_size,
+        total=total,
+        pages=ceil(total / page_size) if page_size else 0,
+    )
+
+@modern_router.post("", response_model=Response[MemberResponse])
+async def create_member_org(
+    org_id: UUID,
+    data: MemberCreate,
+    staff: Staff = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Create a new member in the organization.
+    """
+    if staff.org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        
+    service = MemberService(db)
+    try:
+        member = await service.create_member_org(org_id, data, staff.id)
+        return Response(data=MemberResponse.model_validate(member))
+    except ValidationError as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": str(e), "error_code": e.error_code}
+        )
+
+@modern_router.get("/{member_id}", response_model=Response[MemberResponse])
+async def get_member_profile_org(
+    org_id: UUID,
+    member_id: UUID,
+    staff: Staff = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get full member profile.
+    """
+    if staff.org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        
+    service = MemberService(db)
+    try:
+        member = await service.get_member_org(member_id, org_id)
+        return Response(data=MemberResponse.model_validate(member))
+    except NotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"message": str(e), "error_code": "NOT_FOUND"}
+        )
+
+@modern_router.patch("/{member_id}", response_model=Response[MemberResponse])
+@modern_router.put("/{member_id}", response_model=Response[MemberResponse])
+async def update_member_org(
+    org_id: UUID,
+    member_id: UUID,
+    data: MemberUpdate,
+    staff: Staff = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update member details.
+    """
+    if staff.org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        
+    service = MemberService(db)
+    try:
+        member = await service.update_member_org(org_id, member_id, data, staff.id)
+        return Response(data=MemberResponse.model_validate(member))
+    except NotFoundError as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"message": str(e), "error_code": "NOT_FOUND"}
+        )
+    except ValidationError as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": str(e), "error_code": e.error_code}
+        )
+
+@modern_router.delete("/{member_id}", response_model=Response[MessageResponse])
+async def delete_member_org(
+    org_id: UUID,
+    member_id: UUID,
+    staff: Staff = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Soft delete a member (set is_active=False).
+    """
+    if staff.org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        
+    service = MemberService(db)
+    try:
+        await service.soft_delete_org(org_id, member_id)
+        return Response(data=MessageResponse(message="Member deleted successfully"))
+    except NotFoundError as e:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"message": str(e), "error_code": "NOT_FOUND"}

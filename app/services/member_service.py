@@ -208,6 +208,145 @@ class MemberService:
         await self.session.commit()
         logger.info(f"Soft deleted member {member_id}")
 
+    # === Modern Org-Scoped Methods ===
+
+    async def list_members_org(
+        self,
+        org_id: UUID,
+        home_branch_id: Optional[UUID] = None,
+        status: Optional[MemberStatus] = None,
+        search_term: Optional[str] = None,
+        is_active: bool = True,
+        page: int = 1,
+        size: int = 10
+    ) -> Tuple[List[Member], int]:
+        return await self.member_repo.search_org(
+            org_id, home_branch_id, status, search_term, is_active, page, size
+        )
+
+    async def get_member_org(self, member_id: UUID, org_id: UUID) -> Member:
+        member = await self.member_repo.get_by_id_org(member_id, org_id)
+        if not member:
+            raise NotFoundError(f"Member {member_id} not found", error_code="NOT_FOUND")
+        return member
+
+    async def create_member_org(
+        self,
+        org_id: UUID,
+        data: MemberCreate,
+        created_by: UUID
+    ) -> Member:
+        phone = normalize_phone(data.phone)
+        if not phone:
+            raise ValidationError("Invalid phone number", error_code="VALIDATION_ERROR")
+            
+        existing = await self.member_repo.get_by_phone_org(phone, org_id)
+        if existing:
+            raise ValidationError(
+                f"Member with phone {phone} already exists in this organization",
+                error_code="VALIDATION_ERROR"
+            )
+
+        if data.home_branch_id:
+            from app.models.org_branch import OrgBranch
+            from sqlalchemy import select
+            branch = await self.session.execute(
+                select(OrgBranch).where(
+                    OrgBranch.id == data.home_branch_id,
+                    OrgBranch.org_id == org_id
+                )
+            )
+            if not branch.scalar_one_or_none():
+                raise ValidationError("Invalid home branch", error_code="VALIDATION_ERROR")
+                
+        qr_token = str(uuid.uuid4()).replace("-", "")[:16]
+        
+        member = Member(
+            org_id=org_id,
+            home_branch_id=data.home_branch_id,
+            member_uid=qr_token,
+            name=data.name,
+            phone=phone,
+            email=data.email,
+            date_of_birth=data.date_of_birth,
+            gender=data.gender,
+            blood_group=data.blood_group,
+            address=data.address,
+            notes=data.notes,
+            status=MemberStatus.active,
+            is_active=True,
+            qr_token=qr_token,
+            created_by=created_by,
+            updated_by=created_by
+        )
+        
+        created = await self.member_repo.create(member)
+        await self.session.commit()
+        return created
+
+    async def update_member_org(
+        self,
+        org_id: UUID,
+        member_id: UUID,
+        data: MemberUpdate,
+        updated_by: UUID
+    ) -> Member:
+        member = await self.get_member_org(member_id, org_id)
+        
+        if data.name is not None:
+            member.name = data.name
+        
+        if data.phone is not None:
+            new_phone = normalize_phone(data.phone)
+            if new_phone:
+                existing = await self.member_repo.get_by_phone_org(new_phone, org_id)
+                if existing and existing.id != member_id:
+                    raise ValidationError(
+                        f"Another member already has phone {new_phone}",
+                        error_code="VALIDATION_ERROR"
+                    )
+                member.phone = new_phone
+        
+        if data.email is not None:
+            member.email = data.email
+            
+        if data.address is not None:
+            member.address = data.address
+            
+        if data.gender is not None:
+            member.gender = data.gender
+            
+        if data.notes is not None:
+            member.notes = data.notes
+            
+        if data.status is not None:
+            member.status = data.status
+            
+        if data.home_branch_id is not None:
+            from app.models.org_branch import OrgBranch
+            from sqlalchemy import select
+            branch = await self.session.execute(
+                select(OrgBranch).where(
+                    OrgBranch.id == data.home_branch_id,
+                    OrgBranch.org_id == org_id
+                )
+            )
+            if not branch.scalar_one_or_none():
+                raise ValidationError("Invalid home branch", error_code="VALIDATION_ERROR")
+            member.home_branch_id = data.home_branch_id
+            
+        member.updated_by = updated_by
+        
+        updated = await self.member_repo.update(member)
+        await self.session.commit()
+        return updated
+
+    async def soft_delete_org(self, org_id: UUID, member_id: UUID) -> None:
+        deleted = await self.member_repo.soft_delete_org(member_id, org_id)
+        if not deleted:
+            raise NotFoundError(f"Member {member_id} not found", error_code="NOT_FOUND")
+        await self.session.commit()
+
     async def get_member_qr_png(self, member_uid: str) -> bytes:
         """
         Get QR code PNG bytes for a member.

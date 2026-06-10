@@ -28,6 +28,16 @@ class MemberRepository(BaseRepository[Member]):
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
+    async def get_by_id_org(self, member_id: UUID, org_id: UUID) -> Optional[Member]:
+        """Get member by ID scoped to org."""
+        query = select(Member).where(
+            Member.id == member_id,
+            Member.org_id == org_id,
+            Member.is_active == True
+        )
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+
     async def get_by_id_active(self, member_id: UUID, gym_id: UUID) -> Optional[Member]:
         """Get active member by ID and gym."""
         query = select(Member).where(
@@ -59,6 +69,16 @@ class MemberRepository(BaseRepository[Member]):
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
+    async def get_by_phone_org(self, phone: str, org_id: UUID) -> Optional[Member]:
+        """Get member by normalized phone number and org."""
+        query = select(Member).where(
+            Member.phone == phone,
+            Member.org_id == org_id,
+            Member.is_active == True
+        )
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+
     async def create(self, member: Member) -> Member:
         """Create a new member."""
         self.session.add(member)
@@ -85,6 +105,19 @@ class MemberRepository(BaseRepository[Member]):
         query = sql_update(Member).where(
             Member.id == member_id,
             Member.gym_id == gym_id,
+            Member.is_active == True
+        ).values(is_active=False)
+        result = await self.session.execute(query)
+        await self.session.flush()
+        return result.rowcount > 0
+
+    async def soft_delete_org(self, member_id: UUID, org_id: UUID) -> bool:
+        """
+        Soft delete a member (set is_active=False) scoped to org.
+        """
+        query = sql_update(Member).where(
+            Member.id == member_id,
+            Member.org_id == org_id,
             Member.is_active == True
         ).values(is_active=False)
         result = await self.session.execute(query)
@@ -140,6 +173,49 @@ class MemberRepository(BaseRepository[Member]):
         total = total_result.scalar() or 0
         
         # Get paginated results
+        query = query.order_by(Member.name).offset(offset).limit(size)
+        result = await self.session.execute(query)
+        members = result.scalars().all()
+        
+        return members, total
+
+    async def search_org(
+        self,
+        org_id: UUID,
+        home_branch_id: Optional[UUID] = None,
+        status: Optional[MemberStatus] = None,
+        search_term: Optional[str] = None,
+        is_active: bool = True,
+        page: int = 1,
+        size: int = 10
+    ) -> Tuple[List[Member], int]:
+        """Search members with pagination scoped to org."""
+        offset = (page - 1) * size
+        
+        query = select(Member).where(
+            Member.org_id == org_id,
+            Member.is_active == is_active
+        )
+        
+        if home_branch_id:
+            query = query.where(Member.home_branch_id == home_branch_id)
+            
+        if status:
+            query = query.where(Member.status == status)
+        
+        if search_term:
+            search_pattern = f"%{search_term}%"
+            query = query.where(
+                or_(
+                    Member.name.ilike(search_pattern),
+                    Member.phone.contains(search_term)
+                )
+            )
+        
+        count_query = select(func.count()).select_from(query.subquery())
+        total_result = await self.session.execute(count_query)
+        total = total_result.scalar() or 0
+        
         query = query.order_by(Member.name).offset(offset).limit(size)
         result = await self.session.execute(query)
         members = result.scalars().all()
