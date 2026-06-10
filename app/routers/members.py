@@ -62,7 +62,7 @@ async def create_member(
     """
     service = MemberService(db)
     try:
-        member = await service.create_member(gym_id, data, current_staff.id)
+        member = await service.create_member(gym_id, data, current_staff.id, current_staff.org_id)
         await db.commit()
         return Response(data=MemberResponse.model_validate(member))
     except ValidationError as e:
@@ -70,6 +70,12 @@ async def create_member(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"message": str(e), "error_code": e.error_code}
+        )
+    except NotFoundError as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"message": str(e), "error_code": "NOT_FOUND"}
         )
     except MemberLimitExceeded as e:
         await db.rollback()

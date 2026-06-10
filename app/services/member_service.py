@@ -6,8 +6,10 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.core.exceptions import NotFoundError, ValidationError, MemberLimitExceeded
+from app.models.gym import Gym
 from app.models.member import Member, MemberStatus, MemberMeasurement
 from app.repositories.member_repo import MemberRepository
 from app.schemas.member import MemberCreate, MemberUpdate, MeasurementCreate
@@ -68,7 +70,8 @@ class MemberService:
         self,
         gym_id: UUID,
         data: MemberCreate,
-        created_by: UUID
+        created_by: UUID,
+        org_id: UUID | None = None
     ) -> Member:
         """
         Create a new member.
@@ -97,6 +100,15 @@ class MemberService:
                 f"Member with phone {phone} already exists in this gym",
                 error_code="VALIDATION_ERROR"
             )
+
+        gym_query = select(Gym).where(Gym.id == gym_id)
+        if org_id is not None:
+            gym_query = gym_query.where(Gym.org_id == org_id)
+        gym_result = await self.session.execute(gym_query)
+        gym = gym_result.scalar_one_or_none()
+        if not gym:
+            raise NotFoundError(f"Gym {gym_id} not found", error_code="NOT_FOUND")
+        org_id = gym.org_id
         
         # Check member limit (if any)
         # This can be implemented based on gym settings
@@ -107,6 +119,7 @@ class MemberService:
         
         member = Member(
             gym_id=gym_id,
+            org_id=org_id,
             member_uid=qr_token,  # QR token serves as member_uid
             name=data.name,
             phone=phone,
@@ -116,7 +129,7 @@ class MemberService:
             blood_group=data.blood_group,
             address=data.address,
             notes=data.notes,
-            status=MemberStatus.ACTIVE,
+            status=MemberStatus.active,
             is_active=True,
             qr_token=qr_token,
             created_by=created_by,
