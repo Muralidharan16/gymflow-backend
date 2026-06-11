@@ -1,9 +1,11 @@
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 from app.models.enums import MemberStatus
+
+VALID_BLOOD_GROUPS = {"A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"}
 
 class MeasurementBase(BaseModel):
     measured_on: date
@@ -35,6 +37,59 @@ class MemberBase(BaseModel):
     height_cm: Optional[Decimal] = None
     weight_kg: Optional[Decimal] = None
     notes: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Member name is required")
+        if len(value) < 2:
+            raise ValueError("Member name must be at least 2 characters")
+        return value
+
+    @field_validator("phone", "emergency_contact_phone")
+    @classmethod
+    def trim_phone(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("emergency_contact_name")
+    @classmethod
+    def trim_emergency_contact_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("blood_group")
+    @classmethod
+    def validate_blood_group(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip().upper()
+        if not value:
+            return None
+        if value not in VALID_BLOOD_GROUPS:
+            raise ValueError("Invalid blood group")
+        return value
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def validate_date_of_birth(cls, value: Optional[date]) -> Optional[date]:
+        if value is None:
+            return None
+        today = date.today()
+        if value > today:
+            raise ValueError("Date of birth cannot be in the future")
+        age = today.year - value.year - ((today.month, today.day) < (value.month, value.day))
+        if age < 3:
+            raise ValueError("Member must be at least 3 years old")
+        if age > 120:
+            raise ValueError("Member age cannot exceed 120 years")
+        return value
 
 class MemberCreate(MemberBase):
     phone: str

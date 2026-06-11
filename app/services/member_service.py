@@ -19,6 +19,28 @@ from app.utils.qr import generate_qr_png  # keep for QR PNG generation, but toke
 logger = logging.getLogger(__name__)
 
 
+def _normalize_member_phone(value: str | None, field_name: str) -> str:
+    try:
+        phone = normalize_phone(value)
+    except ValueError as exc:
+        raise ValidationError(f"Invalid {field_name}", error_code="VALIDATION_ERROR") from exc
+    if not phone:
+        raise ValidationError(f"{field_name} is required", error_code="VALIDATION_ERROR")
+    return phone
+
+
+def _require_text(value: str | None, field_name: str) -> str:
+    if value is None or not value.strip():
+        raise ValidationError(f"{field_name} is required", error_code="VALIDATION_ERROR")
+    return value.strip()
+
+
+def _normalize_optional_member_phone(value: str | None, field_name: str) -> str | None:
+    if value is None or not value.strip():
+        return None
+    return _normalize_member_phone(value, field_name)
+
+
 class MemberService:
     """Service for member management operations."""
 
@@ -89,9 +111,7 @@ class MemberService:
             MemberLimitExceeded: If gym member limit reached
         """
         # Normalize phone number
-        phone = normalize_phone(data.phone)
-        if not phone:
-            raise ValidationError("Invalid phone number", error_code="VALIDATION_ERROR")
+        phone = _normalize_member_phone(data.phone, "phone number")
         
         # Check for existing member with same phone in this gym
         existing = await self.member_repo.get_by_phone(phone, gym_id)
@@ -127,6 +147,8 @@ class MemberService:
             date_of_birth=data.date_of_birth,
             gender=data.gender,
             blood_group=data.blood_group,
+            emergency_contact_name=data.emergency_contact_name,
+            emergency_contact_phone=data.emergency_contact_phone,
             address=data.address,
             notes=data.notes,
             status=MemberStatus.active,
@@ -171,16 +193,15 @@ class MemberService:
             member.name = data.name
         
         if data.phone is not None:
-            new_phone = normalize_phone(data.phone)
-            if new_phone:
-                # Check if another member already has this phone
-                existing = await self.member_repo.get_by_phone(new_phone, gym_id)
-                if existing and existing.id != member_id:
-                    raise ValidationError(
-                        f"Another member already has phone {new_phone}",
-                        error_code="VALIDATION_ERROR"
-                    )
-                member.phone = new_phone
+            new_phone = _normalize_member_phone(data.phone, "phone number")
+            # Check if another member already has this phone
+            existing = await self.member_repo.get_by_phone(new_phone, gym_id)
+            if existing and existing.id != member_id:
+                raise ValidationError(
+                    f"Another member already has phone {new_phone}",
+                    error_code="VALIDATION_ERROR"
+                )
+            member.phone = new_phone
         
         if data.email is not None:
             member.email = data.email
@@ -190,6 +211,20 @@ class MemberService:
         
         if data.gender is not None:
             member.gender = data.gender
+
+        if data.date_of_birth is not None:
+            member.date_of_birth = data.date_of_birth
+
+        if data.blood_group is not None:
+            member.blood_group = data.blood_group
+
+        if data.emergency_contact_name is not None:
+            member.emergency_contact_name = data.emergency_contact_name
+
+        if data.emergency_contact_phone is not None:
+            member.emergency_contact_phone = _normalize_member_phone(
+                data.emergency_contact_phone, "emergency contact phone"
+            )
         
         if data.notes is not None:
             member.notes = data.notes
@@ -249,9 +284,18 @@ class MemberService:
         data: MemberCreate,
         created_by: UUID
     ) -> Member:
-        phone = normalize_phone(data.phone)
-        if not phone:
-            raise ValidationError("Invalid phone number", error_code="VALIDATION_ERROR")
+        name = _require_text(data.name, "name")
+        phone = _normalize_member_phone(data.phone, "phone number")
+        emergency_contact_name = _normalize_member_phone(
+            data.emergency_contact_name, "emergency contact no. 1"
+        )
+        emergency_contact_phone = _normalize_optional_member_phone(
+            data.emergency_contact_phone, "emergency contact no. 2"
+        )
+        if not data.date_of_birth:
+            raise ValidationError("date_of_birth is required", error_code="VALIDATION_ERROR")
+        if not data.home_branch_id:
+            raise ValidationError("home_branch_id is required", error_code="VALIDATION_ERROR")
             
         existing = await self.member_repo.get_by_phone_org(phone, org_id)
         if existing:
@@ -260,17 +304,16 @@ class MemberService:
                 error_code="VALIDATION_ERROR"
             )
 
-        if data.home_branch_id:
-            from app.models.org_branch import OrgBranch
-            from sqlalchemy import select
-            branch = await self.session.execute(
-                select(OrgBranch).where(
-                    OrgBranch.id == data.home_branch_id,
-                    OrgBranch.org_id == org_id
-                )
+        from app.models.org_branch import OrgBranch
+        from sqlalchemy import select
+        branch = await self.session.execute(
+            select(OrgBranch).where(
+                OrgBranch.id == data.home_branch_id,
+                OrgBranch.org_id == org_id
             )
-            if not branch.scalar_one_or_none():
-                raise ValidationError("Invalid home branch", error_code="VALIDATION_ERROR")
+        )
+        if not branch.scalar_one_or_none():
+            raise ValidationError("Invalid home branch", error_code="VALIDATION_ERROR")
                 
         qr_token = str(uuid.uuid4()).replace("-", "")[:16]
         
@@ -278,12 +321,14 @@ class MemberService:
             org_id=org_id,
             home_branch_id=data.home_branch_id,
             member_uid=qr_token,
-            name=data.name,
+            name=name,
             phone=phone,
             email=data.email,
             date_of_birth=data.date_of_birth,
             gender=data.gender,
             blood_group=data.blood_group,
+            emergency_contact_name=emergency_contact_name,
+            emergency_contact_phone=emergency_contact_phone,
             address=data.address,
             notes=data.notes,
             status=MemberStatus.active,
@@ -307,18 +352,17 @@ class MemberService:
         member = await self.get_member_org(member_id, org_id)
         
         if data.name is not None:
-            member.name = data.name
+            member.name = _require_text(data.name, "name")
         
         if data.phone is not None:
-            new_phone = normalize_phone(data.phone)
-            if new_phone:
-                existing = await self.member_repo.get_by_phone_org(new_phone, org_id)
-                if existing and existing.id != member_id:
-                    raise ValidationError(
-                        f"Another member already has phone {new_phone}",
-                        error_code="VALIDATION_ERROR"
-                    )
-                member.phone = new_phone
+            new_phone = _normalize_member_phone(data.phone, "phone number")
+            existing = await self.member_repo.get_by_phone_org(new_phone, org_id)
+            if existing and existing.id != member_id:
+                raise ValidationError(
+                    f"Another member already has phone {new_phone}",
+                    error_code="VALIDATION_ERROR"
+                )
+            member.phone = new_phone
         
         if data.email is not None:
             member.email = data.email
@@ -328,6 +372,22 @@ class MemberService:
             
         if data.gender is not None:
             member.gender = data.gender
+
+        if data.date_of_birth is not None:
+            member.date_of_birth = data.date_of_birth
+
+        if data.blood_group is not None:
+            member.blood_group = data.blood_group
+
+        if data.emergency_contact_name is not None:
+            member.emergency_contact_name = _normalize_member_phone(
+                data.emergency_contact_name, "emergency contact no. 1"
+            )
+
+        if data.emergency_contact_phone is not None:
+            member.emergency_contact_phone = _normalize_optional_member_phone(
+                data.emergency_contact_phone, "emergency contact no. 2"
+            )
             
         if data.notes is not None:
             member.notes = data.notes
@@ -347,6 +407,15 @@ class MemberService:
             if not branch.scalar_one_or_none():
                 raise ValidationError("Invalid home branch", error_code="VALIDATION_ERROR")
             member.home_branch_id = data.home_branch_id
+
+        if not member.home_branch_id:
+            raise ValidationError("home_branch_id is required", error_code="VALIDATION_ERROR")
+        if not member.date_of_birth:
+            raise ValidationError("date_of_birth is required", error_code="VALIDATION_ERROR")
+        _require_text(member.name, "name")
+        _normalize_member_phone(member.phone, "phone number")
+        _normalize_member_phone(member.emergency_contact_name, "emergency contact no. 1")
+        _normalize_optional_member_phone(member.emergency_contact_phone, "emergency contact no. 2")
             
         member.updated_by = updated_by
         
