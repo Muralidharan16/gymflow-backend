@@ -60,6 +60,7 @@ def create_refresh_token(owner_id: str) -> str:
     payload = {
         "sub": str(owner_id),
         "type": "refresh",
+        "jti": str(uuid.uuid4()),
         "exp": datetime.now(timezone.utc) + timedelta(days=7)
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")

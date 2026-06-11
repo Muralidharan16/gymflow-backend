@@ -16,6 +16,7 @@ from app.core.redis import get_redis_utils
 from app.utils.email_utils import send_verification_email
 import secrets
 import hashlib
+import hmac
 from app.utils.slug import generate_slug
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,8 @@ class AuthService:
         # 4. Generate magic link token
         raw_token = secrets.token_urlsafe(48)
         token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        signup_poll_token = secrets.token_urlsafe(32)
+        signup_poll_token_hash = hashlib.sha256(signup_poll_token.encode("utf-8")).hexdigest()
 
         # 5. Store in Redis
         pending_key = f"signup:pending:{token_hash}"
@@ -68,6 +71,7 @@ class AuthService:
             "email": email,
             "hashed_password": hashed_pw,
             "facility_type": data.facility_type,
+            "signup_poll_token_hash": signup_poll_token_hash,
             "resend_count": 0,
             "created_at": datetime.now(timezone.utc).isoformat()
         }
@@ -94,8 +98,17 @@ class AuthService:
 
         return {
             "status": "success",
-            "message": "Verification email sent. Please check your inbox."
+            "message": "Verification email sent. Please check your inbox.",
+            "signup_poll_token": signup_poll_token,
         }
+
+    @staticmethod
+    def verify_signup_poll_token(pending_data: dict, poll_token: str) -> bool:
+        expected_hash = pending_data.get("signup_poll_token_hash")
+        if not expected_hash or not poll_token:
+            return False
+        actual_hash = hashlib.sha256(poll_token.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(expected_hash, actual_hash)
 
     async def verify(self, token: str) -> dict:
         """
@@ -193,7 +206,8 @@ class AuthService:
 
         return {
             "owner": owner,
-            "org": org
+            "org": org,
+            "signup_poll_token_hash": data.get("signup_poll_token_hash"),
         }
 
     async def resend_verification(self, email: str) -> dict:

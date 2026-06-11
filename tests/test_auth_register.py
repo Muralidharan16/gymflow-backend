@@ -96,6 +96,7 @@ async def test_signup_happy_path(client):
         assert response.status_code == 200
         assert response.json()["status"] == "success"
         assert "Verification email sent" in response.json()["message"]
+        assert response.json()["signup_poll_token"]
         
         # Ensure email was sent and token was generated
         assert mock_send.called
@@ -109,6 +110,64 @@ async def test_signup_happy_path(client):
         assert pending_data is not None
         assert pending_data["email"] == "arjun@example.com"
         assert pending_data["org_name"] == "Fit Core"
+        assert pending_data["signup_poll_token_hash"]
+
+@pytest.mark.asyncio
+async def test_signup_status_requires_matching_poll_token(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        signup_resp = await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+
+    poll_token = signup_resp.json()["signup_poll_token"]
+
+    email_only = await client.get("/auth/signup-status", params={"email": "arjun@example.com"})
+    assert email_only.status_code == 422
+
+    wrong_pending = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": "wrong-token"},
+    )
+    assert wrong_pending.status_code == 403
+
+    pending = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert pending.status_code == 200
+    assert pending.json()["status"] == "pending"
+
+    verify_resp = await client.get(f"/auth/verify?token={raw_token}", follow_redirects=False)
+    assert verify_resp.status_code == 307
+
+    wrong_verified = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": "wrong-token"},
+    )
+    assert wrong_verified.status_code == 403
+
+    verified = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert verified.status_code == 200
+    assert verified.json()["status"] == "verified"
+    assert verified.json()["access_token"]
+    assert verified.json()["refresh_token"]
+
+    consumed = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert consumed.status_code == 200
+    assert consumed.json()["status"] == "pending"
 
 @pytest.mark.asyncio
 async def test_signup_weak_password(client):
@@ -338,6 +397,38 @@ async def test_login_happy_path(client):
     assert "refresh_token" in login_resp.cookies
 
 @pytest.mark.asyncio
+async def test_refresh_returns_rotated_token_json(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
+
+    login_resp = await client.post("/auth/login", json={
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!"
+    })
+    assert login_resp.status_code == 200
+    refresh_token = login_resp.json()["refresh_token"]
+
+    refresh_resp = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+    assert refresh_resp.status_code == 200
+    data = refresh_resp.json()
+    assert data["status"] == "success"
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["refresh_token"] != refresh_token
+    assert "access_token" in refresh_resp.cookies
+    assert "refresh_token" in refresh_resp.cookies
+
+@pytest.mark.asyncio
 async def test_login_normalizes_email_case_and_spaces(client):
     payload = {
         "org_name": "Fit Core",
@@ -415,3 +506,160 @@ async def test_login_account_locked(client):
     resp_lock = await client.post("/auth/login", json=login_payload)
     assert resp_lock.status_code == 429
     assert "Account locked" in resp_lock.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_signup_status_verified_consumes_pending_data(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        signup_resp = await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+
+    poll_token = signup_resp.json()["signup_poll_token"]
+    redis_utils = get_redis_utils()
+
+    verify_resp = await client.get(f"/auth/verify?token={raw_token}", follow_redirects=False)
+    assert verify_resp.status_code == 307
+
+    verified = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert verified.status_code == 200
+    assert verified.json()["status"] == "verified"
+    assert verified.json()["access_token"]
+    assert verified.json()["refresh_token"]
+
+    email_hash = hashlib.sha256("arjun@example.com".encode("utf-8")).hexdigest()
+    assert await redis_utils.client.get(f"signup:sync:arjun@example.com") is None
+    assert await redis_utils.client.get(f"signup:email:{email_hash}") is None
+
+    consumed = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert consumed.status_code == 200
+    assert consumed.json()["status"] == "pending"
+    assert "access_token" not in consumed.json()
+
+@pytest.mark.asyncio
+async def test_signup_status_rate_limited(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True):
+        signup_resp = await client.post("/auth/signup", json=payload)
+
+    poll_token = signup_resp.json()["signup_poll_token"]
+
+    for _ in range(30):
+        resp = await client.get(
+            "/auth/signup-status",
+            params={"email": "arjun@example.com", "poll_token": poll_token},
+        )
+        assert resp.status_code == 200
+
+    rate_limited = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert rate_limited.status_code == 429
+    assert "Too many requests" in rate_limited.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_signup_status_cache_control_headers(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True):
+        signup_resp = await client.post("/auth/signup", json=payload)
+
+    poll_token = signup_resp.json()["signup_poll_token"]
+
+    resp = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert resp.status_code == 200
+    cache_control = resp.headers.get("cache-control", "").lower()
+    assert "no-store" in cache_control
+    assert "no-cache" in cache_control
+    assert "must-revalidate" in cache_control
+
+@pytest.mark.asyncio
+async def test_signup_status_wrong_poll_token_returns_403(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True):
+        await client.post("/auth/signup", json=payload)
+
+    resp = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": "wrong-token-value"},
+    )
+    assert resp.status_code == 403
+    assert "Invalid signup status token" in resp.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_refresh_token_response_includes_tokens_json(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
+
+    login_resp = await client.post("/auth/login", json={
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!"
+    })
+    assert login_resp.status_code == 200
+
+    refresh_token = login_resp.json()["refresh_token"]
+    refresh_resp = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+    assert refresh_resp.status_code == 200
+
+    data = refresh_resp.json()
+    assert "access_token" in data
+    assert "refresh_token" in data
+    assert data["access_token"] != login_resp.json()["access_token"]
+    assert data["refresh_token"] != refresh_token
+    assert data["status"] == "success"
+    assert data["message"] == "Token refreshed"
+
+@pytest.mark.asyncio
+async def test_signup_status_empty_poll_token_rejected(client):
+    resp = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": ""},
+    )
+    assert resp.status_code == 403
+    assert "Invalid signup status token" in resp.json()["detail"]
