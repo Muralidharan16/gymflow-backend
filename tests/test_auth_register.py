@@ -33,6 +33,7 @@ async def cleanup_database_and_redis():
     async with AsyncSessionLocal() as session:
         test_emails = [
             "arjun@example.com",
+            "arjun2@example.com",
             "duplicate@example.com",
             "weak@example.com",
             "rate@example.com",
@@ -660,6 +661,74 @@ async def test_signup_status_empty_poll_token_rejected(client):
     resp = await client.get(
         "/auth/signup-status",
         params={"email": "arjun@example.com", "poll_token": ""},
+    )
+    assert resp.status_code == 403
+    assert "Invalid signup status token" in resp.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_signup_stores_poll_token_reverse_mapping(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True):
+        signup_resp = await client.post("/auth/signup", json=payload)
+
+    poll_token = signup_resp.json()["signup_poll_token"]
+    poll_token_hash = hashlib.sha256(poll_token.encode("utf-8")).hexdigest()
+    email_hash = hashlib.sha256("arjun@example.com".encode("utf-8")).hexdigest()
+
+    redis_utils = get_redis_utils()
+    stored_email_hash = await redis_utils.client.get(f"poll_token:{poll_token_hash}")
+    assert stored_email_hash == email_hash
+
+@pytest.mark.asyncio
+async def test_signup_status_poll_token_mapping_must_match_email(client):
+    payload_a = {
+        "org_name": "Gym A",
+        "owner_name": "Owner A",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+    payload_b = {
+        "org_name": "Gym B",
+        "owner_name": "Owner B",
+        "email": "arjun2@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True):
+        resp_a = await client.post("/auth/signup", json=payload_a)
+        resp_b = await client.post("/auth/signup", json=payload_b)
+
+    poll_token_a = resp_a.json()["signup_poll_token"]
+    poll_token_b = resp_b.json()["signup_poll_token"]
+
+    resp_cross = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token_b},
+    )
+    assert resp_cross.status_code == 403
+    assert "Invalid signup status token" in resp_cross.json()["detail"]
+
+    resp_own = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token_a},
+    )
+    assert resp_own.status_code == 200
+    assert resp_own.json()["status"] == "pending"
+
+@pytest.mark.asyncio
+async def test_signup_status_unrecognised_poll_token_always_403(client):
+    resp = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": "never-signed-up-token"},
     )
     assert resp.status_code == 403
     assert "Invalid signup status token" in resp.json()["detail"]

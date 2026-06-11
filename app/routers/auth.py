@@ -40,6 +40,15 @@ async def signup(request: Request, data: SignupRequest, db: AsyncSession = Depen
     service = AuthService(db)
     client_ip = request.client.host if request.client else "127.0.0.1"
     result = await service.signup(data, client_ip)
+
+    poll_token = result.get("signup_poll_token")
+    if poll_token:
+        from app.core.redis import get_redis_utils
+        poll_token_hash = hashlib.sha256(poll_token.encode("utf-8")).hexdigest()
+        email_hash = hashlib.sha256(data.email.strip().lower().encode("utf-8")).hexdigest()
+        redis_utils = get_redis_utils()
+        await redis_utils.client.setex(f"poll_token:{poll_token_hash}", 600, email_hash)
+
     return result
 
 @router.get("/verify")
@@ -88,6 +97,7 @@ async def verify(token: str, db: AsyncSession = Depends(get_db)):
     from app.core.redis import get_redis_utils
     import json
     redis_utils = get_redis_utils()
+    signup_poll_token_hash = result.get("signup_poll_token_hash")
     sync_data = {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -95,9 +105,13 @@ async def verify(token: str, db: AsyncSession = Depends(get_db)):
         "sub": str(owner.id),
         "name": owner.owner_name,
         "organizationName": org.name if org else "Studio Owner",
-        "signup_poll_token_hash": result.get("signup_poll_token_hash"),
+        "signup_poll_token_hash": signup_poll_token_hash,
     }
     await redis_utils.client.setex(f"signup:sync:{owner.email}", 300, json.dumps(sync_data))
+
+    if signup_poll_token_hash:
+        email_hash = hashlib.sha256(owner.email.strip().lower().encode("utf-8")).hexdigest()
+        await redis_utils.client.setex(f"poll_token:{signup_poll_token_hash}", 600, email_hash)
     
     # Redirect to a simple success message page instead of onboarding
     response = RedirectResponse(url=f"{settings.FRONTEND_URL}/auth/verify-success")
@@ -113,9 +127,9 @@ async def get_signup_status(email: str, poll_token: str, response: FastApiRespon
     """
     Endpoint for the same device to poll signup verification status.
 
-    SECURITY: Email alone is never sufficient. A valid signup_poll_token (returned
-    by POST /auth/signup) must match the stored hash. Tokens are returned only once
-    (one-time pickup), after which the sync key and pending data are consumed.
+    SECURITY: Email alone is never sufficient. The poll_token is validated via a
+    reverse Redis mapping before any status is returned. Wrong/missing/expired
+    poll_token always returns 403.
     """
     from app.core.redis import get_redis_utils
     import json
@@ -135,6 +149,10 @@ async def get_signup_status(email: str, poll_token: str, response: FastApiRespon
 
     poll_token_hash = hashlib.sha256(poll_token.encode("utf-8")).hexdigest()
     email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()
+
+    poll_token_email_hash = await redis_utils.client.get(f"poll_token:{poll_token_hash}")
+    if not poll_token_email_hash or not hmac.compare_digest(poll_token_email_hash, email_hash):
+        raise HTTPException(status_code=403, detail="Invalid signup status token")
 
     sync_data_raw = await redis_utils.client.get(f"signup:sync:{email}")
     if sync_data_raw:
