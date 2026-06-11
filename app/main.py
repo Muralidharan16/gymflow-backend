@@ -63,6 +63,7 @@ from app.routers import (
     staff_roles,
     subscriptions,
     membership_plans,
+    member_subscriptions_v2,
 )
 
 
@@ -160,6 +161,7 @@ app.include_router(branch_operating_hours.router)
 app.include_router(branch_lifecycle.router)
 app.include_router(geo.router)
 app.include_router(membership_plans.router)
+app.include_router(member_subscriptions_v2.router)
 
 
 # ── Health probe ──────────────────────────────────────────────────────────
