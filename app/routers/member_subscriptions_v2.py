@@ -10,7 +10,7 @@ from app.models.member_subscription_v2 import ModernSubscriptionStatus
 from app.schemas.member_subscription_v2 import SubscriptionCreate, SubscriptionListResponse, SubscriptionResponse
 from app.services.member_subscription_v2_service import MemberSubscriptionV2Service
 
-router = APIRouter(prefix="/organizations/{org_id}/subscriptions", tags=["Modern Subscriptions"])
+router = APIRouter(prefix="/organizations/{org_id}/member-subscriptions", tags=["Modern Subscriptions"])
 
 
 def _enforce_path_org(org_id: uuid.UUID, staff: Staff) -> None:

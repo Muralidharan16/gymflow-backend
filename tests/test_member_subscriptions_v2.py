@@ -199,7 +199,7 @@ async def create_subscription(client, test_data, **overrides):
         "start_date": "2026-06-11",
     }
     payload.update(overrides)
-    return await client.post(f"/organizations/{test_data['org1_id']}/subscriptions", json=payload, headers=headers)
+    return await client.post(f"/organizations/{test_data['org1_id']}/member-subscriptions", json=payload, headers=headers)
 
 
 @pytest.mark.parametrize(
@@ -304,7 +304,7 @@ async def test_path_org_must_match_authenticated_org(client, test_data):
         "membership_plan_id": str(test_data["org_wide_plan_id"]),
         "primary_member_id": str(test_data["member1_id"]),
     }
-    response = await client.post(f"/organizations/{test_data['org2_id']}/subscriptions", json=payload, headers=headers)
+    response = await client.post(f"/organizations/{test_data['org2_id']}/member-subscriptions", json=payload, headers=headers)
     assert response.status_code == 403
 
 
@@ -315,17 +315,17 @@ async def test_list_and_detail_are_org_isolated(client, test_data):
     headers1 = get_headers(test_data["owner1_id"], test_data["org1_id"], "owner1@test.com")
     headers2 = get_headers(test_data["owner2_id"], test_data["org2_id"], "owner2@test.com")
 
-    list_response = await client.get(f"/organizations/{test_data['org1_id']}/subscriptions", headers=headers1)
+    list_response = await client.get(f"/organizations/{test_data['org1_id']}/member-subscriptions", headers=headers1)
     assert list_response.status_code == 200
     assert list_response.json()["total"] == 1
     assert list_response.json()["data"][0]["id"] == subscription_id
 
-    detail = await client.get(f"/organizations/{test_data['org1_id']}/subscriptions/{subscription_id}", headers=headers1)
+    detail = await client.get(f"/organizations/{test_data['org1_id']}/member-subscriptions/{subscription_id}", headers=headers1)
     assert detail.status_code == 200
     assert detail.json()["id"] == subscription_id
     assert len(detail.json()["members"]) == 1
 
-    wrong_org_detail = await client.get(f"/organizations/{test_data['org2_id']}/subscriptions/{subscription_id}", headers=headers2)
+    wrong_org_detail = await client.get(f"/organizations/{test_data['org2_id']}/member-subscriptions/{subscription_id}", headers=headers2)
     assert wrong_org_detail.status_code == 404
 
 
@@ -388,7 +388,7 @@ async def test_concurrent_subscription_code_generation_is_unique_and_sequential(
             "primary_member_id": str(member_id),
             "start_date": "2026-06-11",
         }
-        return await client.post(f"/organizations/{test_data['org1_id']}/subscriptions", json=payload, headers=headers)
+        return await client.post(f"/organizations/{test_data['org1_id']}/member-subscriptions", json=payload, headers=headers)
 
     responses = await asyncio.gather(*[create_for_member(member_id) for member_id in member_ids])
     codes = set()
