@@ -9,6 +9,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import text
 from app.core.database import async_engine
 
+def require_destructive_reset_enabled():
+    if os.getenv("ALLOW_DESTRUCTIVE_DB_RESET") != "true":
+        raise SystemExit("Refusing destructive DB reset. Set ALLOW_DESTRUCTIVE_DB_RESET=true to continue.")
+
 async def clean_db():
     async with async_engine.begin() as conn:
         # Drop all tables in public schema
@@ -19,4 +23,5 @@ async def clean_db():
         print("Dropped and recreated public schema")
 
 if __name__ == "__main__":
+    require_destructive_reset_enabled()
     asyncio.run(clean_db())

@@ -11,6 +11,10 @@ from app.models.org_branch import OrgBranch
 from app.models.branch_operating_hours import BranchOperatingHours, BranchSpecialHours, BranchHoursProjection, BranchHoursAuditLog
 from app.core.security import hash_password
 
+def require_destructive_reset_enabled():
+    if os.getenv("ALLOW_DESTRUCTIVE_DB_RESET") != "true":
+        raise SystemExit("Refusing destructive test-user reset. Set ALLOW_DESTRUCTIVE_DB_RESET=true to continue.")
+
 async def setup_test_user():
     test_email = "phase5@example.com"
     test_password = "StrongPassword123!"
@@ -91,4 +95,5 @@ async def setup_test_user():
         print(f"Password: {test_password}")
 
 if __name__ == "__main__":
+    require_destructive_reset_enabled()
     asyncio.run(setup_test_user())

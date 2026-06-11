@@ -114,6 +114,7 @@ async def get_signup_status(email: str, response: FastApiResponse):
     from app.core.redis import get_redis_utils
     import json
     redis_utils = get_redis_utils()
+    email = email.strip().lower()
     
     sync_data_raw = await redis_utils.client.get(f"signup:sync:{email}")
     if not sync_data_raw:
@@ -157,9 +158,10 @@ async def resend_verification(request: Request, data: dict, db: AsyncSession = D
 async def login(response: FastApiResponse, data: LoginRequest, db: AsyncSession = Depends(get_db)):
     service = AuthService(db)
     tokens = await service.login(data)
+    email = data.email.strip().lower()
     
     # Get user details for response
-    result = await db.execute(select(Owner).where(Owner.email == data.email))
+    result = await db.execute(select(Owner).where(Owner.email == email))
     owner = result.scalar_one()
 
     from app.models.organization import Organization

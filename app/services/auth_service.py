@@ -31,6 +31,7 @@ class AuthService:
         Does NOT write to PostgreSQL.
         """
         redis_utils = get_redis_utils()
+        email = data.email.strip().lower()
 
         # 1. Rate limiting by IP
         rate_key = f"ratelimit:signup:{ip_address}"
@@ -41,7 +42,7 @@ class AuthService:
             )
 
         # 2. Check email existence (anti-enumeration: return success even if exists)
-        q = select(Owner).where(Owner.email == data.email)
+        q = select(Owner).where(Owner.email == email)
         result = await self.session.execute(q)
         if result.scalar_one_or_none():
             return {
@@ -58,13 +59,13 @@ class AuthService:
 
         # 5. Store in Redis
         pending_key = f"signup:pending:{token_hash}"
-        email_hash = hashlib.sha256(data.email.lower().encode("utf-8")).hexdigest()
+        email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()
         email_lookup_key = f"signup:email:{email_hash}"
 
         signup_data = {
             "org_name": data.org_name,
             "owner_name": data.owner_name,
-            "email": data.email,
+            "email": email,
             "hashed_password": hashed_pw,
             "facility_type": data.facility_type,
             "resend_count": 0,
@@ -80,7 +81,7 @@ class AuthService:
 
         # 6. Send verification email
         email_sent = await send_verification_email(
-            email=data.email,
+            email=email,
             owner_name=data.owner_name,
             org_name=data.org_name,
             raw_token=raw_token
@@ -103,22 +104,24 @@ class AuthService:
         redis_utils = get_redis_utils()
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-        # 1. Atomic read + delete (ensures one-time use)
-        raw_payload = await redis_utils.getdel_or_null(f"signup:pending:{token_hash}")
+        pending_key = f"signup:pending:{token_hash}"
+
+        # Read first; consume the token only after account creation commits.
+        raw_payload = await redis_utils.client.get(pending_key)
         if not raw_payload:
             return {"error": "expired"}
 
         data = json.loads(raw_payload)
-        email = data["email"]
-        email_hash = hashlib.sha256(email.lower().encode("utf-8")).hexdigest()
-
-        # Best-effort delete reverse lookup
-        await redis_utils.delete_keys_safe([f"signup:email:{email_hash}"])
+        email = data["email"].strip().lower()
+        email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()
+        email_lookup_key = f"signup:email:{email_hash}"
 
         # 2. Check if already registered (race condition guard)
         q = select(Owner).where(Owner.email == email)
         result = await self.session.execute(q)
-        if result.scalar_one_or_none():
+        existing_owner = result.scalar_one_or_none()
+        if existing_owner:
+            await redis_utils.delete_keys_safe([pending_key, email_lookup_key])
             return {"error": "already_registered"}
 
         # 3. Atomic account creation
@@ -186,6 +189,8 @@ class AuthService:
             await self.session.rollback()
             return {"error": "server_error"}
 
+        await redis_utils.delete_keys_safe([pending_key, email_lookup_key])
+
         return {
             "owner": owner,
             "org": org
@@ -196,7 +201,8 @@ class AuthService:
         Resend magic link if within limits.
         """
         redis_utils = get_redis_utils()
-        email_hash = hashlib.sha256(email.lower().encode("utf-8")).hexdigest()
+        email = email.strip().lower()
+        email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()
 
         # 1. Rate limiting (3 per hour per email)
         resend_rate_key = f"ratelimit:resend:{email_hash}"
@@ -229,13 +235,12 @@ class AuthService:
         new_raw_token = secrets.token_urlsafe(48)
         new_token_hash = hashlib.sha256(new_raw_token.encode("utf-8")).hexdigest()
 
-        # 5. Update data and Redis
-        raw_data["resend_count"] += 1
+        # 5. Store a replacement token while keeping the old token valid until email succeeds.
+        new_data = {**raw_data, "resend_count": raw_data.get("resend_count", 0) + 1}
         new_pending_key = f"signup:pending:{new_token_hash}"
 
         try:
-            await redis_utils.delete_keys_safe([pending_key, email_lookup_key])
-            await redis_utils.set_json_with_ttl(new_pending_key, raw_data, ttl=600)
+            await redis_utils.set_json_with_ttl(new_pending_key, new_data, ttl=600)
             await redis_utils.client.set(email_lookup_key, new_token_hash, ex=600)
         except Exception:
             logger.exception("Redis failure during resend")
@@ -243,21 +248,26 @@ class AuthService:
 
         # 6. Send new email
         email_sent = await send_verification_email(
-            email=raw_data["email"],
-            owner_name=raw_data["owner_name"],
-            org_name=raw_data["org_name"],
+            email=new_data["email"],
+            owner_name=new_data["owner_name"],
+            org_name=new_data["org_name"],
             raw_token=new_raw_token
         )
 
         if not email_sent:
+            await redis_utils.delete_keys_safe([new_pending_key])
+            await redis_utils.client.set(email_lookup_key, old_token_hash, ex=600)
             raise HTTPException(status_code=500, detail="Something went wrong. Please try again.")
+
+        await redis_utils.delete_keys_safe([pending_key])
 
         return {"status": "success", "message": "Verification email resent."}
 
     async def login(self, data: LoginRequest) -> TokenResponse:
         """Secure login with credential verification and brute-force protection."""
-        login_lock_key = f"login_lock:{data.email}"
-        attempts_key = f"login_attempts:{data.email}"
+        email = data.email.strip().lower()
+        login_lock_key = f"login_lock:{email}"
+        attempts_key = f"login_attempts:{email}"
 
         # 1. Check if account is locked
         redis_utils = get_redis_utils()
@@ -268,7 +278,7 @@ class AuthService:
             )
 
         # 2. Get owner
-        q = select(Owner).where(Owner.email == data.email)
+        q = select(Owner).where(Owner.email == email)
         result = await self.session.execute(q)
         owner = result.scalar_one_or_none()
 
