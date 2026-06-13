@@ -21,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Upgrade schema."""
     op.execute("""
-    CREATE TABLE public.audit_key_registry (
+    CREATE TABLE IF NOT EXISTS public.audit_key_registry (
         key_version         SMALLINT PRIMARY KEY,
         kms_key_alias       VARCHAR(128) NOT NULL,
         algorithm           VARCHAR(32) NOT NULL DEFAULT 'aes-256-gcm',
@@ -35,14 +35,25 @@ def upgrade() -> None:
 
     op.execute("""
     INSERT INTO public.audit_key_registry (key_version, kms_key_alias)
-    VALUES (1, 'alias/gymflow-audit-v1');
+    VALUES (1, 'alias/gymflow-audit-v1')
+    ON CONFLICT (key_version) DO NOTHING;
     """)
 
     op.execute("""
-    ALTER TABLE public.branch_audit_log
-        ADD CONSTRAINT fk_branch_audit_log_hash_key
-        FOREIGN KEY (hash_key_version) REFERENCES public.audit_key_registry(key_version)
-        ON DELETE RESTRICT;
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'fk_branch_audit_log_hash_key'
+        ) THEN
+            ALTER TABLE public.branch_audit_log
+                ADD CONSTRAINT fk_branch_audit_log_hash_key
+                FOREIGN KEY (hash_key_version) REFERENCES public.audit_key_registry(key_version)
+                ON DELETE RESTRICT;
+        END IF;
+    END
+    $$;
     """)
 
 def downgrade() -> None:
