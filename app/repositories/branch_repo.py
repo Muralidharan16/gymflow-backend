@@ -88,6 +88,7 @@ class BranchRepository:
         state.deleted_at = datetime.now(timezone.utc)
         state.branch_status = "pending_deletion"
         state.is_active = False
+        state.is_operational = False
         state.status = "permanently_closed"
         state.status_reason = reason
         state.status_changed_by = None
