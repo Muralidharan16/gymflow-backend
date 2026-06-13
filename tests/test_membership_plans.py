@@ -12,19 +12,17 @@ from app.core.security import create_access_token
 from app.models.organization import Organization
 from app.models.auth import Owner
 from app.models.org_branch import OrgBranch
+from conftest import cleanup_test_database_tables
 
 async def clear_membership_plan_test_data():
-    async with AsyncSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
-        await session.execute(text("SET session_replication_role = 'replica'"))
-        await session.execute(text("DELETE FROM membership_plans;"))
-        await session.execute(text("DELETE FROM organization_counters;"))
-        await session.execute(text("DELETE FROM org_branch_state;"))
-        await session.execute(text("DELETE FROM org_branches;"))
-        await session.execute(text("DELETE FROM owners;"))
-        await session.execute(text("DELETE FROM organizations;"))
-        await session.execute(text("SET session_replication_role = 'origin'"))
-        await session.commit()
+    await cleanup_test_database_tables([
+        "membership_plans",
+        "organization_counters",
+        "org_branch_state",
+        "org_branches",
+        "owners",
+        "organizations",
+    ])
 
 @pytest_asyncio.fixture(autouse=True)
 async def cleanup_database():

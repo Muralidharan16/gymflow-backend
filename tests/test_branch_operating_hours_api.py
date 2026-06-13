@@ -24,6 +24,7 @@ from app.models.branch_operating_hours import (
 from app.core.database import AsyncSessionLocal
 from app.core.redis import init_redis, get_redis_utils, close_redis
 from app.tasks.branch_hours_partition import ensure_audit_partitions
+from conftest import cleanup_test_database_tables
 
 @pytest_asyncio.fixture(autouse=True)
 async def cleanup_database_and_redis():
@@ -33,69 +34,31 @@ async def cleanup_database_and_redis():
     redis_utils = get_redis_utils()
     await redis_utils.client.flushdb()
 
-    async with AsyncSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
-        await session.execute(text("SET session_replication_role = 'replica'"))
-        
-        test_emails = ["branch_hours_api@example.com", "other_tenant@example.com"]
-        
-        stmt = select(Owner.org_id).where(Owner.email.in_(test_emails))
-        res = await session.execute(stmt)
-        org_ids = res.scalars().all()
-        
-        if org_ids:
-            # Delete operating hours
-            await session.execute(delete(BranchHoursAuditLog).where(BranchHoursAuditLog.branch_id.in_(
-                select(OrgBranch.id).where(OrgBranch.org_id.in_(org_ids))
-            )))
-            await session.execute(delete(BranchHoursProjection).where(BranchHoursProjection.branch_id.in_(
-                select(OrgBranch.id).where(OrgBranch.org_id.in_(org_ids))
-            )))
-            await session.execute(delete(BranchOperatingHours).where(BranchOperatingHours.branch_id.in_(
-                select(OrgBranch.id).where(OrgBranch.org_id.in_(org_ids))
-            )))
-            await session.execute(delete(BranchSpecialHours).where(BranchSpecialHours.branch_id.in_(
-                select(OrgBranch.id).where(OrgBranch.org_id.in_(org_ids))
-            )))
-            await session.execute(delete(OrganizationOperatingHours).where(OrganizationOperatingHours.org_id.in_(org_ids)))
-            
-            await session.execute(delete(OrgBranch).where(OrgBranch.org_id.in_(org_ids)))
-            await session.execute(delete(Owner).where(Owner.org_id.in_(org_ids)))
-            await session.execute(delete(Organization).where(Organization.id.in_(org_ids)))
-            
-        await session.execute(text("SET session_replication_role = 'origin'"))
-        await session.commit()
+    await cleanup_test_database_tables([
+        "branch_hours_audit_log",
+        "branch_hours_projection",
+        "branch_operating_hours",
+        "branch_special_hours",
+        "organization_operating_hours",
+        "org_branch_state",
+        "org_branches",
+        "owners",
+        "organizations",
+    ])
 
     yield
 
-    async with AsyncSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
-        await session.execute(text("SET session_replication_role = 'replica'"))
-        
-        test_emails = ["branch_hours_api@example.com", "other_tenant@example.com"]
-        stmt = select(Owner.org_id).where(Owner.email.in_(test_emails))
-        res = await session.execute(stmt)
-        org_ids = res.scalars().all()
-        if org_ids:
-            await session.execute(delete(BranchHoursAuditLog).where(BranchHoursAuditLog.branch_id.in_(
-                select(OrgBranch.id).where(OrgBranch.org_id.in_(org_ids))
-            )))
-            await session.execute(delete(BranchHoursProjection).where(BranchHoursProjection.branch_id.in_(
-                select(OrgBranch.id).where(OrgBranch.org_id.in_(org_ids))
-            )))
-            await session.execute(delete(BranchOperatingHours).where(BranchOperatingHours.branch_id.in_(
-                select(OrgBranch.id).where(OrgBranch.org_id.in_(org_ids))
-            )))
-            await session.execute(delete(BranchSpecialHours).where(BranchSpecialHours.branch_id.in_(
-                select(OrgBranch.id).where(OrgBranch.org_id.in_(org_ids))
-            )))
-            await session.execute(delete(OrganizationOperatingHours).where(OrganizationOperatingHours.org_id.in_(org_ids)))
-            
-            await session.execute(delete(OrgBranch).where(OrgBranch.org_id.in_(org_ids)))
-            await session.execute(delete(Owner).where(Owner.org_id.in_(org_ids)))
-            await session.execute(delete(Organization).where(Organization.id.in_(org_ids)))
-        await session.execute(text("SET session_replication_role = 'origin'"))
-        await session.commit()
+    await cleanup_test_database_tables([
+        "branch_hours_audit_log",
+        "branch_hours_projection",
+        "branch_operating_hours",
+        "branch_special_hours",
+        "organization_operating_hours",
+        "org_branch_state",
+        "org_branches",
+        "owners",
+        "organizations",
+    ])
 
 @pytest_asyncio.fixture
 async def client() -> AsyncGenerator[AsyncClient, None]:
@@ -483,4 +446,3 @@ async def test_api_special_hours_partial_replacement(auth_session):
     data = get_resp.json()
     assert len(data) == 1
     assert data[0]["special_date"] == "2026-12-25"
-

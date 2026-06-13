@@ -20,6 +20,7 @@ from app.models.branch_lifecycle import (
 )
 from app.services.branch_lifecycle_service import BranchLifecycleService
 from app.core.database import AsyncSessionLocal
+from conftest import cleanup_test_database_tables
 
 
 async def set_db_session_context(session, org_id: str, user_id: str, role: str):
@@ -167,24 +168,17 @@ async def lifecycle_setup():
         }
 
     # Teardown
-    async with AsyncSessionLocal() as clean_session:
-        # Reset local context variables
-        await clean_session.execute(text("SELECT pg_catalog.set_config('app.current_org_id', '', true)"))
-        await clean_session.execute(text("SELECT pg_catalog.set_config('app.current_user_id', '', true)"))
-        await clean_session.execute(text("SELECT pg_catalog.set_config('app.current_role', '', true)"))
-        # Bypass append-only and history check triggers for cleanup
-        await clean_session.execute(text("SET session_replication_role = 'replica'"))
-        await clean_session.execute(text("DELETE FROM branch_watchdog_alerts WHERE branch_id IN (:b1, :b2)"), {"b1": b1_id, "b2": b2_id})
-        await clean_session.execute(text("DELETE FROM branch_lifecycle_events WHERE branch_id IN (:b1, :b2)"), {"b1": b1_id, "b2": b2_id})
-        await clean_session.execute(text("DELETE FROM branch_outbox_events WHERE branch_id IN (:b1, :b2)"), {"b1": b1_id, "b2": b2_id})
-        await clean_session.execute(text("DELETE FROM branch_status_history WHERE branch_id IN (:b1, :b2)"), {"b1": b1_id, "b2": b2_id})
-        await clean_session.execute(text("DELETE FROM org_branch_state WHERE org_id = :oid"), {"oid": org_id})
-        await clean_session.execute(text("DELETE FROM org_branches WHERE org_id = :oid"), {"oid": org_id})
-        await clean_session.execute(text("DELETE FROM organization_users WHERE org_id = :oid"), {"oid": org_id})
-        await clean_session.execute(text("DELETE FROM gym_owners WHERE org_id = :oid"), {"oid": org_id})
-        await clean_session.execute(text("DELETE FROM organizations WHERE id = :oid"), {"oid": org_id})
-        await clean_session.execute(text("SET session_replication_role = 'origin'"))
-        await clean_session.commit()
+    await cleanup_test_database_tables([
+        "branch_watchdog_alerts",
+        "branch_lifecycle_events",
+        "branch_outbox_events",
+        "branch_status_history",
+        "org_branch_state",
+        "org_branches",
+        "organization_users",
+        "gym_owners",
+        "organizations",
+    ])
 
 
 

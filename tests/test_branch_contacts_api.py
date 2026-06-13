@@ -18,6 +18,7 @@ from app.models.org_branch import OrgBranch
 from app.schemas.branch_contacts import BranchContactORM, BranchContactAuditORM
 from app.core.database import AsyncSessionLocal
 from app.core.redis import init_redis, get_redis_utils, close_redis
+from conftest import cleanup_test_database_tables
 
 @pytest_asyncio.fixture(autouse=True)
 async def cleanup_database_and_redis():
@@ -26,46 +27,25 @@ async def cleanup_database_and_redis():
     redis_utils = get_redis_utils()
     await redis_utils.client.flushdb()
 
-    async with AsyncSessionLocal() as session:
-        from sqlalchemy import text
-        await session.execute(text("RESET ROLE"))
-        await session.execute(text("SET session_replication_role = 'replica'"))
-        
-        test_emails = ["branch_contacts_api@example.com"]
-        
-        stmt = select(Owner.org_id).where(Owner.email.in_(test_emails))
-        res = await session.execute(stmt)
-        org_ids = res.scalars().all()
-        
-        if org_ids:
-            await session.execute(delete(BranchContactAuditORM).where(BranchContactAuditORM.org_id.in_(org_ids)))
-            await session.execute(delete(BranchContactORM).where(BranchContactORM.org_id.in_(org_ids)))
-            await session.execute(delete(OrgBranch).where(OrgBranch.org_id.in_(org_ids)))
-            await session.execute(delete(Owner).where(Owner.org_id.in_(org_ids)))
-            await session.execute(delete(Organization).where(Organization.id.in_(org_ids)))
-            
-        await session.execute(text("SET session_replication_role = 'origin'"))
-        await session.commit()
+    await cleanup_test_database_tables([
+        "branch_contacts_audit",
+        "branch_contacts",
+        "org_branch_state",
+        "org_branches",
+        "owners",
+        "organizations",
+    ])
 
     yield
 
-    async with AsyncSessionLocal() as session:
-        from sqlalchemy import text
-        await session.execute(text("RESET ROLE"))
-        await session.execute(text("SET session_replication_role = 'replica'"))
-        
-        test_emails = ["branch_contacts_api@example.com"]
-        stmt = select(Owner.org_id).where(Owner.email.in_(test_emails))
-        res = await session.execute(stmt)
-        org_ids = res.scalars().all()
-        if org_ids:
-            await session.execute(delete(BranchContactAuditORM).where(BranchContactAuditORM.org_id.in_(org_ids)))
-            await session.execute(delete(BranchContactORM).where(BranchContactORM.org_id.in_(org_ids)))
-            await session.execute(delete(OrgBranch).where(OrgBranch.org_id.in_(org_ids)))
-            await session.execute(delete(Owner).where(Owner.org_id.in_(org_ids)))
-            await session.execute(delete(Organization).where(Organization.id.in_(org_ids)))
-        await session.execute(text("SET session_replication_role = 'origin'"))
-        await session.commit()
+    await cleanup_test_database_tables([
+        "branch_contacts_audit",
+        "branch_contacts",
+        "org_branch_state",
+        "org_branches",
+        "owners",
+        "organizations",
+    ])
 
 @pytest_asyncio.fixture
 async def client() -> AsyncGenerator[AsyncClient, None]:

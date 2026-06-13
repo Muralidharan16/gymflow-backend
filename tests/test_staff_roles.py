@@ -15,6 +15,7 @@ from app.models.auth import Owner
 from app.models.org_branch import OrgBranch, OrgBranchState
 from app.models.organization_user import OrganizationUser, BranchStaffRole, BranchStaffRoleEnum
 from app.core.redis import init_redis, get_redis_utils, close_redis
+from conftest import cleanup_test_database_tables
 
 @pytest_asyncio.fixture(autouse=True)
 async def cleanup_database_and_redis():
@@ -24,24 +25,18 @@ async def cleanup_database_and_redis():
     
     yield
     
-    async with AsyncSessionLocal() as session:
-        # Reset role to superuser before running cleanup commands
-        await session.execute(text("RESET ROLE"))
-        # Bypass append-only and history checks
-        await session.execute(text("SET session_replication_role = 'replica'"))
-        # Drop all rows created during tests in correct dependency order
-        await session.execute(text("DELETE FROM branch_staff_roles;"))
-        await session.execute(text("TRUNCATE TABLE branch_audit_log CASCADE;"))
-        await session.execute(text("DELETE FROM organization_members;"))
-        await session.execute(text("DELETE FROM organization_users;"))
-        await session.execute(text("DELETE FROM organization_addresses;"))
-        await session.execute(text("DELETE FROM member_addresses;"))
-        await session.execute(text("DELETE FROM org_branch_state;"))
-        await session.execute(text("DELETE FROM org_branches;"))
-        await session.execute(text("DELETE FROM owners;"))
-        await session.execute(text("DELETE FROM organizations;"))
-        await session.execute(text("SET session_replication_role = 'origin'"))
-        await session.commit()
+    await cleanup_test_database_tables([
+        "branch_staff_roles",
+        "branch_audit_log",
+        "organization_members",
+        "organization_users",
+        "organization_addresses",
+        "member_addresses",
+        "org_branch_state",
+        "org_branches",
+        "owners",
+        "organizations",
+    ])
     await close_redis()
 
 

@@ -17,23 +17,21 @@ from app.models.membership_plan import DurationUnit, MembershipPlan, PlanStatus
 from app.models.org_branch import OrgBranch
 from app.models.organization import Organization
 from app.utils.subscription_dates import calculate_subscription_end_date
+from conftest import cleanup_test_database_tables
 
 
 async def clear_subscription_v2_test_data():
-    async with AsyncSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
-        await session.execute(text("SET session_replication_role = 'replica'"))
-        await session.execute(text("DELETE FROM subscription_members;"))
-        await session.execute(text("DELETE FROM member_subscriptions_v2;"))
-        await session.execute(text("DELETE FROM members;"))
-        await session.execute(text("DELETE FROM membership_plans;"))
-        await session.execute(text("DELETE FROM organization_counters;"))
-        await session.execute(text("DELETE FROM org_branch_state;"))
-        await session.execute(text("DELETE FROM org_branches;"))
-        await session.execute(text("DELETE FROM owners;"))
-        await session.execute(text("DELETE FROM organizations;"))
-        await session.execute(text("SET session_replication_role = 'origin'"))
-        await session.commit()
+    await cleanup_test_database_tables([
+        "subscription_members",
+        "member_subscriptions_v2",
+        "members",
+        "membership_plans",
+        "organization_counters",
+        "org_branch_state",
+        "org_branches",
+        "owners",
+        "organizations",
+    ])
 
 
 @pytest_asyncio.fixture(autouse=True)

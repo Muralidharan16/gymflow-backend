@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     # ── Database ───────────────────────────────────
     DATABASE_URL: str
+    TEST_DATABASE_URL: str = ""
     REDIS_URL: str
     CELERY_BROKER_URL: str
     CELERY_RESULT_BACKEND: str

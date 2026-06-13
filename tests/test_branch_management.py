@@ -12,6 +12,7 @@ from app.models.org_branch import OrgBranch, OrgBranchState, ActiveOrgBranch
 from app.models.branch_audit import BranchAuditLog
 from app.repositories.branch_repo import BranchRepository
 from app.core.database import AsyncSessionLocal
+from conftest import cleanup_test_database_tables
 
 
 async def set_tenant_context(session, org_id: str, user_id: str):
@@ -94,15 +95,13 @@ async def test_setup():
         }
 
     # Cleanup
-    async with AsyncSessionLocal() as clean_session:
-        # Ensure role is reset to superuser before running cleanup commands
-        await clean_session.execute(text("RESET ROLE"))
-        await clean_session.execute(text("TRUNCATE TABLE branch_audit_log CASCADE;"))
-        await clean_session.execute(text("DELETE FROM org_branch_state WHERE org_id = :oid"), {"oid": org_id})
-        await clean_session.execute(text("DELETE FROM org_branches WHERE org_id = :oid"), {"oid": org_id})
-        await clean_session.execute(text("DELETE FROM gym_owners WHERE org_id = :oid"), {"oid": org_id})
-        await clean_session.execute(text("DELETE FROM organizations WHERE id = :oid"), {"oid": org_id})
-        await clean_session.commit()
+    await cleanup_test_database_tables([
+        "branch_audit_log",
+        "org_branch_state",
+        "org_branches",
+        "gym_owners",
+        "organizations",
+    ])
 
 
 @pytest.mark.asyncio
@@ -316,4 +315,3 @@ async def test_rbac_privileges_on_branch_actions(test_setup):
         success = await repo.soft_delete(b2_id, org_id, owner_id, reason="Decommissioning branch")
         assert success is True
         await session.commit()
-
