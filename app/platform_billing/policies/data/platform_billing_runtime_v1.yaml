@@ -1,0 +1,51 @@
+# Doers Platform Billing — Runtime Policy Configuration
+# ============================================================
+# Single authoritative source for all platform-billing numeric constants,
+# timeouts, and boundary values. Services and tests must import from here;
+# no call-site duplication of these values is permitted.
+#
+# Changing any value in this manifest requires:
+#   1. Architecture review approval
+#   2. Version increment
+#   3. Regression tests passing
+#
+# Version: 1.0
+# Phase: 0 (guardrails only; no enforcement)
+
+manifest_version: "1.0"
+
+# ── Access resolution ──────────────────────────────────────
+access_resolution_sync_timeout_ms: 150
+  # Maximum wall-clock budget for synchronous access recomputation.
+  # Privileged writes fail closed with 503 when this budget is exceeded.
+
+# ── Duration semantics ─────────────────────────────────────
+policy_day_seconds: 86400
+  # One policy day equals exactly 86,400 elapsed seconds from the
+  # triggering TIMESTAMPTZ. Trial, grace, dunning, and post-cancellation
+  # transitions use this exact elapsed-duration semantics.
+  # Monthly/yearly billing intervals use persisted contractual/provider
+  # calendar boundaries; this value does not redefine those.
+
+# ── Provider isolation ─────────────────────────────────────
+provider_mapping_environment_match: exact
+  # test evidence resolves only test mappings; live evidence resolves only
+  # live mappings. No fallback or cross-environment lookup is permitted.
+
+# ── Stale-projection fallback ──────────────────────────────
+stale_read_fallback_minimum_restriction: read_only
+stale_read_fallback_maximum_guessed_restriction: billing_only
+stale_read_fallback_never_guess:
+  - full
+  - blocked
+  # When the access projection is stale and synchronous recomputation is
+  # unavailable, safe reads may use a fallback computed from the last
+  # resolved mode. The fallback is the more restrictive of the usable
+  # last-known mode and read_only, capped at billing_only.
+  # It never guesses full or blocked.
+
+# ── Advisory lock namespace ────────────────────────────────
+first_subscription_lock_namespace: "platform_subscription:first_current"
+  # Advisory lock namespace for serializing first/current subscription
+  # creation per organization. Applied before the partial unique index
+  # check as a deterministic concurrency guard.

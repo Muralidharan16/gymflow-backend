@@ -52,6 +52,17 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "info"
 
+    # ── Platform Billing Feature Flags ─────────────
+    # All disabled during Phase 0; enable progressively per phase.
+    PLATFORM_BILLING_READ_API: bool = False
+    PLATFORM_BILLING_SHADOW_RESOLVER: bool = False
+    PLATFORM_BILLING_ENFORCEMENT: bool = False
+    PLATFORM_BILLING_FRONTEND_SHELL: bool = False
+    PLATFORM_BILLING_CHECKOUT: bool = False
+    PLATFORM_BILLING_WEBHOOK_PROCESSING: bool = False
+    PLATFORM_BILLING_DUNNING_TRANSITIONS: bool = False
+    PLATFORM_BILLING_NOTIFICATIONS: bool = False
+
     # ── Storage (S3) ───────────────────────────────
     AWS_ACCESS_KEY_ID: str = Field(..., alias="AWS_ACCESS_KEY_ID")
     AWS_SECRET_ACCESS_KEY: str = Field(..., alias="AWS_SECRET_ACCESS_KEY")

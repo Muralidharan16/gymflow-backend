@@ -1,0 +1,250 @@
+# Doers Platform Billing — Capability Registry V1
+# =================================================
+# Defines all platform-billing capability keys and their metadata.
+# This file is version-controlled, validated at startup, and used by
+# the capability guard and route manifest.
+#
+# Phase 0: definition only; no enforcement.
+
+manifest_version: "1.0"
+
+capabilities:
+
+  # ── Always/recovery capabilities ─────────────────────────
+  - key: auth.session.refresh
+    description: Refresh an expired authentication session
+    operation_class: recovery
+    recovery: true
+
+  - key: auth.logout
+    description: Terminate current session
+    operation_class: recovery
+    recovery: true
+
+  - key: security.manage_own_session
+    description: View and revoke own devices/sessions
+    operation_class: recovery
+    recovery: true
+
+  - key: support.contact
+    description: Contact platform support
+    operation_class: read
+    recovery: true
+
+  # ── Platform billing capabilities ────────────────────────
+  - key: platform_billing.view
+    description: View plan, usage, invoices, and billing account
+    operation_class: read
+
+  - key: platform_billing.manage_account
+    description: Manage billing account identity and contacts
+    operation_class: modify_existing
+
+  - key: platform_billing.manage_payment_method
+    description: Add, update, or remove payment methods
+    operation_class: financial
+
+  - key: platform_billing.change_plan
+    description: Upgrade or downgrade plan
+    operation_class: financial
+
+  - key: platform_billing.cancel
+    description: Schedule or undo cancellation
+    operation_class: destructive
+
+  - key: platform_billing.download_invoice
+    description: Download invoice PDF documents
+    operation_class: read
+
+  - key: data.export
+    description: Export organization data
+    operation_class: read
+
+  # ── Product capabilities ─────────────────────────────────
+  - key: organization.view
+    description: View organization profile
+    operation_class: read
+
+  - key: organization.update
+    description: Update organization profile
+    operation_class: modify_existing
+
+  - key: branches.view
+    description: View branch listing
+    operation_class: read
+
+  - key: branches.create
+    description: Create a new branch
+    operation_class: increase_capacity
+
+  - key: branches.update
+    description: Update branch details
+    operation_class: modify_existing
+
+  - key: branches.change_status
+    description: Activate/deactivate/close a branch
+    operation_class: destructive
+
+  - key: branches.delete_request
+    description: Request branch deletion
+    operation_class: destructive
+
+  - key: branch_contacts.view
+    description: View branch contacts
+    operation_class: read
+
+  - key: branch_contacts.manage
+    description: Manage branch contacts
+    operation_class: modify_existing
+
+  - key: branch_hours.view
+    description: View branch operating hours
+    operation_class: read
+
+  - key: branch_hours.manage
+    description: Manage branch operating hours
+    operation_class: modify_existing
+
+  - key: staff.view
+    description: View staff listing
+    operation_class: read
+
+  - key: staff.invite
+    description: Invite a new staff member
+    operation_class: increase_capacity
+
+  - key: staff.update
+    description: Update staff details or roles
+    operation_class: modify_existing
+
+  - key: staff.revoke
+    description: Revoke staff access
+    operation_class: destructive
+
+  - key: members.view
+    description: View member listing
+    operation_class: read
+
+  - key: members.create
+    description: Create a new member
+    operation_class: increase_capacity
+
+  - key: members.update
+    description: Update member details
+    operation_class: modify_existing
+
+  - key: members.deactivate
+    description: Deactivate a member
+    operation_class: destructive
+
+  - key: membership_plans.view
+    description: View membership plans
+    operation_class: read
+
+  - key: membership_plans.create
+    description: Create a membership plan
+    operation_class: modify_existing
+
+  - key: membership_plans.update
+    description: Update a membership plan
+    operation_class: modify_existing
+
+  - key: membership_plans.archive
+    description: Archive a membership plan
+    operation_class: destructive
+
+  - key: member_subscriptions.view
+    description: View member subscriptions
+    operation_class: read
+
+  - key: member_subscriptions.create
+    description: Create member subscriptions
+    operation_class: increase_capacity
+
+  - key: member_subscriptions.update
+    description: Modify member subscriptions
+    operation_class: modify_existing
+
+  - key: member_subscriptions.cancel
+    description: Cancel member subscriptions
+    operation_class: destructive
+
+  - key: member_payments.view
+    description: View member payment records
+    operation_class: read
+
+  - key: member_payments.record
+    description: Record a member payment
+    operation_class: financial
+
+  - key: member_payments.refund
+    description: Refund a member payment
+    operation_class: financial
+
+  - key: attendance.view
+    description: View attendance records
+    operation_class: read
+
+  - key: attendance.record
+    description: Record attendance
+    operation_class: modify_existing
+
+  - key: reports.basic.view
+    description: View basic reports
+    operation_class: read
+
+  - key: reports.advanced.view
+    description: View advanced reports
+    operation_class: read
+
+  - key: imports.create
+    description: Create a bulk import
+    operation_class: modify_existing
+
+  - key: imports.view
+    description: View import history
+    operation_class: read
+
+  - key: assets.view
+    description: View assets
+    operation_class: read
+
+  - key: assets.manage
+    description: Manage assets
+    operation_class: modify_existing
+
+  # ── Internal-only capabilities ───────────────────────────
+  - key: internal.platform_billing.view
+    description: View all platform billing data across tenants
+    operation_class: read
+    internal: true
+
+  - key: internal.platform_billing.reconcile
+    description: Run reconciliation operations
+    operation_class: financial
+    internal: true
+
+  - key: internal.platform_billing.issue_refund
+    description: Issue refunds
+    operation_class: financial
+    internal: true
+
+  - key: internal.platform_billing.apply_credit
+    description: Apply credits
+    operation_class: financial
+    internal: true
+
+  - key: internal.platform_billing.override_access
+    description: Override access mode
+    operation_class: destructive
+    internal: true
+
+  - key: internal.platform_billing.manage_catalog
+    description: Manage plan catalog
+    operation_class: modify_existing
+    internal: true
+
+  - key: internal.platform_billing.view_sensitive_audit
+    description: View sensitive audit records
+    operation_class: read
+    internal: true

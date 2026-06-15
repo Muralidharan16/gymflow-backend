@@ -1,0 +1,68 @@
+# Doers Platform Billing — Lifecycle Policies V1
+# ================================================
+# Policy-driven lifecycle defaults. These are versioned policy data,
+# not hard-coded constants distributed through services.
+# Phase 0: definition only; no enforcement.
+
+manifest_version: "1.0"
+
+policies:
+
+  # ── Trial policy ─────────────────────────────────────────
+  TRIAL-IN-V1:
+    policy_type: trial
+    version: 1
+    params:
+      trial_duration_days: 14
+      payment_method_required_to_start: false
+      post_trial_full_access_grace_days: 3
+      read_only_recovery_window_days: 7
+      final_mode: billing_only
+    status: draft
+
+  # ── Dunning (renewal failure) policy ─────────────────────
+  DUNNING-IN-V1:
+    policy_type: dunning
+    version: 1
+    params:
+      full_access_grace_days: 3
+      limited_write_stage_days: 4
+      read_only_stage_days: 7
+      final_mode: billing_only
+      trigger: durable_invoice_payment_evidence_or_reconciliation
+    status: draft
+
+  # ── Cancellation policy ──────────────────────────────────
+  CANCEL-IN-V1:
+    policy_type: cancellation
+    version: 1
+    params:
+      default_cancellation: end_of_paid_period
+      undo_allowed: true
+      undo_deadline: before_effective_timestamp
+      post_cancellation_read_only_days: 30
+      final_mode: billing_only
+      customer_data_deletion: separate_retention_workflow
+    status: draft
+
+  # ── Downgrade policy ────────────────────────────────────
+  DOWNGRADE-IN-V1:
+    policy_type: downgrade
+    version: 1
+    params:
+      default_effective_time: next_renewal
+      preview_required: true
+      scheduled_downgrade_reversible: true
+      over_limit_behavior: preserve_data_block_net_new_capacity
+    status: draft
+
+  # ── Refund policy ────────────────────────────────────────
+  REFUND-IN-V1:
+    policy_type: refund
+    version: 1
+    params:
+      written_policy_required: true
+      dual_approval_threshold_minor: null
+      customer_receipt_required: true
+      ledger_reconciliation_required: true
+    status: draft
