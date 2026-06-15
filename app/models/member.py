@@ -3,7 +3,8 @@ from datetime import date, datetime
 from decimal import Decimal
 # pyrefly: ignore [missing-import]
 from sqlalchemy import (
-    String, Boolean, Date, Text, ForeignKey, Numeric, Index,
+    String, Boolean, Date, Text, ForeignKey, Numeric, Index, Integer,
+    UniqueConstraint,
 )
 # pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Mapped, mapped_column
@@ -38,6 +39,7 @@ class Member(Base, TimestampMixin):
     member_uid: Mapped[str] = mapped_column(
         String(20), unique=True, nullable=False
     )
+    member_number: Mapped[int] = mapped_column(Integer, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     email: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -75,6 +77,9 @@ class Member(Base, TimestampMixin):
         Index("ix_members_org_id", "org_id"),
         Index("ix_members_org_branch_id", "org_id", "home_branch_id"),
         Index("ix_members_org_status", "org_id", "status"),
+        Index("ix_members_org_branch_status", "org_id", "home_branch_id", "status"),
+        Index("ix_members_org_phone", "org_id", "phone"),
+        UniqueConstraint("org_id", "member_number", name="uq_members_org_member_number"),
         Index("ix_members_gym_id", "gym_id"),
         Index("ix_members_gym_member_uid", "gym_id", "member_uid", unique=True),
         Index("ix_members_gym_phone", "gym_id", "phone"),

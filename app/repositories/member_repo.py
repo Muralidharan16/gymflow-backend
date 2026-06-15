@@ -2,11 +2,15 @@ from datetime import datetime, date
 from typing import List, Optional, Tuple
 from uuid import UUID
 
-from sqlalchemy import select, func, or_, and_, update as sql_update
+import uuid
+
+from sqlalchemy import select, func, or_, and_, update as sql_update, text, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.member import Member, MemberMeasurement, MemberStatus
+from app.models.member_subscription_v2 import MemberSubscriptionV2, ModernSubscriptionStatus
+from app.models.org_branch import OrgBranch
 from app.models.subscription import MemberSubscription, SubscriptionStatus
 from app.repositories.base import BaseRepository
 
@@ -84,6 +88,20 @@ class MemberRepository(BaseRepository[Member]):
         self.session.add(member)
         await self.session.flush()
         return member
+
+    async def next_member_number(self, org_id: UUID) -> int:
+        """Atomically allocate the next organization-scoped member number."""
+        query = text("""
+            INSERT INTO organization_counters (id, org_id, counter_key, current_value)
+            VALUES (:id, :org_id, 'member', 100)
+            ON CONFLICT (org_id, counter_key)
+            DO UPDATE SET
+                current_value = organization_counters.current_value + 1,
+                updated_at = now()
+            RETURNING current_value;
+        """)
+        result = await self.session.execute(query, {"id": uuid.uuid4(), "org_id": org_id})
+        return result.scalar_one()
 
     async def update(self, member: Member) -> Member:
         """Update an existing member."""
@@ -186,39 +204,86 @@ class MemberRepository(BaseRepository[Member]):
         status: Optional[MemberStatus] = None,
         search_term: Optional[str] = None,
         is_active: bool = True,
+        has_active_subscription: Optional[bool] = None,
         page: int = 1,
         size: int = 10
     ) -> Tuple[List[Member], int]:
         """Search members with pagination scoped to org."""
         offset = (page - 1) * size
-        
-        query = select(Member).where(
+
+        active_subscription_exists = exists(
+            select(1).where(
+                MemberSubscriptionV2.org_id == org_id,
+                MemberSubscriptionV2.primary_member_id == Member.id,
+                MemberSubscriptionV2.status == ModernSubscriptionStatus.active,
+            )
+        )
+
+        filters = [
             Member.org_id == org_id,
             Member.is_active == is_active
-        )
+        ]
         
         if home_branch_id:
-            query = query.where(Member.home_branch_id == home_branch_id)
+            filters.append(Member.home_branch_id == home_branch_id)
             
         if status:
-            query = query.where(Member.status == status)
+            filters.append(Member.status == status)
+
+        if has_active_subscription is not None:
+            filters.append(active_subscription_exists if has_active_subscription else ~active_subscription_exists)
         
         if search_term:
-            search_pattern = f"%{search_term}%"
-            query = query.where(
+            normalized = search_term.strip()
+            search_pattern = f"%{normalized.lower()}%"
+            search_filters = [
+                func.lower(Member.name).like(search_pattern),
+                Member.phone.contains(normalized),
+            ]
+            if normalized.isdigit():
+                search_filters.append(Member.member_number == int(normalized))
+            filters.append(
                 or_(
-                    Member.name.ilike(search_pattern),
-                    Member.phone.contains(search_term)
+                    *search_filters
                 )
             )
         
-        count_query = select(func.count()).select_from(query.subquery())
+        count_query = select(func.count()).select_from(Member).where(*filters)
         total_result = await self.session.execute(count_query)
         total = total_result.scalar() or 0
-        
-        query = query.order_by(Member.name).offset(offset).limit(size)
+
+        active_subscription_subquery = (
+            select(
+                MemberSubscriptionV2.primary_member_id.label("member_id"),
+                MemberSubscriptionV2.id.label("active_subscription_id"),
+            )
+            .where(
+                MemberSubscriptionV2.org_id == org_id,
+                MemberSubscriptionV2.status == ModernSubscriptionStatus.active,
+            )
+            .subquery()
+        )
+
+        query = (
+            select(
+                Member,
+                OrgBranch.branch_name.label("home_branch_name"),
+                active_subscription_subquery.c.active_subscription_id,
+            )
+            .outerjoin(OrgBranch, OrgBranch.id == Member.home_branch_id)
+            .outerjoin(active_subscription_subquery, active_subscription_subquery.c.member_id == Member.id)
+            .where(*filters)
+            .order_by(Member.member_number, Member.name)
+            .offset(offset)
+            .limit(size)
+        )
         result = await self.session.execute(query)
-        members = result.scalars().all()
+        members: list[Member] = []
+        for member, home_branch_name, active_subscription_id in result.all():
+            member.home_branch_name = home_branch_name
+            member.active_subscription_id = active_subscription_id
+            member.has_active_subscription = active_subscription_id is not None
+            members.append(member)
         
         return members, total
 

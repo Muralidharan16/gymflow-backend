@@ -103,6 +103,11 @@ class MemberResponse(MemberBase):
     gym_id: Optional[uuid.UUID] = None
     org_id: uuid.UUID
     member_uid: str
+    member_number: int
+    member_display_code: Optional[str] = None
+    home_branch_name: Optional[str] = None
+    has_active_subscription: bool = False
+    active_subscription_id: Optional[uuid.UUID] = None
     qr_token: Optional[str] = None
     status: MemberStatus
     is_active: bool

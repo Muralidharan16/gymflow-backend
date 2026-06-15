@@ -11,12 +11,20 @@ from sqlalchemy import select
 from app.core.exceptions import NotFoundError, ValidationError, MemberLimitExceeded
 from app.models.gym import Gym
 from app.models.member import Member, MemberStatus, MemberMeasurement
+from app.models.organization import Organization
 from app.repositories.member_repo import MemberRepository
 from app.schemas.member import MemberCreate, MemberUpdate, MeasurementCreate
 from app.utils.phone import normalize_phone
 from app.utils.qr import generate_qr_png  # keep for QR PNG generation, but token generation is done inline
 
 logger = logging.getLogger(__name__)
+
+
+def _member_display_code(org_slug: str | None, member_number: int | None) -> str | None:
+    if member_number is None:
+        return None
+    prefix = "".join(char for char in (org_slug or "ORG").upper() if char.isalnum())[:6] or "ORG"
+    return f"{prefix}-{member_number}"
 
 
 def _normalize_member_phone(value: str | None, field_name: str) -> str:
@@ -136,11 +144,13 @@ class MemberService:
         
         # Generate unique QR token (short UUID string, not full UUID)
         qr_token = str(uuid.uuid4()).replace("-", "")[:16]
+        member_number = await self.member_repo.next_member_number(org_id)
         
         member = Member(
             gym_id=gym_id,
             org_id=org_id,
             member_uid=qr_token,  # QR token serves as member_uid
+            member_number=member_number,
             name=data.name,
             phone=phone,
             email=data.email,
@@ -159,6 +169,8 @@ class MemberService:
         )
         
         created = await self.member_repo.create(member)
+        org = await self.session.get(Organization, org_id)
+        created.member_display_code = _member_display_code(getattr(org, "slug", None), created.member_number)
         await self.session.commit()
         logger.info(f"Created member {created.id} in gym {gym_id}")
         return created
@@ -265,17 +277,31 @@ class MemberService:
         status: Optional[MemberStatus] = None,
         search_term: Optional[str] = None,
         is_active: bool = True,
+        has_active_subscription: Optional[bool] = None,
         page: int = 1,
         size: int = 10
     ) -> Tuple[List[Member], int]:
-        return await self.member_repo.search_org(
-            org_id, home_branch_id, status, search_term, is_active, page, size
+        members, total = await self.member_repo.search_org(
+            org_id,
+            home_branch_id,
+            status,
+            search_term,
+            is_active,
+            has_active_subscription,
+            page,
+            size,
         )
+        org = await self.session.get(Organization, org_id)
+        for member in members:
+            member.member_display_code = _member_display_code(getattr(org, "slug", None), member.member_number)
+        return members, total
 
     async def get_member_org(self, member_id: UUID, org_id: UUID) -> Member:
         member = await self.member_repo.get_by_id_org(member_id, org_id)
         if not member:
             raise NotFoundError(f"Member {member_id} not found", error_code="NOT_FOUND")
+        org = await self.session.get(Organization, org_id)
+        member.member_display_code = _member_display_code(getattr(org, "slug", None), member.member_number)
         return member
 
     async def create_member_org(
@@ -316,11 +342,13 @@ class MemberService:
             raise ValidationError("Invalid home branch", error_code="VALIDATION_ERROR")
                 
         qr_token = str(uuid.uuid4()).replace("-", "")[:16]
+        member_number = await self.member_repo.next_member_number(org_id)
         
         member = Member(
             org_id=org_id,
             home_branch_id=data.home_branch_id,
             member_uid=qr_token,
+            member_number=member_number,
             name=name,
             phone=phone,
             email=data.email,
@@ -339,6 +367,8 @@ class MemberService:
         )
         
         created = await self.member_repo.create(member)
+        org = await self.session.get(Organization, org_id)
+        created.member_display_code = _member_display_code(getattr(org, "slug", None), created.member_number)
         await self.session.commit()
         return created
 

@@ -89,10 +89,10 @@ async def test_data():
         inactive_member_id = uuid.uuid4()
         member_other_id = uuid.uuid4()
         members = [
-            Member(id=member1_id, org_id=org1_id, member_uid="M001", name="Primary Member", phone="9876500001", status=MemberStatus.active, is_active=True),
-            Member(id=member2_id, org_id=org1_id, member_uid="M002", name="Second Member", phone="9876500002", status=MemberStatus.active, is_active=True),
-            Member(id=inactive_member_id, org_id=org1_id, member_uid="M003", name="Inactive Member", phone="9876500003", status=MemberStatus.inactive, is_active=True),
-            Member(id=member_other_id, org_id=org2_id, member_uid="M004", name="Other Member", phone="9876500004", status=MemberStatus.active, is_active=True),
+            Member(id=member1_id, org_id=org1_id, member_uid="M001", member_number=100, name="Primary Member", phone="9876500001", status=MemberStatus.active, is_active=True),
+            Member(id=member2_id, org_id=org1_id, member_uid="M002", member_number=101, name="Second Member", phone="9876500002", status=MemberStatus.active, is_active=True),
+            Member(id=inactive_member_id, org_id=org1_id, member_uid="M003", member_number=102, name="Inactive Member", phone="9876500003", status=MemberStatus.inactive, is_active=True),
+            Member(id=member_other_id, org_id=org2_id, member_uid="M004", member_number=100, name="Other Member", phone="9876500004", status=MemberStatus.active, is_active=True),
         ]
         session.add_all(members)
         await session.flush()
@@ -369,6 +369,7 @@ async def test_concurrent_subscription_code_generation_is_unique_and_sequential(
                     id=uuid.uuid4(),
                     org_id=test_data["org1_id"],
                     member_uid=f"MC{i:03d}",
+                    member_number=200 + i,
                     name=f"Concurrent Member {i}",
                     phone=f"98765100{i:02d}",
                     status=MemberStatus.active,

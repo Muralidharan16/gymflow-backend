@@ -230,9 +230,11 @@ async def get_member_qr_code(
 async def list_members_org(
     org_id: UUID,
     home_branch_id: Optional[UUID] = Query(None, description="Filter by home branch"),
+    branch_id: Optional[UUID] = Query(None, description="Filter by home branch"),
     status: Optional[MemberStatus] = Query(None, description="Filter by member status"),
-    search: Optional[str] = Query(None, description="Search by name or phone"),
+    search: Optional[str] = Query(None, description="Search by member number, name, or phone"),
     is_active: bool = Query(True, description="Filter by active status"),
+    has_active_subscription: Optional[bool] = Query(None, description="Filter by active subscription availability"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=200, description="Items per page"),
     staff: Staff = Depends(require_org_admin),
@@ -245,12 +247,14 @@ async def list_members_org(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         
     service = MemberService(db)
+    effective_branch_id = branch_id or home_branch_id
     members, total = await service.list_members_org(
         org_id=org_id,
-        home_branch_id=home_branch_id,
+        home_branch_id=effective_branch_id,
         status=status,
         search_term=search,
         is_active=is_active,
+        has_active_subscription=has_active_subscription,
         page=page,
         size=page_size
     )
