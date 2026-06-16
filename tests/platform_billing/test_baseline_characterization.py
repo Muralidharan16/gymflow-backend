@@ -163,21 +163,17 @@ def test_idempotency_middleware_exists():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# No platform billing tables created
+# Platform Billing Phase 1 table surface
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_no_platform_billing_db_tables_created():
+def test_platform_billing_phase_1_db_tables_created_only_as_foundation():
     """
-    Phase 0 must not create any database tables.
-    Verify that no platform_billing models exist.
+    Phase 1 adds only the authorized additive foundation tables.
     """
     import importlib
 
-    try:
-        models_mod = importlib.import_module("app.platform_billing.models")
-    except ImportError:
-        return
+    models_mod = importlib.import_module("app.platform_billing.models")
 
     db_tables = []
     for attr_name in dir(models_mod):
@@ -187,10 +183,20 @@ def test_no_platform_billing_db_tables_created():
         if hasattr(attr, "__tablename__"):
             db_tables.append(attr.__tablename__)
 
-    assert not db_tables, (
-        f"Phase 0 must not create database tables. "
-        f"Found: {db_tables}. These belong in Phase 1 or later."
-    )
+    assert set(db_tables) == {
+        "platform_products",
+        "platform_policy_versions",
+        "platform_plan_versions",
+        "platform_prices",
+        "platform_feature_definitions",
+        "platform_plan_entitlements",
+        "platform_billing_accounts",
+        "platform_subscriptions",
+        "platform_subscription_items",
+        "platform_subscription_periods",
+        "platform_subscription_events",
+        "platform_billing_audit_events",
+    }
 
 
 def test_no_provider_integration_added():

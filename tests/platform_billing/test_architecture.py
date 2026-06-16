@@ -297,36 +297,74 @@ def test_policy_data_files_present():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# 4. No platform-billing database tables (Phase 0 prohibition)
+# 4. Phase 1 database surface
 # ──────────────────────────────────────────────────────────────────────────
 
-def test_no_billing_database_tables_created():
-    models_dir = PLATFORM_BILLING_ROOT / "models"
-    for py_file in models_dir.glob("*.py"):
+PHASE_1_TABLES = frozenset(
+    {
+        "platform_products",
+        "platform_policy_versions",
+        "platform_plan_versions",
+        "platform_prices",
+        "platform_feature_definitions",
+        "platform_plan_entitlements",
+        "platform_billing_accounts",
+        "platform_subscriptions",
+        "platform_subscription_items",
+        "platform_subscription_periods",
+        "platform_subscription_events",
+        "platform_billing_audit_events",
+    }
+)
+
+LATER_PHASE_TABLES = frozenset(
+    {
+        "platform_provider_customers",
+        "platform_payment_methods",
+        "platform_mandates",
+        "platform_provider_operations",
+        "platform_webhook_inbox",
+        "platform_reconciliation_runs",
+        "platform_reconciliation_items",
+        "platform_subscription_changes",
+        "platform_access_overrides",
+        "platform_entitlement_projection",
+        "platform_access_projection",
+        "platform_usage_projection",
+        "platform_document_sequences",
+        "platform_invoices",
+        "platform_invoice_lines",
+        "platform_payment_attempts",
+        "platform_refunds",
+        "platform_credit_notes",
+        "platform_credit_note_lines",
+    }
+)
+
+
+def test_phase_1_models_define_only_authorized_tables():
+    table_names: set[str] = set()
+    for py_file in (PLATFORM_BILLING_ROOT / "models").glob("*.py"):
         if py_file.name == "__init__.py":
             continue
         source = py_file.read_text(encoding="utf-8")
-        if "__tablename__" in source:
-            rel = py_file.relative_to(REPO_ROOT)
-            pytest.fail(
-                f"{rel} defines __tablename__ — database tables are "
-                f"prohibited in Phase 0 (V3.1 §25 explicit prohibition)"
-            )
+        table_names.update(re.findall(r'__tablename__\s*=\s*"([^"]+)"', source))
+
+    missing = PHASE_1_TABLES - table_names
+    extra = table_names - PHASE_1_TABLES
+    assert not missing, f"Missing Phase 1 ORM table mappings: {sorted(missing)}"
+    assert not extra, f"Unauthorized Platform Billing ORM tables: {sorted(extra)}"
+    assert not (table_names & LATER_PHASE_TABLES), "Later-phase tables must not be mapped in Phase 1"
 
 
-def test_no_alembic_migration_generated_for_phase_0():
-    import subprocess
-    result = subprocess.run(
-        ["git", "diff", "--name-only", "HEAD", "--", "alembic/versions/"],
-        capture_output=True, text=True, cwd=str(REPO_ROOT),
-    )
-    new_migrations = [
-        line for line in result.stdout.splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
-    assert not new_migrations, (
-        f"No Alembic migrations may be generated in Phase 0. Found: {new_migrations}"
-    )
+def test_phase_1_migration_exists_and_is_linear():
+    migration = REPO_ROOT / "alembic" / "versions" / "f1a2b3c4d5e6_platform_billing_phase_1_foundation.py"
+    assert migration.exists(), "Phase 1 must add one hand-authored migration"
+    source = migration.read_text(encoding="utf-8")
+    assert 'revision: str = "f1a2b3c4d5e6"' in source
+    assert 'down_revision: Union[str, Sequence[str], None] = "e5f6a7b8c9d0"' in source
+    for forbidden in LATER_PHASE_TABLES:
+        assert forbidden not in source, f"Later-phase table {forbidden} must not be created in Phase 1"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -571,23 +609,9 @@ def test_architecture_doc_checksums_match_manifest():
 
 
 def test_document_checksums():
-    import json
-    checksums: dict[str, str] = {}
     for name in EXPECTED_DOC_FILES:
         path = DOCS_DIR / name
         if not path.exists():
             continue
         sha = hashlib.sha256(path.read_bytes()).hexdigest()
-        checksums[name] = sha
-
-    manifest_path = DOCS_DIR / "architecture_checksums.json"
-    manifest_path.write_text(
-        json.dumps({"generated_at": "2026-06-15T00:00:00Z", "files": checksums}, indent=2)
-        + "\n"
-    )
-
-    for name, expected_sha in checksums.items():
-        assert expected_sha == checksums[name], (
-            f"Checksum mismatch for {name}"
-        )
-    assert manifest_path.exists(), "Checksum manifest should have been written"
+        assert len(sha) == 64

@@ -8,6 +8,7 @@ from alembic import context
 
 # Import all models so Alembic sees them
 from app.models import Base  # noqa: F401
+import app.platform_billing.models  # noqa: F401
 from app.core.config import settings
 
 config = context.config

@@ -9,9 +9,7 @@ Execution Specification.
 
 Domain boundary rule:
     No code in this package may import from facility-commerce
-    modules (app.models.subscription, app.models.payment,
-    app.services.subscription_service, app.services.payment_service,
-    member_subscriptions_v2, membership_plans).
+    models, services, or membership tables.
 
     Conversely, facility-commerce code must never import from
     this package to determine Doers platform access.
