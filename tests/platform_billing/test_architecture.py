@@ -317,6 +317,16 @@ PHASE_1_TABLES = frozenset(
     }
 )
 
+PHASE_2_TABLES = frozenset(
+    {
+        "platform_subscription_changes",
+        "platform_access_overrides",
+        "platform_entitlement_projection",
+        "platform_access_projection",
+        "platform_usage_projection",
+    }
+)
+
 LATER_PHASE_TABLES = frozenset(
     {
         "platform_provider_customers",
@@ -326,11 +336,6 @@ LATER_PHASE_TABLES = frozenset(
         "platform_webhook_inbox",
         "platform_reconciliation_runs",
         "platform_reconciliation_items",
-        "platform_subscription_changes",
-        "platform_access_overrides",
-        "platform_entitlement_projection",
-        "platform_access_projection",
-        "platform_usage_projection",
         "platform_document_sequences",
         "platform_invoices",
         "platform_invoice_lines",
@@ -342,7 +347,7 @@ LATER_PHASE_TABLES = frozenset(
 )
 
 
-def test_phase_1_models_define_only_authorized_tables():
+def test_platform_billing_models_define_only_authorized_phase_1_and_2_tables():
     table_names: set[str] = set()
     for py_file in (PLATFORM_BILLING_ROOT / "models").glob("*.py"):
         if py_file.name == "__init__.py":
@@ -351,10 +356,10 @@ def test_phase_1_models_define_only_authorized_tables():
         table_names.update(re.findall(r'__tablename__\s*=\s*"([^"]+)"', source))
 
     missing = PHASE_1_TABLES - table_names
-    extra = table_names - PHASE_1_TABLES
+    extra = table_names - PHASE_1_TABLES - PHASE_2_TABLES
     assert not missing, f"Missing Phase 1 ORM table mappings: {sorted(missing)}"
     assert not extra, f"Unauthorized Platform Billing ORM tables: {sorted(extra)}"
-    assert not (table_names & LATER_PHASE_TABLES), "Later-phase tables must not be mapped in Phase 1"
+    assert not (table_names & LATER_PHASE_TABLES), "Later-phase tables beyond Phase 2 must not be mapped"
 
 
 def test_phase_1_migration_exists_and_is_linear():
@@ -365,6 +370,18 @@ def test_phase_1_migration_exists_and_is_linear():
     assert 'down_revision: Union[str, Sequence[str], None] = "e5f6a7b8c9d0"' in source
     for forbidden in LATER_PHASE_TABLES:
         assert forbidden not in source, f"Later-phase table {forbidden} must not be created in Phase 1"
+
+
+def test_phase_2_migration_exists_and_creates_only_authorized_tables():
+    migration = REPO_ROOT / "alembic" / "versions" / "f2b3c4d5e6a7_platform_billing_phase_2_resolver.py"
+    assert migration.exists(), "Phase 2 must add one hand-authored migration"
+    source = migration.read_text(encoding="utf-8")
+    assert 'revision: str = "f2b3c4d5e6a7"' in source
+    assert 'down_revision: Union[str, Sequence[str], None] = "f1a2b3c4d5e6"' in source
+    for required in PHASE_2_TABLES:
+        assert required in source, f"Phase 2 table {required} must be created in Phase 2"
+    for forbidden in LATER_PHASE_TABLES:
+        assert forbidden not in source, f"Later-phase table {forbidden} must not be created in Phase 2"
 
 
 # ──────────────────────────────────────────────────────────────────────────

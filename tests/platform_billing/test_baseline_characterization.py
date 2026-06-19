@@ -163,13 +163,14 @@ def test_idempotency_middleware_exists():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Platform Billing Phase 1 table surface
+# Platform Billing table surface
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_platform_billing_phase_1_db_tables_created_only_as_foundation():
+def test_platform_billing_db_tables_created_only_as_authorized_phase_1_and_2_scope():
     """
-    Phase 1 adds only the authorized additive foundation tables.
+    Platform Billing models expose only the authorized Phase 1 foundation
+    plus the authorized Phase 2 shadow/projection tables.
     """
     import importlib
 
@@ -196,6 +197,11 @@ def test_platform_billing_phase_1_db_tables_created_only_as_foundation():
         "platform_subscription_periods",
         "platform_subscription_events",
         "platform_billing_audit_events",
+        "platform_subscription_changes",
+        "platform_access_overrides",
+        "platform_entitlement_projection",
+        "platform_access_projection",
+        "platform_usage_projection",
     }
 
 

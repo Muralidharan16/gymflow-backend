@@ -15,6 +15,14 @@ OWNER_1 = "82000000-0000-0000-0000-000000000001"
 SHA_A = "a" * 64
 SHA_B = "b" * 64
 
+PHASE_2_TABLES = [
+    "platform_usage_projection",
+    "platform_access_projection",
+    "platform_entitlement_projection",
+    "platform_access_overrides",
+    "platform_subscription_changes",
+]
+
 PHASE_1_TABLES = [
     "platform_billing_audit_events",
     "platform_subscription_events",
@@ -33,7 +41,7 @@ PHASE_1_TABLES = [
 
 
 async def cleanup_phase1_tables() -> None:
-    await cleanup_test_database_tables(PHASE_1_TABLES)
+    await cleanup_test_database_tables(PHASE_2_TABLES + PHASE_1_TABLES)
 
 
 async def exec_sql(sql: str, params: dict[str, object] | None = None) -> None:
@@ -202,8 +210,8 @@ async def seed_billing_account_and_subscription() -> dict[str, str]:
     return ids
 
 
-async def test_phase_1_tables_exist_and_later_phase_tables_absent():
-    required = {
+async def test_phase_1_and_2_tables_exist_and_later_phase_tables_absent():
+    phase_1_required = {
         "platform_products",
         "platform_policy_versions",
         "platform_plan_versions",
@@ -217,6 +225,7 @@ async def test_phase_1_tables_exist_and_later_phase_tables_absent():
         "platform_subscription_events",
         "platform_billing_audit_events",
     }
+    phase_2_required = set(PHASE_2_TABLES)
     result = await scalar(
         """
         SELECT count(*)
@@ -224,9 +233,9 @@ async def test_phase_1_tables_exist_and_later_phase_tables_absent():
         WHERE table_schema = 'public'
           AND table_name = ANY(:tables)
         """,
-        {"tables": list(required)},
+        {"tables": list(phase_1_required | phase_2_required)},
     )
-    assert result == len(required)
+    assert result == len(phase_1_required | phase_2_required)
 
     forbidden = [
         "platform_provider_customers",
@@ -234,8 +243,6 @@ async def test_phase_1_tables_exist_and_later_phase_tables_absent():
         "platform_invoices",
         "platform_payment_attempts",
         "platform_refunds",
-        "platform_access_projection",
-        "platform_subscription_changes",
     ]
     absent = await scalar(
         """
