@@ -18,6 +18,12 @@ METRIC_NAMES = {
     "projection_refresh_failed_total": "platform_billing_projection_refresh_failed_total",
     "usage_measurement_total": "platform_billing_usage_measurement_total",
     "access_decisions_total": "platform_billing_access_decisions_total",
+    "capability_decision_total": "platform_billing_capability_decision_total",
+    "capability_denied_total": "platform_billing_capability_denied_total",
+    "capability_unavailable_total": "platform_billing_capability_unavailable_total",
+    "capability_fallback_total": "platform_billing_capability_fallback_total",
+    "legacy_new_mismatch_total": "platform_billing_legacy_new_mismatch_total",
+    "read_api_total": "platform_billing_read_api_total",
 }
 
 

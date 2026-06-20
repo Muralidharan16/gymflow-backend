@@ -124,4 +124,10 @@ def validate_all_policies() -> dict[str, str]:
             _load_yaml(filename)
         except Exception as exc:
             errors[filename] = str(exc)
+    try:
+        from app.platform_billing.policies.capability_registry import load_capability_registry
+
+        load_capability_registry()
+    except Exception as exc:
+        errors["capabilities_v1.yaml"] = str(exc)
     return errors

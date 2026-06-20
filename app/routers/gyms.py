@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.deps import get_current_active_staff, require_org_admin
 from app.core.deps import Staff
+from app.platform_billing.api.dependencies import PlatformCapabilityContext, require_platform_capability
+from app.platform_billing.domain.capability import OperationClass
 from app.schemas.common import Response, MessageResponse
 from app.schemas.gym import GymResponse, GymCreate, GymUpdate, TaxConfigResponse, TaxConfigCreate
 from app.services.gym_service import GymService
@@ -18,6 +20,9 @@ router = APIRouter(prefix="/gyms", tags=["Gyms"])
 @router.get("", response_model=Response[List[GymResponse]])
 async def list_branches(
     current_staff: Staff = Depends(get_current_active_staff),
+    _platform: PlatformCapabilityContext = Depends(
+        require_platform_capability("branches.view", OperationClass.safe_read.value)
+    ),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -32,6 +37,9 @@ async def list_branches(
 async def create_branch(
     data: GymCreate,
     current_staff: Staff = Depends(require_org_admin),
+    _platform: PlatformCapabilityContext = Depends(
+        require_platform_capability("branches.create", OperationClass.capacity_increase.value)
+    ),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -80,6 +88,9 @@ async def update_branch(
     gym_id: UUID,
     data: GymUpdate,
     current_staff: Staff = Depends(require_org_admin),
+    _platform: PlatformCapabilityContext = Depends(
+        require_platform_capability("branches.update", OperationClass.ordinary_write.value)
+    ),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -108,6 +119,9 @@ async def update_branch(
 async def delete_branch(
     gym_id: UUID,
     current_staff: Staff = Depends(require_org_admin),
+    _platform: PlatformCapabilityContext = Depends(
+        require_platform_capability("branches.change_status", OperationClass.capacity_decrease.value)
+    ),
     db: AsyncSession = Depends(get_db)
 ):
     """

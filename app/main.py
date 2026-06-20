@@ -65,6 +65,7 @@ from app.routers import (
     membership_plans,
     member_subscriptions_v2,
 )
+from app.platform_billing.api import tenant as platform_billing_tenant
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -162,6 +163,7 @@ app.include_router(branch_lifecycle.router)
 app.include_router(geo.router)
 app.include_router(membership_plans.router)
 app.include_router(member_subscriptions_v2.router)
+app.include_router(platform_billing_tenant.router)
 
 
 # ── Health probe ──────────────────────────────────────────────────────────

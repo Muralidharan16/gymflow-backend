@@ -1,250 +1,431 @@
-# Doers Platform Billing — Capability Registry V1
-# =================================================
-# Defines all platform-billing capability keys and their metadata.
-# This file is version-controlled, validated at startup, and used by
-# the capability guard and route manifest.
-#
-# Phase 0: definition only; no enforcement.
+# Doers Platform Billing - Capability Registry V1
 
 manifest_version: "1.0"
 
 capabilities:
-
-  # ── Always/recovery capabilities ─────────────────────────
   - key: auth.session.refresh
-    description: Refresh an expired authentication session
-    operation_class: recovery
-    recovery: true
+    description: Refresh an expired authentication session.
+    operation_class: security_recovery
+    allowed_access_modes: [full, limited_write, read_only, billing_only, blocked]
+    fallback_eligible: false
+    recovery_capability: true
 
   - key: auth.logout
-    description: Terminate current session
-    operation_class: recovery
-    recovery: true
+    description: Terminate the current session.
+    operation_class: security_recovery
+    allowed_access_modes: [full, limited_write, read_only, billing_only, blocked]
+    fallback_eligible: false
+    recovery_capability: true
 
   - key: security.manage_own_session
-    description: View and revoke own devices/sessions
-    operation_class: recovery
-    recovery: true
+    description: View and revoke own sessions.
+    operation_class: security_recovery
+    allowed_access_modes: [full, limited_write, read_only, billing_only]
+    fallback_eligible: false
+    recovery_capability: true
 
   - key: support.contact
-    description: Contact platform support
-    operation_class: read
-    recovery: true
+    description: Contact platform support.
+    operation_class: billing_recovery
+    allowed_access_modes: [full, limited_write, read_only, billing_only, blocked]
+    fallback_eligible: true
+    recovery_capability: true
 
-  # ── Platform billing capabilities ────────────────────────
   - key: platform_billing.view
-    description: View plan, usage, invoices, and billing account
-    operation_class: read
+    description: View safe Plan and Billing status.
+    operation_class: safe_read
+    allowed_access_modes: [full, limited_write, read_only, billing_only, blocked]
+    fallback_eligible: true
+    recovery_capability: true
 
   - key: platform_billing.manage_account
-    description: Manage billing account identity and contacts
-    operation_class: modify_existing
+    description: Manage billing account identity and contacts.
+    operation_class: ordinary_write
+    allowed_access_modes: [full, limited_write, read_only, billing_only]
+    fallback_eligible: false
+    recovery_capability: true
 
   - key: platform_billing.manage_payment_method
-    description: Add, update, or remove payment methods
+    description: Add, update, or remove platform payment methods.
     operation_class: financial
+    allowed_access_modes: [full, limited_write, read_only, billing_only]
+    fallback_eligible: false
+    recovery_capability: true
 
   - key: platform_billing.change_plan
-    description: Upgrade or downgrade plan
+    description: Change the Doers platform plan.
     operation_class: financial
+    allowed_access_modes: [full, limited_write, read_only, billing_only]
+    fallback_eligible: false
+    recovery_capability: true
 
   - key: platform_billing.cancel
-    description: Schedule or undo cancellation
-    operation_class: destructive
+    description: Schedule or undo platform plan cancellation.
+    operation_class: financial
+    allowed_access_modes: [full, limited_write, read_only, billing_only]
+    fallback_eligible: false
+    recovery_capability: true
 
   - key: platform_billing.download_invoice
-    description: Download invoice PDF documents
-    operation_class: read
+    description: Download platform billing invoice documents.
+    operation_class: safe_read
+    allowed_access_modes: [full, limited_write, read_only, billing_only]
+    fallback_eligible: false
+    recovery_capability: true
 
   - key: data.export
-    description: Export organization data
-    operation_class: read
+    description: Export organization data.
+    operation_class: export
+    required_feature_key: features.data_export
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: false
+    recovery_capability: false
 
-  # ── Product capabilities ─────────────────────────────────
   - key: organization.view
-    description: View organization profile
-    operation_class: read
+    description: View organization profile.
+    operation_class: safe_read
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: organization.update
-    description: Update organization profile
-    operation_class: modify_existing
+    description: Update organization profile.
+    operation_class: ordinary_write
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: branches.view
-    description: View branch listing
-    operation_class: read
+    description: View branch listing and details.
+    operation_class: safe_read
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: branches.create
-    description: Create a new branch
-    operation_class: increase_capacity
+    description: Create a new branch.
+    operation_class: capacity_increase
+    required_feature_key: limits.branches.active
+    usage_metric_key: limits.branches.active
+    capacity_effect: increase
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: branches.update
-    description: Update branch details
-    operation_class: modify_existing
+    description: Update branch details.
+    operation_class: ordinary_write
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: branches.change_status
-    description: Activate/deactivate/close a branch
-    operation_class: destructive
+    description: Activate, deactivate, close, or reopen a branch.
+    operation_class: capacity_decrease
+    capacity_effect: decrease
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: branches.delete_request
-    description: Request branch deletion
+    description: Request branch deletion.
     operation_class: destructive
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: branch_contacts.view
-    description: View branch contacts
-    operation_class: read
+    description: View branch contacts.
+    operation_class: safe_read
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: branch_contacts.manage
-    description: Manage branch contacts
-    operation_class: modify_existing
+    description: Manage branch contacts.
+    operation_class: ordinary_write
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: branch_hours.view
-    description: View branch operating hours
-    operation_class: read
+    description: View branch operating hours.
+    operation_class: safe_read
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: branch_hours.manage
-    description: Manage branch operating hours
-    operation_class: modify_existing
+    description: Manage branch operating hours.
+    operation_class: ordinary_write
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: staff.view
-    description: View staff listing
-    operation_class: read
+    description: View staff listing.
+    operation_class: safe_read
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: staff.invite
-    description: Invite a new staff member
-    operation_class: increase_capacity
+    description: Invite a staff member.
+    operation_class: capacity_increase
+    required_feature_key: limits.staff.active
+    usage_metric_key: limits.staff.active
+    capacity_effect: increase
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: staff.update
-    description: Update staff details or roles
-    operation_class: modify_existing
+    description: Update staff details or roles.
+    operation_class: privileged_admin
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: staff.revoke
-    description: Revoke staff access
+    description: Revoke staff access.
     operation_class: destructive
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: members.view
-    description: View member listing
-    operation_class: read
+    description: View members.
+    operation_class: safe_read
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: members.create
-    description: Create a new member
-    operation_class: increase_capacity
+    description: Create a member.
+    operation_class: capacity_increase
+    required_feature_key: limits.members.active
+    usage_metric_key: limits.members.active
+    capacity_effect: increase
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: members.update
-    description: Update member details
-    operation_class: modify_existing
+    description: Update member details.
+    operation_class: ordinary_write
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: members.deactivate
-    description: Deactivate a member
-    operation_class: destructive
+    description: Deactivate a member.
+    operation_class: capacity_decrease
+    capacity_effect: decrease
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: membership_plans.view
-    description: View membership plans
-    operation_class: read
+    description: View facility membership plans.
+    operation_class: safe_read
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: membership_plans.create
-    description: Create a membership plan
-    operation_class: modify_existing
+    description: Create a facility membership plan.
+    operation_class: capacity_increase
+    required_feature_key: limits.membership_plans.active
+    usage_metric_key: limits.membership_plans.active
+    capacity_effect: increase
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: membership_plans.update
-    description: Update a membership plan
-    operation_class: modify_existing
+    description: Update a facility membership plan.
+    operation_class: ordinary_write
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: membership_plans.archive
-    description: Archive a membership plan
-    operation_class: destructive
+    description: Archive a facility membership plan.
+    operation_class: capacity_decrease
+    capacity_effect: decrease
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: member_subscriptions.view
-    description: View member subscriptions
-    operation_class: read
+    description: View facility member subscriptions.
+    operation_class: safe_read
+    required_feature_key: features.member_subscriptions
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: member_subscriptions.create
-    description: Create member subscriptions
-    operation_class: increase_capacity
+    description: Create a facility member subscription.
+    operation_class: ordinary_write
+    required_feature_key: features.member_subscriptions
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: member_subscriptions.update
-    description: Modify member subscriptions
-    operation_class: modify_existing
+    description: Update a facility member subscription.
+    operation_class: ordinary_write
+    required_feature_key: features.member_subscriptions
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: member_subscriptions.cancel
-    description: Cancel member subscriptions
+    description: Cancel a facility member subscription.
     operation_class: destructive
+    required_feature_key: features.member_subscriptions
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: member_payments.view
-    description: View member payment records
-    operation_class: read
+    description: View facility member payment records.
+    operation_class: safe_read
+    required_feature_key: features.member_payments
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: member_payments.record
-    description: Record a member payment
+    description: Record a facility member payment.
     operation_class: financial
+    required_feature_key: features.member_payments
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: member_payments.refund
-    description: Refund a member payment
+    description: Refund a facility member payment.
     operation_class: financial
+    required_feature_key: features.member_payments
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: attendance.view
-    description: View attendance records
-    operation_class: read
+    description: View attendance records.
+    operation_class: safe_read
+    required_feature_key: features.attendance
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: attendance.record
-    description: Record attendance
-    operation_class: modify_existing
+    description: Record attendance.
+    operation_class: ordinary_write
+    required_feature_key: features.attendance
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: reports.basic.view
-    description: View basic reports
-    operation_class: read
+    description: View basic reports.
+    operation_class: safe_read
+    required_feature_key: features.basic_reports
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: reports.advanced.view
-    description: View advanced reports
-    operation_class: read
+    description: View advanced reports.
+    operation_class: safe_read
+    required_feature_key: features.advanced_reports
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: imports.create
-    description: Create a bulk import
-    operation_class: modify_existing
+    description: Create a bulk import.
+    operation_class: ordinary_write
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
   - key: imports.view
-    description: View import history
-    operation_class: read
+    description: View import history.
+    operation_class: safe_read
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: assets.view
-    description: View assets
-    operation_class: read
+    description: View organization assets.
+    operation_class: safe_read
+    allowed_access_modes: [full, limited_write, read_only]
+    fallback_eligible: true
+    recovery_capability: false
 
   - key: assets.manage
-    description: Manage assets
-    operation_class: modify_existing
+    description: Manage organization branding assets.
+    operation_class: ordinary_write
+    required_feature_key: features.custom_branding
+    allowed_access_modes: [full, limited_write]
+    fallback_eligible: false
+    recovery_capability: false
 
-  # ── Internal-only capabilities ───────────────────────────
   - key: internal.platform_billing.view
-    description: View all platform billing data across tenants
-    operation_class: read
+    description: View internal Platform Billing diagnostics.
+    operation_class: internal
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
     internal: true
 
   - key: internal.platform_billing.reconcile
-    description: Run reconciliation operations
-    operation_class: financial
+    description: Run internal Platform Billing reconciliation.
+    operation_class: internal
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
     internal: true
 
   - key: internal.platform_billing.issue_refund
-    description: Issue refunds
-    operation_class: financial
+    description: Issue an internal platform refund.
+    operation_class: internal
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
     internal: true
 
   - key: internal.platform_billing.apply_credit
-    description: Apply credits
-    operation_class: financial
+    description: Apply an internal platform credit.
+    operation_class: internal
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
     internal: true
 
   - key: internal.platform_billing.override_access
-    description: Override access mode
-    operation_class: destructive
+    description: Create or revoke internal access overrides.
+    operation_class: internal
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
     internal: true
 
   - key: internal.platform_billing.manage_catalog
-    description: Manage plan catalog
-    operation_class: modify_existing
+    description: Manage internal Platform Billing catalog.
+    operation_class: internal
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
     internal: true
 
   - key: internal.platform_billing.view_sensitive_audit
-    description: View sensitive audit records
-    operation_class: read
+    description: View sensitive internal Platform Billing audit evidence.
+    operation_class: internal
+    allowed_access_modes: [full]
+    fallback_eligible: false
+    recovery_capability: false
     internal: true

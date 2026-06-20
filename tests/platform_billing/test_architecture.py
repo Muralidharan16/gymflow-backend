@@ -428,7 +428,19 @@ def test_no_webhook_routes_under_platform_billing():
 # ──────────────────────────────────────────────────────────────────────────
 
 VALID_ENUM_VALUES = {
-    "operation_class": {"read", "modify_existing", "increase_capacity", "destructive", "financial", "recovery"},
+    "operation_class": {
+        "safe_read",
+        "ordinary_write",
+        "capacity_increase",
+        "capacity_decrease",
+        "financial",
+        "destructive",
+        "export",
+        "privileged_admin",
+        "billing_recovery",
+        "security_recovery",
+        "internal",
+    },
     "value_type": {"boolean", "integer", "string", "json"},
     "enforcement_mode": {"hard", "soft", "metered", "informational"},
     "policy_type": {"trial", "dunning", "cancellation", "downgrade", "refund", "retention"},
@@ -470,8 +482,12 @@ def test_capability_registry_matches_v3_1():
         assert "key" in cap, f"Capability missing 'key': {cap}"
         assert "description" in cap, f"Capability {cap.get('key')} missing 'description'"
         assert "operation_class" in cap, f"Capability {cap.get('key')} missing 'operation_class'"
+        assert "allowed_access_modes" in cap, f"Capability {cap.get('key')} missing allowed_access_modes"
+        assert "fallback_eligible" in cap, f"Capability {cap.get('key')} missing fallback_eligible"
         oc = cap["operation_class"]
         assert oc in VALID_ENUM_VALUES["operation_class"], f"Invalid operation_class {oc} in {cap['key']}"
+        assert set(cap["allowed_access_modes"]) <= REQUIRED_ACCESS_MODES
+        assert "/" not in cap["key"], f"Capability {cap['key']} must not store a route path"
         registered_keys.add(cap["key"])
 
     missing = V3_1_CAPABILITY_KEYS - registered_keys
@@ -482,6 +498,31 @@ def test_capability_registry_matches_v3_1():
     if extra:
         errors.append(f"Extra capabilities not in V3.1 registry: {sorted(extra)}")
     assert not errors, "Capability registry must match V3.1 §10.1 initial definitions.\n" + "\n".join(errors)
+
+
+def test_capability_registry_loader_validates_schema():
+    from app.platform_billing.policies.capability_registry import get_capability_registry
+
+    registry = get_capability_registry()
+    assert registry.source_manifest_hash
+    assert registry.get("branches.create") is not None
+    assert registry.get("branches.create").usage_metric_key == "limits.branches.active"
+
+
+def test_phase_3_route_inventory_is_reviewed():
+    with open(REPO_ROOT / "tests" / "platform_billing" / "fixtures" / "phase3_route_inventory.yaml") as f:
+        data = yaml.safe_load(f)
+    routes = data.get("migrated_routes", [])
+    assert routes, "Phase 3 route inventory must list migrated routes"
+    capabilities = set()
+    for route in routes:
+        assert route["method"] in {"GET", "POST", "PUT", "PATCH", "DELETE"}
+        assert route["proposed_capability"] in V3_1_CAPABILITY_KEYS
+        assert route["operation_class"] in VALID_ENUM_VALUES["operation_class"]
+        capabilities.add(route["proposed_capability"])
+        if route["operation_class"] == "capacity_increase":
+            assert route["usage_metric"], f"{route['normalized_route_path']} must declare usage_metric"
+    assert {"branches.view", "branches.create", "branches.update", "branches.change_status", "platform_billing.view"} <= capabilities
 
 
 REQUIRED_ACCESS_MODES = frozenset({"full", "limited_write", "read_only", "billing_only", "blocked"})
