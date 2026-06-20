@@ -167,10 +167,11 @@ def test_idempotency_middleware_exists():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_platform_billing_db_tables_created_only_as_authorized_phase_1_and_2_scope():
+def test_platform_billing_db_tables_created_only_as_authorized_phase_1_2_and_4a_scope():
     """
     Platform Billing models expose only the authorized Phase 1 foundation
-    plus the authorized Phase 2 shadow/projection tables.
+    plus the authorized Phase 2 shadow/projection tables and Phase 4A
+    provider persistence foundation.
     """
     import importlib
 
@@ -202,6 +203,12 @@ def test_platform_billing_db_tables_created_only_as_authorized_phase_1_and_2_sco
         "platform_entitlement_projection",
         "platform_access_projection",
         "platform_usage_projection",
+        "platform_provider_customers",
+        "platform_payment_methods",
+        "platform_provider_operations",
+        "platform_webhook_inbox",
+        "platform_reconciliation_runs",
+        "platform_reconciliation_items",
     }
 
 

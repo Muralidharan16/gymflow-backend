@@ -327,15 +327,21 @@ PHASE_2_TABLES = frozenset(
     }
 )
 
-LATER_PHASE_TABLES = frozenset(
+PHASE_4A_TABLES = frozenset(
     {
         "platform_provider_customers",
         "platform_payment_methods",
-        "platform_mandates",
         "platform_provider_operations",
         "platform_webhook_inbox",
         "platform_reconciliation_runs",
         "platform_reconciliation_items",
+    }
+)
+
+LATER_PHASE_TABLES = frozenset(
+    {
+        "platform_provider_subscriptions",
+        "platform_mandates",
         "platform_document_sequences",
         "platform_invoices",
         "platform_invoice_lines",
@@ -356,10 +362,11 @@ def test_platform_billing_models_define_only_authorized_phase_1_and_2_tables():
         table_names.update(re.findall(r'__tablename__\s*=\s*"([^"]+)"', source))
 
     missing = PHASE_1_TABLES - table_names
-    extra = table_names - PHASE_1_TABLES - PHASE_2_TABLES
+    extra = table_names - PHASE_1_TABLES - PHASE_2_TABLES - PHASE_4A_TABLES
     assert not missing, f"Missing Phase 1 ORM table mappings: {sorted(missing)}"
     assert not extra, f"Unauthorized Platform Billing ORM tables: {sorted(extra)}"
-    assert not (table_names & LATER_PHASE_TABLES), "Later-phase tables beyond Phase 2 must not be mapped"
+    assert PHASE_4A_TABLES <= table_names, f"Missing Phase 4A ORM table mappings: {sorted(PHASE_4A_TABLES - table_names)}"
+    assert not (table_names & LATER_PHASE_TABLES), "Later-phase tables beyond Phase 4A must not be mapped"
 
 
 def test_phase_1_migration_exists_and_is_linear():
@@ -382,6 +389,20 @@ def test_phase_2_migration_exists_and_creates_only_authorized_tables():
         assert required in source, f"Phase 2 table {required} must be created in Phase 2"
     for forbidden in LATER_PHASE_TABLES:
         assert forbidden not in source, f"Later-phase table {forbidden} must not be created in Phase 2"
+
+
+def test_phase_4a_migration_exists_and_creates_only_authorized_tables():
+    migration = REPO_ROOT / "alembic" / "versions" / "014167728f4a_platform_billing_phase_4a_provider_persistence.py"
+    assert migration.exists(), "Phase 4A must add one hand-authored migration"
+    source = migration.read_text(encoding="utf-8")
+    assert 'revision: str = "014167728f4a"' in source
+    assert 'down_revision: Union[str, Sequence[str], None] = "f2b3c4d5e6a7"' in source
+    for required in PHASE_4A_TABLES:
+        assert required in source, f"Phase 4A table {required} must be created in Phase 4A"
+    for forbidden in LATER_PHASE_TABLES:
+        assert forbidden not in source, f"Later-phase table {forbidden} must not be created in Phase 4A"
+    assert "CREATE ROLE" not in source
+    assert "ALTER ROLE" not in source
 
 
 # ──────────────────────────────────────────────────────────────────────────

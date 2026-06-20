@@ -588,6 +588,8 @@ async def test_authorization_service_capacity_and_projection_states(db_session):
     now = datetime.now(timezone.utc)
     await exec_sql(
         """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+
         INSERT INTO platform_access_projection (
             organization_id, subscription_id, mode, reason_code, reason_detail_safe,
             effective_from, recovery_actions_json, source_subscription_version,
@@ -612,6 +614,8 @@ async def test_authorization_service_capacity_and_projection_states(db_session):
     async def set_usage(value: int) -> None:
         await exec_sql(
             """
+            SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+
             DELETE FROM platform_usage_projection
             WHERE organization_id = :org1 AND metric_key = 'limits.branches.active';
             INSERT INTO platform_usage_projection (
@@ -633,6 +637,10 @@ async def test_authorization_service_capacity_and_projection_states(db_session):
         (4, False, "PLATFORM_USAGE_LIMIT_REACHED"),
     ]:
         await set_usage(value)
+        await db_session.execute(
+            text("SELECT pg_catalog.set_config('app.current_org_id', :org1, true)"),
+            {"org1": ORG_1},
+        )
         result = await CapabilityAuthorizationService(db_session).authorize(
             organization_id=UUID(ORG_1),
             capability_key="branches.create",
@@ -643,6 +651,10 @@ async def test_authorization_service_capacity_and_projection_states(db_session):
         assert result.decision.usage_value == value
 
     await set_usage(4)
+    await db_session.execute(
+        text("SELECT pg_catalog.set_config('app.current_org_id', :org1, true)"),
+        {"org1": ORG_1},
+    )
     decrease = await CapabilityAuthorizationService(db_session).authorize(
         organization_id=UUID(ORG_1),
         capability_key="branches.change_status",
@@ -651,7 +663,14 @@ async def test_authorization_service_capacity_and_projection_states(db_session):
     assert decrease.decision.allowed is True
 
     await exec_sql(
-        "DELETE FROM platform_usage_projection WHERE organization_id = :org1",
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        DELETE FROM platform_usage_projection WHERE organization_id = :org1
+        """,
+        {"org1": ORG_1},
+    )
+    await db_session.execute(
+        text("SELECT pg_catalog.set_config('app.current_org_id', :org1, true)"),
         {"org1": ORG_1},
     )
     unavailable = await CapabilityAuthorizationService(db_session).authorize(
@@ -672,6 +691,8 @@ async def test_authorization_service_recompute_timeout_and_safe_audit(db_session
     now = datetime.now(timezone.utc)
     await exec_sql(
         """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+
         INSERT INTO platform_access_projection (
             organization_id, subscription_id, mode, reason_code, reason_detail_safe,
             effective_from, recovery_actions_json, source_subscription_version,
@@ -685,6 +706,10 @@ async def test_authorization_service_recompute_timeout_and_safe_audit(db_session
         {"org1": ORG_1, "subscription": ids["subscription"], "now": now, "sha": "d" * 64},
     )
 
+    await db_session.execute(
+        text("SELECT pg_catalog.set_config('app.current_org_id', :org1, true)"),
+        {"org1": ORG_1},
+    )
     result = await CapabilityAuthorizationService(db_session).authorize(
         organization_id=UUID(ORG_1),
         capability_key="branches.view",
@@ -720,6 +745,8 @@ async def test_authorization_service_recompute_timeout_and_safe_audit(db_session
 
     await exec_sql(
         """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+
         DELETE FROM platform_access_projection
         WHERE organization_id = :org1;
 
@@ -734,6 +761,10 @@ async def test_authorization_service_recompute_timeout_and_safe_audit(db_session
         )
         """,
         {"org1": ORG_1, "subscription": ids["subscription"], "now": now, "sha": "e" * 64},
+    )
+    await db_session.execute(
+        text("SELECT pg_catalog.set_config('app.current_org_id', :org1, true)"),
+        {"org1": ORG_1},
     )
     timeout_result = await CapabilityAuthorizationService(
         db_session,

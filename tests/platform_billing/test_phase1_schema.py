@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import text
 
 from app.core.database import AsyncSessionLocal
-from conftest import cleanup_test_database_tables
+from conftest import TestSessionLocal, assert_test_database
 
 
 ORG_1 = "81000000-0000-0000-0000-000000000001"
@@ -21,6 +21,15 @@ PHASE_2_TABLES = [
     "platform_entitlement_projection",
     "platform_access_overrides",
     "platform_subscription_changes",
+]
+
+PHASE_4A_TABLES = [
+    "platform_reconciliation_items",
+    "platform_reconciliation_runs",
+    "platform_webhook_inbox",
+    "platform_provider_operations",
+    "platform_payment_methods",
+    "platform_provider_customers",
 ]
 
 PHASE_1_TABLES = [
@@ -41,7 +50,27 @@ PHASE_1_TABLES = [
 
 
 async def cleanup_phase1_tables() -> None:
-    await cleanup_test_database_tables(PHASE_2_TABLES + PHASE_1_TABLES)
+    table_names = PHASE_4A_TABLES + PHASE_2_TABLES + PHASE_1_TABLES
+    async with TestSessionLocal() as session:
+        await session.execute(text("RESET ROLE"))
+        await assert_test_database(session)
+        result = await session.execute(
+            text(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_name = ANY(:table_names)
+                """
+            ),
+            {"table_names": table_names},
+        )
+        existing_tables = {row[0] for row in result}
+        ordered_tables = [table for table in table_names if table in existing_tables]
+        if ordered_tables:
+            quoted_tables = ", ".join(f'"{table}"' for table in ordered_tables)
+            await session.execute(text(f"TRUNCATE TABLE {quoted_tables} CASCADE"))
+        await session.commit()
 
 
 async def exec_sql(sql: str, params: dict[str, object] | None = None) -> None:
@@ -210,7 +239,7 @@ async def seed_billing_account_and_subscription() -> dict[str, str]:
     return ids
 
 
-async def test_phase_1_and_2_tables_exist_and_later_phase_tables_absent():
+async def test_phase_1_2_and_4a_tables_exist_and_later_phase_tables_absent():
     phase_1_required = {
         "platform_products",
         "platform_policy_versions",
@@ -226,6 +255,7 @@ async def test_phase_1_and_2_tables_exist_and_later_phase_tables_absent():
         "platform_billing_audit_events",
     }
     phase_2_required = set(PHASE_2_TABLES)
+    phase_4a_required = set(PHASE_4A_TABLES)
     result = await scalar(
         """
         SELECT count(*)
@@ -233,13 +263,12 @@ async def test_phase_1_and_2_tables_exist_and_later_phase_tables_absent():
         WHERE table_schema = 'public'
           AND table_name = ANY(:tables)
         """,
-        {"tables": list(phase_1_required | phase_2_required)},
+        {"tables": list(phase_1_required | phase_2_required | phase_4a_required)},
     )
-    assert result == len(phase_1_required | phase_2_required)
+    assert result == len(phase_1_required | phase_2_required | phase_4a_required)
 
     forbidden = [
-        "platform_provider_customers",
-        "platform_webhook_inbox",
+        "platform_provider_subscriptions",
         "platform_invoices",
         "platform_payment_attempts",
         "platform_refunds",
