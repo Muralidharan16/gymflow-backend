@@ -4,6 +4,7 @@ from app.platform_billing.repositories.billing_accounts import PlatformBillingAc
 from app.platform_billing.repositories.catalog import PlatformCatalogReadRepository
 from app.platform_billing.repositories.provider_operations import PlatformProviderOperationRepository
 from app.platform_billing.repositories.subscriptions import PlatformSubscriptionReadRepository
+from app.platform_billing.repositories.webhooks import PlatformWebhookInboxRepository
 
 __all__ = [
     "PlatformBillingAccountReadRepository",
@@ -11,4 +12,5 @@ __all__ = [
     "PlatformCatalogReadRepository",
     "PlatformProviderOperationRepository",
     "PlatformSubscriptionReadRepository",
+    "PlatformWebhookInboxRepository",
 ]

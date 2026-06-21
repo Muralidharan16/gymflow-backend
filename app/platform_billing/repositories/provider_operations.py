@@ -130,6 +130,23 @@ class PlatformProviderOperationRepository:
         row = result.scalar_one_or_none()
         return _snapshot(row) if row is not None else None
 
+    async def get_by_external_operation_ref(
+        self,
+        *,
+        provider_code: str,
+        external_operation_ref: str,
+        for_update: bool = False,
+    ) -> ProviderOperationSnapshot | None:
+        statement = select(PlatformProviderOperation).where(
+            PlatformProviderOperation.provider_code == provider_code,
+            PlatformProviderOperation.external_operation_ref == external_operation_ref,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await self._session.execute(statement)
+        row = result.scalar_one_or_none()
+        return _snapshot(row) if row is not None else None
+
     async def record_result(
         self,
         result: ProviderOperationResult,
