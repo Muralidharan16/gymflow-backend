@@ -948,7 +948,9 @@ def test_phase4c_safety_guardrails_remain_invisible_and_non_enforcing():
     assert settings.PLATFORM_BILLING_DUNNING_TRANSITIONS is False
     assert settings.PLATFORM_BILLING_NOTIFICATIONS is False
     assert settings.PLATFORM_BILLING_ENFORCEMENT is False
-    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "checkout.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "completion.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "simulation.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "callback.py").exists()
     assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "webhooks.py").exists()
     assert not (REPO_ROOT / "app" / "platform_billing" / "tasks" / "reconciliation.py").exists()
 

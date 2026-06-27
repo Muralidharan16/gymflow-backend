@@ -419,7 +419,9 @@ def test_phase4a_migration_has_no_cluster_role_or_provider_execution():
 
 
 def test_phase4a_no_api_routes_or_provider_package_added():
-    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "checkout.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "completion.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "simulation.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "callback.py").exists()
     assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "webhooks.py").exists()
     provider_sources = sorted(
         path.name

@@ -512,11 +512,12 @@ async def test_webhook_wins_reconciliation_wins_and_conflicting_race_are_safe():
     webhook_first = await seed_operation(status="unknown", external_ref="fake_op_webhook_wins", completed_at=OLDER)
     recon_first = await seed_operation(status="unknown", external_ref="fake_op_recon_wins", completed_at=OLDER)
     conflict = await seed_operation(status="unknown", external_ref="fake_op_conflict_race", completed_at=OLDER)
+    provider_observed_at = datetime.now(timezone.utc) + timedelta(days=1)
     svc = service(
         [
-            succeeded_script("fake", "fake_op_webhook_wins", NEWER),
-            succeeded_script("fake", "fake_op_recon_wins", NEWER),
-            succeeded_script("fake", "fake_op_conflict_race", NEWER),
+            succeeded_script("fake", "fake_op_webhook_wins", provider_observed_at),
+            succeeded_script("fake", "fake_op_recon_wins", provider_observed_at),
+            succeeded_script("fake", "fake_op_conflict_race", provider_observed_at),
         ]
     )
     run = await svc.reserve_run(request())
@@ -576,7 +577,9 @@ def test_phase4d_safety_guardrails_remain_invisible_and_non_enforcing():
     assert settings.PLATFORM_BILLING_DUNNING_TRANSITIONS is False
     assert settings.PLATFORM_BILLING_NOTIFICATIONS is False
     assert settings.PLATFORM_BILLING_ENFORCEMENT is False
-    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "checkout.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "completion.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "simulation.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "callback.py").exists()
     assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "browser_return.py").exists()
     assert not (REPO_ROOT / "app" / "platform_billing" / "tasks" / "reconciliation.py").exists()
 

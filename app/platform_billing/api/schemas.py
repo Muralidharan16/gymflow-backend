@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -59,3 +60,31 @@ class PlatformBillingSummaryResponse(BaseModel):
     usage: list[PlatformBillingUsageSummary]
     decision_availability: PlatformBillingDecisionAvailability
     server_time: datetime
+
+
+class CreateCheckoutSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan_code: str | None = None
+    plan_id: uuid.UUID | None = None
+    billing_interval: str | None = None
+
+
+class CreateCheckoutSessionResponse(BaseModel):
+    operation_id: uuid.UUID
+    operation_status: str
+    checkout_session_reference: str | None = None
+    fake_checkout_token: str | None = None
+    expires_at: datetime | None = None
+    confirmation_state: str = "not_started"
+    replayed: bool = False
+    browser_authoritative: bool = False
+
+
+class GetCheckoutOperationResponse(BaseModel):
+    operation_id: uuid.UUID
+    operation_status: str
+    checkout_session_reference: str | None = None
+    expires_at: datetime | None = None
+    error_code: str | None = None
+    browser_authoritative: bool = False

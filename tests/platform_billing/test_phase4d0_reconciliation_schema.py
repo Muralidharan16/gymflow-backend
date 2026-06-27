@@ -628,4 +628,6 @@ async def test_phase4d0_security_and_scope_guardrails():
     for token in forbidden:
         assert token not in lowered
 
-    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "checkout.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "completion.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "simulation.py").exists()
+    assert not (REPO_ROOT / "app" / "platform_billing" / "api" / "callback.py").exists()
