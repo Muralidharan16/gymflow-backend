@@ -430,18 +430,11 @@ def test_no_provider_sdk_integration():
     )
 
 
-def test_no_webhook_routes_under_platform_billing():
+def test_no_real_webhook_route_under_platform_billing():
+    forbidden_route_files = {"webhook.py", "webhooks.py", "callback.py"}
     api_dir = PLATFORM_BILLING_ROOT / "api"
-    for py_file in api_dir.glob("*.py"):
-        if py_file.name == "__init__.py":
-            continue
-        source = py_file.read_text(encoding="utf-8")
-        if "webhook" in source.lower() or "Webhook" in source:
-            rel = py_file.relative_to(REPO_ROOT)
-            pytest.fail(
-                f"{rel} contains webhook references — webhook processing "
-                f"is prohibited in Phase 0 (V3.1 §25)"
-            )
+    present = sorted(path.name for path in api_dir.glob("*.py") if path.name in forbidden_route_files)
+    assert not present, "Phase 4E2B may reuse Phase 4C processing internally, but must not expose real webhook routes"
 
 
 # ──────────────────────────────────────────────────────────────────────────

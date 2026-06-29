@@ -72,6 +72,9 @@ class PlatformProviderOperationRepository:
     async def claim_for_execution(
         self,
         operation_id: uuid.UUID,
+        *,
+        external_operation_ref: str | None = None,
+        result_reference: str | None = None,
     ) -> ProviderOperationSnapshot:
         statement = (
             update(PlatformProviderOperation)
@@ -82,6 +85,8 @@ class PlatformProviderOperationRepository:
             .values(
                 status="in_progress",
                 attempt_count=PlatformProviderOperation.attempt_count + 1,
+                **({"external_operation_ref": external_operation_ref} if external_operation_ref is not None else {}),
+                **({"result_reference": result_reference} if result_reference is not None else {}),
             )
             .returning(PlatformProviderOperation)
         )

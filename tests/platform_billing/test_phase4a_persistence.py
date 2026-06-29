@@ -427,7 +427,7 @@ def test_phase4a_no_api_routes_or_provider_package_added():
         path.name
         for path in (REPO_ROOT / "app" / "platform_billing" / "providers").glob("*.py")
     )
-    assert provider_sources == ["__init__.py", "base.py", "fake.py", "reconciliation.py"]
+    assert provider_sources == ["__init__.py", "base.py", "fake.py", "fake_checkout_simulation.py", "reconciliation.py"]
 
 
 def test_phase4a_feature_flags_remain_disabled():
@@ -437,6 +437,7 @@ def test_phase4a_feature_flags_remain_disabled():
     assert settings.PLATFORM_BILLING_FRONTEND_SHELL is False
     assert settings.PLATFORM_BILLING_CHECKOUT is False
     assert settings.PLATFORM_BILLING_WEBHOOK_PROCESSING is False
+    assert settings.PLATFORM_BILLING_FAKE_CHECKOUT_SIMULATION_ENABLED is False
 
 
 def test_protected_architecture_checksums_still_match():

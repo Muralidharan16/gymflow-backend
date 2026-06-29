@@ -88,3 +88,21 @@ class GetCheckoutOperationResponse(BaseModel):
     expires_at: datetime | None = None
     error_code: str | None = None
     browser_authoritative: bool = False
+
+
+class CreateFakeCheckoutSimulationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    checkout_operation_id: uuid.UUID
+    requested_outcome: str
+
+
+class FakeCheckoutSimulationResponse(BaseModel):
+    simulation_operation_id: uuid.UUID
+    checkout_operation_id: uuid.UUID
+    outcome_status: str
+    webhook_processing_status: str | None = None
+    provider_event_reference: str | None = None
+    replayed: bool = False
+    browser_authoritative: bool = False
+    subscription_activated: bool = False

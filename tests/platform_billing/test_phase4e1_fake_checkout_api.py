@@ -444,11 +444,13 @@ def test_checkout_configuration_surface_has_one_authoritative_fake_checkout_path
     assert related == [
         "PLATFORM_BILLING_CHECKOUT",
         "PLATFORM_BILLING_FAKE_CHECKOUT_ENABLED",
+        "PLATFORM_BILLING_FAKE_CHECKOUT_SIMULATION_ENABLED",
         "PLATFORM_BILLING_PROVIDER_MODE",
     ]
     assert not hasattr(settings, "ENABLE_FAKE_CHECKOUT_API")
     assert not hasattr(settings, "PLATFORM_BILLING_CHECKOUT_ENABLED")
     assert settings.PLATFORM_BILLING_FAKE_CHECKOUT_ENABLED is False
+    assert settings.PLATFORM_BILLING_FAKE_CHECKOUT_SIMULATION_ENABLED is False
     assert settings.PLATFORM_BILLING_PROVIDER_MODE == "disabled"
 
 

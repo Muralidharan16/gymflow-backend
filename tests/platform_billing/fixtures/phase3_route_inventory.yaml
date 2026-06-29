@@ -68,3 +68,23 @@ migrated_routes:
     usage_metric: null
     capacity_effect: none
     phase_3_migration_status: fake_checkout_disabled_by_default
+
+  - method: POST
+    normalized_route_path: /api/v1/platform-billing/fake-checkout-simulations
+    current_legacy_guard: require_bearer_token
+    proposed_capability: platform_billing.change_plan
+    operation_class: financial
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: none
+    phase_3_migration_status: fake_checkout_simulation_disabled_by_default
+
+  - method: GET
+    normalized_route_path: /api/v1/platform-billing/fake-checkout-simulations/{simulation_operation_id}
+    current_legacy_guard: require_bearer_token
+    proposed_capability: platform_billing.view
+    operation_class: safe_read
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: none
+    phase_3_migration_status: fake_checkout_simulation_disabled_by_default
