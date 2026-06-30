@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     PLATFORM_BILLING_FAKE_CHECKOUT_SIMULATION_ENABLED: bool = False
     PLATFORM_BILLING_PROVIDER_MODE: str = "disabled"
     PLATFORM_BILLING_WEBHOOK_PAYLOAD_STORE_DIR: str = "/tmp/gymflow-platform-webhook-payloads"
+    PLATFORM_BILLING_FAKE_PROVIDER_EVIDENCE_DIR: str = "/tmp/gymflow-platform-fake-provider-evidence"
     PLATFORM_BILLING_WEBHOOK_PROCESSING: bool = False
     PLATFORM_BILLING_DUNNING_TRANSITIONS: bool = False
     PLATFORM_BILLING_NOTIFICATIONS: bool = False

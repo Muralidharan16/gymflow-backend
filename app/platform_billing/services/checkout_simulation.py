@@ -19,8 +19,15 @@ from app.platform_billing.domain.provider_operations import (
 )
 from app.platform_billing.domain.webhooks import WebhookEnvelope, WebhookTransportHeaders
 from app.platform_billing.models.provider import PlatformProviderCustomer, PlatformProviderOperation
+from app.platform_billing.providers.fake_checkout_evidence import (
+    FakeCheckoutEvidenceStore,
+    build_pending_evidence,
+    build_terminal_evidence,
+    default_fake_checkout_evidence_store,
+)
 from app.platform_billing.providers.fake_checkout_simulation import (
     CONFIRM_CHECKOUT_OPERATION_TYPE,
+    FakeCheckoutOutcomeEvent,
     DeterministicFakeCheckoutOutcomeProducer,
 )
 from app.platform_billing.repositories.provider_operations import PlatformProviderOperationRepository
@@ -50,12 +57,14 @@ class CheckoutSimulationNotFoundError(Exception):
 class CheckoutSimulationServices:
     event_producer: DeterministicFakeCheckoutOutcomeProducer
     payload_store: EncryptedWebhookPayloadStore
+    evidence_store: FakeCheckoutEvidenceStore | None = None
 
 
 def default_simulation_services() -> CheckoutSimulationServices:
     return CheckoutSimulationServices(
         event_producer=DeterministicFakeCheckoutOutcomeProducer(),
         payload_store=LocalEncryptedWebhookPayloadStore(Path(settings.PLATFORM_BILLING_WEBHOOK_PAYLOAD_STORE_DIR)),
+        evidence_store=default_fake_checkout_evidence_store(),
     )
 
 
@@ -72,6 +81,7 @@ class PlatformCheckoutSimulationService:
         services = simulation_services or default_simulation_services()
         self._event_producer = services.event_producer
         self._payload_store = services.payload_store
+        self._evidence_store = services.evidence_store or default_fake_checkout_evidence_store()
 
     async def create_simulation(
         self,
@@ -112,6 +122,14 @@ class PlatformCheckoutSimulationService:
             )
 
         if requested_outcome == "pending":
+            await self._record_pending_provider_evidence(
+                organization_id=organization_id,
+                checkout_operation_id=checkout_operation_id,
+                checkout_session_reference=checkout.result_reference or "",
+                confirm_operation_id=reserved.id,
+                external_operation_ref=external_ref,
+                provider_customer_ref=customer.external_customer_ref,
+            )
             return _response_from_operation(
                 checkout_operation_id=checkout_operation_id,
                 operation=reserved,
@@ -128,11 +146,11 @@ class PlatformCheckoutSimulationService:
                 replayed=True,
             )
 
-        event = self._event_producer.generate(
+        event = await self._record_terminal_provider_evidence(
             organization_id=organization_id,
             checkout_operation_id=checkout_operation_id,
             checkout_session_reference=checkout.result_reference or "",
-            simulation_operation_id=reserved.id,
+            confirm_operation_id=reserved.id,
             external_operation_ref=external_ref,
             provider_customer_ref=customer.external_customer_ref,
             requested_outcome=requested_outcome,
@@ -185,6 +203,88 @@ class PlatformCheckoutSimulationService:
             replayed=False,
             browser_authoritative=False,
             subscription_activated=False,
+        )
+
+    async def _record_pending_provider_evidence(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        checkout_operation_id: uuid.UUID,
+        checkout_session_reference: str,
+        confirm_operation_id: uuid.UUID,
+        external_operation_ref: str,
+        provider_customer_ref: str,
+    ) -> None:
+        evidence = build_pending_evidence(
+            organization_id=organization_id,
+            confirm_checkout_operation_id=confirm_operation_id,
+            checkout_operation_id=checkout_operation_id,
+            external_operation_ref=external_operation_ref,
+            checkout_session_reference=checkout_session_reference,
+            provider_customer_ref=provider_customer_ref,
+        )
+        await self._evidence_store.record(evidence)
+
+    async def _record_terminal_provider_evidence(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        checkout_operation_id: uuid.UUID,
+        checkout_session_reference: str,
+        confirm_operation_id: uuid.UUID,
+        external_operation_ref: str,
+        provider_customer_ref: str,
+        requested_outcome: str,
+    ) -> FakeCheckoutOutcomeEvent:
+        existing = await self._evidence_store.get(
+            provider_code="fake",
+            organization_id=organization_id,
+            external_operation_ref=external_operation_ref,
+        )
+        if existing is not None and existing.provider_outcome in {"succeeded", "failed"}:
+            if existing.provider_outcome != requested_outcome or existing.raw_event is None:
+                raise CheckoutSimulationConflictError("terminal_outcome_conflict")
+            return FakeCheckoutOutcomeEvent(
+                provider_event_id=existing.provider_event_id or "",
+                event_timestamp=existing.signature_timestamp or int(existing.provider_observed_at.timestamp()),
+                event_type=f"provider_operation.{existing.provider_outcome}",
+                external_operation_ref=existing.external_operation_ref,
+                raw_body=existing.raw_event,
+                signature=existing.signature_header or "",
+            )
+
+        event = self._event_producer.generate(
+            organization_id=organization_id,
+            checkout_operation_id=checkout_operation_id,
+            checkout_session_reference=checkout_session_reference,
+            simulation_operation_id=confirm_operation_id,
+            external_operation_ref=external_operation_ref,
+            provider_customer_ref=provider_customer_ref,
+            requested_outcome=requested_outcome,
+        )
+        evidence = build_terminal_evidence(
+            organization_id=organization_id,
+            confirm_checkout_operation_id=confirm_operation_id,
+            checkout_operation_id=checkout_operation_id,
+            external_operation_ref=external_operation_ref,
+            checkout_session_reference=checkout_session_reference,
+            provider_customer_ref=provider_customer_ref,
+            provider_outcome=requested_outcome,
+            provider_event_id=event.provider_event_id,
+            raw_event=event.raw_body,
+            signature_header=event.signature,
+            signature_timestamp=event.event_timestamp,
+        )
+        stored = await self._evidence_store.record(evidence)
+        if stored.provider_outcome != requested_outcome or stored.raw_event is None:
+            raise CheckoutSimulationConflictError("terminal_outcome_conflict")
+        return FakeCheckoutOutcomeEvent(
+            provider_event_id=stored.provider_event_id or event.provider_event_id,
+            event_timestamp=stored.signature_timestamp or event.event_timestamp,
+            event_type=f"provider_operation.{stored.provider_outcome}",
+            external_operation_ref=stored.external_operation_ref,
+            raw_body=stored.raw_event,
+            signature=stored.signature_header or event.signature,
         )
 
     async def _load_checkout_operation(self, checkout_operation_id: uuid.UUID, organization_id: uuid.UUID):

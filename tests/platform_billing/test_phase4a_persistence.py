@@ -427,7 +427,14 @@ def test_phase4a_no_api_routes_or_provider_package_added():
         path.name
         for path in (REPO_ROOT / "app" / "platform_billing" / "providers").glob("*.py")
     )
-    assert provider_sources == ["__init__.py", "base.py", "fake.py", "fake_checkout_simulation.py", "reconciliation.py"]
+    assert provider_sources == [
+        "__init__.py",
+        "base.py",
+        "fake.py",
+        "fake_checkout_evidence.py",
+        "fake_checkout_simulation.py",
+        "reconciliation.py",
+    ]
 
 
 def test_phase4a_feature_flags_remain_disabled():
