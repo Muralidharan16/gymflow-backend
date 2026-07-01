@@ -445,6 +445,7 @@ def test_phase4a_feature_flags_remain_disabled():
     assert settings.PLATFORM_BILLING_CHECKOUT is False
     assert settings.PLATFORM_BILLING_WEBHOOK_PROCESSING is False
     assert settings.PLATFORM_BILLING_FAKE_CHECKOUT_SIMULATION_ENABLED is False
+    assert settings.PLATFORM_BILLING_FAKE_CHECKOUT_RECONCILIATION_ENABLED is False
 
 
 def test_protected_architecture_checksums_still_match():

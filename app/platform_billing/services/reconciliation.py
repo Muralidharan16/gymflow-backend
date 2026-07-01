@@ -5,10 +5,12 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
+from pathlib import Path
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.platform_billing.domain.provider_operations import (
     ProviderOperationResult,
@@ -36,6 +38,12 @@ from app.platform_billing.domain.reconciliation import (
     ReconciliationTransitionRejected,
     require_aware_utc,
 )
+from app.platform_billing.providers.fake_checkout_evidence import (
+    FakeCheckoutEvidenceStorageFailure,
+    LocalEncryptedFakeCheckoutEvidenceStore,
+    LocalFakeCheckoutProviderEvidenceReader,
+)
+from app.platform_billing.providers.fake_checkout_simulation import CONFIRM_CHECKOUT_OPERATION_TYPE
 from app.platform_billing.providers.reconciliation import ProviderEvidenceReader
 from app.platform_billing.repositories.provider_operations import (
     PlatformProviderOperationRepository,
@@ -49,6 +57,12 @@ from app.platform_billing.repositories.reconciliation import (
 SessionFactory = Callable[[], AsyncSession] | async_sessionmaker[AsyncSession]
 Clock = Callable[[], datetime]
 DEFAULT_RECONCILIATION_LEASE = timedelta(minutes=5)
+DEFAULT_FAKE_CHECKOUT_RECONCILIATION_DELAY = timedelta(seconds=30)
+FAKE_CHECKOUT_RECONCILIATION_LIMIT = 100
+
+
+class FakeCheckoutReconciliationDisabled(Exception):
+    pass
 
 
 class PlatformReconciliationService:
@@ -237,7 +251,25 @@ class PlatformReconciliationService:
                         now=self._clock(),
                     )
                     return ReconciliationItemResult(item, "ignored", "unknown_mapping", operation.id)
+                if not _provider_evidence_matches_local_operation(operation, evidence):
+                    item = await item_repository.resolve(
+                        claim.item_id,
+                        expected_attempt_count=claim.attempt_number,
+                        resolution_status="ignored",
+                        last_error_code="ambiguous_provider_evidence",
+                        now=self._clock(),
+                    )
+                    return ReconciliationItemResult(item, "ignored", "ambiguous_provider_evidence", operation.id)
 
+                classification = classify_discrepancy(operation, evidence)
+                if _is_fake_checkout_retryable_noop(evidence, classification):
+                    item = await item_repository.retryable_failure(
+                        claim.item_id,
+                        expected_attempt_count=claim.attempt_number,
+                        last_error_code=classification,
+                        now=self._clock(),
+                    )
+                    return ReconciliationItemResult(item, "open", classification, operation.id)
                 try:
                     classification, transition = resolve_operation_outcome(operation, evidence)
                 except ReconciliationEvidenceStale:
@@ -351,7 +383,55 @@ class PlatformReconciliationService:
                     expected_attempt_count=claim.attempt_number,
                     watermark_json=watermark_json,
                     now=self._clock(),
-                )
+        )
+
+
+async def reconcile_fake_checkout_operations(
+    *,
+    organization_id: uuid.UUID,
+    session_factory: SessionFactory = AsyncSessionLocal,
+    clock: Clock | None = None,
+    eligibility_delay: timedelta = DEFAULT_FAKE_CHECKOUT_RECONCILIATION_DELAY,
+    limit: int = FAKE_CHECKOUT_RECONCILIATION_LIMIT,
+) -> ReconciliationRunResult:
+    now = (clock or _utc_now)()
+    _assert_fake_checkout_reconciliation_enabled()
+    evidence_store = LocalEncryptedFakeCheckoutEvidenceStore(Path(settings.PLATFORM_BILLING_FAKE_PROVIDER_EVIDENCE_DIR))
+    evidence_reader = LocalFakeCheckoutProviderEvidenceReader(evidence_store)
+    async with session_factory() as session:
+        async with session.begin():
+            operation_repository = PlatformProviderOperationRepository(session)
+            await operation_repository.set_tenant_context(organization_id)
+            candidates = await operation_repository.list_reconciliation_candidates(
+                organization_id=organization_id,
+                provider_code="fake",
+                operation_type=CONFIRM_CHECKOUT_OPERATION_TYPE,
+                statuses={"unknown", "in_progress"},
+                older_than=now - eligibility_delay,
+                limit=limit,
+            )
+            candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.external_operation_ref and candidate.external_operation_ref.startswith("fake_confirm_")
+            ]
+
+    request = ReconciliationRunRequest(
+        provider_code="fake",
+        organization_id=organization_id,
+        scope={
+            "source": "fake_checkout_reconciliation",
+            "operation_type": CONFIRM_CHECKOUT_OPERATION_TYPE,
+            "external_operation_refs": [candidate.external_operation_ref for candidate in candidates if candidate.external_operation_ref],
+        },
+        watermark={"selected_at": now.isoformat(), "candidate_count": len(candidates)},
+    )
+    service = PlatformReconciliationService(
+        evidence_reader=evidence_reader,
+        session_factory=session_factory,
+        clock=clock,
+    )
+    return await service.reconcile(request)
 
 
 def classify_discrepancy(operation, evidence: ProviderOperationEvidence) -> str:
@@ -378,7 +458,12 @@ def classify_discrepancy(operation, evidence: ProviderOperationEvidence) -> str:
         if operation.status == "succeeded":
             return "local_terminal_conflicts_provider"
     if evidence.provider_status == PROVIDER_NOT_FOUND:
+        if evidence.evidence_ref.startswith("fake-provider-evidence-missing:"):
+            return "provider_evidence_not_found"
         return "provider_object_not_found"
+    if evidence.provider_status == PROVIDER_PENDING:
+        if evidence.evidence_ref.startswith("fake-provider-evidence:"):
+            return "provider_evidence_pending"
     if evidence.provider_status == PROVIDER_AMBIGUOUS:
         return "ambiguous_provider_evidence"
     return "unsupported_local_mapping"
@@ -396,6 +481,8 @@ def resolve_operation_outcome(operation, evidence: ProviderOperationEvidence) ->
         raise ReconciliationEvidenceStale("Provider evidence is older than local evidence")
 
     if operation.status in {"succeeded", "failed"}:
+        if operation.result_reference == evidence.evidence_ref and operation.result_evidence_sha256 != evidence.evidence_sha256:
+            return "evidence_conflict", None
         if (operation.status == "succeeded" and evidence.provider_status == PROVIDER_TERMINAL_SUCCEEDED) or (
             operation.status == "failed" and evidence.provider_status == PROVIDER_TERMINAL_FAILED
         ):
@@ -419,6 +506,37 @@ def resolve_operation_outcome(operation, evidence: ProviderOperationEvidence) ->
             provider_called=False,
         ),
     )
+
+
+def _is_fake_checkout_retryable_noop(evidence: ProviderOperationEvidence, classification: str) -> bool:
+    if classification not in {"provider_evidence_pending", "provider_evidence_not_found"}:
+        return False
+    return evidence.evidence_ref.startswith(("fake-provider-evidence:", "fake-provider-evidence-missing:"))
+
+
+def _provider_evidence_matches_local_operation(operation, evidence: ProviderOperationEvidence) -> bool:
+    if not evidence.evidence_ref.startswith("fake-provider-evidence:"):
+        return True
+    confirm_operation_id = evidence.safe_evidence.get("confirm_checkout_operation_id")
+    if confirm_operation_id is not None and str(confirm_operation_id) != str(operation.id):
+        return False
+    return True
+
+
+def _assert_fake_checkout_reconciliation_enabled() -> None:
+    if not settings.PLATFORM_BILLING_FAKE_CHECKOUT_RECONCILIATION_ENABLED:
+        raise FakeCheckoutReconciliationDisabled("fake_checkout_reconciliation_disabled")
+    if settings.PLATFORM_BILLING_PROVIDER_MODE != "fake":
+        raise FakeCheckoutReconciliationDisabled("fake_checkout_reconciliation_requires_fake_provider")
+    if settings.ENVIRONMENT not in {"development", "test"}:
+        raise FakeCheckoutReconciliationDisabled("fake_checkout_reconciliation_environment_denied")
+    evidence_dir = settings.PLATFORM_BILLING_FAKE_PROVIDER_EVIDENCE_DIR
+    if not evidence_dir or not evidence_dir.strip():
+        raise FakeCheckoutReconciliationDisabled("fake_checkout_reconciliation_evidence_dir_missing")
+    try:
+        LocalEncryptedFakeCheckoutEvidenceStore(Path(evidence_dir))._validate_root()
+    except FakeCheckoutEvidenceStorageFailure as exc:
+        raise FakeCheckoutReconciliationDisabled("fake_checkout_reconciliation_evidence_dir_unusable") from exc
 
 
 def _utc_now() -> datetime:

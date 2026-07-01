@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
+from datetime import datetime
 
 from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
@@ -151,6 +152,32 @@ class PlatformProviderOperationRepository:
         result = await self._session.execute(statement)
         row = result.scalar_one_or_none()
         return _snapshot(row) if row is not None else None
+
+    async def list_reconciliation_candidates(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        provider_code: str,
+        operation_type: str,
+        statuses: set[str],
+        older_than: datetime,
+        limit: int,
+    ) -> list[ProviderOperationSnapshot]:
+        statement = (
+            select(PlatformProviderOperation)
+            .where(
+                PlatformProviderOperation.organization_id == organization_id,
+                PlatformProviderOperation.provider_code == provider_code,
+                PlatformProviderOperation.operation_type == operation_type,
+                PlatformProviderOperation.status.in_(statuses),
+                PlatformProviderOperation.external_operation_ref.is_not(None),
+                PlatformProviderOperation.updated_at <= older_than,
+            )
+            .order_by(PlatformProviderOperation.updated_at, PlatformProviderOperation.id)
+            .limit(limit)
+        )
+        result = await self._session.execute(statement)
+        return [_snapshot(row) for row in result.scalars()]
 
     async def record_result(
         self,

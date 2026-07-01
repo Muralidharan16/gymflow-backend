@@ -17,6 +17,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from app.core.config import settings
 from app.platform_billing.domain.hashing import CanonicalSerializer
 from app.platform_billing.domain.reconciliation import (
+    PROVIDER_AMBIGUOUS,
+    PROVIDER_NOT_FOUND,
     PROVIDER_PENDING,
     PROVIDER_TERMINAL_FAILED,
     PROVIDER_TERMINAL_SUCCEEDED,
@@ -166,6 +168,8 @@ class LocalEncryptedFakeCheckoutEvidenceStore:
             raise FakeCheckoutEvidenceStorageFailure("Fake provider evidence directory must be outside the source repository")
         if not str(root):
             raise FakeCheckoutEvidenceStorageFailure("Fake provider evidence directory is not configured")
+        if root.exists() and not root.is_dir():
+            raise FakeCheckoutEvidenceStorageFailure("Fake provider evidence directory is not usable")
 
     def _path_for(self, provider_code: str, organization_id: uuid.UUID, external_operation_ref: str) -> Path:
         digest = _identity_digest(provider_code=provider_code, organization_id=organization_id, external_operation_ref=external_operation_ref)
@@ -265,10 +269,37 @@ class LocalFakeCheckoutProviderEvidenceReader:
         self._store = store
 
     async def list_operation_evidence(self, request: ReconciliationRunRequest) -> ReconciliationPage:
-        evidence = tuple(_provider_evidence(record) for record in await self._store.list_for_request(request))
+        requested_refs = request.scope.get("external_operation_refs")
+        if not isinstance(requested_refs, list):
+            records = {
+                record.external_operation_ref: record
+                for record in await self._store.list_for_request(request)
+            }
+            evidence = tuple(_provider_evidence(record) for record in records.values())
+            return ReconciliationPage(evidence=evidence, next_watermark=dict(request.watermark))
+
+        evidence_items: list[ProviderOperationEvidence] = []
+        for external_ref in requested_refs:
+            if not isinstance(external_ref, str):
+                continue
+            try:
+                record = await self._store.get(
+                    provider_code=request.provider_code,
+                    organization_id=request.organization_id,
+                    external_operation_ref=external_ref,
+                )
+            except FakeCheckoutEvidenceCorrupt:
+                evidence_items.append(_corrupt_provider_evidence(request, external_ref))
+                continue
+            evidence_items.append(_provider_evidence(record) if record is not None else _missing_provider_evidence(request, external_ref))
+        evidence = tuple(evidence_items)
         return ReconciliationPage(evidence=evidence, next_watermark=dict(request.watermark))
 
     async def fetch_operation_evidence(self, evidence_ref: str) -> ProviderOperationEvidence:
+        if evidence_ref.startswith("fake-provider-evidence-missing:v1:"):
+            return _missing_provider_evidence_from_ref(evidence_ref)
+        if evidence_ref.startswith("fake-provider-evidence-corrupt:v1:"):
+            return _corrupt_provider_evidence_from_ref(evidence_ref)
         parts = evidence_ref.split(":")
         if len(parts) != 5 or parts[:2] != ["fake-provider-evidence", "v1"]:
             raise ReconciliationProviderFailure("provider_evidence_missing")
@@ -371,6 +402,7 @@ def _provider_evidence(record: FakeCheckoutProviderEvidence) -> ProviderOperatio
     safe = {
         "checkout_operation_id": str(record.checkout_operation_id),
         "checkout_session_reference": record.checkout_session_reference,
+        "confirm_checkout_operation_id": str(record.confirm_checkout_operation_id),
         "external_operation_ref": record.external_operation_ref,
         "provider_code": record.provider_code,
         "provider_customer_reference": record.provider_customer_ref,
@@ -386,6 +418,106 @@ def _provider_evidence(record: FakeCheckoutProviderEvidence) -> ProviderOperatio
         observed_at=record.provider_observed_at,
         evidence_ref=_evidence_ref(record),
         evidence_sha256=record.canonical_evidence_hash,
+        safe_evidence=safe,
+    )
+
+
+def _missing_provider_evidence(request: ReconciliationRunRequest, external_operation_ref: str) -> ProviderOperationEvidence:
+    organization_id = request.organization_id
+    if organization_id is None:
+        raise ReconciliationProviderFailure("provider_evidence_missing")
+    safe = {
+        "external_operation_ref": external_operation_ref,
+        "organization_id": str(organization_id),
+        "provider_code": request.provider_code,
+        "provider_status": PROVIDER_NOT_FOUND,
+    }
+    evidence_sha256 = compute_evidence_hash(safe)
+    return ProviderOperationEvidence(
+        provider_code=request.provider_code,
+        external_operation_ref=external_operation_ref,
+        provider_status=PROVIDER_NOT_FOUND,
+        observed_at=datetime.now(timezone.utc),
+        evidence_ref=f"fake-provider-evidence-missing:v1:{request.provider_code}:{organization_id}:{external_operation_ref}:{evidence_sha256}",
+        evidence_sha256=evidence_sha256,
+        safe_evidence=safe,
+    )
+
+
+def _corrupt_provider_evidence(request: ReconciliationRunRequest, external_operation_ref: str) -> ProviderOperationEvidence:
+    organization_id = request.organization_id
+    if organization_id is None:
+        raise ReconciliationProviderFailure("provider_evidence_corrupt")
+    safe = {
+        "external_operation_ref": external_operation_ref,
+        "organization_id": str(organization_id),
+        "provider_code": request.provider_code,
+        "provider_status": PROVIDER_AMBIGUOUS,
+    }
+    evidence_sha256 = compute_evidence_hash(safe)
+    return ProviderOperationEvidence(
+        provider_code=request.provider_code,
+        external_operation_ref=external_operation_ref,
+        provider_status=PROVIDER_AMBIGUOUS,
+        observed_at=datetime.now(timezone.utc),
+        evidence_ref=f"fake-provider-evidence-corrupt:v1:{request.provider_code}:{organization_id}:{external_operation_ref}:{evidence_sha256}",
+        evidence_sha256=evidence_sha256,
+        safe_evidence=safe,
+    )
+
+
+def _missing_provider_evidence_from_ref(evidence_ref: str) -> ProviderOperationEvidence:
+    parts = evidence_ref.split(":")
+    if len(parts) != 6 or parts[:2] != ["fake-provider-evidence-missing", "v1"]:
+        raise ReconciliationProviderFailure("provider_evidence_missing")
+    try:
+        organization_id = uuid.UUID(parts[3])
+    except ValueError as exc:
+        raise ReconciliationProviderFailure("provider_evidence_missing") from exc
+    safe = {
+        "external_operation_ref": parts[4],
+        "organization_id": str(organization_id),
+        "provider_code": parts[2],
+        "provider_status": PROVIDER_NOT_FOUND,
+    }
+    evidence_sha256 = compute_evidence_hash(safe)
+    if evidence_sha256 != parts[5]:
+        raise ReconciliationProviderFailure("provider_evidence_missing")
+    return ProviderOperationEvidence(
+        provider_code=parts[2],
+        external_operation_ref=parts[4],
+        provider_status=PROVIDER_NOT_FOUND,
+        observed_at=datetime.now(timezone.utc),
+        evidence_ref=evidence_ref,
+        evidence_sha256=evidence_sha256,
+        safe_evidence=safe,
+    )
+
+
+def _corrupt_provider_evidence_from_ref(evidence_ref: str) -> ProviderOperationEvidence:
+    parts = evidence_ref.split(":")
+    if len(parts) != 6 or parts[:2] != ["fake-provider-evidence-corrupt", "v1"]:
+        raise ReconciliationProviderFailure("provider_evidence_corrupt")
+    try:
+        organization_id = uuid.UUID(parts[3])
+    except ValueError as exc:
+        raise ReconciliationProviderFailure("provider_evidence_corrupt") from exc
+    safe = {
+        "external_operation_ref": parts[4],
+        "organization_id": str(organization_id),
+        "provider_code": parts[2],
+        "provider_status": PROVIDER_AMBIGUOUS,
+    }
+    evidence_sha256 = compute_evidence_hash(safe)
+    if evidence_sha256 != parts[5]:
+        raise ReconciliationProviderFailure("provider_evidence_corrupt")
+    return ProviderOperationEvidence(
+        provider_code=parts[2],
+        external_operation_ref=parts[4],
+        provider_status=PROVIDER_AMBIGUOUS,
+        observed_at=datetime.now(timezone.utc),
+        evidence_ref=evidence_ref,
+        evidence_sha256=evidence_sha256,
         safe_evidence=safe,
     )
 
