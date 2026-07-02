@@ -49,6 +49,16 @@ migrated_routes:
     capacity_effect: none
     phase_3_migration_status: read_api_disabled_by_default
 
+  - method: GET
+    normalized_route_path: /api/v1/platform-billing/checkout-options
+    current_legacy_guard: get_current_active_staff
+    proposed_capability: platform_billing.view
+    operation_class: safe_read
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: none
+    phase_3_migration_status: frontend_prerequisite_read_api
+
   - method: POST
     normalized_route_path: /api/v1/platform-billing/checkout-sessions
     current_legacy_guard: require_bearer_token

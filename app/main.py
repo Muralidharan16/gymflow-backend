@@ -66,6 +66,7 @@ from app.routers import (
     member_subscriptions_v2,
 )
 from app.platform_billing.api import tenant as platform_billing_tenant
+from app.platform_billing.api import checkout_options as platform_billing_checkout_options
 from app.platform_billing.api import checkout as platform_billing_checkout
 from app.platform_billing.api import checkout_simulation as platform_billing_checkout_simulation
 
@@ -166,6 +167,7 @@ app.include_router(geo.router)
 app.include_router(membership_plans.router)
 app.include_router(member_subscriptions_v2.router)
 app.include_router(platform_billing_tenant.router)
+app.include_router(platform_billing_checkout_options.router)
 app.include_router(platform_billing_checkout.router)
 app.include_router(platform_billing_checkout_simulation.router)
 

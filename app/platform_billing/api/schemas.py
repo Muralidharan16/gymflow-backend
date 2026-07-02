@@ -62,6 +62,86 @@ class PlatformBillingSummaryResponse(BaseModel):
     server_time: datetime
 
 
+class PlatformBillingCurrentSubscriptionOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str | None = None
+    current_plan_code: str | None = None
+    current_plan_display_name: str | None = None
+    period_type: str | None = None
+    cancel_at_period_end: bool = False
+
+
+class PlatformBillingPriceOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    billing_interval: str
+    interval_count: int
+    amount_minor: int
+    currency: str
+    tax_behavior: str
+
+
+class PlatformBillingPlanOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan_code: str
+    display_name: str
+    description: str | None = None
+    is_current: bool = False
+    prices: list[PlatformBillingPriceOption]
+    feature_summary: list[str] = []
+
+
+class PlatformBillingActionOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_code: str
+    target_plan_code: str | None = None
+    billing_interval: str | None = None
+    display_label: str
+    is_available: bool
+    unavailable_reason_code: str | None = None
+    checkout_supported: bool
+    requires_confirmation: bool
+
+
+class PlatformBillingCheckoutAvailability(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool
+    reason_code: str | None = None
+    message: str
+    action_code: str
+
+
+class FakeCheckoutSimulationAvailability(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool
+    allowed_outcomes: list[str]
+    warning: str
+
+
+class PlatformBillingDiagnostics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fake_checkout_simulation: FakeCheckoutSimulationAvailability
+
+
+class PlatformBillingCheckoutOptionsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = "platform-billing-checkout-options-v1"
+    server_time: datetime
+    catalog_version: str
+    current_subscription: PlatformBillingCurrentSubscriptionOption
+    plans: list[PlatformBillingPlanOption]
+    actions: list[PlatformBillingActionOption]
+    checkout_availability: PlatformBillingCheckoutAvailability
+    diagnostics: PlatformBillingDiagnostics
+
+
 class CreateCheckoutSessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

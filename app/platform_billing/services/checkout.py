@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -27,6 +28,7 @@ from app.platform_billing.repositories.catalog import PlatformCatalogReadReposit
 from app.platform_billing.repositories.provider_operations import PlatformProviderOperationRepository
 from app.platform_billing.services.provider_operations import PlatformProviderOperationService
 from app.platform_billing.services.query_service import PlatformBillingQueryService
+from app.platform_billing.domain.read_models import PlanVersionRead, PriceRead
 
 
 class CheckoutConflictError(Exception):
@@ -39,6 +41,97 @@ class CheckoutPrerequisiteError(Exception):
 
 class CheckoutPlanNotFoundError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class InitialCheckoutSelection:
+    target_plan: PlanVersionRead
+    target_price: PriceRead
+    provider_customer: PlatformProviderCustomer
+
+
+async def resolve_initial_checkout_selection(
+    db: AsyncSession,
+    *,
+    request: CreateCheckoutSessionRequest,
+    organization_id: uuid.UUID,
+    now: datetime | None = None,
+) -> InitialCheckoutSelection:
+    query_service = PlatformBillingQueryService(db)
+    subscription_detail = await query_service.get_current_subscription(organization_id)
+    if subscription_detail is not None:
+        raise CheckoutConflictError("versioned_flow_required")
+
+    catalog = PlatformCatalogReadRepository(db)
+    plans = await catalog.list_published_plan_versions(now=now)
+
+    target_plan = None
+    for plan in plans:
+        if request.plan_id is not None and plan.id == request.plan_id:
+            target_plan = plan
+            break
+        if request.plan_code is not None and plan.code == request.plan_code:
+            target_plan = plan
+            break
+
+    if target_plan is None:
+        raise CheckoutPlanNotFoundError("plan_not_found")
+
+    effective_now = now or datetime.now(timezone.utc)
+    matching_prices = effective_prices_for_plan(
+        target_plan,
+        billing_interval=request.billing_interval,
+        now=effective_now,
+    )
+
+    if len(matching_prices) == 0:
+        raise CheckoutPlanNotFoundError("price_not_found")
+    if len(matching_prices) > 1:
+        raise CheckoutPrerequisiteError("multiple_prices_found")
+
+    customer = await get_active_fake_provider_customer(db, organization_id)
+    if customer is None:
+        raise CheckoutPrerequisiteError("provider_customer_missing")
+
+    return InitialCheckoutSelection(
+        target_plan=target_plan,
+        target_price=matching_prices[0],
+        provider_customer=customer,
+    )
+
+
+def effective_prices_for_plan(
+    plan: PlanVersionRead,
+    *,
+    billing_interval: str | None,
+    now: datetime,
+) -> list[PriceRead]:
+    matching_prices: list[PriceRead] = []
+    for price in plan.prices:
+        if price.status != "active" or price.published_at is None:
+            continue
+        if price.valid_from is not None and price.valid_from > now:
+            continue
+        if price.valid_until is not None and price.valid_until <= now:
+            continue
+        if billing_interval is not None and price.billing_interval != billing_interval:
+            continue
+        matching_prices.append(price)
+    return matching_prices
+
+
+async def get_active_fake_provider_customer(
+    db: AsyncSession,
+    organization_id: uuid.UUID,
+) -> PlatformProviderCustomer | None:
+    customer_result = await db.execute(
+        select(PlatformProviderCustomer).where(
+            PlatformProviderCustomer.organization_id == organization_id,
+            PlatformProviderCustomer.provider_code == "fake",
+            PlatformProviderCustomer.status == "active",
+        )
+    )
+    return customer_result.scalar_one_or_none()
 
 
 class PlatformCheckoutService:
@@ -59,67 +152,22 @@ class PlatformCheckoutService:
         organization_id: uuid.UUID,
         idempotency_key: str,
     ) -> CreateCheckoutSessionResponse:
-        query_service = PlatformBillingQueryService(self._db)
-        subscription_detail = await query_service.get_current_subscription(organization_id)
-        if subscription_detail is not None:
-            raise CheckoutConflictError("versioned_flow_required")
-
-        catalog = PlatformCatalogReadRepository(self._db)
-        plans = await catalog.list_published_plan_versions()
-
-        target_plan = None
-        for plan in plans:
-            if request.plan_id is not None and plan.id == request.plan_id:
-                target_plan = plan
-                break
-            if request.plan_code is not None and plan.code == request.plan_code:
-                target_plan = plan
-                break
-
-        if target_plan is None:
-            raise CheckoutPlanNotFoundError("plan_not_found")
-
-        now = datetime.now(timezone.utc)
-        matching_prices = []
-        for price in target_plan.prices:
-            if price.status != "active" or price.published_at is None:
-                continue
-            if price.valid_from > now or (price.valid_until is not None and price.valid_until <= now):
-                continue
-            if request.billing_interval is not None:
-                if price.billing_interval == request.billing_interval:
-                    matching_prices.append(price)
-            else:
-                matching_prices.append(price)
-
-        if len(matching_prices) == 0:
-            raise CheckoutPlanNotFoundError("price_not_found")
-        if len(matching_prices) > 1:
-            raise CheckoutPrerequisiteError("multiple_prices_found")
-
-        target_price = matching_prices[0]
-
-        customer_result = await self._db.execute(
-            select(PlatformProviderCustomer).where(
-                PlatformProviderCustomer.organization_id == organization_id,
-                PlatformProviderCustomer.provider_code == "fake",
-                PlatformProviderCustomer.status == "active",
-            )
+        selection = await resolve_initial_checkout_selection(
+            self._db,
+            request=request,
+            organization_id=organization_id,
         )
-        customer = customer_result.scalar_one_or_none()
-        if customer is None:
-            raise CheckoutPrerequisiteError("provider_customer_missing")
 
         op_request = ProviderOperationRequest(
             organization_id=organization_id,
             provider_code="fake",
             operation_type="create_checkout",
             idempotency_key=idempotency_key,
-            amount_minor=target_price.money.amount_minor,
-            currency_code=target_price.money.currency_code,
-            plan_version_id=target_plan.id,
-            price_id=target_price.id,
-            provider_customer_ref=customer.external_customer_ref,
+            amount_minor=selection.target_price.money.amount_minor,
+            currency_code=selection.target_price.money.currency_code,
+            plan_version_id=selection.target_plan.id,
+            price_id=selection.target_price.id,
+            provider_customer_ref=selection.provider_customer.external_customer_ref,
         )
 
         provider_service = PlatformProviderOperationService(
