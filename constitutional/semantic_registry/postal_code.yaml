@@ -1,0 +1,41 @@
+# =============================================================================
+# SEMANTIC REGISTRY: PostalCode — Derived from app/models/geo.py::PostalCode (L90-111)
+# =============================================================================
+
+term: "postal_code"
+source_model: "app/models/geo.py::PostalCode"
+table: "postal_codes"
+
+primary_key: { name: "id", type: "BigInteger" }
+
+foreign_keys:
+  - { name: "country_id", type: "SmallInteger", references: "countries.id", on_delete: "RESTRICT", nullable: false }
+  - { name: "subdivision_id", type: "BigInteger", nullable: false }
+  - { name: "city_id", type: "BigInteger", nullable: false }
+
+required_fields:
+  - { name: "postal_code", type: "Text", nullable: false }
+  - { name: "status", type: "geo_record_status", nullable: false, default: "active" }
+
+optional_fields:
+  - { name: "locality", type: "Text" }
+  - { name: "locality_normalized", type: "Text", server_default: true }
+  - { name: "latitude", type: "Numeric(9,6)" }
+  - { name: "longitude", type: "Numeric(9,6)" }
+  - { name: "timezone", type: "Text" }
+  - { name: "source_priority", type: "SmallInteger", default: 100 }
+  - { name: "imported_at", type: "DateTime(timezone=True)" }
+
+timestamp_fields:
+  - { name: "created_at", type: "DateTime(timezone=True)", server_default: true }
+  - { name: "updated_at", type: "DateTime(timezone=True)", server_default: true }
+
+status_enum: "geo_record_status"
+
+invariants:
+  - "city_id must reference an active city"
+  - "subdivision_id must reference an active subdivision"
+  - "country_id must reference an active country"
+  - "status transitions follow geo_record_status state machine"
+  - "latitude/longitude use Numeric(9,6) — never Float"
+  - "postal_code text is not normalized (preserves original formatting)"

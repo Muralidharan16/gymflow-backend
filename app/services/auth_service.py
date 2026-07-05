@@ -6,7 +6,8 @@ from fastapi import HTTPException, status
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
 from app.models.organization import Organization
 from app.models.gym import Gym, FacilityType
-from app.models.auth import Owner, RefreshToken
+from app.models.auth import Owner
+from app.models.auth_session import AuthSession, AuthSessionFamily
 from app.models.enums import StaffRole, OrgTier
 from app.schemas.auth import SignupRequest, LoginRequest, TokenResponse, RefreshRequest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,7 @@ from app.core.redis import get_redis_utils
 from app.utils.email_utils import send_verification_email
 import secrets
 import hashlib
+import hmac
 from app.utils.slug import generate_slug
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,7 @@ class AuthService:
         Does NOT write to PostgreSQL.
         """
         redis_utils = get_redis_utils()
+        email = data.email.strip().lower()
 
         # 1. Rate limiting by IP
         rate_key = f"ratelimit:signup:{ip_address}"
@@ -40,7 +43,7 @@ class AuthService:
             )
 
         # 2. Check email existence (anti-enumeration: return success even if exists)
-        q = select(Owner).where(Owner.email == data.email)
+        q = select(Owner).where(Owner.email == email)
         result = await self.session.execute(q)
         if result.scalar_one_or_none():
             return {
@@ -54,18 +57,21 @@ class AuthService:
         # 4. Generate magic link token
         raw_token = secrets.token_urlsafe(48)
         token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        signup_poll_token = secrets.token_urlsafe(32)
+        signup_poll_token_hash = hashlib.sha256(signup_poll_token.encode("utf-8")).hexdigest()
 
         # 5. Store in Redis
         pending_key = f"signup:pending:{token_hash}"
-        email_hash = hashlib.sha256(data.email.lower().encode("utf-8")).hexdigest()
+        email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()
         email_lookup_key = f"signup:email:{email_hash}"
 
         signup_data = {
             "org_name": data.org_name,
             "owner_name": data.owner_name,
-            "email": data.email,
+            "email": email,
             "hashed_password": hashed_pw,
             "facility_type": data.facility_type,
+            "signup_poll_token_hash": signup_poll_token_hash,
             "resend_count": 0,
             "created_at": datetime.now(timezone.utc).isoformat()
         }
@@ -79,7 +85,7 @@ class AuthService:
 
         # 6. Send verification email
         email_sent = await send_verification_email(
-            email=data.email,
+            email=email,
             owner_name=data.owner_name,
             org_name=data.org_name,
             raw_token=raw_token
@@ -92,8 +98,17 @@ class AuthService:
 
         return {
             "status": "success",
-            "message": "Verification email sent. Please check your inbox."
+            "message": "Verification email sent. Please check your inbox.",
+            "signup_poll_token": signup_poll_token,
         }
+
+    @staticmethod
+    def verify_signup_poll_token(pending_data: dict, poll_token: str) -> bool:
+        expected_hash = pending_data.get("signup_poll_token_hash")
+        if not expected_hash or not poll_token:
+            return False
+        actual_hash = hashlib.sha256(poll_token.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(expected_hash, actual_hash)
 
     async def verify(self, token: str) -> dict:
         """
@@ -102,22 +117,24 @@ class AuthService:
         redis_utils = get_redis_utils()
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-        # 1. Atomic read + delete (ensures one-time use)
-        raw_payload = await redis_utils.getdel_or_null(f"signup:pending:{token_hash}")
+        pending_key = f"signup:pending:{token_hash}"
+
+        # Read first; consume the token only after account creation commits.
+        raw_payload = await redis_utils.client.get(pending_key)
         if not raw_payload:
             return {"error": "expired"}
 
         data = json.loads(raw_payload)
-        email = data["email"]
-        email_hash = hashlib.sha256(email.lower().encode("utf-8")).hexdigest()
-
-        # Best-effort delete reverse lookup
-        await redis_utils.delete_keys_safe([f"signup:email:{email_hash}"])
+        email = data["email"].strip().lower()
+        email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()
+        email_lookup_key = f"signup:email:{email_hash}"
 
         # 2. Check if already registered (race condition guard)
         q = select(Owner).where(Owner.email == email)
         result = await self.session.execute(q)
-        if result.scalar_one_or_none():
+        existing_owner = result.scalar_one_or_none()
+        if existing_owner:
+            await redis_utils.delete_keys_safe([pending_key, email_lookup_key])
             return {"error": "already_registered"}
 
         # 3. Atomic account creation
@@ -185,9 +202,12 @@ class AuthService:
             await self.session.rollback()
             return {"error": "server_error"}
 
+        await redis_utils.delete_keys_safe([pending_key, email_lookup_key])
+
         return {
             "owner": owner,
-            "org": org
+            "org": org,
+            "signup_poll_token_hash": data.get("signup_poll_token_hash"),
         }
 
     async def resend_verification(self, email: str) -> dict:
@@ -195,7 +215,8 @@ class AuthService:
         Resend magic link if within limits.
         """
         redis_utils = get_redis_utils()
-        email_hash = hashlib.sha256(email.lower().encode("utf-8")).hexdigest()
+        email = email.strip().lower()
+        email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()
 
         # 1. Rate limiting (3 per hour per email)
         resend_rate_key = f"ratelimit:resend:{email_hash}"
@@ -228,13 +249,12 @@ class AuthService:
         new_raw_token = secrets.token_urlsafe(48)
         new_token_hash = hashlib.sha256(new_raw_token.encode("utf-8")).hexdigest()
 
-        # 5. Update data and Redis
-        raw_data["resend_count"] += 1
+        # 5. Store a replacement token while keeping the old token valid until email succeeds.
+        new_data = {**raw_data, "resend_count": raw_data.get("resend_count", 0) + 1}
         new_pending_key = f"signup:pending:{new_token_hash}"
 
         try:
-            await redis_utils.delete_keys_safe([pending_key, email_lookup_key])
-            await redis_utils.set_json_with_ttl(new_pending_key, raw_data, ttl=600)
+            await redis_utils.set_json_with_ttl(new_pending_key, new_data, ttl=600)
             await redis_utils.client.set(email_lookup_key, new_token_hash, ex=600)
         except Exception:
             logger.exception("Redis failure during resend")
@@ -242,21 +262,26 @@ class AuthService:
 
         # 6. Send new email
         email_sent = await send_verification_email(
-            email=raw_data["email"],
-            owner_name=raw_data["owner_name"],
-            org_name=raw_data["org_name"],
+            email=new_data["email"],
+            owner_name=new_data["owner_name"],
+            org_name=new_data["org_name"],
             raw_token=new_raw_token
         )
 
         if not email_sent:
+            await redis_utils.delete_keys_safe([new_pending_key])
+            await redis_utils.client.set(email_lookup_key, old_token_hash, ex=600)
             raise HTTPException(status_code=500, detail="Something went wrong. Please try again.")
+
+        await redis_utils.delete_keys_safe([pending_key])
 
         return {"status": "success", "message": "Verification email resent."}
 
     async def login(self, data: LoginRequest) -> TokenResponse:
         """Secure login with credential verification and brute-force protection."""
-        login_lock_key = f"login_lock:{data.email}"
-        attempts_key = f"login_attempts:{data.email}"
+        email = data.email.strip().lower()
+        login_lock_key = f"login_lock:{email}"
+        attempts_key = f"login_attempts:{email}"
 
         # 1. Check if account is locked
         redis_utils = get_redis_utils()
@@ -267,7 +292,7 @@ class AuthService:
             )
 
         # 2. Get owner
-        q = select(Owner).where(Owner.email == data.email)
+        q = select(Owner).where(Owner.email == email)
         result = await self.session.execute(q)
         owner = result.scalar_one_or_none()
 
@@ -303,12 +328,22 @@ class AuthService:
 
         # 7. Store refresh token hash in DB
         rt_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-        db_rt = RefreshToken(
-            owner_id=owner.id,
-            token_hash=rt_hash,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=7)
+        
+        family = AuthSessionFamily(
+            org_id=owner.org_id,
+            user_id=owner.id
         )
-        self.session.add(db_rt)
+        self.session.add(family)
+        await self.session.flush()
+
+        auth_session = AuthSession(
+            user_id=owner.id,
+            org_id=owner.org_id,
+            token_family_id=family.id,
+            refresh_token_hash=rt_hash,
+            token_version_snapshot=1
+        )
+        self.session.add(auth_session)
         await self.session.commit()
 
         return TokenResponse(
@@ -321,19 +356,37 @@ class AuthService:
         """Implements refresh token rotation as per spec."""
         rt_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
 
-        q = select(RefreshToken).where(
-            RefreshToken.token_hash == rt_hash,
-            RefreshToken.is_revoked == False,
-            RefreshToken.expires_at > datetime.now(timezone.utc)
+        q = select(AuthSession).where(
+            AuthSession.refresh_token_hash == rt_hash,
+            AuthSession.revoked_at.is_(None)
         )
         result = await self.session.execute(q)
         db_rt = result.scalar_one_or_none()
 
         if not db_rt:
+            # Check for token reuse
+            q_any = select(AuthSession).where(AuthSession.refresh_token_hash == rt_hash)
+            result_any = await self.session.execute(q_any)
+            reused_session = result_any.scalar_one_or_none()
+            if reused_session:
+                q_family = select(AuthSessionFamily).where(AuthSessionFamily.id == reused_session.token_family_id)
+                res_fam = await self.session.execute(q_family)
+                family = res_fam.scalar_one()
+                family.revoked_at = datetime.now(timezone.utc)
+                reused_session.reuse_detected_at = datetime.now(timezone.utc)
+                await self.session.commit()
+                raise HTTPException(status_code=401, detail="Session compromised. Please login again.")
+                
             raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
+        q_family = select(AuthSessionFamily).where(AuthSessionFamily.id == db_rt.token_family_id)
+        res_fam = await self.session.execute(q_family)
+        family = res_fam.scalar_one()
+        if family.revoked_at:
+             raise HTTPException(status_code=401, detail="Session revoked")
+
         # Get owner data for new access token
-        q_owner = select(Owner).where(Owner.id == db_rt.owner_id)
+        q_owner = select(Owner).where(Owner.id == db_rt.user_id)
         owner_result = await self.session.execute(q_owner)
         owner = owner_result.scalar_one_or_none()
 
@@ -347,13 +400,19 @@ class AuthService:
 
         # FIX: same pattern — use begin_nested() since SELECT above opened a transaction
         async with self.session.begin_nested():
-            db_rt.is_revoked = True
-            new_db_rt = RefreshToken(
-                owner_id=owner.id,
-                token_hash=new_rt_hash,
-                expires_at=datetime.now(timezone.utc) + timedelta(days=7)
+            db_rt.revoked_at = datetime.now(timezone.utc)
+            
+            new_db_rt = AuthSession(
+                user_id=owner.id,
+                org_id=owner.org_id,
+                token_family_id=family.id,
+                parent_session_id=db_rt.id,
+                refresh_token_hash=new_rt_hash,
+                token_version_snapshot=db_rt.token_version_snapshot + 1
             )
             self.session.add(new_db_rt)
+            await self.session.flush()
+            db_rt.replaced_by_session_id = new_db_rt.id
 
         await self.session.commit()
 

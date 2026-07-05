@@ -1,0 +1,66 @@
+# =============================================================================
+# CORPUS GOVERNANCE — Constitutional Enforcement Spec v1
+# =============================================================================
+# Governs mutation of the replay certification corpus.
+# Prevents replay from becoming ceremonial instead of meaningful.
+# =============================================================================
+
+version: "1.0"
+
+corpus_path: "tests/corpora/"
+
+minimum_requirements:
+  countries: 5
+  subdivisions: 20
+  cities: 50
+  postal_codes: 200
+  replay_operations: 40
+
+required_edge_cases:
+  unicode_city_names:
+    description: "Cities with non-ASCII characters (São Paulo, München, 東京)"
+    minimum: 3
+    rationale: |
+      Tests NFC normalization in canonical_serialization.yaml.
+      Validates casefold() behavior in normalized_name fields.
+
+  timezone_conflicts:
+    description: "Regions where subdivision and city timezones differ"
+    minimum: 2
+    rationale: |
+      Tests timezone cascade resolution in geo_service.py L43:
+      p.timezone or c.timezone or s.timezone or co.timezone
+
+  deprecated_regions:
+    description: "At least one entity in each deprecated/historical state"
+    minimum: 2
+    rationale: |
+      Tests geo_record_status state machine transitions.
+      Validates status='active' filtering in geo_repository.py L24, L32.
+
+  null_timezone_paths:
+    description: "Entities requiring full cascade to resolve timezone"
+    minimum: 3
+    rationale: |
+      Tests cascade fallback when postal_code.timezone IS NULL,
+      city.timezone IS NULL, and resolution falls to subdivision or country.
+
+  overlapping_postal_ranges:
+    description: "Postal codes shared across multiple cities"
+    minimum: 2
+    rationale: |
+      Tests that postal lookup returns deterministic multi-row result
+      sets with consistent ordering.
+
+mutation_rules:
+  corpus_entries_removable: false       # Append-only corpus
+  additions_require_amendment: true     # Must document in decision_archive/
+  edge_case_removal: "prohibited"       # Edge cases can never be removed
+
+  exceptions:
+    - "Data correction (typo fix) — does not require amendment"
+    - "Format normalization to match canonical_serialization.yaml"
+
+verification: |
+  The complexity_auditor validates corpus minimums on every CI run.
+  Any corpus change triggers replay recertification.

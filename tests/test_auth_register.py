@@ -1,45 +1,81 @@
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete
 from typing import AsyncGenerator
 import sys
 import os
+import uuid
+import hashlib
+from unittest.mock import patch
 
 # Ensure app is in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.main import app
-from app.database import Base, get_db
-from app.models.models import Gym, GymOwner, EmailVerificationToken
-from passlib.context import CryptContext
-
-# Use an in-memory SQLite database for testing
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-
-test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-TestingSessionLocal = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
-
-async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with TestingSessionLocal() as session:
-        yield session
-
-app.dependency_overrides[get_db] = override_get_db
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-import uuid
-from app.redis_client import _fallback_rate_limits
+from app.models.auth import Owner
+from app.models.auth_session import AuthSession, AuthSessionFamily
+from app.models.gym import Gym
+from app.models.organization import Organization
+from app.core.database import AsyncSessionLocal, get_db
+from app.core.redis import init_redis, get_redis_utils
 
 @pytest_asyncio.fixture(autouse=True)
-async def prepare_database():
-    """Create all tables before each test and drop them after."""
-    _fallback_rate_limits.clear()
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def cleanup_database_and_redis():
+    """Flush Redis and clean up Postgres test data before and after each test."""
+    from app.core.redis import init_redis, get_redis_utils, close_redis
+    await close_redis()
+    await init_redis()
+    redis_utils = get_redis_utils()
+    await redis_utils.client.flushdb()
+
+    async with AsyncSessionLocal() as session:
+        test_emails = [
+            "arjun@example.com",
+            "arjun2@example.com",
+            "duplicate@example.com",
+            "weak@example.com",
+            "rate@example.com",
+            "fail@example.com",
+            "login@example.com",
+            "locked@example.com"
+        ]
+        
+        # Get org_ids of owners we are about to delete
+        stmt = select(Owner.org_id).where(Owner.email.in_(test_emails))
+        res = await session.execute(stmt)
+        org_ids = res.scalars().all()
+        
+        # Delete auth sessions and families
+        await session.execute(delete(AuthSession).where(AuthSession.user_id.in_(
+            select(Owner.id).where(Owner.email.in_(test_emails))
+        )))
+        
+        await session.execute(delete(AuthSessionFamily).where(AuthSessionFamily.user_id.in_(
+            select(Owner.id).where(Owner.email.in_(test_emails))
+        )))
+        
+        # Delete owners
+        await session.execute(delete(Owner).where(Owner.email.in_(test_emails)))
+        
+        # Delete gyms
+        if org_ids:
+            await session.execute(delete(Gym).where(Gym.org_id.in_(org_ids)))
+            await session.execute(delete(Organization).where(Organization.id.in_(org_ids)))
+            
+        # Delete any dangling test organizations by name
+        stmt_orgs = select(Organization.id).where(Organization.name.in_(["Fit Core", "Gym A", "Gym B", "Gym C", "Gym Rate Limit", "Fail Gym"]))
+        res_orgs = await session.execute(stmt_orgs)
+        dangling_org_ids = res_orgs.scalars().all()
+        if dangling_org_ids:
+            await session.execute(delete(Gym).where(Gym.org_id.in_(dangling_org_ids)))
+            await session.execute(delete(Organization).where(Organization.id.in_(dangling_org_ids)))
+
+        await session.commit()
+
     yield
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+    await close_redis()
 
 @pytest_asyncio.fixture
 async def client():
@@ -47,134 +83,652 @@ async def client():
         yield ac
 
 @pytest.mark.asyncio
-async def test_register_happy_path(client):
+async def test_signup_happy_path(client):
     payload = {
-        "gym_name": "  Fit Core  ",
-        "phone": "9876543210",
-        "city": "Mumbai",
-        "plan": "growth",
-        "owner_name": "  Arjun   Singh ",
-        "email": " ARJUN@example.com ",
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+    
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        response = await client.post("/auth/signup", json=payload)
+        assert response.status_code == 200
+        assert response.json()["status"] == "success"
+        assert "Verification email sent" in response.json()["message"]
+        assert response.json()["signup_poll_token"]
+        
+        # Ensure email was sent and token was generated
+        assert mock_send.called
+        raw_token = mock_send.call_args[1]["raw_token"]
+        assert raw_token is not None
+
+        # Verify Redis has the pending signup entry
+        redis_utils = get_redis_utils()
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        pending_data = await redis_utils.get_json(f"signup:pending:{token_hash}")
+        assert pending_data is not None
+        assert pending_data["email"] == "arjun@example.com"
+        assert pending_data["org_name"] == "Fit Core"
+        assert pending_data["signup_poll_token_hash"]
+
+@pytest.mark.asyncio
+async def test_signup_status_requires_matching_poll_token(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        signup_resp = await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+
+    poll_token = signup_resp.json()["signup_poll_token"]
+
+    email_only = await client.get("/auth/signup-status", params={"email": "arjun@example.com"})
+    assert email_only.status_code == 422
+
+    wrong_pending = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": "wrong-token"},
+    )
+    assert wrong_pending.status_code == 403
+
+    pending = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert pending.status_code == 200
+    assert pending.json()["status"] == "pending"
+
+    verify_resp = await client.get(f"/auth/verify?token={raw_token}", follow_redirects=False)
+    assert verify_resp.status_code == 307
+
+    wrong_verified = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": "wrong-token"},
+    )
+    assert wrong_verified.status_code == 403
+
+    verified = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert verified.status_code == 200
+    assert verified.json()["status"] == "verified"
+    assert verified.json()["access_token"]
+    assert verified.json()["refresh_token"]
+
+    consumed = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert consumed.status_code == 200
+    assert consumed.json()["status"] == "pending"
+
+@pytest.mark.asyncio
+async def test_signup_weak_password(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "short",
+        "facility_type": "gym"
+    }
+    response = await client.post("/auth/signup", json=payload)
+    assert response.status_code == 422
+
+@pytest.mark.asyncio
+async def test_signup_missing_field(client):
+    payload = {
+        "org_name": "Fit Core",
+        "email": "arjun@example.com",
         "password": "StrongPassword123!"
     }
+    response = await client.post("/auth/signup", json=payload)
+    assert response.status_code == 422
+
+@pytest.mark.asyncio
+async def test_signup_rate_limit(client):
+    # Loop to hit the IP rate limit of 5 requests per 10 minutes
+    # Note: Use different emails so we don't hit the anti-enumeration early success return
+    for i in range(5):
+        payload = {
+            "org_name": f"Gym Rate Limit {i}",
+            "owner_name": "Rate Limiter",
+            "email": f"rate{i}@example.com",
+            "password": "StrongPassword123!",
+            "facility_type": "gym"
+        }
+        with patch("app.services.auth_service.send_verification_email", return_value=True):
+            resp = await client.post("/auth/signup", json=payload)
+            assert resp.status_code == 200
+
+    # The 6th request should hit the rate limit
+    payload = {
+        "org_name": "Gym Rate Limit 5",
+        "owner_name": "Rate Limiter",
+        "email": "rate5@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+    resp_rate_limited = await client.post("/auth/signup", json=payload)
+    assert resp_rate_limited.status_code == 429
+    assert "Too many signup attempts" in resp_rate_limited.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_verify_happy_path(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
     
-    response = await client.post("/auth/register", json=payload)
-    assert response.status_code == 201
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        
+        # Verify the signup using the token
+        verify_resp = await client.get(f"/auth/verify?token={raw_token}", follow_redirects=False)
+        assert verify_resp.status_code == 307
+        assert "verify-success" in verify_resp.headers["location"]
+        
+        # Verify Postgres DB contains the newly created organization and owner
+        async with AsyncSessionLocal() as session:
+            stmt_owner = select(Owner).where(Owner.email == "arjun@example.com")
+            res_owner = await session.execute(stmt_owner)
+            owner = res_owner.scalar_one_or_none()
+            assert owner is not None
+            assert owner.owner_name == "Arjun Singh"
+            assert owner.email_verified is True
+            
+            stmt_org = select(Organization).where(Organization.id == owner.org_id)
+            res_org = await session.execute(stmt_org)
+            org = res_org.scalar_one_or_none()
+            assert org is not None
+            assert org.name == "Fit Core"
+            
+            stmt_gym = select(Gym).where(Gym.org_id == org.id)
+            res_gym = await session.execute(stmt_gym)
+            gym = res_gym.scalar_one_or_none()
+            assert gym is not None
+            assert gym.name == "Fit Core"
+
+        redis_utils = get_redis_utils()
+        assert await redis_utils.client.get(f"signup:pending:{token_hash}") is None
+        email_hash = hashlib.sha256("arjun@example.com".encode("utf-8")).hexdigest()
+        assert await redis_utils.client.get(f"signup:email:{email_hash}") is None
+
+@pytest.mark.asyncio
+async def test_verify_db_failure_preserves_pending_signup_and_allows_retry(client):
+    payload = {
+        "org_name": "Fail Gym",
+        "owner_name": "Arjun Singh",
+        "email": "fail@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    redis_utils = get_redis_utils()
+    assert await redis_utils.client.get(f"signup:pending:{token_hash}") is not None
+
+    with patch("app.services.auth_service.Gym", side_effect=RuntimeError("simulated db creation failure")):
+        failed_verify = await client.get(f"/auth/verify?token={raw_token}", follow_redirects=False)
+
+    assert failed_verify.status_code == 307
+    assert "verify-failed?reason=server_error" in failed_verify.headers["location"]
+    assert await redis_utils.client.get(f"signup:pending:{token_hash}") is not None
+
+    async with AsyncSessionLocal() as session:
+        owner_res = await session.execute(select(Owner).where(Owner.email == "fail@example.com"))
+        assert owner_res.scalar_one_or_none() is None
+        org_res = await session.execute(select(Organization).where(Organization.name == "Fail Gym"))
+        assert org_res.scalar_one_or_none() is None
+
+    retry_verify = await client.get(f"/auth/verify?token={raw_token}", follow_redirects=False)
+    assert retry_verify.status_code == 307
+    assert "verify-success" in retry_verify.headers["location"]
+    assert await redis_utils.client.get(f"signup:pending:{token_hash}") is None
+
+@pytest.mark.asyncio
+async def test_signup_duplicate_email_is_safe(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "duplicate@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send_duplicate:
+        duplicate_resp = await client.post("/auth/signup", json=payload)
+
+    assert duplicate_resp.status_code == 200
+    assert duplicate_resp.json()["status"] == "success"
+    assert not mock_send_duplicate.called
+
+@pytest.mark.asyncio
+async def test_resend_verification_email_failure_preserves_old_token(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        old_raw_token = mock_send.call_args[1]["raw_token"]
+
+    redis_utils = get_redis_utils()
+    old_token_hash = hashlib.sha256(old_raw_token.encode("utf-8")).hexdigest()
+    old_pending_key = f"signup:pending:{old_token_hash}"
+    email_hash = hashlib.sha256("arjun@example.com".encode("utf-8")).hexdigest()
+    email_lookup_key = f"signup:email:{email_hash}"
+    assert await redis_utils.client.get(old_pending_key) is not None
+
+    new_raw_token = "new-resend-token"
+    new_token_hash = hashlib.sha256(new_raw_token.encode("utf-8")).hexdigest()
+    new_pending_key = f"signup:pending:{new_token_hash}"
+
+    with patch("app.services.auth_service.secrets.token_urlsafe", return_value=new_raw_token), \
+         patch("app.services.auth_service.send_verification_email", return_value=False):
+        resend_resp = await client.post("/auth/resend-verification", json={"email": "arjun@example.com"})
+
+    assert resend_resp.status_code == 500
+    assert await redis_utils.client.get(old_pending_key) is not None
+    assert await redis_utils.client.get(new_pending_key) is None
+    assert await redis_utils.client.get(email_lookup_key) == old_token_hash
+
+@pytest.mark.asyncio
+async def test_verify_invalid_token(client):
+    verify_resp = await client.get("/auth/verify?token=invalidtoken", follow_redirects=False)
+    assert verify_resp.status_code == 307
+    assert "verify-failed" in verify_resp.headers["location"]
+
+@pytest.mark.asyncio
+async def test_login_happy_path(client):
+    # 1. Signup and Verify
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
     
-    data = response.json()
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
+        
+    # 2. Login
+    login_payload = {
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!"
+    }
+    login_resp = await client.post("/auth/login", json=login_payload)
+    assert login_resp.status_code == 200
+    
+    data = login_resp.json()
     assert "access_token" in data
     assert "refresh_token" in data
-    assert "gym_id" in data
-    assert "owner_id" in data
+    assert data["user"]["email"] == "arjun@example.com"
     
-    # Verify DB rows
-    async with TestingSessionLocal() as session:
-        gym = await session.get(Gym, uuid.UUID(data["gym_id"]))
-        assert gym is not None
-        assert gym.name == "Fit Core"
-        assert gym.city == "Mumbai"
-        
-        owner = await session.get(GymOwner, uuid.UUID(data["owner_id"]))
-        assert owner is not None
-        assert owner.name == "Arjun Singh"
-        assert owner.email == "arjun@example.com"
-        assert pwd_context.verify("StrongPassword123!", owner.password_hash)
-        
-        # Verify Token
-        from sqlalchemy import select
-        token_stmt = select(EmailVerificationToken).where(EmailVerificationToken.owner_id == owner.id)
-        token_res = await session.execute(token_stmt)
-        token = token_res.scalars().first()
-        assert token is not None
+    # Check that cookies were set
+    assert "access_token" in login_resp.cookies
+    assert "refresh_token" in login_resp.cookies
 
 @pytest.mark.asyncio
-async def test_register_duplicate_email(client):
+async def test_refresh_returns_rotated_token_json(client):
     payload = {
-        "gym_name": "Gym A",
-        "phone": "123456789",
-        "city": "Delhi",
-        "plan": "starter",
-        "owner_name": "John",
-        "email": "duplicate@example.com",
-        "password": "Password123"
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
     }
-    
-    # First registration
-    resp1 = await client.post("/auth/register", json=payload)
-    assert resp1.status_code == 201
-    
-    # Second registration with same email
-    resp2 = await client.post("/auth/register", json=payload)
-    assert resp2.status_code == 409
-    assert "An account with this email already exists" in resp2.json()["detail"]
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
+
+    login_resp = await client.post("/auth/login", json={
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!"
+    })
+    assert login_resp.status_code == 200
+    refresh_token = login_resp.json()["refresh_token"]
+
+    refresh_resp = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+    assert refresh_resp.status_code == 200
+    data = refresh_resp.json()
+    assert data["status"] == "success"
+    assert data["access_token"]
+    assert data["refresh_token"]
+    assert data["refresh_token"] != refresh_token
+    assert "access_token" in refresh_resp.cookies
+    assert "refresh_token" in refresh_resp.cookies
 
 @pytest.mark.asyncio
-async def test_register_weak_password(client):
+async def test_login_normalizes_email_case_and_spaces(client):
     payload = {
-        "gym_name": "Gym B",
-        "phone": "123456789",
-        "city": "Delhi",
-        "plan": "starter",
-        "owner_name": "John",
-        "email": "weak@example.com",
-        "password": "short"
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
     }
-    
-    response = await client.post("/auth/register", json=payload)
-    assert response.status_code == 422
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
+
+    login_resp = await client.post("/auth/login", json={
+        "email": "  ARJUN@EXAMPLE.COM  ",
+        "password": "StrongPassword123!"
+    })
+
+    assert login_resp.status_code == 200
+    data = login_resp.json()
+    assert data["user"]["email"] == "arjun@example.com"
 
 @pytest.mark.asyncio
-async def test_register_missing_field(client):
+async def test_login_invalid_credentials(client):
+    # 1. Signup and Verify
     payload = {
-        "gym_name": "Gym C",
-        "email": "missing@example.com",
-        "password": "Password123"
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
     }
     
-    response = await client.post("/auth/register", json=payload)
-    assert response.status_code == 422
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
+
+    # 2. Login with wrong password
+    login_payload = {
+        "email": "arjun@example.com",
+        "password": "WrongPassword!"
+    }
+    login_resp = await client.post("/auth/login", json=login_payload)
+    assert login_resp.status_code == 401
+    assert "attempts remaining" in login_resp.json()["detail"]
 
 @pytest.mark.asyncio
-async def test_register_rate_limit(client):
+async def test_login_account_locked(client):
+    # 1. Signup and Verify
     payload = {
-        "gym_name": "Gym Rate Limit",
-        "phone": "123456789",
-        "city": "Delhi",
-        "plan": "starter",
-        "owner_name": "Rate Limiter",
-        "email": "rate@example.com",
-        "password": "Password123"
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
     }
     
-    # 5 allowed requests (first 4 will 201 or 409, we just care they don't 429)
-    for _ in range(5):
-        resp = await client.post("/auth/register", json=payload)
-        assert resp.status_code in [201, 409]
-        
-    # 6th request should hit rate limit
-    resp_rate_limited = await client.post("/auth/register", json=payload)
-    assert resp_rate_limited.status_code == 429
-    assert "Too many registration attempts" in resp_rate_limited.json()["detail"]
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
+
+    # 2. Perform 5 failed login attempts
+    login_payload = {
+        "email": "arjun@example.com",
+        "password": "WrongPassword!"
+    }
+    for _ in range(4):
+        resp = await client.post("/auth/login", json=login_payload)
+        assert resp.status_code == 401
+
+    # The 5th failed attempt should trigger the account lock
+    resp_lock = await client.post("/auth/login", json=login_payload)
+    assert resp_lock.status_code == 429
+    assert "Account locked" in resp_lock.json()["detail"]
 
 @pytest.mark.asyncio
-async def test_register_db_failure_no_leak(client, monkeypatch):
+async def test_signup_status_verified_consumes_pending_data(client):
     payload = {
-        "gym_name": "Fail Gym",
-        "phone": "123456789",
-        "city": "Delhi",
-        "plan": "starter",
-        "owner_name": "Fail Owner",
-        "email": "fail@example.com",
-        "password": "Password123"
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
     }
-    
-    # Mock db.execute to raise Exception
-    async def mock_execute(*args, **kwargs):
-        raise Exception("Raw database error that should not leak")
-    
-    # We patch AsyncSession.execute
-    monkeypatch.setattr("sqlalchemy.ext.asyncio.AsyncSession.execute", mock_execute)
-    
-    response = await client.post("/auth/register", json=payload)
-    assert response.status_code == 500
-    assert response.json()["detail"] == "Registration failed due to a server error. Please try again."
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        signup_resp = await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+
+    poll_token = signup_resp.json()["signup_poll_token"]
+    redis_utils = get_redis_utils()
+
+    verify_resp = await client.get(f"/auth/verify?token={raw_token}", follow_redirects=False)
+    assert verify_resp.status_code == 307
+
+    verified = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert verified.status_code == 200
+    assert verified.json()["status"] == "verified"
+    assert verified.json()["access_token"]
+    assert verified.json()["refresh_token"]
+
+    email_hash = hashlib.sha256("arjun@example.com".encode("utf-8")).hexdigest()
+    assert await redis_utils.client.get(f"signup:sync:arjun@example.com") is None
+    assert await redis_utils.client.get(f"signup:email:{email_hash}") is None
+
+    consumed = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert consumed.status_code == 200
+    assert consumed.json()["status"] == "pending"
+    assert "access_token" not in consumed.json()
+
+@pytest.mark.asyncio
+async def test_signup_status_rate_limited(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True):
+        signup_resp = await client.post("/auth/signup", json=payload)
+
+    poll_token = signup_resp.json()["signup_poll_token"]
+
+    for _ in range(30):
+        resp = await client.get(
+            "/auth/signup-status",
+            params={"email": "arjun@example.com", "poll_token": poll_token},
+        )
+        assert resp.status_code == 200
+
+    rate_limited = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert rate_limited.status_code == 429
+    assert "Too many requests" in rate_limited.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_signup_status_cache_control_headers(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True):
+        signup_resp = await client.post("/auth/signup", json=payload)
+
+    poll_token = signup_resp.json()["signup_poll_token"]
+
+    resp = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token},
+    )
+    assert resp.status_code == 200
+    cache_control = resp.headers.get("cache-control", "").lower()
+    assert "no-store" in cache_control
+    assert "no-cache" in cache_control
+    assert "must-revalidate" in cache_control
+
+@pytest.mark.asyncio
+async def test_signup_status_wrong_poll_token_returns_403(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True):
+        await client.post("/auth/signup", json=payload)
+
+    resp = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": "wrong-token-value"},
+    )
+    assert resp.status_code == 403
+    assert "Invalid signup status token" in resp.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_refresh_token_response_includes_tokens_json(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
+        await client.post("/auth/signup", json=payload)
+        raw_token = mock_send.call_args[1]["raw_token"]
+        await client.get(f"/auth/verify?token={raw_token}")
+
+    login_resp = await client.post("/auth/login", json={
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!"
+    })
+    assert login_resp.status_code == 200
+
+    refresh_token = login_resp.json()["refresh_token"]
+    refresh_resp = await client.post("/auth/refresh", json={"refresh_token": refresh_token})
+    assert refresh_resp.status_code == 200
+
+    data = refresh_resp.json()
+    assert "access_token" in data
+    assert "refresh_token" in data
+    assert data["access_token"] != login_resp.json()["access_token"]
+    assert data["refresh_token"] != refresh_token
+    assert data["status"] == "success"
+    assert data["message"] == "Token refreshed"
+
+@pytest.mark.asyncio
+async def test_signup_status_empty_poll_token_rejected(client):
+    resp = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": ""},
+    )
+    assert resp.status_code == 403
+    assert "Invalid signup status token" in resp.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_signup_stores_poll_token_reverse_mapping(client):
+    payload = {
+        "org_name": "Fit Core",
+        "owner_name": "Arjun Singh",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True):
+        signup_resp = await client.post("/auth/signup", json=payload)
+
+    poll_token = signup_resp.json()["signup_poll_token"]
+    poll_token_hash = hashlib.sha256(poll_token.encode("utf-8")).hexdigest()
+    email_hash = hashlib.sha256("arjun@example.com".encode("utf-8")).hexdigest()
+
+    redis_utils = get_redis_utils()
+    stored_email_hash = await redis_utils.client.get(f"poll_token:{poll_token_hash}")
+    assert stored_email_hash == email_hash
+
+@pytest.mark.asyncio
+async def test_signup_status_poll_token_mapping_must_match_email(client):
+    payload_a = {
+        "org_name": "Gym A",
+        "owner_name": "Owner A",
+        "email": "arjun@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+    payload_b = {
+        "org_name": "Gym B",
+        "owner_name": "Owner B",
+        "email": "arjun2@example.com",
+        "password": "StrongPassword123!",
+        "facility_type": "gym"
+    }
+
+    with patch("app.services.auth_service.send_verification_email", return_value=True):
+        resp_a = await client.post("/auth/signup", json=payload_a)
+        resp_b = await client.post("/auth/signup", json=payload_b)
+
+    poll_token_a = resp_a.json()["signup_poll_token"]
+    poll_token_b = resp_b.json()["signup_poll_token"]
+
+    resp_cross = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token_b},
+    )
+    assert resp_cross.status_code == 403
+    assert "Invalid signup status token" in resp_cross.json()["detail"]
+
+    resp_own = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": poll_token_a},
+    )
+    assert resp_own.status_code == 200
+    assert resp_own.json()["status"] == "pending"
+
+@pytest.mark.asyncio
+async def test_signup_status_unrecognised_poll_token_always_403(client):
+    resp = await client.get(
+        "/auth/signup-status",
+        params={"email": "arjun@example.com", "poll_token": "never-signed-up-token"},
+    )
+    assert resp.status_code == 403
+    assert "Invalid signup status token" in resp.json()["detail"]

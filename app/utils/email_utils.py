@@ -210,6 +210,13 @@ async def send_verification_email(
 ) -> bool:
     verify_url = f"{settings.BACKEND_BASE_URL}/auth/verify?token={raw_token}"
     subject = "Verify your Doers account"
+    
+    if settings.ENVIRONMENT == "development":
+        logger.info("\n======================================================\n"
+                    f" DEVELOPMENT MODE VERIFICATION LINK FOR: {email}\n"
+                    f" {verify_url}\n"
+                    "======================================================\n")
+
     plain, html = _build_email(owner_name, org_name, verify_url)
 
     if settings.MAIL_PROVIDER == "resend":

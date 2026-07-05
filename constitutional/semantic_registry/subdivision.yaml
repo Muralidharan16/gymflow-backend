@@ -1,0 +1,46 @@
+# =============================================================================
+# SEMANTIC REGISTRY: Subdivision — Derived from app/models/geo.py::Subdivision (L40-65)
+# =============================================================================
+
+term: "subdivision"
+source_model: "app/models/geo.py::Subdivision"
+table: "subdivisions"
+
+primary_key: { name: "id", type: "BigInteger" }
+
+foreign_keys:
+  - { name: "country_id", type: "SmallInteger", references: "countries.id", on_delete: "RESTRICT", nullable: false }
+  - { name: "parent_id", type: "BigInteger", references: "subdivisions.id", on_delete: "RESTRICT", deferrable: true, initially: "DEFERRED" }
+
+required_fields:
+  - { name: "name", type: "Text", nullable: false }
+  - { name: "normalized_name", type: "Text", nullable: false }
+  - { name: "type", type: "Text", nullable: false }
+  - { name: "status", type: "geo_record_status", nullable: false, default: "active" }
+
+optional_fields:
+  - { name: "code", type: "Text" }
+  - { name: "timezone", type: "Text" }
+  - { name: "valid_from", type: "Date" }
+  - { name: "valid_until", type: "Date" }
+  - { name: "deactivated_at", type: "DateTime(timezone=True)" }
+  - { name: "deactivation_reason", type: "Text" }
+  - { name: "source_priority", type: "SmallInteger", default: 100 }
+  - { name: "confidence_score", type: "SmallInteger", default: 100 }
+
+timestamp_fields:
+  - { name: "created_at", type: "DateTime(timezone=True)", server_default: true }
+  - { name: "updated_at", type: "DateTime(timezone=True)", server_default: true }
+
+relationships:
+  - { name: "country", target: "Country", back_populates: "subdivisions" }
+  - { name: "cities", target: "City", back_populates: "subdivision", cascade: "none" }
+
+status_enum: "geo_record_status"
+
+invariants:
+  - "country_id must reference an active country"
+  - "parent_id self-reference supports hierarchical subdivisions"
+  - "status transitions follow geo_record_status state machine"
+  - "normalized_name = casefold(name)"
+  - "valid_from/valid_until define temporal validity window"

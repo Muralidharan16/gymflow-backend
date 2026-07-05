@@ -1,0 +1,60 @@
+# =============================================================================
+# CANONICAL SERIALIZATION CONTRACT — Constitutional Enforcement Spec v1
+# =============================================================================
+# Defines deterministic serialization for replay snapshot outputs.
+# All replay evidence MUST pass through this contract before hashing.
+# Without this, deterministic replay produces nondeterministic hashes.
+#
+# Grounded in actual data types from app/models/geo.py:
+#   - Numeric(9,6) for latitude/longitude (Country, City, PostalCode)
+#   - DateTime(timezone=True) for timestamps
+#   - Text for names, normalized_name, timezone
+#   - geo_record_status ENUM for status fields
+# =============================================================================
+
+version: "1.0"
+
+encoding:
+  character_set: "UTF-8"
+  normalization_form: "NFC"   # Unicode Canonical Decomposition + Composition
+  byte_order_mark: false
+
+json:
+  key_ordering: "sorted_recursive"      # json.dumps(sort_keys=True)
+  indent: null                          # Compact — no whitespace
+  ensure_ascii: false                   # Preserve Unicode directly (São Paulo, München)
+  separators: [",", ":"]               # No trailing spaces
+
+numeric:
+  integers: "unquoted"                  # 42, not "42"
+  decimals:
+    format: "fixed_point"
+    precision: 6                        # Matches Numeric(9,6) in geo.py L76-77, L101-102
+    trailing_zeros: "preserve"          # 1.500000, not 1.5
+    representation: "string_in_json"    # "1.500000" — avoids float64 drift
+
+temporal:
+  timezone_format: "UTC_offset"         # +00:00, not Z or UTC
+  datetime_format: "ISO8601"            # 2025-01-15T12:00:00+00:00
+  date_format: "ISO8601"               # 2025-01-15
+  null_dates: "null"                    # JSON null, not empty string
+
+geometry:
+  latitude:  { type: "Numeric(9,6)", serialization: "string_fixed_6" }
+  longitude: { type: "Numeric(9,6)", serialization: "string_fixed_6" }
+
+null_representation: "json_null"        # null, not "", not "None", not "NULL"
+
+arrays:
+  ordering_rule: "preserve_query_order" # ORDER BY in SQL determines order
+  empty_arrays: "[]"                    # Not null, not omitted
+
+# Grounded in actual geo_service.py timezone cascade behavior (L43)
+geo_specific:
+  timezone_cascade_serialization: |
+    Timezone resolution follows: postal_code.timezone → city.timezone →
+    subdivision.timezone → country.timezone (geo_service.py L43).
+    The RESOLVED timezone is serialized, not the cascade path.
+  normalized_name_serialization: |
+    Always casefold(), never locale-dependent lower().
+    Matches invariant in semantic_registry/city.yaml.

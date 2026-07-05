@@ -1,0 +1,66 @@
+# =============================================================================
+# EMERGENCY OVERRIDE AUTHORIZATION — Constitutional Enforcement Spec v1
+# =============================================================================
+# Formalized emergency override procedures for catastrophic recovery.
+# Prevents shadow governance by making exceptions explicit and auditable.
+# =============================================================================
+
+version: "1.0"
+
+severity_levels:
+
+  SEV1_data_corruption:
+    description: "Canonical geo data is corrupted or inconsistent"
+    authorized_overrides:
+      - "Direct SQL UPDATE on frozen tables (normally prohibited)"
+      - "Schema hotfix without full amendment cycle"
+    authorization_required: "2 principals (on-call + team lead)"
+    max_duration_hours: 4
+    examples:
+      - "countries.iso2 contains invalid data after bad import"
+      - "geo_record_status enum values corrupted"
+
+  SEV2_service_degradation:
+    description: "Geo lookups failing but data integrity preserved"
+    authorized_overrides:
+      - "Cache bypass (skip Redis, direct DB queries)"
+      - "Temporary nondeterminism boundary expansion"
+    authorization_required: "1 principal (on-call engineer)"
+    max_duration_hours: 8
+    examples:
+      - "Redis cluster failure causing cache misses"
+      - "Timezone cascade returning nulls due to missing data"
+
+  SEV3_governance_bypass:
+    description: "CI gate blocking critical hotfix deployment"
+    authorized_overrides:
+      - "Skip specific CI gate with justification"
+      - "Temporary exemption addition without full review"
+    authorization_required: "1 principal + written justification"
+    max_duration_hours: 24
+    examples:
+      - "Purity scan false positive blocking urgent security patch"
+      - "Dependency lockfile mismatch after emergency package update"
+
+override_lifecycle:
+  activation:
+    - "Create incident record with severity classification"
+    - "Record override authorization (who approved, when, why)"
+    - "Log exact override actions taken"
+
+  expiry:
+    - "All overrides auto-expire at max_duration_hours"
+    - "Expired overrides trigger mandatory review"
+    - "No override renewal without fresh authorization"
+
+  reconciliation:
+    - "Post-incident: replay validation MUST pass"
+    - "Post-incident: semantic drift check MUST pass"
+    - "Post-incident: all 12 runtime governance checks MUST pass"
+    - "Post-incident: constitutional amendment if permanent change needed"
+    - "Post-incident: decision_archive/ entry documenting incident"
+
+budgets:
+  max_active_overrides: 2
+  max_per_quarter: 6
+  mandatory_review_after: 3  # After 3 in a quarter, architecture review

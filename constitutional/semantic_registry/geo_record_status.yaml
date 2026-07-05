@@ -1,0 +1,26 @@
+# =============================================================================
+# SEMANTIC REGISTRY: geo_record_status — Derived from app/models/geo.py L6
+# =============================================================================
+
+term: "geo_record_status"
+source_model: "app/models/geo.py L6"
+type: "PostgreSQL ENUM"
+values: ["active", "deprecated", "historical", "pending_validation"]
+
+state_machine:
+  pending_validation: ["active"]      # Validation passed → active
+  active: ["deprecated"]              # Soft deactivation
+  deprecated: ["historical"]          # Permanent archival
+  historical: []                      # Terminal state — no transitions out
+
+invariants:
+  - "No state reversal permitted (enforced by application layer)"
+  - "Deletion is soft-delete via deactivated_at, never row removal"
+  - "'active' is the only state visible to public API queries"
+  - "State transitions are unidirectional: pending→active→deprecated→historical"
+
+used_by:
+  - "countries.status"
+  - "subdivisions.status"
+  - "cities.status"
+  - "postal_codes.status"

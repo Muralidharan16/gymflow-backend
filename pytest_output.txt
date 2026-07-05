@@ -1,0 +1,673 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0
+rootdir: /home/jeevashri/gymflow-backend
+configfile: pytest.ini
+plugins: anyio-4.13.0, asyncio-1.3.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/test_membership_plans.py F                                         [100%]
+
+=================================== FAILURES ===================================
+__________________________ test_membership_plans_api ___________________________
+
+self = <sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_cursor object at 0x71a8edc76980>
+operation = 'INSERT INTO membership_plans (id, org_id, branch_id, plan_code, name, description, price, currency, duration_value, d...n_status, $15::UUID, $16::TIMESTAMP WITH TIME ZONE) RETURNING membership_plans.created_at, membership_plans.updated_at'
+parameters = (UUID('d20fce68-af3e-43e6-b1e9-d58d2c3fb999'), UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), None, 'TESTOR-001', 'Org Wide Plan', None, ...)
+
+    async def _prepare_and_execute(self, operation, parameters):
+        adapt_connection = self._adapt_connection
+    
+        async with adapt_connection._execute_mutex:
+            if not adapt_connection._started:
+                await adapt_connection._start_transaction()
+    
+            if parameters is None:
+                parameters = ()
+    
+            try:
+                prepared_stmt, attributes = await adapt_connection._prepare(
+                    operation, self._invalidate_schema_cache_asof
+                )
+    
+                if attributes:
+                    self.description = [
+                        (
+                            attr.name,
+                            attr.type.oid,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                        for attr in attributes
+                    ]
+                else:
+                    self.description = None
+    
+                if self.server_side:
+                    self._cursor = await prepared_stmt.cursor(*parameters)
+                    self.rowcount = -1
+                else:
+>                   self._rows = deque(await prepared_stmt.fetch(*parameters))
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.venv/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:550: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.12/site-packages/asyncpg/prepared_stmt.py:177: in fetch
+    data = await self.__bind_execute(args, 0, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/asyncpg/prepared_stmt.py:268: in __bind_execute
+    data, status, _ = await self.__do_execute(
+.venv/lib/python3.12/site-packages/asyncpg/prepared_stmt.py:257: in __do_execute
+    return await executor(protocol)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.ForeignKeyViolationError: insert or update on table "membership_plans" violates foreign key constraint "membership_plans_created_by_fkey"
+E   DETAIL:  Key (created_by)=(c7419309-5f3c-4b8c-8909-5d57a1cff864) is not present in table "gym_owners".
+
+asyncpg/protocol/protocol.pyx:205: ForeignKeyViolationError
+
+The above exception was the direct cause of the following exception:
+
+self = <sqlalchemy.engine.base.Connection object at 0x71a8edc445c0>
+dialect = <sqlalchemy.dialects.postgresql.asyncpg.PGDialect_asyncpg object at 0x71a8f520ebd0>
+context = <sqlalchemy.dialects.postgresql.asyncpg.PGExecutionContext_asyncpg object at 0x71a8edc5e270>
+statement = <sqlalchemy.dialects.postgresql.asyncpg.PGCompiler_asyncpg object at 0x71a8edc5e030>
+parameters = [(UUID('d20fce68-af3e-43e6-b1e9-d58d2c3fb999'), UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), None, 'TESTOR-001', 'Org Wide Plan', None, ...)]
+
+    def _exec_single_context(
+        self,
+        dialect: Dialect,
+        context: ExecutionContext,
+        statement: Union[str, Compiled],
+        parameters: Optional[_AnyMultiExecuteParams],
+    ) -> CursorResult[Any]:
+        """continue the _execute_context() method for a single DBAPI
+        cursor.execute() or cursor.executemany() call.
+    
+        """
+        if dialect.bind_typing is BindTyping.SETINPUTSIZES:
+            generic_setinputsizes = context._prepare_set_input_sizes()
+    
+            if generic_setinputsizes:
+                try:
+                    dialect.do_set_input_sizes(
+                        context.cursor, generic_setinputsizes, context
+                    )
+                except BaseException as e:
+                    self._handle_dbapi_exception(
+                        e, str(statement), parameters, None, context
+                    )
+    
+        cursor, str_statement, parameters = (
+            context.cursor,
+            context.statement,
+            context.parameters,
+        )
+    
+        effective_parameters: Optional[_AnyExecuteParams]
+    
+        if not context.executemany:
+            effective_parameters = parameters[0]
+        else:
+            effective_parameters = parameters
+    
+        if self._has_events or self.engine._has_events:
+            for fn in self.dispatch.before_cursor_execute:
+                str_statement, effective_parameters = fn(
+                    self,
+                    cursor,
+                    str_statement,
+                    effective_parameters,
+                    context,
+                    context.executemany,
+                )
+    
+        if self._echo:
+            self._log_info(str_statement)
+    
+            stats = context._get_cache_stats()
+    
+            if not self.engine.hide_parameters:
+                self._log_info(
+                    "[%s] %r",
+                    stats,
+                    sql_util._repr_params(
+                        effective_parameters,
+                        batches=10,
+                        ismulti=context.executemany,
+                    ),
+                )
+            else:
+                self._log_info(
+                    "[%s] [SQL parameters hidden due to hide_parameters=True]",
+                    stats,
+                )
+    
+        evt_handled: bool = False
+        try:
+            if context.execute_style is ExecuteStyle.EXECUTEMANY:
+                effective_parameters = cast(
+                    "_CoreMultiExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_executemany:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_executemany(
+                        cursor,
+                        str_statement,
+                        effective_parameters,
+                        context,
+                    )
+            elif not effective_parameters and context.no_parameters:
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute_no_params:
+                        if fn(cursor, str_statement, context):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_execute_no_params(
+                        cursor, str_statement, context
+                    )
+            else:
+                effective_parameters = cast(
+                    "_CoreSingleExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+>                   self.dialect.do_execute(
+                        cursor, str_statement, effective_parameters, context
+                    )
+
+.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1967: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+.venv/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:585: in execute
+    self._adapt_connection.await_(
+.venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py:132: in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py:196: in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:563: in _prepare_and_execute
+    self._handle_exception(error)
+.venv/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:513: in _handle_exception
+    self._adapt_connection._handle_exception(error)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AdaptedConnection <asyncpg.connection.Connection object at 0x71a8edc3b6b0>>
+error = ForeignKeyViolationError('insert or update on table "membership_plans" violates foreign key constraint "membership_plans_created_by_fkey"')
+
+    def _handle_exception(self, error):
+        if self._connection.is_closed():
+            self._transaction = None
+            self._started = False
+    
+        if not isinstance(error, AsyncAdapt_asyncpg_dbapi.Error):
+            exception_mapping = self.dbapi._asyncpg_error_translate
+    
+            for super_ in type(error).__mro__:
+                if super_ in exception_mapping:
+                    translated_error = exception_mapping[super_](
+                        "%s: %s" % (type(error), error)
+                    )
+                    translated_error.pgcode = translated_error.sqlstate = (
+                        getattr(error, "sqlstate", None)
+                    )
+>                   raise translated_error from error
+E                   sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_dbapi.IntegrityError: <class 'asyncpg.exceptions.ForeignKeyViolationError'>: insert or update on table "membership_plans" violates foreign key constraint "membership_plans_created_by_fkey"
+E                   DETAIL:  Key (created_by)=(c7419309-5f3c-4b8c-8909-5d57a1cff864) is not present in table "gym_owners".
+
+.venv/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:797: IntegrityError
+
+The above exception was the direct cause of the following exception:
+
+client = <httpx.AsyncClient object at 0x71a8ee7684d0>
+test_data = {'branch1_id': UUID('2db30c40-e195-46eb-b6d3-11480f35bca4'), 'org1_id': UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), 'org2_id': UUID('170ad353-c19b-4103-902e-a454b540acce'), 'owner1_id': UUID('c7419309-5f3c-4b8c-8909-5d57a1cff864'), ...}
+
+    @pytest.mark.asyncio
+    async def test_membership_plans_api(client, test_data):
+        org1_id = test_data["org1_id"]
+        owner1_id = test_data["owner1_id"]
+        branch1_id = test_data["branch1_id"]
+        org2_id = test_data["org2_id"]
+        owner2_id = test_data["owner2_id"]
+    
+        headers1 = get_headers(owner1_id, org1_id, "owner1@test.com")
+        headers2 = get_headers(owner2_id, org2_id, "owner2@test.com")
+    
+        # 1. create org-wide plan
+>       res = await client.post("/membership-plans", json={
+            "name": "Org Wide Plan",
+            "price": 1000,
+            "duration_value": 1,
+            "duration_unit": "months"
+        }, headers=headers1)
+
+tests/test_membership_plans.py:120: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.12/site-packages/httpx/_client.py:1859: in post
+    return await self.request(
+.venv/lib/python3.12/site-packages/httpx/_client.py:1540: in request
+    return await self.send(request, auth=auth, follow_redirects=follow_redirects)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/httpx/_client.py:1629: in send
+    response = await self._send_handling_auth(
+.venv/lib/python3.12/site-packages/httpx/_client.py:1657: in _send_handling_auth
+    response = await self._send_handling_redirects(
+.venv/lib/python3.12/site-packages/httpx/_client.py:1694: in _send_handling_redirects
+    response = await self._send_single_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/httpx/_client.py:1730: in _send_single_request
+    response = await transport.handle_async_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/httpx/_transports/asgi.py:170: in handle_async_request
+    await self.app(scope, receive, send)
+.venv/lib/python3.12/site-packages/fastapi/applications.py:1159: in __call__
+    await super().__call__(scope, receive, send)
+.venv/lib/python3.12/site-packages/starlette/applications.py:90: in __call__
+    await self.middleware_stack(scope, receive, send)
+.venv/lib/python3.12/site-packages/starlette/middleware/errors.py:186: in __call__
+    raise exc
+.venv/lib/python3.12/site-packages/starlette/middleware/errors.py:164: in __call__
+    await self.app(scope, receive, _send)
+.venv/lib/python3.12/site-packages/starlette/middleware/cors.py:88: in __call__
+    await self.app(scope, receive, send)
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:191: in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+/usr/lib/python3.12/contextlib.py:158: in __exit__
+    self.gen.throw(value)
+.venv/lib/python3.12/site-packages/starlette/_utils.py:87: in collapse_excgroups
+    raise exc
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:193: in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app/core/middleware.py:72: in dispatch
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:168: in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:144: in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:191: in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+/usr/lib/python3.12/contextlib.py:158: in __exit__
+    self.gen.throw(value)
+.venv/lib/python3.12/site-packages/starlette/_utils.py:87: in collapse_excgroups
+    raise exc
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:193: in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app/core/middleware.py:99: in dispatch
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:168: in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:144: in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:191: in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+/usr/lib/python3.12/contextlib.py:158: in __exit__
+    self.gen.throw(value)
+.venv/lib/python3.12/site-packages/starlette/_utils.py:87: in collapse_excgroups
+    raise exc
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:193: in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app/core/middleware.py:154: in dispatch
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:168: in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:144: in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:191: in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+/usr/lib/python3.12/contextlib.py:158: in __exit__
+    self.gen.throw(value)
+.venv/lib/python3.12/site-packages/starlette/_utils.py:87: in collapse_excgroups
+    raise exc
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:193: in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app/core/middleware.py:227: in dispatch
+    return await call_next(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:168: in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:144: in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:191: in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+/usr/lib/python3.12/contextlib.py:158: in __exit__
+    self.gen.throw(value)
+.venv/lib/python3.12/site-packages/starlette/_utils.py:87: in collapse_excgroups
+    raise exc
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:193: in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app/core/middleware.py:311: in dispatch
+    return await call_next(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:168: in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:144: in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:191: in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+/usr/lib/python3.12/contextlib.py:158: in __exit__
+    self.gen.throw(value)
+.venv/lib/python3.12/site-packages/starlette/_utils.py:87: in collapse_excgroups
+    raise exc
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:193: in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app/core/middleware.py:380: in dispatch
+    return await call_next(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:168: in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:144: in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:191: in __call__
+    with recv_stream, send_stream, collapse_excgroups():
+/usr/lib/python3.12/contextlib.py:158: in __exit__
+    self.gen.throw(value)
+.venv/lib/python3.12/site-packages/starlette/_utils.py:87: in collapse_excgroups
+    raise exc
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:193: in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app/core/middleware.py:361: in dispatch
+    return await call_next(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:168: in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+.venv/lib/python3.12/site-packages/starlette/middleware/base.py:144: in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+.venv/lib/python3.12/site-packages/starlette/middleware/exceptions.py:63: in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+.venv/lib/python3.12/site-packages/starlette/_exception_handler.py:53: in wrapped_app
+    raise exc
+.venv/lib/python3.12/site-packages/starlette/_exception_handler.py:42: in wrapped_app
+    await app(scope, receive, sender)
+.venv/lib/python3.12/site-packages/fastapi/middleware/asyncexitstack.py:18: in __call__
+    await self.app(scope, receive, send)
+.venv/lib/python3.12/site-packages/starlette/routing.py:660: in __call__
+    await self.middleware_stack(scope, receive, send)
+.venv/lib/python3.12/site-packages/starlette/routing.py:680: in app
+    await route.handle(scope, receive, send)
+.venv/lib/python3.12/site-packages/starlette/routing.py:276: in handle
+    await self.app(scope, receive, send)
+.venv/lib/python3.12/site-packages/fastapi/routing.py:134: in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+.venv/lib/python3.12/site-packages/starlette/_exception_handler.py:53: in wrapped_app
+    raise exc
+.venv/lib/python3.12/site-packages/starlette/_exception_handler.py:42: in wrapped_app
+    await app(scope, receive, sender)
+.venv/lib/python3.12/site-packages/fastapi/routing.py:120: in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/fastapi/routing.py:674: in app
+    raw_response = await run_endpoint_function(
+.venv/lib/python3.12/site-packages/fastapi/routing.py:328: in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app/routers/membership_plans.py:79: in create_membership_plan
+    await db.commit()
+.venv/lib/python3.12/site-packages/sqlalchemy/ext/asyncio/session.py:1000: in commit
+    await greenlet_spawn(self.sync_session.commit)
+.venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py:203: in greenlet_spawn
+    result = context.switch(value)
+             ^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py:2030: in commit
+    trans.commit(_to_root=True)
+<string>:2: in commit
+    ???
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+                ^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py:1311: in commit
+    self._prepare_impl()
+<string>:2: in _prepare_impl
+    ???
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+                ^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py:1286: in _prepare_impl
+    self.session.flush()
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py:4331: in flush
+    self._flush(objects)
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py:4466: in _flush
+    with util.safe_reraise():
+.venv/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py:121: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py:4427: in _flush
+    flush_context.execute()
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/unitofwork.py:466: in execute
+    rec.execute(self)
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/unitofwork.py:642: in execute
+    util.preloaded.orm_persistence.save_obj(
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/persistence.py:93: in save_obj
+    _emit_insert_statements(
+.venv/lib/python3.12/site-packages/sqlalchemy/orm/persistence.py:1233: in _emit_insert_statements
+    result = connection.execute(
+.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1419: in execute
+    return meth(
+.venv/lib/python3.12/site-packages/sqlalchemy/sql/elements.py:527: in _execute_on_connection
+    return connection._execute_clauseelement(
+.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1641: in _execute_clauseelement
+    ret = self._execute_context(
+.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1846: in _execute_context
+    return self._exec_single_context(
+.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1986: in _exec_single_context
+    self._handle_dbapi_exception(
+.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py:2363: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1967: in _exec_single_context
+    self.dialect.do_execute(
+.venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+.venv/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:585: in execute
+    self._adapt_connection.await_(
+.venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py:132: in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py:196: in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:563: in _prepare_and_execute
+    self._handle_exception(error)
+.venv/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:513: in _handle_exception
+    self._adapt_connection._handle_exception(error)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AdaptedConnection <asyncpg.connection.Connection object at 0x71a8edc3b6b0>>
+error = ForeignKeyViolationError('insert or update on table "membership_plans" violates foreign key constraint "membership_plans_created_by_fkey"')
+
+    def _handle_exception(self, error):
+        if self._connection.is_closed():
+            self._transaction = None
+            self._started = False
+    
+        if not isinstance(error, AsyncAdapt_asyncpg_dbapi.Error):
+            exception_mapping = self.dbapi._asyncpg_error_translate
+    
+            for super_ in type(error).__mro__:
+                if super_ in exception_mapping:
+                    translated_error = exception_mapping[super_](
+                        "%s: %s" % (type(error), error)
+                    )
+                    translated_error.pgcode = translated_error.sqlstate = (
+                        getattr(error, "sqlstate", None)
+                    )
+>                   raise translated_error from error
+E                   sqlalchemy.exc.IntegrityError: (sqlalchemy.dialects.postgresql.asyncpg.IntegrityError) <class 'asyncpg.exceptions.ForeignKeyViolationError'>: insert or update on table "membership_plans" violates foreign key constraint "membership_plans_created_by_fkey"
+E                   DETAIL:  Key (created_by)=(c7419309-5f3c-4b8c-8909-5d57a1cff864) is not present in table "gym_owners".
+E                   [SQL: INSERT INTO membership_plans (id, org_id, branch_id, plan_code, name, description, price, currency, duration_value, duration_unit, max_members, valid_from, valid_until, status, created_by, archived_at) VALUES ($1::UUID, $2::UUID, $3::UUID, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR, $7::NUMERIC(12, 2), $8::VARCHAR, $9::INTEGER, $10::duration_unit, $11::INTEGER, $12::TIMESTAMP WITH TIME ZONE, $13::TIMESTAMP WITH TIME ZONE, $14::plan_status, $15::UUID, $16::TIMESTAMP WITH TIME ZONE) RETURNING membership_plans.created_at, membership_plans.updated_at]
+E                   [parameters: (UUID('d20fce68-af3e-43e6-b1e9-d58d2c3fb999'), UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), None, 'TESTOR-001', 'Org Wide Plan', None, 1000.0, 'INR', 1, 'months', 1, None, None, 'active', UUID('c7419309-5f3c-4b8c-8909-5d57a1cff864'), None)]
+E                   (Background on this error at: https://sqlalche.me/e/20/gkpj)
+
+.venv/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py:797: IntegrityError
+---------------------------- Captured stdout setup -----------------------------
+2026-06-07 01:14:03,354 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-06-07 01:14:03,355 INFO sqlalchemy.engine.Engine RESET ROLE
+2026-06-07 01:14:03,355 INFO sqlalchemy.engine.Engine [generated in 0.00017s] ()
+2026-06-07 01:14:03,356 INFO sqlalchemy.engine.Engine ROLLBACK
+2026-06-07 01:14:03,431 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-06-07 01:14:03,434 INFO sqlalchemy.engine.Engine INSERT INTO organizations (id, name, slug, tier, business_type, is_active, max_branches, default_currency_code, tagline, description, year_established, website_url, website_verified, social_links, phone, address_line1, address_line2, city, state, doc ... 1421 characters truncated ... TIME ZONE, $76::UUID) RETURNING organizations.created_at, organizations.updated_at, organizations.id
+2026-06-07 01:14:03,434 INFO sqlalchemy.engine.Engine [generated in 0.00025s (insertmanyvalues) 1/1 (ordered)] (UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), 'Test Org 1', 'TEST-ORG-1', 'basic', None, True, 5, 'INR', None, None, None, None, False, '{}', None, None, None, None, None, None, 'pending', None, 'India', False, None, None, None, None, None, None, None, None, None, None, None, None, None, None, UUID('170ad353-c19b-4103-902e-a454b540acce'), 'Test Org 2', 'TEST-ORG-2', 'basic', None, True, 5, 'USD', None, None, None, None, False, '{}', None, None, None, None, None, None, 'pending', None, 'India', False, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+2026-06-07 01:14:03,446 INFO sqlalchemy.engine.Engine INSERT INTO owners (id, org_id, owner_name, email, hashed_password, email_verified, email_verified_at, onboarding_completed, onboarding_completed_at) VALUES ($1::UUID, $2::UUID, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::BOOLEAN, $7::TIMESTAMP WITH T ... 166 characters truncated ... 7::BOOLEAN, $18::TIMESTAMP WITH TIME ZONE) RETURNING owners.created_at, owners.updated_at, owners.id
+2026-06-07 01:14:03,446 INFO sqlalchemy.engine.Engine [generated in 0.00011s (insertmanyvalues) 1/1 (ordered)] (UUID('c7419309-5f3c-4b8c-8909-5d57a1cff864'), UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), 'Org Owner 1', 'owner1@test.com', 'hash', True, None, False, None, UUID('7f46d089-eee4-4597-ac8e-813bca9b96cb'), UUID('170ad353-c19b-4103-902e-a454b540acce'), 'Org Owner 2', 'owner2@test.com', 'hash', True, None, False, None)
+2026-06-07 01:14:03,449 INFO sqlalchemy.engine.Engine INSERT INTO org_branches (id, org_id, branch_name, branch_code, internal_slug, timezone, currency_code, region_code, country_code, address_id, created_by) VALUES ($1::UUID, $2::UUID, $3::VARCHAR, $4::VARCHAR, $5, $6::VARCHAR, $7::VARCHAR, $8::VARCHAR, $9::VARCHAR, $10::UUID, $11::UUID) RETURNING org_branches.search_normalized_name, org_branches.created_at, org_branches.updated_at
+2026-06-07 01:14:03,449 INFO sqlalchemy.engine.Engine [generated in 0.00017s] (UUID('2db30c40-e195-46eb-b6d3-11480f35bca4'), UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), 'Branch 1', 'BR1', 'branch-1', 'UTC', 'USD', None, None, None, UUID('c7419309-5f3c-4b8c-8909-5d57a1cff864'))
+2026-06-07 01:14:03,456 INFO sqlalchemy.engine.Engine COMMIT
+------------------------------ Captured log setup ------------------------------
+INFO     sqlalchemy.engine.Engine:base.py:2710 BEGIN (implicit)
+INFO     sqlalchemy.engine.Engine:base.py:1846 RESET ROLE
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00017s] ()
+INFO     sqlalchemy.engine.Engine:base.py:2713 ROLLBACK
+INFO     sqlalchemy.engine.Engine:base.py:2710 BEGIN (implicit)
+INFO     sqlalchemy.engine.Engine:base.py:1844 INSERT INTO organizations (id, name, slug, tier, business_type, is_active, max_branches, default_currency_code, tagline, description, year_established, website_url, website_verified, social_links, phone, address_line1, address_line2, city, state, doc ... 1421 characters truncated ... TIME ZONE, $76::UUID) RETURNING organizations.created_at, organizations.updated_at, organizations.id
+INFO     sqlalchemy.engine.Engine:base.py:1844 [generated in 0.00025s (insertmanyvalues) 1/1 (ordered)] (UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), 'Test Org 1', 'TEST-ORG-1', 'basic', None, True, 5, 'INR', None, None, None, None, False, '{}', None, None, None, None, None, None, 'pending', None, 'India', False, None, None, None, None, None, None, None, None, None, None, None, None, None, None, UUID('170ad353-c19b-4103-902e-a454b540acce'), 'Test Org 2', 'TEST-ORG-2', 'basic', None, True, 5, 'USD', None, None, None, None, False, '{}', None, None, None, None, None, None, 'pending', None, 'India', False, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+INFO     sqlalchemy.engine.Engine:base.py:1844 INSERT INTO owners (id, org_id, owner_name, email, hashed_password, email_verified, email_verified_at, onboarding_completed, onboarding_completed_at) VALUES ($1::UUID, $2::UUID, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::BOOLEAN, $7::TIMESTAMP WITH T ... 166 characters truncated ... 7::BOOLEAN, $18::TIMESTAMP WITH TIME ZONE) RETURNING owners.created_at, owners.updated_at, owners.id
+INFO     sqlalchemy.engine.Engine:base.py:1844 [generated in 0.00011s (insertmanyvalues) 1/1 (ordered)] (UUID('c7419309-5f3c-4b8c-8909-5d57a1cff864'), UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), 'Org Owner 1', 'owner1@test.com', 'hash', True, None, False, None, UUID('7f46d089-eee4-4597-ac8e-813bca9b96cb'), UUID('170ad353-c19b-4103-902e-a454b540acce'), 'Org Owner 2', 'owner2@test.com', 'hash', True, None, False, None)
+INFO     sqlalchemy.engine.Engine:base.py:1846 INSERT INTO org_branches (id, org_id, branch_name, branch_code, internal_slug, timezone, currency_code, region_code, country_code, address_id, created_by) VALUES ($1::UUID, $2::UUID, $3::VARCHAR, $4::VARCHAR, $5, $6::VARCHAR, $7::VARCHAR, $8::VARCHAR, $9::VARCHAR, $10::UUID, $11::UUID) RETURNING org_branches.search_normalized_name, org_branches.created_at, org_branches.updated_at
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00017s] (UUID('2db30c40-e195-46eb-b6d3-11480f35bca4'), UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), 'Branch 1', 'BR1', 'branch-1', 'UTC', 'USD', None, None, None, UUID('c7419309-5f3c-4b8c-8909-5d57a1cff864'))
+INFO     sqlalchemy.engine.Engine:base.py:2716 COMMIT
+----------------------------- Captured stdout call -----------------------------
+2026-06-07 01:14:03,563 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-06-07 01:14:03,564 INFO sqlalchemy.engine.Engine SET LOCAL application_name = 'doers:org:anon:trace:unknown'
+2026-06-07 01:14:03,564 INFO sqlalchemy.engine.Engine [generated in 0.00022s] ()
+2026-06-07 01:14:03,566 INFO sqlalchemy.engine.Engine SELECT pg_catalog.set_config('app.current_user', $1, true)
+2026-06-07 01:14:03,566 INFO sqlalchemy.engine.Engine [generated in 0.00028s] ('00000000-0000-0000-0000-000000000000',)
+2026-06-07 01:14:03,568 INFO sqlalchemy.engine.Engine SELECT pg_catalog.set_config('app.current_user_id', $1, true)
+2026-06-07 01:14:03,569 INFO sqlalchemy.engine.Engine [generated in 0.00026s] ('00000000-0000-0000-0000-000000000000',)
+2026-06-07 01:14:03,570 INFO sqlalchemy.engine.Engine SELECT pg_catalog.set_config('app.current_role', $1, true)
+2026-06-07 01:14:03,570 INFO sqlalchemy.engine.Engine [generated in 0.00020s] ('unknown',)
+2026-06-07 01:14:03,571 INFO sqlalchemy.engine.Engine SET LOCAL statement_timeout = '5000ms'
+2026-06-07 01:14:03,571 INFO sqlalchemy.engine.Engine [generated in 0.00016s] ()
+2026-06-07 01:14:03,572 INFO sqlalchemy.engine.Engine SET LOCAL lock_timeout = '500ms'
+2026-06-07 01:14:03,572 INFO sqlalchemy.engine.Engine [generated in 0.00015s] ()
+2026-06-07 01:14:03,573 INFO sqlalchemy.engine.Engine SET LOCAL deadlock_timeout = '200ms'
+2026-06-07 01:14:03,573 INFO sqlalchemy.engine.Engine [generated in 0.00015s] ()
+2026-06-07 01:14:03,574 INFO sqlalchemy.engine.Engine SET LOCAL idle_in_transaction_session_timeout = '15000ms'
+2026-06-07 01:14:03,574 INFO sqlalchemy.engine.Engine [generated in 0.00035s] ()
+2026-06-07 01:14:03,575 INFO sqlalchemy.engine.Engine COMMIT
+2026-06-07 01:14:03,624 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-06-07 01:14:03,627 INFO sqlalchemy.engine.Engine SELECT organizations.id, organizations.name, organizations.slug, organizations.tier, organizations.business_type, organizations.is_active, organizations.max_branches, organizations.default_currency_code, organizations.tagline, organizations.description, organizations.year_established, organizations.website_url, organizations.website_verified, organizations.social_links, organizations.phone, organizations.address_line1, organizations.address_line2, organizations.city, organizations.state, organizations.document_url, organizations.verification_status, organizations.pincode, organizations.country, organizations.profile_completed, organizations.logo_key, organizations.logo_thumb_key, organizations.logo_medium_key, organizations.logo_full_key, organizations.logo_meta, organizations.logo_status, organizations.logo_updated_at, organizations.logo_updated_by, organizations.cover_key, organizations.cover_mobile_key, organizations.cover_tablet_key, organizations.cover_desktop_key, organizations.cover_meta, organizations.cover_status, organizations.cover_updated_at, organizations.cover_updated_by, organizations.created_at, organizations.updated_at 
+FROM organizations 
+WHERE organizations.id = $1::UUID
+2026-06-07 01:14:03,627 INFO sqlalchemy.engine.Engine [generated in 0.00015s] (UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'),)
+2026-06-07 01:14:03,638 INFO sqlalchemy.engine.Engine SELECT count(*) AS count_1 
+FROM membership_plans 
+WHERE membership_plans.org_id = $1::UUID
+2026-06-07 01:14:03,638 INFO sqlalchemy.engine.Engine [generated in 0.00016s] (UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'),)
+2026-06-07 01:14:03,640 INFO sqlalchemy.engine.Engine INSERT INTO membership_plans (id, org_id, branch_id, plan_code, name, description, price, currency, duration_value, duration_unit, max_members, valid_from, valid_until, status, created_by, archived_at) VALUES ($1::UUID, $2::UUID, $3::UUID, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR, $7::NUMERIC(12, 2), $8::VARCHAR, $9::INTEGER, $10::duration_unit, $11::INTEGER, $12::TIMESTAMP WITH TIME ZONE, $13::TIMESTAMP WITH TIME ZONE, $14::plan_status, $15::UUID, $16::TIMESTAMP WITH TIME ZONE) RETURNING membership_plans.created_at, membership_plans.updated_at
+2026-06-07 01:14:03,640 INFO sqlalchemy.engine.Engine [generated in 0.00019s] (UUID('d20fce68-af3e-43e6-b1e9-d58d2c3fb999'), UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), None, 'TESTOR-001', 'Org Wide Plan', None, 1000.0, 'INR', 1, 'months', 1, None, None, 'active', UUID('c7419309-5f3c-4b8c-8909-5d57a1cff864'), None)
+2026-06-07 01:14:03,644 INFO sqlalchemy.engine.Engine ROLLBACK
+------------------------------ Captured log call -------------------------------
+INFO     sqlalchemy.engine.Engine:base.py:2710 BEGIN (implicit)
+INFO     sqlalchemy.engine.Engine:base.py:1846 SET LOCAL application_name = 'doers:org:anon:trace:unknown'
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00022s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 SELECT pg_catalog.set_config('app.current_user', $1, true)
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00028s] ('00000000-0000-0000-0000-000000000000',)
+INFO     sqlalchemy.engine.Engine:base.py:1846 SELECT pg_catalog.set_config('app.current_user_id', $1, true)
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00026s] ('00000000-0000-0000-0000-000000000000',)
+INFO     sqlalchemy.engine.Engine:base.py:1846 SELECT pg_catalog.set_config('app.current_role', $1, true)
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00020s] ('unknown',)
+INFO     sqlalchemy.engine.Engine:base.py:1846 SET LOCAL statement_timeout = '5000ms'
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00016s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 SET LOCAL lock_timeout = '500ms'
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00015s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 SET LOCAL deadlock_timeout = '200ms'
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00015s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 SET LOCAL idle_in_transaction_session_timeout = '15000ms'
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00035s] ()
+INFO     sqlalchemy.engine.Engine:base.py:2716 COMMIT
+INFO     sqlalchemy.engine.Engine:base.py:2710 BEGIN (implicit)
+INFO     sqlalchemy.engine.Engine:base.py:1846 SELECT organizations.id, organizations.name, organizations.slug, organizations.tier, organizations.business_type, organizations.is_active, organizations.max_branches, organizations.default_currency_code, organizations.tagline, organizations.description, organizations.year_established, organizations.website_url, organizations.website_verified, organizations.social_links, organizations.phone, organizations.address_line1, organizations.address_line2, organizations.city, organizations.state, organizations.document_url, organizations.verification_status, organizations.pincode, organizations.country, organizations.profile_completed, organizations.logo_key, organizations.logo_thumb_key, organizations.logo_medium_key, organizations.logo_full_key, organizations.logo_meta, organizations.logo_status, organizations.logo_updated_at, organizations.logo_updated_by, organizations.cover_key, organizations.cover_mobile_key, organizations.cover_tablet_key, organizations.cover_desktop_key, organizations.cover_meta, organizations.cover_status, organizations.cover_updated_at, organizations.cover_updated_by, organizations.created_at, organizations.updated_at 
+FROM organizations 
+WHERE organizations.id = $1::UUID
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00015s] (UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'),)
+INFO     sqlalchemy.engine.Engine:base.py:1846 SELECT count(*) AS count_1 
+FROM membership_plans 
+WHERE membership_plans.org_id = $1::UUID
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00016s] (UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'),)
+INFO     sqlalchemy.engine.Engine:base.py:1846 INSERT INTO membership_plans (id, org_id, branch_id, plan_code, name, description, price, currency, duration_value, duration_unit, max_members, valid_from, valid_until, status, created_by, archived_at) VALUES ($1::UUID, $2::UUID, $3::UUID, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR, $7::NUMERIC(12, 2), $8::VARCHAR, $9::INTEGER, $10::duration_unit, $11::INTEGER, $12::TIMESTAMP WITH TIME ZONE, $13::TIMESTAMP WITH TIME ZONE, $14::plan_status, $15::UUID, $16::TIMESTAMP WITH TIME ZONE) RETURNING membership_plans.created_at, membership_plans.updated_at
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00019s] (UUID('d20fce68-af3e-43e6-b1e9-d58d2c3fb999'), UUID('ddc3aac6-c835-4191-a83c-5f9790b06afa'), None, 'TESTOR-001', 'Org Wide Plan', None, 1000.0, 'INR', 1, 'months', 1, None, None, 'active', UUID('c7419309-5f3c-4b8c-8909-5d57a1cff864'), None)
+INFO     sqlalchemy.engine.Engine:base.py:2713 ROLLBACK
+--------------------------- Captured stdout teardown ---------------------------
+2026-06-07 01:14:04,157 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-06-07 01:14:04,157 INFO sqlalchemy.engine.Engine RESET ROLE
+2026-06-07 01:14:04,157 INFO sqlalchemy.engine.Engine [cached since 0.8022s ago] ()
+2026-06-07 01:14:04,158 INFO sqlalchemy.engine.Engine SET session_replication_role = 'replica'
+2026-06-07 01:14:04,158 INFO sqlalchemy.engine.Engine [generated in 0.00008s] ()
+2026-06-07 01:14:04,158 INFO sqlalchemy.engine.Engine DELETE FROM membership_plans;
+2026-06-07 01:14:04,158 INFO sqlalchemy.engine.Engine [generated in 0.00008s] ()
+2026-06-07 01:14:04,159 INFO sqlalchemy.engine.Engine DELETE FROM org_branch_state;
+2026-06-07 01:14:04,159 INFO sqlalchemy.engine.Engine [generated in 0.00008s] ()
+2026-06-07 01:14:04,160 INFO sqlalchemy.engine.Engine DELETE FROM org_branches;
+2026-06-07 01:14:04,160 INFO sqlalchemy.engine.Engine [generated in 0.00008s] ()
+2026-06-07 01:14:04,161 INFO sqlalchemy.engine.Engine DELETE FROM owners;
+2026-06-07 01:14:04,161 INFO sqlalchemy.engine.Engine [generated in 0.00008s] ()
+2026-06-07 01:14:04,161 INFO sqlalchemy.engine.Engine DELETE FROM organizations;
+2026-06-07 01:14:04,161 INFO sqlalchemy.engine.Engine [generated in 0.00009s] ()
+2026-06-07 01:14:04,163 INFO sqlalchemy.engine.Engine SET session_replication_role = 'origin'
+2026-06-07 01:14:04,163 INFO sqlalchemy.engine.Engine [generated in 0.00016s] ()
+2026-06-07 01:14:04,164 INFO sqlalchemy.engine.Engine COMMIT
+---------------------------- Captured log teardown -----------------------------
+INFO     sqlalchemy.engine.Engine:base.py:2710 BEGIN (implicit)
+INFO     sqlalchemy.engine.Engine:base.py:1846 RESET ROLE
+INFO     sqlalchemy.engine.Engine:base.py:1846 [cached since 0.8022s ago] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 SET session_replication_role = 'replica'
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00008s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 DELETE FROM membership_plans;
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00008s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 DELETE FROM org_branch_state;
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00008s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 DELETE FROM org_branches;
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00008s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 DELETE FROM owners;
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00008s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 DELETE FROM organizations;
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00009s] ()
+INFO     sqlalchemy.engine.Engine:base.py:1846 SET session_replication_role = 'origin'
+INFO     sqlalchemy.engine.Engine:base.py:1846 [generated in 0.00016s] ()
+INFO     sqlalchemy.engine.Engine:base.py:2716 COMMIT
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/passlib/utils/__init__.py:854
+  /home/jeevashri/gymflow-backend/.venv/lib/python3.12/site-packages/passlib/utils/__init__.py:854: DeprecationWarning: 'crypt' is deprecated and slated for removal in Python 3.13
+    from crypt import crypt as _crypt
+
+app/schemas/membership_plan.py:36
+  /home/jeevashri/gymflow-backend/app/schemas/membership_plan.py:36: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+    class MembershipPlanResponse(BaseModel):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_membership_plans.py::test_membership_plans_api - sqlalchemy...
+======================== 1 failed, 2 warnings in 2.03s =========================

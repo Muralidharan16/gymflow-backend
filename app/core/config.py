@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     # ── Database ───────────────────────────────────
     DATABASE_URL: str
+    TEST_DATABASE_URL: str = ""
     REDIS_URL: str
     CELERY_BROKER_URL: str
     CELERY_RESULT_BACKEND: str
@@ -44,9 +45,29 @@ class Settings(BaseSettings):
     WA_TEMPLATE_REMINDER: str = "member_renewal_reminder"
     WA_TEMPLATE_DIGEST: str = "daily_digest_notification"
 
+    # ── Google Maps ────────────────────────────────
+    GOOGLE_MAPS_SERVER_API_KEY: str = ""
+
     # ── App ────────────────────────────────────────
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "info"
+
+    # ── Platform Billing Feature Flags ─────────────
+    # All disabled during Phase 0; enable progressively per phase.
+    PLATFORM_BILLING_READ_API: bool = False
+    PLATFORM_BILLING_SHADOW_RESOLVER: bool = False
+    PLATFORM_BILLING_ENFORCEMENT: bool = False
+    PLATFORM_BILLING_FRONTEND_SHELL: bool = False
+    PLATFORM_BILLING_CHECKOUT: bool = False
+    PLATFORM_BILLING_FAKE_CHECKOUT_ENABLED: bool = False
+    PLATFORM_BILLING_FAKE_CHECKOUT_SIMULATION_ENABLED: bool = False
+    PLATFORM_BILLING_FAKE_CHECKOUT_RECONCILIATION_ENABLED: bool = False
+    PLATFORM_BILLING_PROVIDER_MODE: str = "disabled"
+    PLATFORM_BILLING_WEBHOOK_PAYLOAD_STORE_DIR: str = "/tmp/gymflow-platform-webhook-payloads"
+    PLATFORM_BILLING_FAKE_PROVIDER_EVIDENCE_DIR: str = "/tmp/gymflow-platform-fake-provider-evidence"
+    PLATFORM_BILLING_WEBHOOK_PROCESSING: bool = False
+    PLATFORM_BILLING_DUNNING_TRANSITIONS: bool = False
+    PLATFORM_BILLING_NOTIFICATIONS: bool = False
 
     # ── Storage (S3) ───────────────────────────────
     AWS_ACCESS_KEY_ID: str = Field(..., alias="AWS_ACCESS_KEY_ID")

@@ -6,3 +6,10 @@ from app.schemas.subscription import PlanCreate, PlanUpdate, PlanResponse, Subsc
 from app.schemas.payment import PaymentCreate, PaymentResponse, InvoiceResponse
 from app.schemas.attendance import AttendanceCreate, AttendanceResponse, AccessCheckResponse
 from app.schemas.reports import DashboardResponse, CollectionReport, ExpiringMembersResponse
+from app.schemas.branch_lifecycle import (  # noqa: F401
+    BranchTransitionRequest,
+    BranchStatusStateResponse,
+    BranchStatusHistoryResponse,
+    BranchWatchdogAlertResponse
+)
+

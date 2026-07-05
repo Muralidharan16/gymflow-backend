@@ -1,0 +1,71 @@
+# =============================================================================
+# DETERMINISTIC PURITY RULES — Constitutional Enforcement Spec v1
+# =============================================================================
+# Governs code purity within canonical geo data paths.
+# Modules listed in nondeterminism_boundaries.yaml are SKIPPED entirely.
+#
+# Grounded in codebase audit of:
+#   - app/services/geo_service.py (75 lines)
+#   - app/repositories/geo_repository.py (35 lines)
+#   - app/models/geo.py (111 lines)
+#   - app/core/topology.py (108 lines)
+# =============================================================================
+
+version: "2.0"
+
+canonical_paths:
+  - "app/services/geo_service.py"
+  - "app/repositories/geo_repository.py"
+  - "app/models/geo.py"
+  - "app/core/topology.py"
+
+prohibited_patterns:
+  randomization:
+    imports: ["random", "secrets"]
+    calls: ["randint", "choice", "shuffle", "uniform"]
+
+  wall_clock:
+    calls: ["datetime.now", "datetime.utcnow", "time.time"]
+
+  mutable_globals:
+    constructs: ["global_variable_assignment"]
+
+  locale_sensitive:
+    # str.lower() is locale-dependent — use casefold() for normalized_name
+    calls: ["locale.setlocale", "str.lower"]
+
+  hidden_retries:
+    # All retry logic must go through app/core/db_retry.py
+    calls: ["tenacity.retry"]
+
+# Per-file exemptions for legitimate nondeterministic usage.
+# Each exemption references a decision_archive/ entry for traceability.
+exemptions:
+  "app/services/geo_service.py":
+    - pattern: "float"
+      reason: |
+        Pydantic serialization boundary — Numeric(9,6) → float for JSON.
+        Occurs at geo_service.py L55-56: float(p.latitude), float(p.longitude).
+        This is a type boundary, not a computation — precision is preserved
+        because Numeric(9,6) fits within float64 without loss.
+      approved_by: "decision_archive/decisions/0001_initial_geo_invariants.md"
+
+  "app/core/topology.py":
+    - pattern: "asyncio"
+      reason: |
+        Module IS an async orchestrator (TopologyRouter + TenantMigrationOrchestrator).
+        Requires direct asyncio for distributed lock coordination and Redis I/O.
+        See topology.py L17: import asyncio.
+      approved_by: "decision_archive/decisions/0001_initial_geo_invariants.md"
+    - pattern: "asyncio.sleep"
+      reason: |
+        Intentional migration delay in TenantMigrationOrchestrator.
+        See topology.py L95: await asyncio.sleep(1.5).
+        Simulates streaming data replication during tenant region migration.
+      approved_by: "decision_archive/decisions/0001_initial_geo_invariants.md"
+
+# What was removed from v1 and why:
+# - asyncio.gather blanket ban → moved to nondeterminism_boundaries.yaml
+# - float type blanket ban → moved to per-file exemptions (above)
+# - "time" import ban → too broad (time.monotonic is deterministic)
+# - "unordered iteration" → not detectable via AST (runtime type concern)

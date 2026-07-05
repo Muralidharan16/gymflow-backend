@@ -1,0 +1,100 @@
+migrated_routes:
+  - method: GET
+    normalized_route_path: /gyms
+    current_legacy_guard: get_current_active_staff
+    proposed_capability: branches.view
+    operation_class: safe_read
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: none
+    phase_3_migration_status: migrated_shadow_safe
+
+  - method: POST
+    normalized_route_path: /gyms
+    current_legacy_guard: require_org_admin
+    proposed_capability: branches.create
+    operation_class: capacity_increase
+    required_entitlement: limits.branches.active
+    usage_metric: limits.branches.active
+    capacity_effect: increase
+    phase_3_migration_status: migrated_shadow_safe
+
+  - method: PUT
+    normalized_route_path: /gyms/{gym_id}
+    current_legacy_guard: require_org_admin
+    proposed_capability: branches.update
+    operation_class: ordinary_write
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: none
+    phase_3_migration_status: migrated_shadow_safe
+
+  - method: DELETE
+    normalized_route_path: /gyms/{gym_id}
+    current_legacy_guard: require_org_admin
+    proposed_capability: branches.change_status
+    operation_class: capacity_decrease
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: decrease
+    phase_3_migration_status: migrated_shadow_safe
+
+  - method: GET
+    normalized_route_path: /api/v1/platform-billing/summary
+    current_legacy_guard: get_current_active_staff
+    proposed_capability: platform_billing.view
+    operation_class: safe_read
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: none
+    phase_3_migration_status: read_api_disabled_by_default
+
+  - method: GET
+    normalized_route_path: /api/v1/platform-billing/checkout-options
+    current_legacy_guard: get_current_active_staff
+    proposed_capability: platform_billing.view
+    operation_class: safe_read
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: none
+    phase_3_migration_status: frontend_prerequisite_read_api
+
+  - method: POST
+    normalized_route_path: /api/v1/platform-billing/checkout-sessions
+    current_legacy_guard: require_bearer_token
+    proposed_capability: platform_billing.change_plan
+    operation_class: financial
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: none
+    phase_3_migration_status: fake_checkout_disabled_by_default
+
+  - method: GET
+    normalized_route_path: /api/v1/platform-billing/checkout-operations/{operation_id}
+    current_legacy_guard: require_bearer_token
+    proposed_capability: platform_billing.view
+    operation_class: safe_read
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: none
+    phase_3_migration_status: fake_checkout_disabled_by_default
+
+  - method: POST
+    normalized_route_path: /api/v1/platform-billing/fake-checkout-simulations
+    current_legacy_guard: require_bearer_token
+    proposed_capability: platform_billing.change_plan
+    operation_class: financial
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: none
+    phase_3_migration_status: fake_checkout_simulation_disabled_by_default
+
+  - method: GET
+    normalized_route_path: /api/v1/platform-billing/fake-checkout-simulations/{simulation_operation_id}
+    current_legacy_guard: require_bearer_token
+    proposed_capability: platform_billing.view
+    operation_class: safe_read
+    required_entitlement: null
+    usage_metric: null
+    capacity_effect: none
+    phase_3_migration_status: fake_checkout_simulation_disabled_by_default

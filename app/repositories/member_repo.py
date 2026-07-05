@@ -2,11 +2,15 @@ from datetime import datetime, date
 from typing import List, Optional, Tuple
 from uuid import UUID
 
-from sqlalchemy import select, func, or_, and_, update as sql_update
+import uuid
+
+from sqlalchemy import select, func, or_, and_, update as sql_update, text, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.member import Member, MemberMeasurement, MemberStatus
+from app.models.member_subscription_v2 import MemberSubscriptionV2, ModernSubscriptionStatus
+from app.models.org_branch import OrgBranch
 from app.models.subscription import MemberSubscription, SubscriptionStatus
 from app.repositories.base import BaseRepository
 
@@ -23,6 +27,16 @@ class MemberRepository(BaseRepository[Member]):
         query = select(Member).where(
             Member.id == member_id,
             Member.gym_id == gym_id,
+            Member.is_active == True
+        )
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+
+    async def get_by_id_org(self, member_id: UUID, org_id: UUID) -> Optional[Member]:
+        """Get member by ID scoped to org."""
+        query = select(Member).where(
+            Member.id == member_id,
+            Member.org_id == org_id,
             Member.is_active == True
         )
         result = await self.session.execute(query)
@@ -59,11 +73,35 @@ class MemberRepository(BaseRepository[Member]):
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
+    async def get_by_phone_org(self, phone: str, org_id: UUID) -> Optional[Member]:
+        """Get member by normalized phone number and org."""
+        query = select(Member).where(
+            Member.phone == phone,
+            Member.org_id == org_id,
+            Member.is_active == True
+        )
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+
     async def create(self, member: Member) -> Member:
         """Create a new member."""
         self.session.add(member)
         await self.session.flush()
         return member
+
+    async def next_member_number(self, org_id: UUID) -> int:
+        """Atomically allocate the next organization-scoped member number."""
+        query = text("""
+            INSERT INTO organization_counters (id, org_id, counter_key, current_value)
+            VALUES (:id, :org_id, 'member', 100)
+            ON CONFLICT (org_id, counter_key)
+            DO UPDATE SET
+                current_value = organization_counters.current_value + 1,
+                updated_at = now()
+            RETURNING current_value;
+        """)
+        result = await self.session.execute(query, {"id": uuid.uuid4(), "org_id": org_id})
+        return result.scalar_one()
 
     async def update(self, member: Member) -> Member:
         """Update an existing member."""
@@ -85,6 +123,19 @@ class MemberRepository(BaseRepository[Member]):
         query = sql_update(Member).where(
             Member.id == member_id,
             Member.gym_id == gym_id,
+            Member.is_active == True
+        ).values(is_active=False)
+        result = await self.session.execute(query)
+        await self.session.flush()
+        return result.rowcount > 0
+
+    async def soft_delete_org(self, member_id: UUID, org_id: UUID) -> bool:
+        """
+        Soft delete a member (set is_active=False) scoped to org.
+        """
+        query = sql_update(Member).where(
+            Member.id == member_id,
+            Member.org_id == org_id,
             Member.is_active == True
         ).values(is_active=False)
         result = await self.session.execute(query)
@@ -143,6 +194,96 @@ class MemberRepository(BaseRepository[Member]):
         query = query.order_by(Member.name).offset(offset).limit(size)
         result = await self.session.execute(query)
         members = result.scalars().all()
+        
+        return members, total
+
+    async def search_org(
+        self,
+        org_id: UUID,
+        home_branch_id: Optional[UUID] = None,
+        status: Optional[MemberStatus] = None,
+        search_term: Optional[str] = None,
+        is_active: bool = True,
+        has_active_subscription: Optional[bool] = None,
+        page: int = 1,
+        size: int = 10
+    ) -> Tuple[List[Member], int]:
+        """Search members with pagination scoped to org."""
+        offset = (page - 1) * size
+
+        active_subscription_exists = exists(
+            select(1).where(
+                MemberSubscriptionV2.org_id == org_id,
+                MemberSubscriptionV2.primary_member_id == Member.id,
+                MemberSubscriptionV2.status == ModernSubscriptionStatus.active,
+            )
+        )
+
+        filters = [
+            Member.org_id == org_id,
+            Member.is_active == is_active
+        ]
+        
+        if home_branch_id:
+            filters.append(Member.home_branch_id == home_branch_id)
+            
+        if status:
+            filters.append(Member.status == status)
+
+        if has_active_subscription is not None:
+            filters.append(active_subscription_exists if has_active_subscription else ~active_subscription_exists)
+        
+        if search_term:
+            normalized = search_term.strip()
+            search_pattern = f"%{normalized.lower()}%"
+            search_filters = [
+                func.lower(Member.name).like(search_pattern),
+                Member.phone.contains(normalized),
+            ]
+            if normalized.isdigit():
+                search_filters.append(Member.member_number == int(normalized))
+            filters.append(
+                or_(
+                    *search_filters
+                )
+            )
+        
+        count_query = select(func.count()).select_from(Member).where(*filters)
+        total_result = await self.session.execute(count_query)
+        total = total_result.scalar() or 0
+
+        active_subscription_subquery = (
+            select(
+                MemberSubscriptionV2.primary_member_id.label("member_id"),
+                MemberSubscriptionV2.id.label("active_subscription_id"),
+            )
+            .where(
+                MemberSubscriptionV2.org_id == org_id,
+                MemberSubscriptionV2.status == ModernSubscriptionStatus.active,
+            )
+            .subquery()
+        )
+
+        query = (
+            select(
+                Member,
+                OrgBranch.branch_name.label("home_branch_name"),
+                active_subscription_subquery.c.active_subscription_id,
+            )
+            .outerjoin(OrgBranch, OrgBranch.id == Member.home_branch_id)
+            .outerjoin(active_subscription_subquery, active_subscription_subquery.c.member_id == Member.id)
+            .where(*filters)
+            .order_by(Member.member_number, Member.name)
+            .offset(offset)
+            .limit(size)
+        )
+        result = await self.session.execute(query)
+        members: list[Member] = []
+        for member, home_branch_name, active_subscription_id in result.all():
+            member.home_branch_name = home_branch_name
+            member.active_subscription_id = active_subscription_id
+            member.has_active_subscription = active_subscription_id is not None
+            members.append(member)
         
         return members, total
 

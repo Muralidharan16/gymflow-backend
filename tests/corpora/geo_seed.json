@@ -1,0 +1,32 @@
+{
+  "countries": [
+    { "id": 1, "iso2": "BR", "iso3": "BRA", "name": "Brazil", "normalized_name": "brazil", "status": "active", "timezone": "America/Sao_Paulo" },
+    { "id": 2, "iso2": "DE", "iso3": "DEU", "name": "Germany", "normalized_name": "germany", "status": "active", "timezone": "Europe/Berlin" },
+    { "id": 3, "iso2": "JP", "iso3": "JPN", "name": "Japan", "normalized_name": "japan", "status": "active", "timezone": "Asia/Tokyo" },
+    { "id": 4, "iso2": "XX", "iso3": "XXX", "name": "Old Country", "normalized_name": "old country", "status": "deprecated", "timezone": null },
+    { "id": 5, "iso2": "US", "iso3": "USA", "name": "United States", "normalized_name": "united states", "status": "active", "timezone": "America/New_York" }
+  ],
+  "subdivisions": [
+    { "id": 1, "country_id": 1, "parent_id": null, "name": "São Paulo State", "normalized_name": "são paulo state", "type": "state", "status": "active", "timezone": null },
+    { "id": 2, "country_id": 2, "parent_id": null, "name": "Bavaria", "normalized_name": "bavaria", "type": "state", "status": "active", "timezone": "Europe/Berlin" },
+    { "id": 3, "country_id": 3, "parent_id": null, "name": "Tokyo Prefecture", "normalized_name": "tokyo prefecture", "type": "prefecture", "status": "active", "timezone": null },
+    { "id": 4, "country_id": 5, "parent_id": null, "name": "New York", "normalized_name": "new york", "type": "state", "status": "active", "timezone": "America/New_York" },
+    { "id": 5, "country_id": 5, "parent_id": 4, "name": "New York County", "normalized_name": "new york county", "type": "county", "status": "active", "timezone": null }
+  ],
+  "cities": [
+    { "id": 1, "country_id": 1, "subdivision_id": 1, "name": "São Paulo", "normalized_name": "são paulo", "status": "active", "latitude": -23.550520, "longitude": -46.633308, "timezone": null },
+    { "id": 2, "country_id": 2, "subdivision_id": 2, "name": "München", "normalized_name": "münchen", "status": "active", "latitude": 48.135124, "longitude": 11.581981, "timezone": "Europe/Berlin" },
+    { "id": 3, "country_id": 3, "subdivision_id": 3, "name": "東京", "normalized_name": "東京", "status": "active", "latitude": 35.689487, "longitude": 139.691711, "timezone": "Asia/Tokyo" },
+    { "id": 4, "country_id": 5, "subdivision_id": 4, "name": "New York", "normalized_name": "new york", "status": "active", "latitude": 40.712776, "longitude": -74.005974, "timezone": null },
+    { "id": 5, "country_id": 5, "subdivision_id": 5, "name": "Manhattan", "normalized_name": "manhattan", "status": "active", "latitude": 40.783060, "longitude": -73.971249, "timezone": "America/New_York" },
+    { "id": 6, "country_id": 2, "subdivision_id": 2, "name": "Old Munich", "normalized_name": "old munich", "status": "deprecated", "latitude": 48.135124, "longitude": 11.581981, "timezone": null }
+  ],
+  "postal_codes": [
+    { "id": 1, "country_id": 1, "subdivision_id": 1, "city_id": 1, "postal_code": "01000-000", "status": "active", "locality": "Centro", "latitude": -23.550000, "longitude": -46.633000, "timezone": null },
+    { "id": 2, "country_id": 2, "subdivision_id": 2, "city_id": 2, "postal_code": "80331", "status": "active", "locality": "Altstadt", "latitude": 48.137000, "longitude": 11.575000, "timezone": null },
+    { "id": 3, "country_id": 3, "subdivision_id": 3, "city_id": 3, "postal_code": "100-0000", "status": "active", "locality": "Chiyoda", "latitude": 35.689000, "longitude": 139.691000, "timezone": null },
+    { "id": 4, "country_id": 5, "subdivision_id": 4, "city_id": 4, "postal_code": "10001", "status": "active", "locality": "Chelsea", "latitude": 40.712000, "longitude": -74.005000, "timezone": null },
+    { "id": 5, "country_id": 5, "subdivision_id": 5, "city_id": 5, "postal_code": "10001", "status": "active", "locality": "Midtown", "latitude": 40.783000, "longitude": -73.971000, "timezone": null },
+    { "id": 6, "country_id": 5, "subdivision_id": 4, "city_id": 4, "postal_code": "10001-1234", "status": "active", "locality": "Penn Station", "latitude": 40.712000, "longitude": -74.005000, "timezone": null }
+  ]
+}

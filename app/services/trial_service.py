@@ -41,11 +41,13 @@ class TrialService:
         if not trial:
             return {"status": "none", "is_hard_locked": False, "is_soft_locked": False}
 
-        now_ist = datetime.now(IST)
+        now_utc = datetime.now(timezone.utc)
+        now_ist = now_utc.astimezone(IST)  # display-only — not used in canonical writes
         
         # Determine effective status based on dates (fallback if scheduler hasn't run)
-        is_hard_locked = trial.status == "hard_locked" or now_ist > trial.hard_lock_at.astimezone(IST)
-        is_soft_locked = trial.status == "soft_locked" or (not is_hard_locked and now_ist > trial.trial_end.astimezone(IST))
+        # Compare UTC against UTC-aware DB timestamps directly — no timezone conversion needed
+        is_hard_locked = trial.status == "hard_locked" or now_utc > trial.hard_lock_at
+        is_soft_locked = trial.status == "soft_locked" or (not is_hard_locked and now_utc > trial.trial_end)
         
         status_data = {
             "status": trial.status,

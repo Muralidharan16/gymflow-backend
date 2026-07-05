@@ -1,0 +1,2 @@
+<string>:7: RuntimeWarning: coroutine 'run' was never awaited
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback

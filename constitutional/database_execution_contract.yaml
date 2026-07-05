@@ -1,0 +1,55 @@
+# =============================================================================
+# DATABASE EXECUTION CONTRACT — Constitutional Enforcement Spec v1
+# =============================================================================
+# Constrains PostgreSQL execution environment to prevent
+# infrastructure-level nondeterminism from undermining replay guarantees.
+#
+# Grounded in existing infrastructure:
+#   - docker-compose.yml: postgres:16
+#   - Dockerfile: python:3.12-slim
+#   - alembic/versions/: 50 migrations
+# =============================================================================
+
+version: "1.0"
+
+postgresql:
+  minimum_version: "16"
+  maximum_version: "16.x"    # Major version pinned to match docker-compose.yml
+
+locale:
+  lc_collate: "C"            # Binary collation — no locale-dependent ordering
+  lc_ctype: "C.UTF-8"        # UTF-8 character classification, no locale variance
+
+timezone:
+  default: "UTC"
+  session_timezone: "UTC"    # SET timezone = 'UTC' in connection init
+
+planner_constraints:
+  # Disable parallel query for replay environments to ensure deterministic plans
+  max_parallel_workers_per_gather: 0
+  # JIT can affect numeric precision edge cases
+  jit: false
+
+extensions:
+  required:
+    - name: "btree_gist"
+      reason: "Exclusion constraints on branch_contacts (migration 0020)"
+    - name: "pg_trgm"
+      reason: "Trigram indexes for fuzzy text search"
+  forbidden:
+    - "Untrusted PL languages (plpythonu, plperlu)"
+    - "Foreign data wrappers in canonical schema"
+
+connection_init_sql: |
+  SET timezone = 'UTC';
+  SET extra_float_digits = 0;
+  SET lc_messages = 'C';
+
+# Verified during bootstrap_protocol Step 3
+verification_queries:
+  - query: "SHOW lc_collate"
+    expected: "C"
+  - query: "SHOW timezone"
+    expected: "UTC"
+  - query: "SHOW server_version"
+    expected_prefix: "16"

@@ -1,0 +1,83 @@
+# Doers Platform Billing — Access Matrix V1
+# ==========================================
+# Maps platform access modes to permitted capability groups.
+# Phase 0: definition only; no enforcement.
+
+manifest_version: "1.0"
+
+# Legend: A = allowed (subject to RBAC/entitlement)
+#         D = denied
+#         C = conditionally allowed (per-capability policy)
+
+matrix:
+  full:
+    all: A
+
+  limited_write:
+    auth_refresh: A
+    own_security: A
+    plan_billing_view: A
+    update_payment: A
+    download_invoice: A
+    contact_support: A
+    export_data: A
+    product_reads: A
+    normal_updates: C
+    attendance_record: C
+    capacity_creates: D
+    destructive: C
+    plan_change: A
+
+  read_only:
+    auth_refresh: A
+    own_security: A
+    plan_billing_view: A
+    update_payment: A
+    download_invoice: A
+    contact_support: A
+    export_data: A
+    product_reads: A
+    normal_updates: D
+    attendance_record: D
+    capacity_creates: D
+    destructive: D
+    plan_change: A
+
+  billing_only:
+    auth_refresh: A
+    own_security: A
+    plan_billing_view: A
+    update_payment: A
+    download_invoice: A
+    contact_support: A
+    export_data: C
+    product_reads: D
+    normal_updates: D
+    attendance_record: D
+    capacity_creates: D
+    destructive: D
+    plan_change: A
+
+  blocked:
+    auth_refresh: A
+    own_security: C
+    plan_billing_view: C
+    update_payment: C
+    download_invoice: C
+    contact_support: A
+    export_data: C
+    product_reads: D
+    normal_updates: D
+    attendance_record: D
+    capacity_creates: D
+    destructive: D
+    plan_change: C
+
+allow_recovery_actions:
+  - VIEW_PLAN_BILLING
+  - UPDATE_PAYMENT_METHOD
+  - COMPLETE_PAYMENT_ACTION
+  - DOWNLOAD_INVOICES
+  - CONTACT_SUPPORT
+  - EXPORT_DATA
+  - UNDO_CANCELLATION

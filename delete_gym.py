@@ -11,6 +11,10 @@ from app.models.models import Gym, GymOwner
 
 load_dotenv()
 
+def require_destructive_reset_enabled():
+    if os.getenv("ALLOW_DESTRUCTIVE_DB_RESET") != "true":
+        raise SystemExit("Refusing destructive gym deletion. Set ALLOW_DESTRUCTIVE_DB_RESET=true to continue.")
+
 async def delete_gym_data(email: str = None, gymu_id: str = None):
     if not email and not gymu_id:
         print("Error: Please provide either an email or a gymu_id.")
@@ -61,6 +65,7 @@ async def delete_gym_data(email: str = None, gymu_id: str = None):
             print("Gym and all related owner, member, and token data successfully deleted.")
 
 if __name__ == "__main__":
+    require_destructive_reset_enabled()
     parser = argparse.ArgumentParser(description="Delete a gym and all its related owner data.")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--email", type=str, help="The email of the gym owner")

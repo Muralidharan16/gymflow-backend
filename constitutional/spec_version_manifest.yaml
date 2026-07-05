@@ -1,0 +1,34 @@
+# =============================================================================
+# SPEC VERSION MANIFEST — Constitutional Enforcement Spec v1
+# =============================================================================
+# Tracks versions of constitutional specifications themselves.
+# Enables historical reproducibility: "what rules existed at logical time T?"
+# =============================================================================
+
+version_policy:
+  current: "v1"
+  retention: "all"   # Never delete historical spec versions
+
+  versioned_specs:
+    - "deterministic_purity_rules.yaml"
+    - "governance_budgets.yaml"
+    - "nondeterminism_boundaries.yaml"
+    - "canonical_serialization.yaml"
+
+  versioning_trigger:
+    - "Any change to deterministic_purity_rules.yaml"
+    - "Any change to governance_budgets.yaml"
+    - "Any change to nondeterminism_boundaries.yaml"
+    - "Any change to canonical_serialization.yaml"
+
+  procedure:
+    1: "Copy current specs to spec_versions/vN/"
+    2: "Increment version in this manifest"
+    3: "Apply changes to root-level specs"
+    4: "Record amendment in decision_archive/"
+
+  replay_binding: |
+    Each replay corpus manifest references a spec version.
+    Replay validation uses the spec version from the manifest,
+    NOT the current root-level specs. This ensures historical
+    replay reproducibility.

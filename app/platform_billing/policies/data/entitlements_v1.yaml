@@ -1,0 +1,118 @@
+# Doers Platform Billing — Entitlement Definitions V1
+# ====================================================
+# Canonical feature entitlement keys and their metadata.
+# Phase 0: definition only; no enforcement.
+
+manifest_version: "1.0"
+
+entitlements:
+
+  # ── Quantitative limits ──────────────────────────────────
+  - key: limits.branches.active
+    value_type: integer
+    enforcement_mode: hard
+    unit: branches
+    description: Maximum number of active branches
+
+  - key: limits.members.active
+    value_type: integer
+    enforcement_mode: hard
+    unit: members
+    description: Maximum number of active members
+
+  - key: limits.staff.active
+    value_type: integer
+    enforcement_mode: hard
+    unit: staff
+    description: Maximum number of active staff accounts
+
+  - key: limits.membership_plans.active
+    value_type: integer
+    enforcement_mode: hard
+    unit: plans
+    description: Maximum number of active membership plans
+
+  - key: limits.storage.bytes
+    value_type: integer
+    enforcement_mode: hard
+    unit: bytes
+    description: Maximum storage for assets and documents
+
+  - key: limits.monthly_messages
+    value_type: integer
+    enforcement_mode: metered
+    unit: messages
+    description: Monthly WhatsApp/email message allowance
+
+  - key: limits.api_requests.monthly
+    value_type: integer
+    enforcement_mode: metered
+    unit: requests
+    description: Monthly API request allowance
+
+  - key: retention.audit_days
+    value_type: integer
+    enforcement_mode: informational
+    unit: days
+    description: Number of days audit records are retained
+
+  # ── Boolean features ─────────────────────────────────────
+  - key: features.multi_branch
+    value_type: boolean
+    enforcement_mode: hard
+    description: Multiple branch support
+
+  - key: features.attendance
+    value_type: boolean
+    enforcement_mode: hard
+    description: Attendance tracking
+
+  - key: features.member_subscriptions
+    value_type: boolean
+    enforcement_mode: hard
+    description: Member subscription management
+
+  - key: features.member_payments
+    value_type: boolean
+    enforcement_mode: hard
+    description: Member payment collection
+
+  - key: features.basic_reports
+    value_type: boolean
+    enforcement_mode: hard
+    description: Basic reporting
+
+  - key: features.advanced_reports
+    value_type: boolean
+    enforcement_mode: hard
+    description: Advanced analytics and reports
+
+  - key: features.custom_branding
+    value_type: boolean
+    enforcement_mode: hard
+    description: Custom branding and white-labeling
+
+  - key: features.data_export
+    value_type: boolean
+    enforcement_mode: hard
+    description: Data export capability
+
+  - key: features.api_access
+    value_type: boolean
+    enforcement_mode: hard
+    description: API access for integrations
+
+  - key: features.whatsapp
+    value_type: boolean
+    enforcement_mode: hard
+    description: WhatsApp communication channel
+
+  - key: features.priority_support
+    value_type: boolean
+    enforcement_mode: informational
+    description: Priority support queue access
+
+feature_defaults:
+  default_boolean: false
+  default_integer: 0
+  default_string: ""

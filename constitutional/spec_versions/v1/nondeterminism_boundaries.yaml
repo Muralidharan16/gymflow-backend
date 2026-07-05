@@ -1,0 +1,61 @@
+# =============================================================================
+# NONDETERMINISM BOUNDARY MANIFEST — Constitutional Enforcement Spec v1
+# =============================================================================
+# Modules explicitly authorized to contain nondeterministic primitives.
+# These serve as isolation layers — canonical paths may CALL these modules
+# but may NOT contain nondeterministic primitives directly.
+#
+# The purity scanner SKIPS these modules entirely.
+# Any new boundary addition requires a constitutional amendment in
+# decision_archive/decisions/.
+# =============================================================================
+
+version: "1.0"
+
+boundaries:
+  - module: "app/core/concurrency.py"
+    authorized_patterns: ["random", "time", "uuid", "asyncio"]
+    justification: |
+      Confirmed by codebase audit:
+        L17: import asyncio
+        L19: import random        — retry jitter via random.uniform (L344)
+        L20: import time          — monotonic scheduling via time.monotonic (L109, L112)
+        L21: import uuid          — lease tokens via uuid.uuid4 (L203)
+      This module isolates WFQ scheduling, sorted-set semaphores, EWMA adaptive
+      concurrency, and retry-depth-guarded backoff from canonical data paths.
+
+  - module: "app/core/crypto.py"
+    authorized_patterns: ["random", "os.urandom", "time", "asyncio"]
+    justification: |
+      Confirmed by codebase audit:
+        L26: import os            — os.urandom(12) for AES-GCM nonces (L396, L490)
+        L27: import time          — time.time() for cache TTL expiry (L180, L273, L296, L474)
+        L28: import random        — random.SystemRandom() for jittered TTL (L45, L473)
+        L29: import asyncio       — async lock coordination (L59, L87, L169)
+      Security-critical isolation boundary. Envelope encryption, circuit breakers,
+      and DEK cache require OS entropy and wall-clock time by design.
+
+  - module: "app/core/db_retry.py"
+    authorized_patterns: ["random", "asyncio"]
+    justification: |
+      Confirmed by codebase audit:
+        L15: import asyncio       — asyncio.sleep for retry delay (L278)
+        L17: import random        — random.random() for backoff jitter (L164)
+      Canonical retry boundary. Also contains datetime.utcnow() (L87, L107) for
+      circuit breaker failure timestamps — accepted as infrastructure-level timing.
+
+  - module: "app/tasks/geocoding.py"
+    authorized_patterns: ["asyncio", "random"]
+    justification: |
+      Confirmed by codebase audit:
+        L3: import asyncio        — asyncio.run for async task execution (L212)
+        L4: import random         — random.randint for retry jitter (L121)
+        L6: from datetime import datetime — datetime.now() for retry scheduling (L41, L122)
+      Background task orchestration boundary. Not on canonical lookup path.
+
+enforcement_rule: |
+  The purity scanner SKIPS these modules entirely.
+  Any new boundary addition requires:
+    1. A constitutional amendment in decision_archive/decisions/
+    2. Dual review (2 approvers)
+    3. Complexity budget check (max_modules: 6, currently 4 used)
