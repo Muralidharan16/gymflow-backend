@@ -8,6 +8,7 @@ from alembic import context
 
 # Import all models so Alembic sees them
 from app.models import Base  # noqa: F401
+import app.finance_core.models  # noqa: F401
 import app.platform_billing.models  # noqa: F401
 from app.core.config import settings
 
@@ -78,6 +79,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_schemas=True,
     )
 
     with context.begin_transaction():
@@ -90,6 +92,7 @@ def do_run_migrations(connection) -> None:
         connection=connection, 
         target_metadata=target_metadata,
         compare_type=True,
+        include_schemas=True,
     )
 
     with context.begin_transaction():
