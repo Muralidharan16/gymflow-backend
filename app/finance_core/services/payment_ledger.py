@@ -20,7 +20,9 @@ from app.finance_core.domain.payment_ledger import (
     PaymentAllocationResult,
     PaymentEventResult,
     PaymentResult,
+    PaymentSettlementResult,
     PostLedgerEntryCommand,
+    ReconcilePaymentSettlementCommand,
     RecordPaymentCommand,
     RecordPaymentEventCommand,
     validate_ledger_lines,
@@ -30,11 +32,14 @@ from app.finance_core.repositories.payments import FinancePaymentRepository
 
 
 ACCOUNT_AR = "AR"
+ACCOUNT_BANK = "BANK"
 ACCOUNT_CLEARING = "PAYMENT_CLEARING"
+ACCOUNT_GATEWAY_FEES = "PG_FEES"
 ACCOUNT_REVENUE = "SAAS_REVENUE"
 ACCOUNT_CGST = "CGST_PAYABLE"
 ACCOUNT_SGST = "SGST_PAYABLE"
 ACCOUNT_IGST = "IGST_PAYABLE"
+SETTLEMENT_SOURCE_NAMESPACE = uuid.UUID("3ceded8b-66e0-4283-82d7-69ef11a67fb0")
 
 
 class FinancePaymentLedgerService:
@@ -147,6 +152,131 @@ class FinancePaymentLedgerService:
             command=command,
             idempotency_scope="finance.payment.apply",
             payment_event_type="finance.payment.applied",
+        )
+
+    async def reconcile_payment_settlement(self, command: ReconcilePaymentSettlementCommand) -> PaymentSettlementResult:
+        settlement_ref = command.settlement_ref.strip()
+        idempotency_key = command.idempotency_key.strip()
+        if not settlement_ref:
+            raise FinancePaymentStateError("Settlement reference is required")
+        if not idempotency_key:
+            raise FinancePaymentStateError("Settlement reconciliation requires an idempotency key")
+
+        settlement_amount = validate_money_amount(command.settlement_amount, "Settlement amount")
+        gateway_fee_amount = money(command.gateway_fee_amount)
+        if gateway_fee_amount < 0:
+            raise FinancePaymentStateError("Gateway fee cannot be negative")
+        if gateway_fee_amount > settlement_amount:
+            raise FinancePaymentStateError("Gateway fee cannot exceed settlement amount")
+
+        payment = await self._repo.get_payment(command.payment_id, for_update=True)
+        if payment is None:
+            raise FinancePaymentNotFoundError("Payment was not found")
+        if payment.status not in CAPTURED_PAYMENT_STATUSES:
+            raise FinancePaymentStateError("Only captured or settled payments can be reconciled")
+
+        source_id = _settlement_source_id(settlement_ref)
+        payload = _settlement_payload(
+            payment_id=payment.id,
+            settlement_ref=settlement_ref,
+            settlement_amount=settlement_amount,
+            gateway_fee_amount=gateway_fee_amount,
+        )
+        idem, created = await self._repo.reserve_idempotency_key(
+            organization_id=payment.organization_id,
+            scope="finance.payment.reconcile_settlement",
+            idempotency_key=idempotency_key,
+            request_hash=canonical_hash(payload),
+        )
+        if not created and idem.response_ref:
+            return PaymentSettlementResult(
+                payment_id=payment.id,
+                settlement_ref=settlement_ref,
+                ledger_entry_id=uuid.UUID(idem.response_ref),
+                settlement_amount=settlement_amount,
+                gateway_fee_amount=gateway_fee_amount,
+                replayed=True,
+            )
+        if not created:
+            raise FinancePaymentConflictError("Payment settlement reconciliation is already processing for this idempotency key")
+
+        existing = await self._repo.get_ledger_entry_by_source(
+            source_type="settlement",
+            source_id=source_id,
+            for_update=True,
+        )
+        if existing is not None:
+            raise FinancePaymentConflictError("Settlement reference already exists")
+
+        allocated_total = money(await self._repo.allocated_payment_total(payment.id))
+        if allocated_total <= 0:
+            raise FinancePaymentStateError("Only applied payments can be reconciled")
+        reconciled_total = money(await self._repo.reconciled_payment_total(payment.id))
+        unreconciled_amount = money(allocated_total - reconciled_total)
+        if settlement_amount > unreconciled_amount:
+            raise FinancePaymentStateError("Settlement amount cannot exceed unreconciled clearing amount")
+
+        net_bank_amount = money(settlement_amount - gateway_fee_amount)
+        lines: list[LedgerLineInput] = []
+        if net_bank_amount > 0:
+            lines.append(LedgerLineInput(account_code=ACCOUNT_BANK, debit_amount=net_bank_amount, memo="Settlement to bank"))
+        if gateway_fee_amount > 0:
+            lines.append(LedgerLineInput(account_code=ACCOUNT_GATEWAY_FEES, debit_amount=gateway_fee_amount, memo="Gateway fee"))
+        lines.append(LedgerLineInput(account_code=ACCOUNT_CLEARING, credit_amount=settlement_amount, memo="Payment clearing reconciled"))
+
+        ledger = await self.post_ledger_entry(
+            PostLedgerEntryCommand(
+                legal_entity_id=payment.legal_entity_id,
+                division_id=payment.division_id,
+                brand_id=payment.brand_id,
+                entry_type="settlement",
+                source_type="settlement",
+                source_id=source_id,
+                idempotency_key=f"{idempotency_key}:ledger",
+                lines=tuple(lines),
+            )
+        )
+        await self._emit_outbox(
+            aggregate_type="payment",
+            aggregate_id=payment.id,
+            event_type="finance.payment.reconciled",
+            idempotency_key=idempotency_key,
+            payload=payload | {"ledger_entry_id": str(ledger.ledger_entry_id)},
+            organization_id=payment.organization_id,
+            legal_entity_id=payment.legal_entity_id,
+            division_id=payment.division_id,
+            brand_id=payment.brand_id,
+        )
+        await self._emit_outbox(
+            aggregate_type="settlement",
+            aggregate_id=source_id,
+            event_type="finance.settlement.reconciled",
+            idempotency_key=idempotency_key,
+            payload=payload | {"ledger_entry_id": str(ledger.ledger_entry_id)},
+            organization_id=payment.organization_id,
+            legal_entity_id=payment.legal_entity_id,
+            division_id=payment.division_id,
+            brand_id=payment.brand_id,
+        )
+        await self._emit_outbox(
+            aggregate_type="ledger_entry",
+            aggregate_id=ledger.ledger_entry_id,
+            event_type="finance.ledger.entry.posted",
+            idempotency_key=f"{idempotency_key}:ledger",
+            payload={"ledger_entry_id": str(ledger.ledger_entry_id), "source_type": "settlement"},
+            organization_id=payment.organization_id,
+            legal_entity_id=payment.legal_entity_id,
+            division_id=payment.division_id,
+            brand_id=payment.brand_id,
+        )
+        await self._repo.complete_idempotency_key(idem, response_ref=str(ledger.ledger_entry_id))
+        await self._session.flush()
+        return PaymentSettlementResult(
+            payment_id=payment.id,
+            settlement_ref=settlement_ref,
+            ledger_entry_id=ledger.ledger_entry_id,
+            settlement_amount=settlement_amount,
+            gateway_fee_amount=gateway_fee_amount,
         )
 
     async def _allocate_payment_to_invoice(
@@ -436,4 +566,23 @@ def _ledger_payload(command: PostLedgerEntryCommand, lines: tuple[LedgerLineInpu
         "source_type": command.source_type,
         "source_id": str(command.source_id),
         "lines": [asdict(line) for line in lines],
+    }
+
+
+def _settlement_source_id(settlement_ref: str) -> uuid.UUID:
+    return uuid.uuid5(SETTLEMENT_SOURCE_NAMESPACE, settlement_ref)
+
+
+def _settlement_payload(
+    *,
+    payment_id: uuid.UUID,
+    settlement_ref: str,
+    settlement_amount: Decimal,
+    gateway_fee_amount: Decimal,
+) -> dict[str, str]:
+    return {
+        "payment_id": str(payment_id),
+        "settlement_ref": settlement_ref,
+        "settlement_amount": str(settlement_amount),
+        "gateway_fee_amount": str(gateway_fee_amount),
     }

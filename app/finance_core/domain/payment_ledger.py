@@ -72,6 +72,15 @@ class ApplyPaymentToInvoiceCommand:
 
 
 @dataclass(frozen=True)
+class ReconcilePaymentSettlementCommand:
+    payment_id: uuid.UUID
+    settlement_ref: str
+    settlement_amount: Decimal
+    gateway_fee_amount: Decimal = Decimal("0.00")
+    idempotency_key: str = ""
+
+
+@dataclass(frozen=True)
 class LedgerLineInput:
     account_code: str
     debit_amount: Decimal = Decimal("0.00")
@@ -120,6 +129,16 @@ class PaymentAllocationResult:
 class LedgerEntryResult:
     ledger_entry_id: uuid.UUID
     status: str
+    replayed: bool = False
+
+
+@dataclass(frozen=True)
+class PaymentSettlementResult:
+    payment_id: uuid.UUID
+    settlement_ref: str
+    ledger_entry_id: uuid.UUID
+    settlement_amount: Decimal
+    gateway_fee_amount: Decimal
     replayed: bool = False
 
 

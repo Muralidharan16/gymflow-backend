@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import Numeric, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -198,6 +198,21 @@ class FinancePaymentRepository:
         result = await self._session.execute(
             select(func.coalesce(func.sum(FinancePaymentAllocation.allocated_amount), 0)).where(
                 FinancePaymentAllocation.invoice_id == invoice_id
+            )
+        )
+        return Decimal(result.scalar_one())
+
+    async def reconciled_payment_total(self, payment_id: uuid.UUID) -> Decimal:
+        result = await self._session.execute(
+            select(
+                func.coalesce(
+                    func.sum(FinanceOutboxEvent.payload_json["settlement_amount"].astext.cast(Numeric(14, 2))),
+                    0,
+                )
+            ).where(
+                FinanceOutboxEvent.aggregate_type == "payment",
+                FinanceOutboxEvent.aggregate_id == payment_id,
+                FinanceOutboxEvent.event_type == "finance.payment.reconciled",
             )
         )
         return Decimal(result.scalar_one())
