@@ -447,6 +447,7 @@ def test_phase5d_has_no_real_provider_api_or_subscription_activation_behavior():
     combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in finance_files)
     assert "razorpay import" not in combined
     assert "razorpay.client" not in combined
-    assert "webhook" not in combined
+    assert "apirouter" not in combined
+    assert "@router" not in combined
     assert "activate_subscription" not in combined
     assert "platform_subscriptions" not in combined

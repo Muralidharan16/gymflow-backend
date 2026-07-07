@@ -176,6 +176,7 @@ def test_phase5e_has_no_live_provider_api_or_subscription_activation_behavior():
     assert "httpx" not in combined
     assert "aiohttp" not in combined
     assert "provider_secret" not in combined
-    assert "webhook" not in combined
+    assert "apirouter" not in combined
+    assert "@router" not in combined
     assert "activate_subscription" not in combined
     assert "platform_subscriptions" not in combined
