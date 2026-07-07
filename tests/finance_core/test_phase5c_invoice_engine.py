@@ -423,4 +423,4 @@ def test_phase5c_does_not_import_or_mention_razorpay_or_provider_behavior():
     ]
     combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in finance_files)
     assert "razorpay" not in combined
-    assert "checkout" not in combined
+    assert "activate_subscription" not in combined
