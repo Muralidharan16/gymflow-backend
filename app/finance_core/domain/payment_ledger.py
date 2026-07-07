@@ -64,6 +64,14 @@ class AllocatePaymentCommand:
 
 
 @dataclass(frozen=True)
+class ApplyPaymentToInvoiceCommand:
+    payment_id: uuid.UUID
+    invoice_id: uuid.UUID
+    amount: Decimal
+    idempotency_key: str
+
+
+@dataclass(frozen=True)
 class LedgerLineInput:
     account_code: str
     debit_amount: Decimal = Decimal("0.00")

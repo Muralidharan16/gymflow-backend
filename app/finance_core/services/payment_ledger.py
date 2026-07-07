@@ -11,6 +11,7 @@ from app.finance_core.domain.invoice_engine import FinanceInvoiceNotFoundError, 
 from app.finance_core.domain.payment_ledger import (
     CAPTURED_PAYMENT_STATUSES,
     AllocatePaymentCommand,
+    ApplyPaymentToInvoiceCommand,
     FinancePaymentConflictError,
     FinancePaymentNotFoundError,
     FinancePaymentStateError,
@@ -135,6 +136,26 @@ class FinancePaymentLedgerService:
         return PaymentEventResult(payment_event_id=event.id)
 
     async def allocate_payment_to_invoice(self, command: AllocatePaymentCommand) -> PaymentAllocationResult:
+        return await self._allocate_payment_to_invoice(
+            command=command,
+            idempotency_scope="finance.payment.allocate",
+            payment_event_type="finance.payment.allocated",
+        )
+
+    async def apply_payment_to_invoice(self, command: ApplyPaymentToInvoiceCommand) -> PaymentAllocationResult:
+        return await self._allocate_payment_to_invoice(
+            command=command,
+            idempotency_scope="finance.payment.apply",
+            payment_event_type="finance.payment.applied",
+        )
+
+    async def _allocate_payment_to_invoice(
+        self,
+        *,
+        command: AllocatePaymentCommand | ApplyPaymentToInvoiceCommand,
+        idempotency_scope: str,
+        payment_event_type: str,
+    ) -> PaymentAllocationResult:
         amount = validate_money_amount(command.amount, "Allocation amount")
         payment = await self._repo.get_payment(command.payment_id, for_update=True)
         if payment is None:
@@ -150,7 +171,7 @@ class FinancePaymentLedgerService:
         }
         idem, created = await self._repo.reserve_idempotency_key(
             organization_id=payment.organization_id,
-            scope="finance.payment.allocate",
+            scope=idempotency_scope,
             idempotency_key=command.idempotency_key,
             request_hash=canonical_hash(payload),
         )
@@ -196,7 +217,7 @@ class FinancePaymentLedgerService:
         await self._emit_outbox(
             aggregate_type="payment_allocation",
             aggregate_id=allocation.id,
-            event_type="finance.payment.allocated",
+            event_type=payment_event_type,
             idempotency_key=command.idempotency_key,
             payload={
                 "allocation_id": str(allocation.id),
