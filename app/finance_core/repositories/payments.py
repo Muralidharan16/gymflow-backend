@@ -15,6 +15,8 @@ from app.finance_core.domain.payment_ledger import (
 )
 from app.finance_core.models.foundation import (
     FinanceIdempotencyKey,
+    FinanceCreditNote,
+    FinanceCreditNoteLine,
     FinanceInvoice,
     FinanceInvoiceLine,
     FinanceLedgerAccount,
@@ -24,6 +26,7 @@ from app.finance_core.models.foundation import (
     FinancePayment,
     FinancePaymentAllocation,
     FinancePaymentEvent,
+    FinanceRefund,
 )
 
 
@@ -202,6 +205,24 @@ class FinancePaymentRepository:
         )
         return Decimal(result.scalar_one())
 
+    async def credited_invoice_total(self, invoice_id: uuid.UUID) -> Decimal:
+        result = await self._session.execute(
+            select(func.coalesce(func.sum(FinanceCreditNote.total_amount), 0)).where(
+                FinanceCreditNote.invoice_id == invoice_id,
+                FinanceCreditNote.status != "voided",
+            )
+        )
+        return Decimal(result.scalar_one())
+
+    async def refunded_payment_total(self, payment_id: uuid.UUID) -> Decimal:
+        result = await self._session.execute(
+            select(func.coalesce(func.sum(FinanceRefund.amount), 0)).where(
+                FinanceRefund.payment_id == payment_id,
+                FinanceRefund.status != "cancelled",
+            )
+        )
+        return Decimal(result.scalar_one())
+
     async def reconciled_payment_total(self, payment_id: uuid.UUID) -> Decimal:
         result = await self._session.execute(
             select(
@@ -259,6 +280,119 @@ class FinancePaymentRepository:
             statement = statement.with_for_update()
         result = await self._session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def get_credit_note(self, credit_note_id: uuid.UUID, *, for_update: bool = False) -> FinanceCreditNote | None:
+        statement = select(FinanceCreditNote).where(FinanceCreditNote.id == credit_note_id)
+        if for_update:
+            statement = statement.with_for_update()
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def get_credit_note_by_number(
+        self,
+        *,
+        legal_entity_id: uuid.UUID,
+        gst_registration_id: uuid.UUID,
+        financial_year: str,
+        credit_note_number: str,
+        for_update: bool = False,
+    ) -> FinanceCreditNote | None:
+        statement = select(FinanceCreditNote).where(
+            FinanceCreditNote.legal_entity_id == legal_entity_id,
+            FinanceCreditNote.gst_registration_id == gst_registration_id,
+            FinanceCreditNote.financial_year == financial_year,
+            FinanceCreditNote.credit_note_number == credit_note_number,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def create_credit_note(
+        self,
+        *,
+        invoice: FinanceInvoice,
+        financial_year: str,
+        credit_note_number: str,
+        amount: Decimal,
+        description: str,
+        invoice_line_id: uuid.UUID | None,
+    ) -> FinanceCreditNote:
+        credit_note = FinanceCreditNote(
+            organization_id=invoice.organization_id,
+            invoice_id=invoice.id,
+            legal_entity_id=invoice.legal_entity_id,
+            gst_registration_id=invoice.gst_registration_id,
+            division_id=invoice.division_id,
+            brand_id=invoice.brand_id,
+            financial_year=financial_year,
+            credit_note_number=credit_note_number,
+            status="issued",
+            total_amount=amount,
+            issued_at=datetime.now(timezone.utc),
+        )
+        self._session.add(credit_note)
+        await self._session.flush()
+        self._session.add(
+            FinanceCreditNoteLine(
+                credit_note_id=credit_note.id,
+                invoice_line_id=invoice_line_id,
+                description=description,
+                amount=amount,
+            )
+        )
+        await self._session.flush()
+        return credit_note
+
+    async def first_invoice_line_id(self, invoice_id: uuid.UUID) -> uuid.UUID | None:
+        result = await self._session.execute(
+            select(FinanceInvoiceLine.id).where(FinanceInvoiceLine.invoice_id == invoice_id).order_by(FinanceInvoiceLine.created_at)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_refund_by_reason_code(
+        self,
+        *,
+        payment_id: uuid.UUID,
+        reason_code: str,
+        for_update: bool = False,
+    ) -> FinanceRefund | None:
+        statement = select(FinanceRefund).where(
+            FinanceRefund.payment_id == payment_id,
+            FinanceRefund.reason_code == reason_code,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def get_refund(self, refund_id: uuid.UUID, *, for_update: bool = False) -> FinanceRefund | None:
+        statement = select(FinanceRefund).where(FinanceRefund.id == refund_id)
+        if for_update:
+            statement = statement.with_for_update()
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def create_refund(
+        self,
+        *,
+        payment: FinancePayment,
+        amount: Decimal,
+        refund_ref: str,
+    ) -> FinanceRefund:
+        refund = FinanceRefund(
+            organization_id=payment.organization_id,
+            payment_id=payment.id,
+            legal_entity_id=payment.legal_entity_id,
+            division_id=payment.division_id,
+            brand_id=payment.brand_id,
+            amount=amount,
+            status="requested",
+            reason_code=refund_ref,
+        )
+        self._session.add(refund)
+        await self._session.flush()
+        return refund
 
     async def create_allocation(
         self,

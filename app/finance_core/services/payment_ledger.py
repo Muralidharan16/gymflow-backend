@@ -12,6 +12,9 @@ from app.finance_core.domain.payment_ledger import (
     CAPTURED_PAYMENT_STATUSES,
     AllocatePaymentCommand,
     ApplyPaymentToInvoiceCommand,
+    CreateCreditNoteCommand,
+    CreateRefundIntentCommand,
+    CreditNoteResult,
     FinancePaymentConflictError,
     FinancePaymentNotFoundError,
     FinancePaymentStateError,
@@ -25,6 +28,7 @@ from app.finance_core.domain.payment_ledger import (
     ReconcilePaymentSettlementCommand,
     RecordPaymentCommand,
     RecordPaymentEventCommand,
+    RefundIntentResult,
     validate_ledger_lines,
     validate_money_amount,
 )
@@ -279,6 +283,213 @@ class FinancePaymentLedgerService:
             gateway_fee_amount=gateway_fee_amount,
         )
 
+    async def create_credit_note(self, command: CreateCreditNoteCommand) -> CreditNoteResult:
+        credit_note_ref = command.credit_note_ref.strip()
+        reason = command.reason.strip()
+        idempotency_key = command.idempotency_key.strip()
+        if not credit_note_ref:
+            raise FinancePaymentStateError("Credit note reference is required")
+        if not reason:
+            raise FinancePaymentStateError("Credit note reason is required")
+        if not idempotency_key:
+            raise FinancePaymentStateError("Credit note requires an idempotency key")
+        amount = validate_money_amount(command.amount, "Credit note amount")
+
+        invoice = await self._repo.get_invoice(command.invoice_id, for_update=True)
+        if invoice is None:
+            raise FinanceInvoiceNotFoundError("Invoice was not found")
+        if invoice.status not in {"issued", "partially_paid", "paid"}:
+            raise FinanceInvoiceStateError("Only issued invoices can receive a credit note")
+
+        payload = _credit_note_payload(
+            invoice_id=invoice.id,
+            credit_note_ref=credit_note_ref,
+            amount=amount,
+            reason=reason,
+        )
+        idem, created = await self._repo.reserve_idempotency_key(
+            organization_id=invoice.organization_id,
+            scope="finance.credit_note.create",
+            idempotency_key=idempotency_key,
+            request_hash=canonical_hash(payload),
+        )
+        if not created and idem.response_ref:
+            credit_note = await self._repo.get_credit_note(uuid.UUID(idem.response_ref), for_update=True)
+            if credit_note is None:
+                raise FinanceInvoiceNotFoundError("Idempotent credit note response could not be found")
+            ledger = await self._repo.get_ledger_entry_by_source(
+                source_type="credit_note",
+                source_id=credit_note.id,
+                for_update=True,
+            )
+            if ledger is None:
+                raise FinancePaymentNotFoundError("Credit note ledger entry was not found")
+            return CreditNoteResult(
+                credit_note_id=credit_note.id,
+                invoice_id=credit_note.invoice_id,
+                credit_note_ref=credit_note.credit_note_number or credit_note_ref,
+                amount=credit_note.total_amount,
+                ledger_entry_id=ledger.id,
+                replayed=True,
+            )
+        if not created:
+            raise FinancePaymentConflictError("Credit note creation is already processing for this idempotency key")
+
+        existing = await self._repo.get_credit_note_by_number(
+            legal_entity_id=invoice.legal_entity_id,
+            gst_registration_id=invoice.gst_registration_id,
+            financial_year=invoice.financial_year,
+            credit_note_number=credit_note_ref,
+            for_update=True,
+        )
+        if existing is not None:
+            raise FinancePaymentConflictError("Credit note reference already exists")
+
+        eligible_amount = money(await self._repo.allocated_invoice_total(invoice.id) - await self._repo.credited_invoice_total(invoice.id))
+        if amount > eligible_amount:
+            raise FinancePaymentStateError("Credit note amount cannot exceed eligible invoice amount")
+
+        invoice_line_id = await self._repo.first_invoice_line_id(invoice.id)
+        credit_note = await self._repo.create_credit_note(
+            invoice=invoice,
+            financial_year=invoice.financial_year,
+            credit_note_number=credit_note_ref,
+            amount=amount,
+            description=reason,
+            invoice_line_id=invoice_line_id,
+        )
+        ledger = await self.post_ledger_entry(
+            PostLedgerEntryCommand(
+                legal_entity_id=invoice.legal_entity_id,
+                division_id=invoice.division_id,
+                brand_id=invoice.brand_id,
+                entry_type="credit_note",
+                source_type="credit_note",
+                source_id=credit_note.id,
+                idempotency_key=f"{idempotency_key}:ledger",
+                lines=tuple(await self._credit_note_ledger_lines(invoice_id=invoice.id, amount=amount)),
+            )
+        )
+        await self._emit_outbox(
+            aggregate_type="credit_note",
+            aggregate_id=credit_note.id,
+            event_type="finance.credit_note.issued",
+            idempotency_key=idempotency_key,
+            payload=payload | {"credit_note_id": str(credit_note.id), "ledger_entry_id": str(ledger.ledger_entry_id)},
+            organization_id=invoice.organization_id,
+            legal_entity_id=invoice.legal_entity_id,
+            division_id=invoice.division_id,
+            brand_id=invoice.brand_id,
+        )
+        await self._emit_outbox(
+            aggregate_type="ledger_entry",
+            aggregate_id=ledger.ledger_entry_id,
+            event_type="finance.ledger.entry.posted",
+            idempotency_key=f"{idempotency_key}:ledger",
+            payload={"ledger_entry_id": str(ledger.ledger_entry_id), "source_type": "credit_note"},
+            organization_id=invoice.organization_id,
+            legal_entity_id=invoice.legal_entity_id,
+            division_id=invoice.division_id,
+            brand_id=invoice.brand_id,
+        )
+        await self._repo.complete_idempotency_key(idem, response_ref=str(credit_note.id))
+        await self._session.flush()
+        return CreditNoteResult(
+            credit_note_id=credit_note.id,
+            invoice_id=invoice.id,
+            credit_note_ref=credit_note_ref,
+            amount=amount,
+            ledger_entry_id=ledger.ledger_entry_id,
+        )
+
+    async def create_refund_intent(self, command: CreateRefundIntentCommand) -> RefundIntentResult:
+        refund_ref = command.refund_ref.strip()
+        reason = command.reason.strip()
+        idempotency_key = command.idempotency_key.strip()
+        if not refund_ref:
+            raise FinancePaymentStateError("Refund reference is required")
+        if not reason:
+            raise FinancePaymentStateError("Refund reason is required")
+        if not idempotency_key:
+            raise FinancePaymentStateError("Refund intent requires an idempotency key")
+        amount = validate_money_amount(command.amount, "Refund amount")
+
+        payment = await self._repo.get_payment(command.payment_id, for_update=True)
+        if payment is None:
+            raise FinancePaymentNotFoundError("Payment was not found")
+        if payment.status not in CAPTURED_PAYMENT_STATUSES:
+            raise FinancePaymentStateError("Only captured or settled payments can receive a refund intent")
+
+        credit_note = None
+        if command.credit_note_id is not None:
+            credit_note = await self._repo.get_credit_note(command.credit_note_id, for_update=True)
+            if credit_note is None:
+                raise FinanceInvoiceNotFoundError("Credit note was not found")
+
+        payload = _refund_intent_payload(
+            payment_id=payment.id,
+            credit_note_id=command.credit_note_id,
+            refund_ref=refund_ref,
+            amount=amount,
+            reason=reason,
+        )
+        idem, created = await self._repo.reserve_idempotency_key(
+            organization_id=payment.organization_id,
+            scope="finance.refund_intent.create",
+            idempotency_key=idempotency_key,
+            request_hash=canonical_hash(payload),
+        )
+        if not created and idem.response_ref:
+            refund = await self._repo.get_refund(uuid.UUID(idem.response_ref), for_update=True)
+            if refund is None:
+                raise FinancePaymentNotFoundError("Idempotent refund response could not be found")
+            return RefundIntentResult(
+                refund_id=refund.id,
+                payment_id=refund.payment_id,
+                refund_ref=refund.reason_code or refund_ref,
+                amount=refund.amount,
+                status=refund.status,
+                replayed=True,
+            )
+        if not created:
+            raise FinancePaymentConflictError("Refund intent creation is already processing for this idempotency key")
+
+        existing = await self._repo.get_refund_by_reason_code(
+            payment_id=payment.id,
+            reason_code=refund_ref,
+            for_update=True,
+        )
+        if existing is not None:
+            raise FinancePaymentConflictError("Refund reference already exists")
+
+        eligible_amount = money(await self._repo.allocated_payment_total(payment.id) - await self._repo.refunded_payment_total(payment.id))
+        if amount > eligible_amount:
+            raise FinancePaymentStateError("Refund amount cannot exceed eligible applied payment amount")
+        if credit_note is not None and amount > credit_note.total_amount:
+            raise FinancePaymentStateError("Refund amount cannot exceed credit note amount")
+
+        refund = await self._repo.create_refund(payment=payment, amount=amount, refund_ref=refund_ref)
+        await self._emit_outbox(
+            aggregate_type="refund",
+            aggregate_id=refund.id,
+            event_type="finance.refund.intent.created",
+            idempotency_key=idempotency_key,
+            payload=payload | {"refund_id": str(refund.id), "status": refund.status},
+            organization_id=payment.organization_id,
+            legal_entity_id=payment.legal_entity_id,
+            division_id=payment.division_id,
+            brand_id=payment.brand_id,
+        )
+        await self._repo.complete_idempotency_key(idem, response_ref=str(refund.id))
+        await self._session.flush()
+        return RefundIntentResult(
+            refund_id=refund.id,
+            payment_id=payment.id,
+            refund_ref=refund_ref,
+            amount=amount,
+            status=refund.status,
+        )
+
     async def _allocate_payment_to_invoice(
         self,
         *,
@@ -507,6 +718,26 @@ class FinancePaymentLedgerService:
             replayed=replayed,
         )
 
+    async def _credit_note_ledger_lines(self, *, invoice_id: uuid.UUID, amount: Decimal) -> list[LedgerLineInput]:
+        invoice = await self._repo.get_invoice(invoice_id, for_update=True)
+        if invoice is None:
+            raise FinanceInvoiceNotFoundError("Invoice was not found")
+        taxes = await self._repo.invoice_tax_component_totals(invoice.id)
+        ratio = Decimal("0.00") if invoice.grand_total_amount == 0 else amount / invoice.grand_total_amount
+        cgst = money(taxes["cgst"] * ratio)
+        sgst = money(taxes["sgst"] * ratio)
+        igst = money(taxes["igst"] * ratio)
+        revenue = money(amount - cgst - sgst - igst)
+        lines = [LedgerLineInput(account_code=ACCOUNT_REVENUE, debit_amount=revenue, memo="Credit note revenue reversal")]
+        if cgst > 0:
+            lines.append(LedgerLineInput(account_code=ACCOUNT_CGST, debit_amount=cgst, memo="Credit note CGST reversal"))
+        if sgst > 0:
+            lines.append(LedgerLineInput(account_code=ACCOUNT_SGST, debit_amount=sgst, memo="Credit note SGST reversal"))
+        if igst > 0:
+            lines.append(LedgerLineInput(account_code=ACCOUNT_IGST, debit_amount=igst, memo="Credit note IGST reversal"))
+        lines.append(LedgerLineInput(account_code=ACCOUNT_AR, credit_amount=amount, memo="Credit note receivable reduction"))
+        return lines
+
     def _validate_allocation_state(self, *, payment_status: str, invoice_status: str) -> None:
         if payment_status not in CAPTURED_PAYMENT_STATUSES:
             raise FinancePaymentStateError("Only captured or settled payments can be allocated")
@@ -585,4 +816,36 @@ def _settlement_payload(
         "settlement_ref": settlement_ref,
         "settlement_amount": str(settlement_amount),
         "gateway_fee_amount": str(gateway_fee_amount),
+    }
+
+
+def _credit_note_payload(
+    *,
+    invoice_id: uuid.UUID,
+    credit_note_ref: str,
+    amount: Decimal,
+    reason: str,
+) -> dict[str, str]:
+    return {
+        "invoice_id": str(invoice_id),
+        "credit_note_ref": credit_note_ref,
+        "amount": str(amount),
+        "reason": reason,
+    }
+
+
+def _refund_intent_payload(
+    *,
+    payment_id: uuid.UUID,
+    credit_note_id: uuid.UUID | None,
+    refund_ref: str,
+    amount: Decimal,
+    reason: str,
+) -> dict[str, str | None]:
+    return {
+        "payment_id": str(payment_id),
+        "credit_note_id": str(credit_note_id) if credit_note_id else None,
+        "refund_ref": refund_ref,
+        "amount": str(amount),
+        "reason": reason,
     }

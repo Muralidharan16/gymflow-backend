@@ -81,6 +81,25 @@ class ReconcilePaymentSettlementCommand:
 
 
 @dataclass(frozen=True)
+class CreateCreditNoteCommand:
+    invoice_id: uuid.UUID
+    credit_note_ref: str
+    amount: Decimal
+    reason: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True)
+class CreateRefundIntentCommand:
+    payment_id: uuid.UUID
+    refund_ref: str
+    amount: Decimal
+    reason: str
+    credit_note_id: uuid.UUID | None
+    idempotency_key: str
+
+
+@dataclass(frozen=True)
 class LedgerLineInput:
     account_code: str
     debit_amount: Decimal = Decimal("0.00")
@@ -139,6 +158,26 @@ class PaymentSettlementResult:
     ledger_entry_id: uuid.UUID
     settlement_amount: Decimal
     gateway_fee_amount: Decimal
+    replayed: bool = False
+
+
+@dataclass(frozen=True)
+class CreditNoteResult:
+    credit_note_id: uuid.UUID
+    invoice_id: uuid.UUID
+    credit_note_ref: str
+    amount: Decimal
+    ledger_entry_id: uuid.UUID
+    replayed: bool = False
+
+
+@dataclass(frozen=True)
+class RefundIntentResult:
+    refund_id: uuid.UUID
+    payment_id: uuid.UUID
+    refund_ref: str
+    amount: Decimal
+    status: str
     replayed: bool = False
 
 
