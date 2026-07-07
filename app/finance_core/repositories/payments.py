@@ -83,6 +83,12 @@ class FinancePaymentRepository:
         result = await self._session.execute(statement)
         return result.scalar_one_or_none()
 
+    async def update_payment_status(self, payment: FinancePayment, *, status: str, raw_status: str | None) -> None:
+        payment.status = status
+        payment.raw_status = raw_status
+        payment.updated_at = datetime.now(timezone.utc)
+        await self._session.flush()
+
     async def get_payment_by_provider_ref(
         self,
         *,

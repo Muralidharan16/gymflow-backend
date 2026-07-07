@@ -27,6 +27,10 @@ class FinanceWebhookNormalizationError(Exception):
     pass
 
 
+class FinancePaymentStateTransitionError(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class CreateCheckoutIntentCommand:
     organization_id: uuid.UUID | None
@@ -110,6 +114,10 @@ class NormalizedProviderEventResult:
     provider_event_id: str
     event_type: str
     raw_status: str
+    payment_id: uuid.UUID | None = None
+    payment_status: str | None = None
+    state_applied: bool = False
+    state_ignored: bool = False
     replayed: bool = False
 
 
@@ -151,3 +159,42 @@ class StaticSandboxSignatureVerifier:
     def verify(self, *, payload_hash: str, signature: str, config: ProviderSandboxConfig) -> bool:
         expected = hashlib.sha256(f"{payload_hash}:{config.signing_secret}".encode("utf-8")).hexdigest()
         return signature == expected
+
+
+ALLOWED_PAYMENT_STATE_TRANSITIONS = {
+    "created": {"pending", "authorized", "captured", "failed", "cancelled"},
+    "pending": {"authorized", "captured", "failed", "cancelled"},
+    "authorized": {"captured", "failed", "cancelled"},
+    "captured": {"settled", "partially_refunded", "refunded"},
+    "settled": {"partially_refunded", "refunded"},
+    "partially_refunded": {"refunded"},
+    "failed": set(),
+    "cancelled": set(),
+    "refunded": set(),
+}
+
+PAYMENT_STATE_ORDER = {
+    "created": 0,
+    "pending": 1,
+    "authorized": 2,
+    "captured": 3,
+    "settled": 4,
+    "partially_refunded": 5,
+    "refunded": 6,
+}
+
+
+def payment_state_transition_action(current_status: str, target_status: str) -> str:
+    if current_status == target_status:
+        return "noop"
+    if current_status in {"failed", "cancelled", "refunded"}:
+        raise FinancePaymentStateTransitionError(f"Invalid payment transition: {current_status} -> {target_status}")
+    if target_status in ALLOWED_PAYMENT_STATE_TRANSITIONS.get(current_status, set()):
+        return "apply"
+    if (
+        current_status in PAYMENT_STATE_ORDER
+        and target_status in PAYMENT_STATE_ORDER
+        and PAYMENT_STATE_ORDER[target_status] < PAYMENT_STATE_ORDER[current_status]
+    ):
+        return "ignore_stale"
+    raise FinancePaymentStateTransitionError(f"Invalid payment transition: {current_status} -> {target_status}")
