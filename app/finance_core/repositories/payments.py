@@ -108,6 +108,26 @@ class FinancePaymentRepository:
         result = await self._session.execute(statement)
         return result.scalar_one_or_none()
 
+    async def get_payment_by_provider_order_ref(
+        self,
+        *,
+        provider_code: str,
+        provider_order_ref: str,
+        for_update: bool = False,
+    ) -> FinancePayment | None:
+        statement = select(FinancePayment).where(
+            FinancePayment.provider_code == provider_code,
+            FinancePayment.provider_order_ref == provider_order_ref,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def set_provider_payment_ref(self, payment: FinancePayment, *, provider_payment_ref: str) -> None:
+        payment.provider_payment_ref = provider_payment_ref
+        await self._session.flush()
+
     async def create_payment(
         self,
         *,
