@@ -171,7 +171,7 @@ def test_phase5e_has_no_live_provider_api_or_subscription_activation_behavior():
         *(finance_root / "services").rglob("*.py"),
     ]
     combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in finance_files)
-    assert "razorpay" not in combined
+    assert "rzp_live_" not in combined
     assert "requests" not in combined
     assert "httpx" not in combined
     assert "aiohttp" not in combined

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.finance_core.domain.operational_guards import (
+    FinanceOperationalGuardError,
     FinanceKillSwitchStatus,
     FinanceOperationalGuardReport,
     FinanceOperationalPosture,
@@ -18,7 +19,8 @@ class FinanceOperationalGuardService:
     def require_safe_preflight(self) -> FinanceOperationalGuardReport:
         report = self.preflight()
         if not report.safe:
-            return report
+            codes = ", ".join(failure.code for failure in report.failures)
+            raise FinanceOperationalGuardError(f"Finance operational guard failed: {codes}")
         return report
 
     def kill_switch_status(self) -> FinanceKillSwitchStatus:

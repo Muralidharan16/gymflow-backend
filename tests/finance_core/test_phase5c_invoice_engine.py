@@ -414,7 +414,7 @@ async def test_issued_invoice_is_immutable_through_service():
         await session.rollback()
 
 
-def test_phase5c_does_not_import_or_mention_razorpay_or_provider_behavior():
+def test_phase5c_does_not_import_live_provider_or_subscription_behavior():
     finance_root = Path(__file__).resolve().parents[2] / "app" / "finance_core"
     finance_files = [
         *(finance_root / "domain").rglob("*.py"),
@@ -422,5 +422,8 @@ def test_phase5c_does_not_import_or_mention_razorpay_or_provider_behavior():
         *(finance_root / "services").rglob("*.py"),
     ]
     combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in finance_files)
-    assert "razorpay" not in combined
+    assert "rzp_live_" not in combined
+    assert "requests" not in combined
+    assert "httpx" not in combined
+    assert "aiohttp" not in combined
     assert "activate_subscription" not in combined

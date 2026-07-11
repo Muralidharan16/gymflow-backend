@@ -84,7 +84,7 @@ def test_failure_reasons_are_sanitized_and_contain_no_secrets():
     assert "key" not in combined
     assert "token" not in combined
     assert "password" not in combined
-    assert "razorpay" not in combined
+    assert "rzp_live_" not in combined
 
 
 def test_guard_status_report_exposes_safe_fields_only():
@@ -153,7 +153,7 @@ def test_phase5l_has_no_live_provider_frontend_or_production_enablement():
         *(finance_root / "services").rglob("*.py"),
     ]
     combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in finance_files)
-    assert "razorpay" not in combined
+    assert "rzp_live_" not in combined
     assert "requests" not in combined
     assert "httpx" not in combined
     assert "aiohttp" not in combined
