@@ -3,8 +3,12 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, Header, Request, Response, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
 
 from app.finance_core.api.auth import (
+    FinancePaymentActor,
     checkout_actor_dependency,
     checkout_status_actor_dependency,
     finance_admin_actor_dependency,
@@ -20,6 +24,12 @@ from app.finance_core.api.schemas import (
     FinanceInternalPaymentApplicationRequest,
     FinanceInternalPaymentApplicationResponse,
 )
+from app.finance_core.domain.checkout_orchestration import (
+    CheckoutPlanSelector,
+    CreateCheckoutSessionCommand,
+    SafeCheckoutSessionResult,
+)
+from app.finance_core.services.checkout_orchestration import FinanceCheckoutOrchestrationService
 
 
 router = APIRouter(
@@ -28,13 +38,54 @@ router = APIRouter(
 )
 
 
+def get_checkout_orchestration_service(
+    db: AsyncSession = Depends(get_db),
+) -> FinanceCheckoutOrchestrationService:
+    # Phase 6J records the route-to-service boundary only. This dependency must
+    # remain unreachable while require_finance_payment_api_enabled is first.
+    raise AssertionError("Finance payment API guard must reject before checkout orchestration service construction.")
+
+
+def build_checkout_session_command(
+    request: FinanceCheckoutCreateRequest,
+    *,
+    actor: FinancePaymentActor,
+    idempotency_key: str | None,
+) -> CreateCheckoutSessionCommand:
+    if not idempotency_key:
+        raise ValueError("Finance checkout idempotency key is required.")
+    return CreateCheckoutSessionCommand(
+        organization_id=actor.organization_id,
+        billing_party_id=request.billing_party_id,
+        selector=CheckoutPlanSelector(
+            plan_code=request.plan_code,
+            billing_interval=request.billing_interval,
+        ),
+        idempotency_key=idempotency_key,
+    )
+
+
+def map_checkout_session_response(result: SafeCheckoutSessionResult) -> FinanceCheckoutCreateResponse:
+    return FinanceCheckoutCreateResponse(
+        finance_invoice_id=result.finance_invoice_id,
+        finance_checkout_intent_id=result.finance_checkout_intent_id,
+        checkout_fields=result.checkout_fields,
+        display_amount=result.display_amount,
+        display_currency=result.display_currency,
+    )
+
+
 @router.post("/checkout-sessions", response_model=FinanceCheckoutCreateResponse)
 async def create_checkout_session(
-    _request: FinanceCheckoutCreateRequest,
+    request: FinanceCheckoutCreateRequest,
+    x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
     _disabled: None = Depends(require_finance_payment_api_enabled),
-    _actor: None = Depends(checkout_actor_dependency),
+    actor: FinancePaymentActor = Depends(checkout_actor_dependency),
+    checkout_service: FinanceCheckoutOrchestrationService = Depends(get_checkout_orchestration_service),
 ) -> FinanceCheckoutCreateResponse:
-    raise AssertionError("Finance payment API guard must reject before checkout creation.")
+    command = build_checkout_session_command(request, actor=actor, idempotency_key=x_idempotency_key)
+    result = await checkout_service.create_checkout_session(command)
+    return map_checkout_session_response(result)
 
 
 @router.get("/checkout-sessions/{checkout_session_id}", response_model=FinanceCheckoutStatusResponse)
