@@ -29,7 +29,9 @@ from app.finance_core.domain.checkout_orchestration import (
     CreateCheckoutSessionCommand,
     SafeCheckoutSessionResult,
 )
+from app.finance_core.domain.razorpay_webhooks import RazorpayWebhookInput
 from app.finance_core.services.checkout_orchestration import FinanceCheckoutOrchestrationService
+from app.finance_core.services.razorpay_webhooks import RazorpayWebhookConfirmationService
 
 
 router = APIRouter(
@@ -44,6 +46,27 @@ def get_checkout_orchestration_service(
     # Phase 6J records the route-to-service boundary only. This dependency must
     # remain unreachable while require_finance_payment_api_enabled is first.
     raise AssertionError("Finance payment API guard must reject before checkout orchestration service construction.")
+
+
+def get_razorpay_webhook_confirmation_service(
+    db: AsyncSession = Depends(get_db),
+) -> RazorpayWebhookConfirmationService:
+    # Phase 6K records the route-to-service boundary only. This dependency must
+    # remain unreachable while require_finance_payment_api_enabled is first.
+    raise AssertionError("Finance payment API guard must reject before webhook confirmation service construction.")
+
+
+def build_razorpay_webhook_input(
+    *,
+    raw_body: bytes,
+    signature: str | None,
+    idempotency_key: str | None,
+) -> RazorpayWebhookInput:
+    return RazorpayWebhookInput(
+        raw_body=raw_body,
+        signature=signature,
+        idempotency_key=idempotency_key,
+    )
 
 
 def build_checkout_session_command(
@@ -102,10 +125,18 @@ async def receive_razorpay_webhook(
     request: Request,
     _response: Response,
     x_razorpay_signature: str | None = Header(default=None, alias="X-Razorpay-Signature"),
+    x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
     _disabled: None = Depends(require_finance_payment_api_enabled),
     _actor: None = Depends(webhook_actor_dependency),
+    webhook_service: RazorpayWebhookConfirmationService = Depends(get_razorpay_webhook_confirmation_service),
 ) -> dict[str, str]:
-    raise AssertionError("Finance payment API guard must reject before webhook intake.")
+    webhook = build_razorpay_webhook_input(
+        raw_body=await request.body(),
+        signature=x_razorpay_signature,
+        idempotency_key=x_idempotency_key,
+    )
+    await webhook_service.confirm_payment_event(webhook)
+    return {"status": "accepted"}
 
 
 @router.post("/internal/payment-applications", response_model=FinanceInternalPaymentApplicationResponse)

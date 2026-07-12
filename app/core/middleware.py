@@ -53,6 +53,7 @@ EXEMPT_PATHS = {
     "/organizations/mock-s3/upload",
     "/static",
     "/health",
+    "/api/v1/finance/payments/webhooks/razorpay",
 }
 
 

@@ -208,7 +208,7 @@ async def test_disabled_webhook_route_still_does_not_mutate_payment_state(client
         headers={"X-Razorpay-Signature": "signed-fixture"},
     )
 
-    assert response.status_code == 401
+    assert_disabled(response)
     assert await finance_counts() == before
 
 
