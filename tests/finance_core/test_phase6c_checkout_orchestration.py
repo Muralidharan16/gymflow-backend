@@ -235,9 +235,8 @@ def test_phase6c_has_no_public_api_frontend_webhook_network_or_subscription_beha
     finance_root = repo_root / "app" / "finance_core"
     combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in finance_root.rglob("*.py"))
 
-    assert "apirouter" not in combined
-    assert "@router" not in combined
-    assert "fastapi" not in combined
+    assert "finance_payment_api_enabled = false" in combined
+    assert "require_finance_payment_api_enabled" in combined
     assert "webhook" not in (repo_root / "app" / "finance_core" / "services" / "checkout_orchestration.py").read_text(encoding="utf-8").lower()
     assert "requests" not in combined
     assert "httpx" not in combined

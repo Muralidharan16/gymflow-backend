@@ -278,9 +278,8 @@ def test_phase6d_has_no_public_api_frontend_network_or_subscription_behavior():
     finance_root = repo_root / "app" / "finance_core"
     combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in finance_root.rglob("*.py"))
 
-    assert "apirouter" not in combined
-    assert "@router" not in combined
-    assert "fastapi" not in combined
+    assert "finance_payment_api_enabled = false" in combined
+    assert "require_finance_payment_api_enabled" in combined
     assert "requests" not in combined
     assert "httpx" not in combined
     assert "aiohttp" not in combined

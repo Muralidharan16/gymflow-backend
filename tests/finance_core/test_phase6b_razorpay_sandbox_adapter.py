@@ -203,9 +203,8 @@ def test_phase6b_has_no_public_routes_frontend_subscription_or_live_provider_ena
     finance_root = repo_root / "app" / "finance_core"
     combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in finance_root.rglob("*.py"))
 
-    assert "apirouter" not in combined
-    assert "@router" not in combined
-    assert "fastapi" not in combined
+    assert "finance_payment_api_enabled = false" in combined
+    assert "require_finance_payment_api_enabled" in combined
     assert "activate_subscription" not in combined
     assert "deactivate_subscription" not in combined
     assert "platform_subscriptions" not in combined

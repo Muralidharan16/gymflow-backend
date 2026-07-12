@@ -69,6 +69,7 @@ from app.platform_billing.api import tenant as platform_billing_tenant
 from app.platform_billing.api import checkout_options as platform_billing_checkout_options
 from app.platform_billing.api import checkout as platform_billing_checkout
 from app.platform_billing.api import checkout_simulation as platform_billing_checkout_simulation
+from app.finance_core.api import payment_boundary as finance_payment_boundary
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -170,6 +171,7 @@ app.include_router(platform_billing_tenant.router)
 app.include_router(platform_billing_checkout_options.router)
 app.include_router(platform_billing_checkout.router)
 app.include_router(platform_billing_checkout_simulation.router)
+app.include_router(finance_payment_boundary.router)
 
 
 # ── Health probe ──────────────────────────────────────────────────────────
