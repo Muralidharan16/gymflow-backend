@@ -17,6 +17,7 @@ from app.finance_core.api.auth import (
 )
 from app.finance_core.api.guards import (
     require_finance_checkout_sandbox_enabled,
+    require_finance_internal_apply_sandbox_enabled,
     require_finance_payment_api_enabled,
     require_finance_webhook_sandbox_enabled,
 )
@@ -33,7 +34,18 @@ from app.finance_core.domain.checkout_orchestration import (
     CreateCheckoutSessionCommand,
     SafeCheckoutSessionResult,
 )
-from app.finance_core.domain.payment_application_gate import ApplyConfirmedPaymentCommand, AppliedPaymentResult
+from app.finance_core.domain.invoice_engine import FinanceInvoiceNotFoundError, FinanceInvoiceStateError
+from app.finance_core.domain.operational_guards import FinanceOperationalGuardError
+from app.finance_core.domain.payment_application_gate import (
+    AppliedPaymentResult,
+    ApplyConfirmedPaymentCommand,
+    FinancePaymentApplicationAuthorityError,
+)
+from app.finance_core.domain.payment_ledger import (
+    FinancePaymentConflictError,
+    FinancePaymentNotFoundError,
+    FinancePaymentStateError,
+)
 from app.finance_core.domain.provider_boundary import (
     FinancePaymentStateTransitionError,
     FinanceWebhookNormalizationError,
@@ -54,9 +66,7 @@ router = APIRouter(
 def get_payment_application_gate_service(
     db: AsyncSession = Depends(get_db),
 ) -> FinancePaymentApplicationGateService:
-    # Phase 6L records the route-to-service boundary only. This dependency must
-    # remain unreachable while require_finance_payment_api_enabled is first.
-    raise AssertionError("Finance payment API guard must reject before payment application gate construction.")
+    return FinancePaymentApplicationGateService(db)
 
 
 def build_apply_confirmed_payment_command(
@@ -204,12 +214,33 @@ async def receive_razorpay_webhook(
 @router.post("/internal/payment-applications", response_model=FinanceInternalPaymentApplicationResponse)
 async def apply_internal_payment(
     request: FinanceInternalPaymentApplicationRequest,
-    _disabled: None = Depends(require_finance_payment_api_enabled),
+    _sandbox_enabled: None = Depends(require_finance_internal_apply_sandbox_enabled),
     _actor: None = Depends(internal_payment_application_actor_dependency),
     application_gate: FinancePaymentApplicationGateService = Depends(get_payment_application_gate_service),
 ) -> FinanceInternalPaymentApplicationResponse:
     command = build_apply_confirmed_payment_command(request)
-    result = await application_gate.apply_confirmed_payment(command)
+    try:
+        result = await application_gate.apply_confirmed_payment(command)
+    except FinancePaymentApplicationAuthorityError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FINANCE_INTERNAL_APPLY_FORBIDDEN", "message": "Payment application authority is invalid."},
+        )
+    except (FinancePaymentNotFoundError, FinanceInvoiceNotFoundError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "FINANCE_INTERNAL_APPLY_NOT_FOUND", "message": "Payment application target was not found."},
+        )
+    except FinanceOperationalGuardError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FINANCE_INTERNAL_APPLY_GUARD_UNSAFE", "message": "Payment application guard posture is unsafe."},
+        )
+    except (FinancePaymentConflictError, FinancePaymentStateError, FinanceInvoiceStateError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "FINANCE_INTERNAL_APPLY_STATE_CONFLICT", "message": "Payment application state is invalid."},
+        )
     return map_internal_payment_application_response(result)
 
 

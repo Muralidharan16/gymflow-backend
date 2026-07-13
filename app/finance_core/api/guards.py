@@ -30,12 +30,28 @@ class FinanceWebhookRoutePosture:
     internal_payment_application_enabled: bool = False
 
 
+@dataclass(frozen=True)
+class FinanceInternalApplyRoutePosture:
+    sandbox_internal_apply_enabled: bool = False
+    provider_mode: str = "disabled"
+    live_provider_enabled: bool = False
+    live_money_movement_enabled: bool = False
+    production_payment_application_enabled: bool = False
+    webhook_triggered_application_enabled: bool = False
+    subscription_automation_enabled: bool = False
+    entitlement_updates_enabled: bool = False
+
+
 def get_finance_webhook_route_posture() -> FinanceWebhookRoutePosture:
     return FinanceWebhookRoutePosture()
 
 
 def get_finance_checkout_route_posture() -> FinanceCheckoutRoutePosture:
     return FinanceCheckoutRoutePosture()
+
+
+def get_finance_internal_apply_route_posture() -> FinanceInternalApplyRoutePosture:
+    return FinanceInternalApplyRoutePosture()
 
 
 def _raise_finance_payment_api_disabled() -> NoReturn:
@@ -115,6 +131,39 @@ def require_finance_webhook_sandbox_enabled(
             detail={
                 "code": "FINANCE_WEBHOOK_SANDBOX_POSTURE_UNSAFE",
                 "message": "Finance webhook sandbox posture is unsafe.",
+            },
+        )
+
+    return None
+
+
+def require_finance_internal_apply_sandbox_enabled(
+    posture: FinanceInternalApplyRoutePosture = Depends(get_finance_internal_apply_route_posture),
+) -> None:
+    """Allow only explicit Phase 6R sandbox internal payment application.
+
+    Checkout and webhook keep their separate sandbox guards. This guard does
+    not enable production payment application, browser/admin-triggered apply,
+    live money movement, or subscription/entitlement side effects.
+    """
+
+    if not posture.sandbox_internal_apply_enabled:
+        _raise_finance_payment_api_disabled()
+
+    if (
+        posture.provider_mode not in {"sandbox", "test"}
+        or posture.live_provider_enabled
+        or posture.live_money_movement_enabled
+        or posture.production_payment_application_enabled
+        or posture.webhook_triggered_application_enabled
+        or posture.subscription_automation_enabled
+        or posture.entitlement_updates_enabled
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "FINANCE_INTERNAL_APPLY_SANDBOX_POSTURE_UNSAFE",
+                "message": "Finance internal apply sandbox posture is unsafe.",
             },
         )
 
