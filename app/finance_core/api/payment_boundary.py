@@ -50,10 +50,12 @@ from app.finance_core.domain.payment_ledger import (
 from app.finance_core.domain.provider_boundary import (
     FinanceProviderConfigError,
     FinancePaymentStateTransitionError,
+    ProviderSandboxConfig,
+    validate_sandbox_provider_config,
     FinanceWebhookNormalizationError,
     FinanceWebhookSignatureError,
 )
-from app.finance_core.domain.razorpay_sandbox import RazorpayProviderError, RazorpaySandboxConfig
+from app.finance_core.domain.razorpay_sandbox import RazorpayProviderError, RazorpaySandboxConfig, validate_razorpay_sandbox_config
 from app.finance_core.domain.razorpay_webhooks import RazorpayWebhookInput
 from app.finance_core.services.checkout_orchestration import FinanceCheckoutOrchestrationService
 from app.finance_core.services.payment_application_gate import FinancePaymentApplicationGateService
@@ -146,12 +148,35 @@ def get_checkout_orchestration_service(
     )
 
 
+def get_razorpay_webhook_test_mode_config() -> RazorpaySandboxConfig:
+    raise AssertionError("Razorpay webhook test-mode config must be explicitly injected for sandbox webhook.")
+
+
+def get_provider_webhook_sandbox_config() -> ProviderSandboxConfig:
+    raise AssertionError("Provider webhook sandbox config must be explicitly injected for sandbox webhook.")
+
+
 def get_razorpay_webhook_confirmation_service(
     db: AsyncSession = Depends(get_db),
+    razorpay_config: RazorpaySandboxConfig = Depends(get_razorpay_webhook_test_mode_config),
+    provider_config: ProviderSandboxConfig = Depends(get_provider_webhook_sandbox_config),
 ) -> RazorpayWebhookConfirmationService:
-    # Phase 6K records the route-to-service boundary only. This dependency must
-    # remain unreachable while require_finance_payment_api_enabled is first.
-    raise AssertionError("Finance payment API guard must reject before webhook confirmation service construction.")
+    try:
+        safe_razorpay_config = validate_razorpay_sandbox_config(razorpay_config)
+        safe_provider_config = validate_sandbox_provider_config(provider_config)
+    except FinanceProviderConfigError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "FINANCE_WEBHOOK_PROVIDER_CONFIG_UNSAFE",
+                "message": "Finance webhook provider configuration is unsafe.",
+            },
+        )
+    return RazorpayWebhookConfirmationService(
+        db,
+        razorpay_config=safe_razorpay_config,
+        provider_config=safe_provider_config,
+    )
 
 
 def build_razorpay_webhook_input(
