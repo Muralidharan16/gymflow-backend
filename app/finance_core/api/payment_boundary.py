@@ -15,7 +15,10 @@ from app.finance_core.api.auth import (
     internal_payment_application_actor_dependency,
     webhook_actor_dependency,
 )
-from app.finance_core.api.guards import require_finance_payment_api_enabled
+from app.finance_core.api.guards import (
+    require_finance_checkout_sandbox_enabled,
+    require_finance_payment_api_enabled,
+)
 from app.finance_core.api.schemas import (
     FinanceAdminPaymentStatusResponse,
     FinanceCheckoutCreateRequest,
@@ -139,8 +142,8 @@ def map_checkout_session_response(result: SafeCheckoutSessionResult) -> FinanceC
 async def create_checkout_session(
     request: FinanceCheckoutCreateRequest,
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
-    _disabled: None = Depends(require_finance_payment_api_enabled),
     actor: FinancePaymentActor = Depends(checkout_actor_dependency),
+    _sandbox_enabled: None = Depends(require_finance_checkout_sandbox_enabled),
     checkout_service: FinanceCheckoutOrchestrationService = Depends(get_checkout_orchestration_service),
 ) -> FinanceCheckoutCreateResponse:
     command = build_checkout_session_command(request, actor=actor, idempotency_key=x_idempotency_key)
