@@ -30,6 +30,7 @@ from app.finance_core.api.schemas import (
     FinanceInternalPaymentApplicationResponse,
 )
 from app.finance_core.domain.checkout_orchestration import (
+    CheckoutPlanResolver,
     CheckoutPlanSelector,
     CreateCheckoutSessionCommand,
     SafeCheckoutSessionResult,
@@ -47,13 +48,20 @@ from app.finance_core.domain.payment_ledger import (
     FinancePaymentStateError,
 )
 from app.finance_core.domain.provider_boundary import (
+    FinanceProviderConfigError,
     FinancePaymentStateTransitionError,
     FinanceWebhookNormalizationError,
     FinanceWebhookSignatureError,
 )
+from app.finance_core.domain.razorpay_sandbox import RazorpayProviderError, RazorpaySandboxConfig
 from app.finance_core.domain.razorpay_webhooks import RazorpayWebhookInput
 from app.finance_core.services.checkout_orchestration import FinanceCheckoutOrchestrationService
 from app.finance_core.services.payment_application_gate import FinancePaymentApplicationGateService
+from app.finance_core.services.razorpay_sandbox import (
+    RazorpaySandboxAdapter,
+    RazorpayTestModeOrdersClient,
+    RazorpayTestModeTransport,
+)
 from app.finance_core.services.razorpay_webhooks import RazorpayWebhookConfirmationService
 
 
@@ -96,12 +104,46 @@ def map_internal_payment_application_response(
     )
 
 
+def get_checkout_plan_resolver() -> CheckoutPlanResolver:
+    raise AssertionError("Finance checkout plan resolver must be explicitly injected for sandbox checkout.")
+
+
+def get_razorpay_test_mode_config() -> RazorpaySandboxConfig:
+    raise AssertionError("Razorpay test-mode config must be explicitly injected for sandbox checkout.")
+
+
+def get_razorpay_test_mode_transport() -> RazorpayTestModeTransport:
+    raise AssertionError("Razorpay test-mode transport must be explicitly injected for sandbox checkout.")
+
+
 def get_checkout_orchestration_service(
     db: AsyncSession = Depends(get_db),
+    plan_resolver: CheckoutPlanResolver = Depends(get_checkout_plan_resolver),
+    razorpay_config: RazorpaySandboxConfig = Depends(get_razorpay_test_mode_config),
+    razorpay_transport: RazorpayTestModeTransport = Depends(get_razorpay_test_mode_transport),
 ) -> FinanceCheckoutOrchestrationService:
-    # Phase 6J records the route-to-service boundary only. This dependency must
-    # remain unreachable while require_finance_payment_api_enabled is first.
-    raise AssertionError("Finance payment API guard must reject before checkout orchestration service construction.")
+    try:
+        client = RazorpayTestModeOrdersClient(
+            config=razorpay_config,
+            transport=razorpay_transport,
+        )
+        adapter = RazorpaySandboxAdapter(
+            config=razorpay_config,
+            client=client,
+        )
+    except (FinanceProviderConfigError, RazorpayProviderError):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "FINANCE_CHECKOUT_PROVIDER_CONFIG_UNSAFE",
+                "message": "Finance checkout provider configuration is unsafe.",
+            },
+        )
+    return FinanceCheckoutOrchestrationService(
+        db,
+        plan_resolver=plan_resolver,
+        razorpay_adapter=adapter,
+    )
 
 
 def get_razorpay_webhook_confirmation_service(
