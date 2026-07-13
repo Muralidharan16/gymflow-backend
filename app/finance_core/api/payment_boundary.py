@@ -29,8 +29,10 @@ from app.finance_core.domain.checkout_orchestration import (
     CreateCheckoutSessionCommand,
     SafeCheckoutSessionResult,
 )
+from app.finance_core.domain.payment_application_gate import ApplyConfirmedPaymentCommand, AppliedPaymentResult
 from app.finance_core.domain.razorpay_webhooks import RazorpayWebhookInput
 from app.finance_core.services.checkout_orchestration import FinanceCheckoutOrchestrationService
+from app.finance_core.services.payment_application_gate import FinancePaymentApplicationGateService
 from app.finance_core.services.razorpay_webhooks import RazorpayWebhookConfirmationService
 
 
@@ -38,6 +40,41 @@ router = APIRouter(
     prefix="/api/v1/finance/payments",
     tags=["Finance Payment Boundary"],
 )
+
+
+def get_payment_application_gate_service(
+    db: AsyncSession = Depends(get_db),
+) -> FinancePaymentApplicationGateService:
+    # Phase 6L records the route-to-service boundary only. This dependency must
+    # remain unreachable while require_finance_payment_api_enabled is first.
+    raise AssertionError("Finance payment API guard must reject before payment application gate construction.")
+
+
+def build_apply_confirmed_payment_command(
+    request: FinanceInternalPaymentApplicationRequest,
+) -> ApplyConfirmedPaymentCommand:
+    return ApplyConfirmedPaymentCommand(
+        payment_id=request.payment_id,
+        invoice_id=request.invoice_id,
+        amount=request.amount,
+        currency_code=request.currency_code,
+        idempotency_key=request.idempotency_key,
+        internal_actor=request.internal_actor,
+        reason=request.reason,
+    )
+
+
+def map_internal_payment_application_response(
+    result: AppliedPaymentResult,
+) -> FinanceInternalPaymentApplicationResponse:
+    return FinanceInternalPaymentApplicationResponse(
+        allocation_id=result.allocation_id,
+        payment_id=result.payment_id,
+        invoice_id=result.invoice_id,
+        invoice_status=result.invoice_status,
+        allocated_amount=result.allocated_amount,
+        replayed=result.replayed,
+    )
 
 
 def get_checkout_orchestration_service(
@@ -141,11 +178,14 @@ async def receive_razorpay_webhook(
 
 @router.post("/internal/payment-applications", response_model=FinanceInternalPaymentApplicationResponse)
 async def apply_internal_payment(
-    _request: FinanceInternalPaymentApplicationRequest,
+    request: FinanceInternalPaymentApplicationRequest,
     _disabled: None = Depends(require_finance_payment_api_enabled),
     _actor: None = Depends(internal_payment_application_actor_dependency),
+    application_gate: FinancePaymentApplicationGateService = Depends(get_payment_application_gate_service),
 ) -> FinanceInternalPaymentApplicationResponse:
-    raise AssertionError("Finance payment API guard must reject before internal payment application.")
+    command = build_apply_confirmed_payment_command(request)
+    result = await application_gate.apply_confirmed_payment(command)
+    return map_internal_payment_application_response(result)
 
 
 @router.get("/admin/payments/{payment_id}", response_model=FinanceAdminPaymentStatusResponse)
