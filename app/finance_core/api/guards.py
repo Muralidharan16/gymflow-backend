@@ -20,6 +20,20 @@ class FinanceCheckoutRoutePosture:
     internal_payment_application_enabled: bool = False
 
 
+@dataclass(frozen=True)
+class FinanceWebhookRoutePosture:
+    sandbox_webhook_enabled: bool = False
+    provider_mode: str = "disabled"
+    live_provider_enabled: bool = False
+    live_money_movement_enabled: bool = False
+    production_webhook_enabled: bool = False
+    internal_payment_application_enabled: bool = False
+
+
+def get_finance_webhook_route_posture() -> FinanceWebhookRoutePosture:
+    return FinanceWebhookRoutePosture()
+
+
 def get_finance_checkout_route_posture() -> FinanceCheckoutRoutePosture:
     return FinanceCheckoutRoutePosture()
 
@@ -71,6 +85,36 @@ def require_finance_checkout_sandbox_enabled(
             detail={
                 "code": "FINANCE_CHECKOUT_SANDBOX_POSTURE_UNSAFE",
                 "message": "Finance checkout sandbox posture is unsafe.",
+            },
+        )
+
+    return None
+
+
+def require_finance_webhook_sandbox_enabled(
+    posture: FinanceWebhookRoutePosture = Depends(get_finance_webhook_route_posture),
+) -> None:
+    """Allow only explicit Phase 6P sandbox webhook execution.
+
+    Checkout keeps its separate Phase 6N guard. Internal apply, status,
+    and admin routes continue using the hard-disabled payment API guard.
+    """
+
+    if not posture.sandbox_webhook_enabled:
+        _raise_finance_payment_api_disabled()
+
+    if (
+        posture.provider_mode not in {"sandbox", "test"}
+        or posture.live_provider_enabled
+        or posture.live_money_movement_enabled
+        or posture.production_webhook_enabled
+        or posture.internal_payment_application_enabled
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "FINANCE_WEBHOOK_SANDBOX_POSTURE_UNSAFE",
+                "message": "Finance webhook sandbox posture is unsafe.",
             },
         )
 

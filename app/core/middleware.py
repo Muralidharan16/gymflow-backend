@@ -51,14 +51,18 @@ EXEMPT_PATHS = {
     "/openapi.json",
     "/redoc",
     "/organizations/mock-s3/upload",
-    "/static",
     "/health",
     "/api/v1/finance/payments/webhooks/razorpay",
 }
 
 
+PREFIX_EXEMPT_PATHS = {"/static"}
+
+
 def _is_exempt(path: str) -> bool:
-    return path in EXEMPT_PATHS or any(path.startswith(p) for p in EXEMPT_PATHS)
+    if path in EXEMPT_PATHS:
+        return True
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in PREFIX_EXEMPT_PATHS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

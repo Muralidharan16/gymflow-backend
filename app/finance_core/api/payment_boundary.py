@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -18,6 +18,7 @@ from app.finance_core.api.auth import (
 from app.finance_core.api.guards import (
     require_finance_checkout_sandbox_enabled,
     require_finance_payment_api_enabled,
+    require_finance_webhook_sandbox_enabled,
 )
 from app.finance_core.api.schemas import (
     FinanceAdminPaymentStatusResponse,
@@ -33,6 +34,11 @@ from app.finance_core.domain.checkout_orchestration import (
     SafeCheckoutSessionResult,
 )
 from app.finance_core.domain.payment_application_gate import ApplyConfirmedPaymentCommand, AppliedPaymentResult
+from app.finance_core.domain.provider_boundary import (
+    FinancePaymentStateTransitionError,
+    FinanceWebhookNormalizationError,
+    FinanceWebhookSignatureError,
+)
 from app.finance_core.domain.razorpay_webhooks import RazorpayWebhookInput
 from app.finance_core.services.checkout_orchestration import FinanceCheckoutOrchestrationService
 from app.finance_core.services.payment_application_gate import FinancePaymentApplicationGateService
@@ -166,8 +172,8 @@ async def receive_razorpay_webhook(
     _response: Response,
     x_razorpay_signature: str | None = Header(default=None, alias="X-Razorpay-Signature"),
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
-    _disabled: None = Depends(require_finance_payment_api_enabled),
     _actor: None = Depends(webhook_actor_dependency),
+    _sandbox_enabled: None = Depends(require_finance_webhook_sandbox_enabled),
     webhook_service: RazorpayWebhookConfirmationService = Depends(get_razorpay_webhook_confirmation_service),
 ) -> dict[str, str]:
     webhook = build_razorpay_webhook_input(
@@ -175,7 +181,23 @@ async def receive_razorpay_webhook(
         signature=x_razorpay_signature,
         idempotency_key=x_idempotency_key,
     )
-    await webhook_service.confirm_payment_event(webhook)
+    try:
+        await webhook_service.confirm_payment_event(webhook)
+    except FinanceWebhookSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "FINANCE_WEBHOOK_SIGNATURE_INVALID", "message": "Webhook signature is invalid."},
+        )
+    except FinanceWebhookNormalizationError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "FINANCE_WEBHOOK_PAYLOAD_INVALID", "message": "Webhook payload is invalid."},
+        )
+    except FinancePaymentStateTransitionError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "FINANCE_WEBHOOK_STATE_CONFLICT", "message": "Webhook state transition is invalid."},
+        )
     return {"status": "accepted"}
 
 
