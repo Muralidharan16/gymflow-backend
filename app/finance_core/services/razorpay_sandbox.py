@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+from typing import Any, Protocol
+
 from app.finance_core.domain.provider_boundary import (
     ProviderCheckoutIntentRequest,
     ProviderCheckoutIntentResponse,
@@ -7,13 +10,71 @@ from app.finance_core.domain.provider_boundary import (
 from app.finance_core.domain.razorpay_sandbox import (
     RazorpayCheckoutFields,
     RazorpayOrderCreateRequest,
+    RazorpayOrderCreateResponse,
+    RazorpayProviderError,
     RazorpaySandboxClient,
     RazorpaySandboxConfig,
     amount_to_razorpay_subunits,
+    map_razorpay_order_response,
     validate_razorpay_sandbox_config,
     verify_razorpay_webhook_signature,
 )
 from app.finance_core.services.operational_guards import FinanceOperationalGuardService
+
+
+class RazorpayTestModeTransport(Protocol):
+    async def post_json(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        """Injected transport. No default network client is constructed in Finance Core."""
+
+
+class RazorpayTestModeOrdersClient:
+    def __init__(self, *, config: RazorpaySandboxConfig, transport: RazorpayTestModeTransport):
+        self._config = validate_razorpay_sandbox_config(config)
+        self._transport = transport
+
+    async def create_order(self, request: RazorpayOrderCreateRequest):
+        payload = request.to_provider_payload()
+        headers = {
+            "Authorization": self._basic_auth_header(),
+            "Content-Type": "application/json",
+        }
+        try:
+            response_payload = await self._transport.post_json(
+                url=f"{self._config.api_base_url}/orders",
+                headers=headers,
+                payload=payload,
+                timeout_seconds=float(self._config.timeout_seconds),
+            )
+        except TimeoutError as exc:
+            raise RazorpayProviderError("RAZORPAY_TIMEOUT", "Razorpay test-mode order request timed out.") from exc
+        except RazorpayProviderError:
+            raise
+        except Exception as exc:
+            raise RazorpayProviderError("RAZORPAY_UNAVAILABLE", "Razorpay test-mode order request failed safely.") from exc
+
+        result = map_razorpay_order_response(
+            payload=response_payload,
+            expected=request,
+            public_key_id=self._config.key_id,
+        )
+        return RazorpayOrderCreateResponse(
+            order_id=result.provider_order_id,
+            amount_subunits=result.amount_subunits,
+            currency_code=result.currency_code,
+            receipt=result.receipt,
+            status=result.status,
+        )
+
+    def _basic_auth_header(self) -> str:
+        token = base64.b64encode(f"{self._config.key_id}:{self._config.key_secret}".encode("utf-8")).decode("ascii")
+        return f"Basic {token}"
 
 
 class RazorpaySandboxAdapter:
@@ -51,7 +112,7 @@ class RazorpaySandboxAdapter:
         amount_subunits = amount_to_razorpay_subunits(request.amount)
         currency_code = request.currency_code.upper()
         receipt = f"fin_{request.invoice_id.hex[:32]}"
-        return RazorpayOrderCreateRequest(
+        order_request = RazorpayOrderCreateRequest(
             amount_subunits=amount_subunits,
             currency_code=currency_code,
             receipt=receipt,
@@ -60,6 +121,15 @@ class RazorpaySandboxAdapter:
                 "finance_idempotency_key": request.idempotency_key,
             },
         )
+        self._validate_safe_order_request(order_request)
+        return order_request
+
+    def _validate_safe_order_request(self, request: RazorpayOrderCreateRequest) -> None:
+        joined = " ".join([request.receipt, *request.notes.keys(), *request.notes.values()]).lower()
+        live_key_marker = "rzp_" + "live_"
+        forbidden = ("secret", "token", "password", "email", "phone", live_key_marker, self._config.key_secret.lower(), self._config.webhook_secret.lower())
+        if any(value and value in joined for value in forbidden):
+            raise RazorpayProviderError("RAZORPAY_ORDER_NOTES_UNSAFE", "Razorpay order metadata contained unsafe fields.")
 
     def checkout_fields(self, *, order_id: str) -> RazorpayCheckoutFields:
         return RazorpayCheckoutFields(key_id=self._config.key_id, order_id=order_id)
