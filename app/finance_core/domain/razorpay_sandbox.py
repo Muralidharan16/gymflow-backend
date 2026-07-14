@@ -106,6 +106,22 @@ class RazorpayCheckoutFields:
         return {"key": self.key_id, "order_id": self.order_id}
 
 
+@dataclass(frozen=True)
+class RazorpayCheckoutSignatureVerificationResult:
+    verified: bool
+    provider_order_id: str
+    provider_payment_id: str
+
+
+@dataclass(frozen=True)
+class RazorpayCheckoutSignatureError(Exception):
+    code: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"{self.code}: {self.message}"
+
+
 def validate_razorpay_sandbox_config(config: RazorpaySandboxConfig) -> RazorpaySandboxConfig:
     if config.mode not in {"sandbox", "test"}:
         raise FinanceProviderConfigError(f"Razorpay config must be sandbox/test only: {config.redacted()}")
@@ -171,3 +187,52 @@ def map_razorpay_order_response(
 def verify_razorpay_webhook_signature(*, raw_body: bytes, signature: str, webhook_secret: str) -> bool:
     expected = hmac.digest(webhook_secret.encode("utf-8"), raw_body, "sha256").hex()
     return hmac.compare_digest(expected, signature)
+
+
+def verify_razorpay_checkout_signature(
+    *,
+    razorpay_order_id: str,
+    razorpay_payment_id: str,
+    razorpay_signature: str,
+    key_secret: str,
+) -> RazorpayCheckoutSignatureVerificationResult:
+    order_id = _required_checkout_signature_field(
+        "RAZORPAY_CHECKOUT_ORDER_ID_REQUIRED",
+        "Razorpay order id is required.",
+        razorpay_order_id,
+    )
+    payment_id = _required_checkout_signature_field(
+        "RAZORPAY_CHECKOUT_PAYMENT_ID_REQUIRED",
+        "Razorpay payment id is required.",
+        razorpay_payment_id,
+    )
+    signature = _required_checkout_signature_field(
+        "RAZORPAY_CHECKOUT_SIGNATURE_REQUIRED",
+        "Razorpay checkout signature is required.",
+        razorpay_signature,
+    )
+    secret = _required_checkout_signature_field(
+        "RAZORPAY_CHECKOUT_KEY_SECRET_REQUIRED",
+        "Razorpay key secret is required.",
+        key_secret,
+    )
+
+    signed_payload = f"{order_id}|{payment_id}".encode("utf-8")
+    expected = hmac.digest(secret.encode("utf-8"), signed_payload, "sha256").hex()
+    if not hmac.compare_digest(expected, signature):
+        raise RazorpayCheckoutSignatureError(
+            "RAZORPAY_CHECKOUT_SIGNATURE_INVALID",
+            "Razorpay checkout signature is invalid.",
+        )
+    return RazorpayCheckoutSignatureVerificationResult(
+        verified=True,
+        provider_order_id=order_id,
+        provider_payment_id=payment_id,
+    )
+
+
+def _required_checkout_signature_field(code: str, message: str, value: str) -> str:
+    normalized = value.strip() if isinstance(value, str) else ""
+    if not normalized:
+        raise RazorpayCheckoutSignatureError(code, message)
+    return normalized
