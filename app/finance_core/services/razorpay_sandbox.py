@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import http.client
+import json
 from typing import Any, Protocol
 
 from app.finance_core.domain.provider_boundary import (
@@ -75,6 +77,61 @@ class RazorpayTestModeOrdersClient:
     def _basic_auth_header(self) -> str:
         token = base64.b64encode(f"{self._config.key_id}:{self._config.key_secret}".encode("utf-8")).decode("ascii")
         return f"Basic {token}"
+
+
+class RazorpayTestModeHTTPTransport:
+    """Explicit real test-mode transport. Never constructed by default routes."""
+
+    def __init__(self, *, connection_factory=http.client.HTTPSConnection):
+        self._connection_factory = connection_factory
+
+    async def post_json(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        if not url.startswith("https://api.razorpay.com/v1/"):
+            raise RazorpayProviderError("RAZORPAY_URL_UNSAFE", "Razorpay test-mode URL is not approved.")
+        if timeout_seconds <= 0:
+            raise RazorpayProviderError("RAZORPAY_TIMEOUT_UNSAFE", "Razorpay test-mode timeout is invalid.")
+
+        path = url.removeprefix("https://api.razorpay.com")
+        safe_headers = {
+            "Authorization": headers.get("Authorization", ""),
+            "Content-Type": "application/json",
+        }
+        body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        connection = self._connection_factory("api.razorpay.com", timeout=timeout_seconds)
+        try:
+            connection.request("POST", path, body=body, headers=safe_headers)
+            response = connection.getresponse()
+            response_body = response.read()
+        except TimeoutError:
+            raise
+        except Exception as exc:
+            raise RazorpayProviderError("RAZORPAY_NETWORK_ERROR", "Razorpay test-mode request failed safely.") from exc
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
+        if response.status < 200 or response.status >= 300:
+            raise RazorpayProviderError(
+                "RAZORPAY_HTTP_ERROR",
+                "Razorpay test-mode request returned a non-success status.",
+                provider_status_code=response.status,
+            )
+
+        try:
+            parsed = json.loads(response_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RazorpayProviderError("RAZORPAY_RESPONSE_INVALID", "Razorpay test-mode response was invalid.") from exc
+        if not isinstance(parsed, dict):
+            raise RazorpayProviderError("RAZORPAY_RESPONSE_INVALID", "Razorpay test-mode response was invalid.")
+        return parsed
 
 
 class RazorpaySandboxAdapter:
