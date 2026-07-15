@@ -20,6 +20,7 @@ from app.finance_core.domain.invoice_engine import (
 from app.finance_core.services.invoice_engine import FinanceInvoiceEngine
 
 
+ORG_ID = uuid.UUID("91000000-0000-0000-0000-000000000901")
 LEGAL_ENTITY_ID = uuid.UUID("91000000-0000-0000-0000-000000000001")
 GST_REGISTRATION_ID = uuid.UUID("91000000-0000-0000-0000-000000000101")
 DIVISION_ID = uuid.UUID("91000000-0000-0000-0000-000000000201")
@@ -63,6 +64,10 @@ async def cleanup_finance_tables() -> None:
                 """
             )
         )
+        await session.execute(
+            text("DELETE FROM organizations WHERE id = :organization_id"),
+            {"organization_id": ORG_ID},
+        )
         await session.commit()
 
 
@@ -82,7 +87,17 @@ async def seed_master_data(*, buyer_state_code: str = "33", b2b: bool = False) -
             "pan": "ABCDE1234F" if b2b else None,
             "buyer_state_code": buyer_state_code,
             "financial_year": FY,
+            "organization_id": ORG_ID,
         }
+        await session.execute(
+            text(
+                """
+                INSERT INTO organizations (id, name, slug, tier, is_active, max_branches, default_currency_code)
+                VALUES (:organization_id, 'Vitara Test Finance Org', 'vitara-test-finance-org', 'basic', true, 10, 'INR');
+                """
+            ),
+            params,
+        )
         await session.execute(
             text(
                 """
@@ -133,11 +148,11 @@ async def seed_master_data(*, buyer_state_code: str = "33", b2b: bool = False) -
             text(
                 """
                 INSERT INTO finance.billing_parties (
-                    id, billing_name, party_type, gst_treatment, gstin, pan,
+                    id, organization_id, billing_name, party_type, gst_treatment, gstin, pan,
                     billing_address, place_of_supply_state_code, status
                 )
                 VALUES (
-                    :billing_party_id, :billing_name, :party_type, :gst_treatment,
+                    :billing_party_id, :organization_id, :billing_name, :party_type, :gst_treatment,
                     :gstin, :pan, 'Buyer Test Address', :buyer_state_code, 'active'
                 );
                 """
@@ -198,7 +213,7 @@ def draft_command(
     line_items: tuple[InvoiceLineInput, ...] = (line(),),
 ) -> CreateDraftInvoiceCommand:
     return CreateDraftInvoiceCommand(
-        organization_id=None,
+        organization_id=ORG_ID,
         legal_entity_id=LEGAL_ENTITY_ID,
         gst_registration_id=GST_REGISTRATION_ID,
         division_id=DIVISION_ID,

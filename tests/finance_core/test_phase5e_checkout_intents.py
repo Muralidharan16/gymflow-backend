@@ -13,7 +13,7 @@ from app.finance_core.domain.provider_boundary import (
     FinanceCheckoutIntentStateError,
 )
 from app.finance_core.services.checkout_intents import FinanceCheckoutIntentService
-from tests.finance_core.test_phase5c_invoice_engine import create_draft, draft_command, fetch_scalar
+from tests.finance_core.test_phase5c_invoice_engine import ORG_ID, create_draft, draft_command, fetch_scalar
 from tests.finance_core.test_phase5d_payment_ledger import (
     allocate_payment,
     issued_invoice,
@@ -30,7 +30,7 @@ def checkout_command(
     idempotency_key: str = "checkout-intent-key-1",
 ) -> CreateCheckoutIntentCommand:
     return CreateCheckoutIntentCommand(
-        organization_id=None,
+        organization_id=ORG_ID,
         invoice_id=invoice_id,
         provider_code="deferred_provider",
         amount=Decimal(amount),
@@ -122,7 +122,7 @@ async def test_checkout_intent_amount_and_currency_must_match_invoice():
         with pytest.raises(FinanceCheckoutIntentStateError):
             await service.create_checkout_intent(
                 CreateCheckoutIntentCommand(
-                    organization_id=None,
+                    organization_id=ORG_ID,
                     invoice_id=invoice.invoice_id,
                     provider_code="deferred_provider",
                     amount=Decimal("1180.00"),

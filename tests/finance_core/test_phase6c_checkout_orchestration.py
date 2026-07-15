@@ -28,6 +28,7 @@ from tests.finance_core.test_phase5c_invoice_engine import (
     DIVISION_ID,
     GST_REGISTRATION_ID,
     LEGAL_ENTITY_ID,
+    ORG_ID,
     fetch_one,
     fetch_scalar,
     seed_master_data,
@@ -80,7 +81,7 @@ class FakeRazorpayClient:
 
 def command(*, idempotency_key: str = "phase6c-checkout-key") -> CreateCheckoutSessionCommand:
     return CreateCheckoutSessionCommand(
-        organization_id=None,
+        organization_id=ORG_ID,
         billing_party_id=BILLING_PARTY_ID,
         selector=CheckoutPlanSelector(plan_code="DOERS_PRO_MONTHLY", billing_interval="monthly"),
         idempotency_key=idempotency_key,
@@ -158,7 +159,7 @@ def test_browser_client_cannot_supply_financial_or_provider_authority_by_dto_des
     assert selector_fields == {"plan_code", "billing_interval"}
     with pytest.raises(TypeError):
         CreateCheckoutSessionCommand(  # type: ignore[call-arg]
-            organization_id=None,
+            organization_id=ORG_ID,
             billing_party_id=BILLING_PARTY_ID,
             selector=CheckoutPlanSelector(plan_code="DOERS_PRO_MONTHLY", billing_interval="monthly"),
             idempotency_key="unsafe",
@@ -173,7 +174,7 @@ async def test_unknown_plan_and_unsupported_interval_fail_safely():
     with pytest.raises(FinanceCheckoutPlanNotFoundError):
         await orchestrate(
             CreateCheckoutSessionCommand(
-                organization_id=None,
+                organization_id=ORG_ID,
                 billing_party_id=BILLING_PARTY_ID,
                 selector=CheckoutPlanSelector(plan_code="UNKNOWN", billing_interval="monthly"),
                 idempotency_key="unknown-plan",
@@ -182,7 +183,7 @@ async def test_unknown_plan_and_unsupported_interval_fail_safely():
     with pytest.raises(FinanceCheckoutBillingIntervalError):
         await orchestrate(
             CreateCheckoutSessionCommand(
-                organization_id=None,
+                organization_id=ORG_ID,
                 billing_party_id=BILLING_PARTY_ID,
                 selector=CheckoutPlanSelector(plan_code="DOERS_PRO_MONTHLY", billing_interval="yearly"),
                 idempotency_key="bad-interval",

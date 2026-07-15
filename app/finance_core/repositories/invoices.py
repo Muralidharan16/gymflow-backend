@@ -13,6 +13,7 @@ from app.finance_core.domain.invoice_engine import (
     InvoiceResult,
     invoice_number,
 )
+from app.models.organization import Organization
 from app.finance_core.models.foundation import (
     FinanceBillingParty,
     FinanceBrand,
@@ -38,6 +39,10 @@ class FinanceInvoiceRepository:
         if for_update:
             statement = statement.with_for_update()
         result = await self._session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def get_organization(self, organization_id: uuid.UUID) -> Organization | None:
+        result = await self._session.execute(select(Organization).where(Organization.id == organization_id))
         return result.scalar_one_or_none()
 
     async def get_legal_entity(self, legal_entity_id: uuid.UUID) -> FinanceLegalEntity | None:

@@ -31,6 +31,14 @@ class FinanceInvoiceEngine:
     async def create_draft_invoice(self, command: CreateDraftInvoiceCommand) -> InvoiceResult:
         payload = _create_payload(command)
         request_hash = canonical_hash(payload)
+        master = await self._load_master_data(
+            organization_id=command.organization_id,
+            legal_entity_id=command.legal_entity_id,
+            gst_registration_id=command.gst_registration_id,
+            division_id=command.division_id,
+            brand_id=command.brand_id,
+            billing_party_id=command.billing_party_id,
+        )
         idem, created = await self._repo.reserve_idempotency_key(
             organization_id=command.organization_id,
             scope="finance.invoice.create",
@@ -45,13 +53,6 @@ class FinanceInvoiceEngine:
         if not created:
             raise FinanceInvoiceConflictError("Invoice creation is already processing for this idempotency key")
 
-        master = await self._load_master_data(
-            legal_entity_id=command.legal_entity_id,
-            gst_registration_id=command.gst_registration_id,
-            division_id=command.division_id,
-            brand_id=command.brand_id,
-            billing_party_id=command.billing_party_id,
-        )
         totals = calculate_invoice_totals(
             supplier_state_code=master["gst_registration"].state_code,
             buyer_place_of_supply_state_code=master["billing_party"].place_of_supply_state_code,
@@ -89,6 +90,14 @@ class FinanceInvoiceEngine:
         if invoice is None:
             raise FinanceInvoiceNotFoundError("Invoice was not found")
 
+        master = await self._load_master_data(
+            organization_id=invoice.organization_id,
+            legal_entity_id=invoice.legal_entity_id,
+            gst_registration_id=invoice.gst_registration_id,
+            division_id=invoice.division_id,
+            brand_id=invoice.brand_id,
+            billing_party_id=invoice.billing_party_id,
+        )
         idem, created = await self._repo.reserve_idempotency_key(
             organization_id=invoice.organization_id,
             scope="finance.invoice.issue",
@@ -106,13 +115,6 @@ class FinanceInvoiceEngine:
         if invoice.status != "draft":
             raise FinanceInvoiceStateError("Only draft invoices can be issued")
 
-        master = await self._load_master_data(
-            legal_entity_id=invoice.legal_entity_id,
-            gst_registration_id=invoice.gst_registration_id,
-            division_id=invoice.division_id,
-            brand_id=invoice.brand_id,
-            billing_party_id=invoice.billing_party_id,
-        )
         official_number = await self._repo.allocate_official_invoice_number(
             invoice,
             division_code=master["division"].code,
@@ -170,12 +172,21 @@ class FinanceInvoiceEngine:
     async def _load_master_data(
         self,
         *,
+        organization_id: uuid.UUID | None,
         legal_entity_id: uuid.UUID,
         gst_registration_id: uuid.UUID,
         division_id: uuid.UUID,
         brand_id: uuid.UUID,
         billing_party_id: uuid.UUID,
     ) -> dict[str, Any]:
+        if organization_id is None:
+            raise FinanceInvoiceValidationError("Invoice organization is required for billing-party ownership")
+        organization = await self._repo.get_organization(organization_id)
+        if organization is None:
+            raise FinanceInvoiceValidationError("Invoice organization was not found")
+        if not organization.is_active:
+            raise FinanceInvoiceValidationError("Invoice organization is not active")
+
         legal_entity = await self._repo.get_legal_entity(legal_entity_id)
         gst_registration = await self._repo.get_gst_registration(gst_registration_id)
         division = await self._repo.get_division(division_id)
@@ -189,6 +200,12 @@ class FinanceInvoiceEngine:
             raise FinanceInvoiceValidationError("Division does not belong to legal entity")
         if brand.legal_entity_id != legal_entity.id or brand.division_id != division.id:
             raise FinanceInvoiceValidationError("Brand does not belong to division/legal entity")
+        if billing_party.organization_id is None:
+            raise FinanceInvoiceValidationError("Billing party ownership is required")
+        if billing_party.organization_id != organization_id:
+            raise FinanceInvoiceValidationError("Billing party does not belong to invoice organization")
+        if billing_party.status != "active":
+            raise FinanceInvoiceValidationError("Billing party is not active")
         return {
             "legal_entity": legal_entity,
             "gst_registration": gst_registration,

@@ -29,6 +29,7 @@ from tests.finance_core.test_phase5c_invoice_engine import (
     DIVISION_ID,
     GST_REGISTRATION_ID,
     LEGAL_ENTITY_ID,
+    ORG_ID,
     create_draft,
     draft_command,
     fetch_one,
@@ -84,7 +85,7 @@ def payment_command(
     idempotency_key: str = "payment-key-1",
 ) -> RecordPaymentCommand:
     return RecordPaymentCommand(
-        organization_id=None,
+        organization_id=ORG_ID,
         legal_entity_id=LEGAL_ENTITY_ID,
         gst_registration_id=GST_REGISTRATION_ID,
         division_id=DIVISION_ID,

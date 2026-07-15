@@ -17,23 +17,21 @@ from app.finance_core.api.schemas import FinanceCheckoutCreateRequest
 from app.finance_core.services.checkout_orchestration import FinanceCheckoutOrchestrationService
 from app.finance_core.services.razorpay_sandbox import RazorpaySandboxAdapter
 from app.main import app
-from tests.finance_core.test_phase5c_invoice_engine import BILLING_PARTY_ID, fetch_one, fetch_scalar, seed_master_data
+from tests.finance_core.test_phase5c_invoice_engine import BILLING_PARTY_ID, ORG_ID, fetch_one, fetch_scalar, seed_master_data
 from tests.finance_core.test_phase6b_razorpay_sandbox_adapter import sandbox_config
 from tests.finance_core.test_phase6c_checkout_orchestration import FakePlanResolver, FakeRazorpayClient
 from tests.finance_core.test_phase6h_disabled_payment_api_routes import assert_disabled, finance_counts
 
 
-ORG_ID = uuid.UUID("92000000-0000-0000-0000-00000000006e")
-
 
 async def seed_route_organization() -> None:
     async with AsyncSessionLocal() as session:
-        await session.execute(text("DELETE FROM organizations WHERE id = :org_id"), {"org_id": ORG_ID})
         await session.execute(
             text(
                 """
                 INSERT INTO organizations (id, name, slug, tier, is_active, max_branches, default_currency_code)
-                VALUES (:org_id, 'Phase 6N Org', 'phase-6n-org', 'basic'::orgtier, true, 5, 'INR')
+                VALUES (:org_id, 'Vitara Test Finance Org', 'vitara-test-finance-org', 'basic'::orgtier, true, 10, 'INR')
+                ON CONFLICT (id) DO UPDATE SET is_active = EXCLUDED.is_active
                 """
             ),
             {"org_id": ORG_ID},
