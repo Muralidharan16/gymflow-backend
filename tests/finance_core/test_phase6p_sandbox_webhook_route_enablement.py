@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import uuid
 
 import pytest
@@ -39,7 +40,9 @@ def sandbox_webhook_posture(**overrides) -> FinanceWebhookRoutePosture:
 
 
 def signed_headers(raw_body: bytes, *, idempotency_key: str = "phase6p-webhook", signature: str | None = None) -> dict[str, str]:
+    event_id = json.loads(raw_body.decode("utf-8")).get("id", "evt_phase6p_fixture")
     return {
+        "X-Razorpay-Event-Id": event_id,
         "X-Razorpay-Signature": signature if signature is not None else hmac.digest(b"rzp_webhook_secret", raw_body, "sha256").hex(),
         "X-Idempotency-Key": idempotency_key,
     }

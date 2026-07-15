@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import Numeric, func, select
+from sqlalchemy import Numeric, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,6 +79,12 @@ class FinancePaymentRepository:
         key.response_ref = response_ref
         await self._session.flush()
 
+    async def acquire_provider_event_lock(self, *, provider_code: str, provider_event_id: str) -> None:
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"{provider_code}:{provider_event_id}"},
+        )
+
     async def get_payment(self, payment_id: uuid.UUID, *, for_update: bool = False) -> FinancePayment | None:
         statement = select(FinancePayment).where(FinancePayment.id == payment_id)
         if for_update:
@@ -123,6 +129,30 @@ class FinancePaymentRepository:
             statement = statement.with_for_update()
         result = await self._session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def get_payments_by_provider_references(
+        self,
+        *,
+        provider_code: str,
+        provider_order_ref: str,
+        provider_payment_ref: str,
+        for_update: bool = False,
+    ) -> list[FinancePayment]:
+        statement = (
+            select(FinancePayment)
+            .where(
+                FinancePayment.provider_code == provider_code,
+                or_(
+                    FinancePayment.provider_order_ref == provider_order_ref,
+                    FinancePayment.provider_payment_ref == provider_payment_ref,
+                ),
+            )
+            .order_by(FinancePayment.id)
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await self._session.execute(statement)
+        return list(result.scalars().all())
 
     async def set_provider_payment_ref(self, payment: FinancePayment, *, provider_payment_ref: str) -> None:
         payment.provider_payment_ref = provider_payment_ref

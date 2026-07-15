@@ -40,7 +40,12 @@ def signature(raw_body: bytes, *, secret: str = WEBHOOK_SECRET) -> str:
 
 
 def signed_headers(raw_body: bytes, *, idempotency_key: str = "phase6w-webhook", sig: str | None = None) -> dict[str, str]:
+    try:
+        event_id = json.loads(raw_body.decode("utf-8")).get("id", "evt_phase6w_fixture")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        event_id = "evt_phase6w_fixture"
     return {
+        "X-Razorpay-Event-Id": event_id,
         "X-Razorpay-Signature": sig if sig is not None else signature(raw_body),
         "X-Idempotency-Key": idempotency_key,
     }

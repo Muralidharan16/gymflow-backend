@@ -47,6 +47,7 @@ from app.finance_core.domain.payment_ledger import (
     FinancePaymentNotFoundError,
     FinancePaymentStateError,
 )
+from app.finance_core.domain.provider_capture_confirmation import FinanceProviderEvidenceError
 from app.finance_core.domain.provider_boundary import (
     FinanceProviderConfigError,
     FinancePaymentStateTransitionError,
@@ -183,11 +184,13 @@ def build_razorpay_webhook_input(
     *,
     raw_body: bytes,
     signature: str | None,
-    idempotency_key: str | None,
+    provider_event_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> RazorpayWebhookInput:
     return RazorpayWebhookInput(
         raw_body=raw_body,
         signature=signature,
+        provider_event_id=provider_event_id,
         idempotency_key=idempotency_key,
     )
 
@@ -248,6 +251,7 @@ async def receive_razorpay_webhook(
     request: Request,
     _response: Response,
     x_razorpay_signature: str | None = Header(default=None, alias="X-Razorpay-Signature"),
+    x_razorpay_event_id: str | None = Header(default=None, alias="X-Razorpay-Event-Id"),
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
     _actor: None = Depends(webhook_actor_dependency),
     _sandbox_enabled: None = Depends(require_finance_webhook_sandbox_enabled),
@@ -256,6 +260,7 @@ async def receive_razorpay_webhook(
     webhook = build_razorpay_webhook_input(
         raw_body=await request.body(),
         signature=x_razorpay_signature,
+        provider_event_id=x_razorpay_event_id,
         idempotency_key=x_idempotency_key,
     )
     try:
@@ -265,12 +270,12 @@ async def receive_razorpay_webhook(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "FINANCE_WEBHOOK_SIGNATURE_INVALID", "message": "Webhook signature is invalid."},
         )
-    except FinanceWebhookNormalizationError:
+    except (FinanceWebhookNormalizationError, FinanceProviderEvidenceError):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": "FINANCE_WEBHOOK_PAYLOAD_INVALID", "message": "Webhook payload is invalid."},
         )
-    except FinancePaymentStateTransitionError:
+    except (FinancePaymentStateTransitionError, FinancePaymentConflictError):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "FINANCE_WEBHOOK_STATE_CONFLICT", "message": "Webhook state transition is invalid."},

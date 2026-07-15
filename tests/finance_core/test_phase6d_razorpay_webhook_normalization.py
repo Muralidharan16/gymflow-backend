@@ -15,6 +15,7 @@ from app.finance_core.domain.provider_boundary import (
     FinanceWebhookSignatureError,
     ProviderSandboxConfig,
 )
+from app.finance_core.domain.provider_capture_confirmation import FinanceProviderEvidenceError
 from app.finance_core.domain.razorpay_webhooks import RazorpayWebhookInput
 from app.finance_core.services.operational_guards import FinanceOperationalGuardService
 from app.finance_core.services.razorpay_webhooks import RazorpayWebhookConfirmationService
@@ -60,10 +61,18 @@ def razorpay_payload(
     ).encode("utf-8")
 
 
-def signed_webhook(raw_body: bytes, *, idempotency_key: str | None = None, signature: str | None = None) -> RazorpayWebhookInput:
+def signed_webhook(
+    raw_body: bytes,
+    *,
+    idempotency_key: str | None = None,
+    signature: str | None = None,
+    provider_event_id: str | None = None,
+) -> RazorpayWebhookInput:
+    resolved_event_id = provider_event_id or json.loads(raw_body.decode("utf-8")).get("id")
     return RazorpayWebhookInput(
         raw_body=raw_body,
         signature=signature if signature is not None else hmac.digest(b"rzp_webhook_secret", raw_body, "sha256").hex(),
+        provider_event_id=resolved_event_id,
         idempotency_key=idempotency_key,
     )
 
@@ -155,7 +164,7 @@ async def test_unknown_event_type_and_unknown_provider_order_fail_safely_without
                 idempotency_key="unknown-type",
             )
         )
-    with pytest.raises(FinanceWebhookNormalizationError):
+    with pytest.raises(FinanceProviderEvidenceError):
         await confirm(
             signed_webhook(
                 razorpay_payload(event_id="evt_unknown_order", order_id="order_missing", payment_id="pay_missing"),
