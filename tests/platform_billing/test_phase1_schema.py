@@ -6,7 +6,13 @@ import pytest
 from sqlalchemy import text
 
 from app.core.database import AsyncSessionLocal
-from conftest import TestSessionLocal, assert_test_database
+from conftest import assert_test_database
+from tests.platform_billing.platform_billing_test_isolation import (
+    assert_no_protected_d11_identity,
+    assert_platform_billing_admin_posture,
+    create_platform_billing_admin_sessionmaker,
+    get_platform_billing_test_config,
+)
 
 
 ORG_1 = "81000000-0000-0000-0000-000000000001"
@@ -51,26 +57,40 @@ PHASE_1_TABLES = [
 
 async def cleanup_phase1_tables() -> None:
     table_names = PHASE_4A_TABLES + PHASE_2_TABLES + PHASE_1_TABLES
-    async with TestSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
-        await assert_test_database(session)
-        result = await session.execute(
-            text(
-                """
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = 'public'
-                  AND table_name = ANY(:table_names)
-                """
-            ),
-            {"table_names": table_names},
-        )
-        existing_tables = {row[0] for row in result}
-        ordered_tables = [table for table in table_names if table in existing_tables]
-        if ordered_tables:
-            quoted_tables = ", ".join(f'"{table}"' for table in ordered_tables)
-            await session.execute(text(f"TRUNCATE TABLE {quoted_tables} CASCADE"))
-        await session.commit()
+    config = get_platform_billing_test_config()
+    engine, admin_sessionmaker = create_platform_billing_admin_sessionmaker(config)
+    try:
+        async with admin_sessionmaker() as session:
+            try:
+                await session.execute(text("RESET ROLE"))
+                await session.execute(text("SET LOCAL lock_timeout = '5s'"))
+                await session.execute(text("SET LOCAL statement_timeout = '30s'"))
+                await assert_test_database(session)
+                await assert_platform_billing_admin_posture(session, config)
+                await assert_no_protected_d11_identity(session)
+                result = await session.execute(
+                    text(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                          AND table_name = ANY(:table_names)
+                        """
+                    ),
+                    {"table_names": table_names},
+                )
+                existing_tables = {row[0] for row in result}
+                ordered_tables = [table for table in table_names if table in existing_tables]
+                if ordered_tables:
+                    quoted_tables = ", ".join(f'"{table}"' for table in ordered_tables)
+                    await session.execute(text(f"TRUNCATE TABLE {quoted_tables} CASCADE"))
+                await assert_no_protected_d11_identity(session)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+    finally:
+        await engine.dispose()
 
 
 async def exec_sql(sql: str, params: dict[str, object] | None = None) -> None:

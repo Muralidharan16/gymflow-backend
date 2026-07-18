@@ -53,13 +53,13 @@ class SyntheticOrganizationRepository:
     async def acquire_slug_lock(self, slug: str) -> None:
         await self._acquire_lock(f"org-create:slug:{slug}")
 
-    async def get_evidence(self, *, operation: str, idempotency_key: str, for_update: bool = False) -> OrganizationCreationIdempotency | None:
+    async def get_evidence(self, *, operation: str, idempotency_key: str) -> OrganizationCreationIdempotency | None:
+        # Callers must hold the idempotency advisory lock before relying on this
+        # immutable evidence read for create/replay serialization.
         statement = select(OrganizationCreationIdempotency).where(
             OrganizationCreationIdempotency.operation == operation,
             OrganizationCreationIdempotency.idempotency_key == idempotency_key,
         )
-        if for_update:
-            statement = statement.with_for_update()
         result = await self._session.execute(statement)
         return result.scalar_one_or_none()
 

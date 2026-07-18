@@ -52,10 +52,15 @@ def validate_test_database_url(test_database_url: str | None, database_url: str 
 
 
 APP_DATABASE_URL = os.environ.get("DATABASE_URL") or _read_dotenv_value("DATABASE_URL")
-TEST_DATABASE_URL = validate_test_database_url(os.environ.get("TEST_DATABASE_URL"), APP_DATABASE_URL)
+PLATFORM_BILLING_TEST_DATABASE_URL = os.environ.get("PLATFORM_BILLING_TEST_DATABASE_URL")
+if PLATFORM_BILLING_TEST_DATABASE_URL:
+    TEST_DATABASE_URL = validate_test_database_url(PLATFORM_BILLING_TEST_DATABASE_URL, APP_DATABASE_URL)
+else:
+    TEST_DATABASE_URL = validate_test_database_url(os.environ.get("TEST_DATABASE_URL"), APP_DATABASE_URL)
 
 # Force this pytest process, including app.core.database import-time engine creation,
-# onto the guarded test database. Runtime app processes still use DATABASE_URL normally.
+# onto the guarded test database. Platform Billing can opt into a dedicated
+# disposable runtime DB before app.core.database is imported.
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
 from app.core import database as app_database  # noqa: E402

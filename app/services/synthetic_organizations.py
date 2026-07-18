@@ -65,7 +65,6 @@ class SyntheticOrganizationCreationService:
             evidence = await self._repo.get_evidence(
                 operation=SYNTHETIC_ORGANIZATION_OPERATION,
                 idempotency_key=normalized["idempotency_key"],
-                for_update=True,
             )
             if evidence is not None:
                 return await self._replay_or_conflict(evidence, request_hash)
@@ -74,7 +73,6 @@ class SyntheticOrganizationCreationService:
             evidence = await self._repo.get_evidence(
                 operation=SYNTHETIC_ORGANIZATION_OPERATION,
                 idempotency_key=normalized["idempotency_key"],
-                for_update=True,
             )
             if evidence is not None:
                 return await self._replay_or_conflict(evidence, request_hash)
