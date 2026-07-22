@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://doers.internal/schemas/cluster-role-manifest-v2.json",
+  "title": "Doers secret-free cluster role manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["state", "state_sha256", "capture_metadata"],
+  "properties": {
+    "state": {"$ref": "#/$defs/state"},
+    "state_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "capture_metadata": {"$ref": "#/$defs/capture_metadata"}
+  },
+  "$defs": {
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_schema_version",
+        "generator_version",
+        "policy_version",
+        "policy_status",
+        "evidence_status",
+        "postgresql_major_version",
+        "relevant_role_set_id",
+        "relevant_role_set_sha256",
+        "relevant_roles",
+        "roles",
+        "role_settings",
+        "memberships"
+      ],
+      "properties": {
+        "manifest_schema_version": {"const": "doers-cluster-role-manifest/v2"},
+        "generator_version": {"const": "doers-role-manifest-generator/2.0.0"},
+        "policy_version": {"const": "doers-cluster-role-policy/v2-draft-r19a"},
+        "policy_status": {"const": "draft_framework"},
+        "evidence_status": {
+          "enum": ["current_evidence", "candidate", "approved_baseline"]
+        },
+        "postgresql_major_version": {"type": "integer", "minimum": 16},
+        "relevant_role_set_id": {"type": "string", "minLength": 1},
+        "relevant_role_set_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "relevant_roles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/role_name"}
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/role"}
+        },
+        "role_settings": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/role_setting"}
+        },
+        "memberships": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/membership"}
+        }
+      }
+    },
+    "role_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,62}$"
+    },
+    "nullable_boolean": {"type": ["boolean", "null"]},
+    "valid_until": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {"kind": {"const": "unlimited"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {"const": "timestamp"},
+            "value": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role_name", "exists", "superuser", "inherit", "create_role",
+        "create_database", "login", "replication", "bypass_rls",
+        "connection_limit", "valid_until", "password_classification", "comment"
+      ],
+      "properties": {
+        "role_name": {"$ref": "#/$defs/role_name"},
+        "exists": {"type": "boolean"},
+        "superuser": {"$ref": "#/$defs/nullable_boolean"},
+        "inherit": {"$ref": "#/$defs/nullable_boolean"},
+        "create_role": {"$ref": "#/$defs/nullable_boolean"},
+        "create_database": {"$ref": "#/$defs/nullable_boolean"},
+        "login": {"$ref": "#/$defs/nullable_boolean"},
+        "replication": {"$ref": "#/$defs/nullable_boolean"},
+        "bypass_rls": {"$ref": "#/$defs/nullable_boolean"},
+        "connection_limit": {"type": ["integer", "null"], "minimum": -1},
+        "valid_until": {"$ref": "#/$defs/valid_until"},
+        "password_classification": {
+          "type": ["string", "null"],
+          "enum": [null, "none", "scram-sha-256", "md5", "unrecognized"]
+        },
+        "comment": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/secret_free_text"}
+          ]
+        }
+      }
+    },
+    "database_scope": {
+      "type": "string",
+      "pattern": "^(\\*|[a-z][a-z0-9_-]{0,62})$",
+      "not": {"pattern": "^gymflow_platform_billing_test_"}
+    },
+    "secret_free_text": {
+      "type": "string",
+      "not": {
+        "anyOf": [
+          {"pattern": "[A-Za-z][A-Za-z0-9+.-]*://"},
+          {"pattern": "\\$?SCRAM-SHA-256\\$"},
+          {"pattern": "md5[0-9A-Fa-f]{32}"},
+          {"pattern": "-----BEGIN [A-Z ]*PRIVATE KEY-----"},
+          {"pattern": "(^|\\s)/(?:[^\\s/]+/)*[^\\s/]+"},
+          {"pattern": "\\b(?:credential|password|private_key|secret|token|verifier)\\s*[:=]"}
+        ]
+      }
+    },
+    "role_setting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role_name", "database_scope", "setting_name", "setting_value"],
+      "properties": {
+        "role_name": {"$ref": "#/$defs/role_name"},
+        "database_scope": {"$ref": "#/$defs/database_scope"},
+        "setting_name": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]*$"},
+        "setting_value": {"$ref": "#/$defs/secret_free_text"}
+      }
+    },
+    "membership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "granted_role", "member", "grantor", "admin_option",
+        "inherit_option", "set_option"
+      ],
+      "properties": {
+        "granted_role": {"$ref": "#/$defs/role_name"},
+        "member": {"$ref": "#/$defs/role_name"},
+        "grantor": {"$ref": "#/$defs/role_name"},
+        "admin_option": {"type": "boolean"},
+        "inherit_option": {"type": "boolean"},
+        "set_option": {"type": "boolean"}
+      }
+    },
+    "capture_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["captured_at", "execution_mode", "source_database", "label"],
+      "properties": {
+        "captured_at": {"type": "string", "format": "date-time"},
+        "execution_mode": {
+          "enum": ["offline_fixture", "peer_admin_read_only"]
+        },
+        "source_database": {"$ref": "#/$defs/database_scope"},
+        "label": {
+          "allOf": [
+            {"$ref": "#/$defs/secret_free_text"},
+            {"minLength": 1, "maxLength": 160}
+          ]
+        }
+      }
+    }
+  }
+}

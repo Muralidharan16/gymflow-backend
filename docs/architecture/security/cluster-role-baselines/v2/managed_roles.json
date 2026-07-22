@@ -1,0 +1,85 @@
+{
+  "relevant_role_set_id": "doers-managed-cluster-roles/r4r17-v1",
+  "relevant_role_set_sha256": "00a1e2b5f1818737f715a64b9cb99cf5c4e5c273e66dc09a250c444c9e5a60de",
+  "checksum_contract": "sha256(canonical-json(ordered-role-names))",
+  "roles": [
+    {
+      "role_name": "app_migrator",
+      "classification": "production_migration_identity",
+      "expected_current_presence": "absent",
+      "inclusion_reason": "Approved D8-B migration identity tracked explicitly while absent"
+    },
+    {
+      "role_name": "app_rls_executor",
+      "classification": "production_capability",
+      "expected_current_presence": "present",
+      "inclusion_reason": "Owns approved RLS and trigger execution objects"
+    },
+    {
+      "role_name": "app_runtime",
+      "classification": "production_capability",
+      "expected_current_presence": "present",
+      "inclusion_reason": "Ordinary application runtime privilege group"
+    },
+    {
+      "role_name": "app_security_owner",
+      "classification": "production_ownership_role",
+      "expected_current_presence": "present",
+      "inclusion_reason": "Owns approved security-definer objects"
+    },
+    {
+      "role_name": "app_user",
+      "classification": "legacy_production_capability",
+      "expected_current_presence": "present",
+      "inclusion_reason": "Existing application capability retained for drift visibility"
+    },
+    {
+      "role_name": "audit_writer",
+      "classification": "production_capability",
+      "expected_current_presence": "present",
+      "inclusion_reason": "Function-mediated audit write capability"
+    },
+    {
+      "role_name": "branch_admin",
+      "classification": "production_capability",
+      "expected_current_presence": "present",
+      "inclusion_reason": "Existing branch administration database capability"
+    },
+    {
+      "role_name": "branch_viewer",
+      "classification": "production_capability",
+      "expected_current_presence": "present",
+      "inclusion_reason": "Existing branch read database capability"
+    },
+    {
+      "role_name": "internal_billing_worker",
+      "classification": "production_capability",
+      "expected_current_presence": "present",
+      "inclusion_reason": "Internal Platform Billing worker capability"
+    },
+    {
+      "role_name": "migration_owner",
+      "classification": "production_ownership_role",
+      "expected_current_presence": "present",
+      "inclusion_reason": "Migration-managed object ownership capability"
+    },
+    {
+      "role_name": "ops_support",
+      "classification": "production_capability",
+      "expected_current_presence": "present",
+      "inclusion_reason": "JIT-only operational support capability"
+    },
+    {
+      "role_name": "readonly_analytics",
+      "classification": "production_capability",
+      "expected_current_presence": "present",
+      "inclusion_reason": "Replica-oriented read-only analytics capability"
+    },
+    {
+      "role_name": "test_runner",
+      "classification": "test_identity",
+      "expected_current_presence": "present",
+      "inclusion_reason": "Ordinary application-runtime test identity"
+    }
+  ]
+}
