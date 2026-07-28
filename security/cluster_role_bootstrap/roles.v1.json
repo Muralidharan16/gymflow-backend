@@ -1,0 +1,174 @@
+{
+  "contract_id": "doers-postgresql-cluster-role-bootstrap-v1",
+  "downgrade_policy": {
+    "cluster_roles_are_not_dropped_by_alembic": true,
+    "cluster_roles_are_not_repaired_by_alembic": true,
+    "cluster_roles_survive_database_downgrade": true,
+    "role_attributes_survive_database_downgrade": true
+  },
+  "managed_roles": {
+    "app_rls_executor": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "purpose": "Owns approved RLS tables, partitions, sequences and bounded lifecycle routines.",
+      "role": "app_rls_executor"
+    },
+    "app_runtime": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "purpose": "Restricted FastAPI runtime privilege group.",
+      "role": "app_runtime"
+    },
+    "app_security_owner": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "purpose": "Owns app_secure views and approved SECURITY DEFINER or trigger routines.",
+      "role": "app_security_owner"
+    },
+    "app_user": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "purpose": "Legacy restricted application privilege group.",
+      "role": "app_user"
+    },
+    "audit_writer": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "purpose": "Restricted audit append capability.",
+      "role": "audit_writer"
+    },
+    "branch_admin": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "purpose": "Tenant-scoped branch administration group.",
+      "role": "branch_admin"
+    },
+    "branch_viewer": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "purpose": "Tenant-scoped branch read group.",
+      "role": "branch_viewer"
+    },
+    "migration_owner": {
+      "attributes": {
+        "bypass_rls": true,
+        "can_login": true,
+        "create_db": false,
+        "create_role": false,
+        "inherit": true,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "Global INHERIT remains explicitly allowed, but each owner-role membership is INHERIT FALSE. CREATEROLE is removed after bootstrap. BYPASSRLS remains migration-only and must not be used by runtime identities.",
+      "purpose": "Ordinary Alembic migration identity after privileged cluster bootstrap.",
+      "role": "migration_owner"
+    },
+    "ops_support": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "REMOVE BYPASSRLS. Support access must remain tenant- and RLS-scoped. Any cross-tenant or break-glass operation requires a separately authorized, audited administrative workflow or narrow SECURITY DEFINER interface. The group must own no object and must never be granted to migration_owner.",
+      "purpose": "Operational support group; source currently contains broad BYPASSRLS.",
+      "role": "ops_support"
+    },
+    "readonly_analytics": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "purpose": "Read-only analytics privilege group.",
+      "role": "readonly_analytics"
+    }
+  },
+  "schema_version": 1,
+  "source_evidence": {
+    "contract": {
+      "path": "v2-bootstrap-contract.md",
+      "sha256": "edcf8caa32a7ba85ec69adadb998f98695b3189fd96b8752799cedd49764f3a5"
+    },
+    "downgrade": {
+      "path": "v2-downgrade-dependencies.json",
+      "sha256": "6b960eafd9ec25a340cb825887c4ec17ad3b2c4f64b80460bf1ab1f55c046f0a"
+    },
+    "memberships": {
+      "path": "v2-membership-manifest.json",
+      "sha256": "aee8b7a99a78caee804fab49cb868f81a098daa5edd8d4622d8470055909d974"
+    },
+    "ownership": {
+      "path": "v2-ownership-manifest.json",
+      "sha256": "546e20cd0859c80e6f4a7a15d5a425ed86ad5d7333c39d1dddbef646d2d01327"
+    },
+    "roles": {
+      "path": "v2-role-matrices.json",
+      "sha256": "8cdd16d1a191a5601ab7124dd50c7c87d07cf018669fe38deebb7dbabcbf191d"
+    },
+    "semantic": {
+      "path": "v2-semantic-validation.json",
+      "sha256": "74ead098ea615c13916a5bd555ee4dd2d401e4ad54a77210245b8a24e4bdc065"
+    },
+    "settings": {
+      "path": "v2-role-setting-manifest.json",
+      "sha256": "38007e7b50e29feec729afa7b09f4f690d4996a5f83c2a88e77f94e42cfd0abb"
+    }
+  }
+}
