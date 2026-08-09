@@ -29,7 +29,7 @@ def test_address_audit_integration_establishes_tenant_context_per_transaction():
     test = _test_function()
     helpers = [
         node
-        for node in test.body
+        for node in ast.walk(test)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "set_tenant_context"
     ]
     assert len(helpers) == 1
