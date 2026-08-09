@@ -10,6 +10,7 @@ Key design decisions:
     ``set_config(..., is_local=true)`` before application SQL executes. This keeps
     RLS/audit GUCs correct even when a route commits and starts another transaction,
     while preventing tenant context from leaking through the connection pool.
+  • All application database identities use one request→Session context initializer.
   • User-settable statement, lock, and idle-in-transaction timeouts are enforced
     on every transaction.
   • Cluster-level/privileged lock-detection settings such as ``deadlock_timeout``
@@ -47,10 +48,6 @@ _STMT_TIMEOUT_MS = 5000
 _IDLE_TIMEOUT_MS = 15000
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Async engine (FastAPI)
-# ─────────────────────────────────────────────────────────────────────────────
-
 async_engine = create_async_engine(
     settings.DATABASE_URL,
     pool_size=10,
@@ -69,10 +66,6 @@ AsyncSessionLocal = async_sessionmaker(
 async_session_maker = AsyncSessionLocal
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Request/session database context
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _validate_principal_type(principal_type: Optional[str]) -> Optional[str]:
     if principal_type is None:
         return None
@@ -83,14 +76,6 @@ def _validate_principal_type(principal_type: Optional[str]) -> Optional[str]:
 
 
 def _context_settings(context: dict[str, Optional[str]]):
-    """Yield PostgreSQL settings that must be transaction-local.
-
-    Values are passed through ``pg_catalog.set_config`` parameters rather than SQL
-    interpolation. Missing optional values are intentionally not written: because
-    every setting is LOCAL, PostgreSQL clears the previous transaction's value
-    before the next transaction/pooled borrower can observe it.
-    """
-
     org_id = context.get("org_id")
     trace_id = context.get("trace_id") or "unknown"
     org_label = org_id or "anon"
@@ -131,15 +116,6 @@ def _apply_context_sync(connection, context: dict[str, Optional[str]]) -> None:
 
 @event.listens_for(Session, "after_begin")
 def _apply_request_context_after_begin(session, transaction, connection) -> None:
-    """Install verified context on *every* transaction for this Session.
-
-    This is intentionally a Session event rather than a pool/connection event:
-    context follows one logical request/session and cannot bleed into the next
-    borrower of a pooled PostgreSQL connection. Re-applying on transaction begin
-    also makes route/service commits safe: the next transaction receives the same
-    verified RLS/audit context automatically.
-    """
-
     context = session.info.get(_SESSION_CONTEXT_KEY)
     if context:
         _apply_context_sync(connection, context)
@@ -159,13 +135,6 @@ async def update_session_context(
     user_agent: Optional[str] = None,
     internal_maintenance: Optional[str] = None,
 ) -> None:
-    """Update Session-owned context and apply it to the active transaction.
-
-    Routers/services that learn additional verified context after dependency
-    creation (for example request metadata or an onboarding owner) call this
-    helper. Future transactions inherit the updated values automatically.
-    """
-
     context = dict(session.info.get(_SESSION_CONTEXT_KEY, {}))
     updates = {
         "principal_id": principal_id,
@@ -199,13 +168,6 @@ async def update_session_context(
 
 
 class SessionContextInitializer:
-    """Attach verified request context to an ``AsyncSession``.
-
-    No transaction is opened here. The ``after_begin`` hook above installs the
-    context when SQLAlchemy begins the actual request transaction, and repeats it
-    for every later transaction on the same Session.
-    """
-
     @staticmethod
     async def initialize(
         session: AsyncSession,
@@ -218,9 +180,6 @@ class SessionContextInitializer:
     ) -> None:
         normalized_principal_type = _validate_principal_type(principal_type)
         if user_id != _ZERO_UUID and normalized_principal_type is None:
-            # Existing pre-hardening access tokens are owner tokens. Keeping this
-            # compatibility default avoids invalidating a 15-minute token window;
-            # all newly issued tokens carry an explicit principal_type claim.
             normalized_principal_type = "owner"
 
         session.info[_SESSION_CONTEXT_KEY] = {
@@ -233,19 +192,12 @@ class SessionContextInitializer:
         }
 
 
-# ── Register initial pool in DynamicPoolManager ───────────────────────────
-from app.core.pool_manager import pool_manager
-pool_manager.set_initial_pool(async_engine, AsyncSessionLocal)
+async def initialize_request_session(session: AsyncSession, request=None) -> None:
+    """Attach verified request state to any application database identity.
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FastAPI dependency — instrumented with latency recording
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def get_db(request=None) -> AsyncGenerator[AsyncSession, None]:  # type: ignore[misc]
-    """Yield a request Session with transaction-safe RLS/audit context."""
-    from app.core.concurrency import adaptive_controller
-
+    Ordinary, auth/bootstrap, and future bounded pools must all call this helper;
+    they may differ in PostgreSQL privileges, never in tenant/principal semantics.
+    """
     principal_id = _ZERO_UUID
     principal_type = None
     org_id = None
@@ -268,19 +220,29 @@ async def get_db(request=None) -> AsyncGenerator[AsyncSession, None]:  # type: i
             state, "correlation_id", "unknown"
         )
 
+    await SessionContextInitializer.initialize(
+        session,
+        user_id=str(principal_id),
+        principal_type=str(principal_type) if principal_type else None,
+        org_id=str(org_id) if org_id else None,
+        gym_id=str(gym_id) if gym_id else None,
+        trace_id=str(trace_id),
+        role=str(role),
+    )
+
+
+from app.core.pool_manager import pool_manager
+pool_manager.set_initial_pool(async_engine, AsyncSessionLocal)
+
+
+async def get_db(request=None) -> AsyncGenerator[AsyncSession, None]:  # type: ignore[misc]
+    from app.core.concurrency import adaptive_controller
+
     active_sessionmaker = pool_manager.current_sessionmaker or AsyncSessionLocal
     async with active_sessionmaker() as session:
         t0 = time.monotonic()
         try:
-            await SessionContextInitializer.initialize(
-                session,
-                user_id=str(principal_id),
-                principal_type=str(principal_type) if principal_type else None,
-                org_id=str(org_id) if org_id else None,
-                gym_id=str(gym_id) if gym_id else None,
-                trace_id=str(trace_id),
-                role=str(role),
-            )
+            await initialize_request_session(session, request)
             yield session
             await session.commit()
         except Exception:
@@ -290,10 +252,6 @@ async def get_db(request=None) -> AsyncGenerator[AsyncSession, None]:  # type: i
             elapsed_ms = (time.monotonic() - t0) * 1000
             await adaptive_controller.record_latency(elapsed_ms)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Sync engine (Celery tasks)
-# ─────────────────────────────────────────────────────────────────────────────
 
 SYNC_DATABASE_URL = settings.DATABASE_URL.replace("+asyncpg", "+psycopg")
 sync_engine = None
