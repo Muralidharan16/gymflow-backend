@@ -41,6 +41,22 @@ def test_address_audit_integration_uses_session_owned_typed_context():
     assert "org_id=str(org_id)" in source
 
 
+def test_address_audit_fixture_seed_is_admin_only_but_behavior_is_reduced_runtime():
+    test = _test_function()
+    source = ast.unparse(test)
+
+    assert any(arg.arg == "admin_db_session" for arg in test.args.args)
+    assert "admin_db_session.add(Organization" in source
+    assert "await admin_db_session.commit()" in source
+    assert "async with AsyncSessionLocal() as db" in source
+
+    # Tenant-root creation is fixture administration. The behavior under test—
+    # branch/staff/address writes plus trigger/audit reads—must never switch to
+    # the admin session.
+    runtime_source = source[source.index("async with AsyncSessionLocal() as db") :]
+    assert "admin_db_session" not in runtime_source
+
+
 def test_address_audit_context_survives_commit_without_manual_reapplication():
     test = _test_function()
     source = ast.unparse(test)
@@ -54,11 +70,11 @@ def test_address_audit_context_survives_commit_without_manual_reapplication():
         and node.value.func.id == "update_session_context"
     ]
 
-    # One org-only setup and one typed-actor upgrade are sufficient. Subsequent
-    # commits must rely on the Session.after_begin hook rather than manually
+    # One org-only setup and one typed-actor upgrade are sufficient. The three
+    # runtime commits must rely on Session.after_begin rather than manually
     # replaying tenant context for every transaction.
     assert len(context_calls) == 2
-    assert source.count("await db.commit()") >= 4
+    assert source.count("await db.commit()") >= 3
 
     database_source = DATABASE.read_text(encoding="utf-8")
     assert '@event.listens_for(Session, "after_begin")' in database_source
