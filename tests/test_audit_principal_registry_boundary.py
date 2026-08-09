@@ -27,6 +27,22 @@ def _function_source(name: str) -> str:
     raise AssertionError(f"Missing function {name}")
 
 
+def _literal_tuple(name: str) -> tuple[str, ...]:
+    tree = _tree()
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        if node.targets[0].id != name:
+            continue
+        value = ast.literal_eval(node.value)
+        assert isinstance(value, tuple)
+        assert all(isinstance(item, str) for item in value)
+        return value
+    raise AssertionError(f"Missing literal tuple {name}")
+
+
 def test_revision_extends_current_head_without_owning_infrastructure_extensions() -> None:
     source = _source()
 
@@ -120,11 +136,12 @@ def test_downgrade_refuses_to_discard_new_actor_provenance() -> None:
 def test_private_trigger_functions_are_security_definer_with_fixed_search_path() -> None:
     function_builder = _function_source("_create_private_functions")
 
-    for function_name in (
+    function_names = (
         "register_audit_principal",
         "prevent_principal_identity_reassignment",
         "prevent_audit_principal_mutation",
-    ):
+    )
+    for function_name in function_names:
         marker = f"CREATE FUNCTION app_private.{function_name}()"
         assert marker in function_builder
         block = function_builder[function_builder.index(marker) :]
@@ -134,7 +151,11 @@ def test_private_trigger_functions_are_security_definer_with_fixed_search_path()
         assert "SECURITY DEFINER" in block
         assert "SET search_path = pg_catalog" in block
 
-    assert "REVOKE ALL ON FUNCTION {signature} FROM PUBLIC" in function_builder
+    assert _literal_tuple("_PUBLIC_EXECUTE_REVOKES") == tuple(
+        f"REVOKE ALL ON FUNCTION app_private.{name}() FROM PUBLIC"
+        for name in function_names
+    )
+    assert "*_PUBLIC_EXECUTE_REVOKES" in function_builder
 
 
 def test_trigger_creation_uses_owner_grant_window_and_proves_direct_final_acl() -> None:
@@ -144,12 +165,24 @@ def test_trigger_creation_uses_owner_grant_window_and_proves_direct_final_acl() 
     create = _function_source("_create_principal_triggers")
     verify = _function_source("_require_private_function_security_contract")
 
+    function_names = (
+        "register_audit_principal",
+        "prevent_principal_identity_reassignment",
+        "prevent_audit_principal_mutation",
+    )
+    assert _literal_tuple("_MIGRATION_EXECUTE_GRANTS") == tuple(
+        f"GRANT EXECUTE ON FUNCTION app_private.{name}() TO migration_owner"
+        for name in function_names
+    )
+    assert _literal_tuple("_MIGRATION_EXECUTE_REVOKES") == tuple(
+        f"REVOKE EXECUTE ON FUNCTION app_private.{name}() FROM migration_owner"
+        for name in function_names
+    )
+
     # Only the private-function owner grants/revokes; migration_owner remains the
     # table owner that issues CREATE TRIGGER.
-    assert "_as_security_owner(" in grant
-    assert 'f"GRANT EXECUTE ON FUNCTION {signature} TO {_MIGRATION_OWNER}"' in grant
-    assert "_as_security_owner(" in revoke
-    assert 'f"REVOKE EXECUTE ON FUNCTION {signature} FROM {_MIGRATION_OWNER}"' in revoke
+    assert "_as_security_owner(bind, _MIGRATION_EXECUTE_GRANTS)" in grant
+    assert "_as_security_owner(bind, _MIGRATION_EXECUTE_REVOKES)" in revoke
 
     grant_index = create.index("_grant_trigger_creation_execute(bind)")
     first_trigger_index = create.index(
