@@ -33,6 +33,14 @@ def database_name(database_url: str) -> str:
 
 
 def validate_test_database_url(test_database_url: str | None, database_url: str | None) -> str:
+    """Validate the runtime test URL without conflating database and identity.
+
+    An isolated CI lane may intentionally migrate a disposable test database as
+    ``migration_owner`` and exercise that *same database* as a reduced runtime
+    login. That is safe only when the database is unmistakably disposable and
+    the two identities are distinct. Exact URL reuse or same-user reuse remains
+    forbidden.
+    """
     if not test_database_url:
         raise RuntimeError("TEST_DATABASE_URL is required for pytest. Refusing to use DATABASE_URL.")
 
@@ -44,10 +52,23 @@ def validate_test_database_url(test_database_url: str | None, database_url: str 
     if database_url:
         app_url = make_url(database_url)
         app_db_name = app_url.database or ""
-        if test_database_url == database_url or test_db_name == app_db_name:
+
+        if test_database_url == database_url:
             raise RuntimeError(
-                f"TEST_DATABASE_URL must not point at the app database: {test_db_name}"
+                "TEST_DATABASE_URL must use a distinct runtime identity; "
+                "exact DATABASE_URL reuse is forbidden."
             )
+
+        if test_db_name == app_db_name:
+            if app_url.username == test_url.username:
+                raise RuntimeError(
+                    "TEST_DATABASE_URL must use a distinct runtime identity when "
+                    f"sharing disposable test database {test_db_name!r}."
+                )
+            if "test" not in app_db_name.lower():
+                raise RuntimeError(
+                    f"TEST_DATABASE_URL must not point at the app database: {test_db_name}"
+                )
 
     return test_database_url
 
@@ -86,6 +107,11 @@ def validate_test_admin_database_url(
         raise RuntimeError(
             "TEST_ADMIN_DATABASE_URL must use a distinct privileged identity; "
             "runtime and cleanup connections must not be identical."
+        )
+    if admin_url.username == runtime_url.username:
+        raise RuntimeError(
+            "TEST_ADMIN_DATABASE_URL must use a distinct privileged identity; "
+            "runtime and cleanup usernames must differ."
         )
 
     return admin_database_url
