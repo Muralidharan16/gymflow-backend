@@ -53,6 +53,7 @@ jobs:
             alembic/versions/66a95af89112_init_partman_for_branch_lifecycle_events.py \
             alembic/versions/371b1a44a333_add_spatial_and_filtering_indexes.py \
             alembic/versions/361c32e72e93_add_geo_fields_to_branches.py \
+            alembic/versions/4d5e6f708192_establish_audit_principal_registry.py \
             app/core/database.py
 
       - name: Run migration hardening static regressions
@@ -94,8 +95,10 @@ jobs:
 
     env:
       MIGRATION_PASSWORD: ci-migration-owner
+      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
-      TEST_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
       REDIS_URL: redis://127.0.0.1:6379/0
       CELERY_BROKER_URL: redis://127.0.0.1:6379/1
       CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
@@ -136,7 +139,7 @@ jobs:
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
           test -f /usr/share/postgresql/16/extension/pg_partman.control
 
-      - name: Bootstrap reduced migration/test roles and databases
+      - name: Bootstrap migration, runtime and test roles and databases
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
           CREATE ROLE migration_owner
@@ -174,28 +177,51 @@ jobs:
           CREATE ROLE readonly_analytics
             NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
             NOREPLICATION NOBYPASSRLS;
+
           CREATE ROLE test_runner
             LOGIN PASSWORD 'ci-test-runner'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          -- CI-only application login. It inherits only the privilege groups
+          -- that the current application contract uses. SET FALSE prevents the
+          -- login from changing identity to either group role, while explicit
+          -- INHERIT TRUE makes object privileges available on PostgreSQL 16 even
+          -- though the login itself is NOINHERIT by default.
+          CREATE ROLE app_test_runtime
+            LOGIN PASSWORD 'ci-app-test-runtime'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
             NOREPLICATION NOBYPASSRLS;
 
           ALTER ROLE app_runtime SET statement_timeout = '5s';
           ALTER ROLE app_runtime SET lock_timeout = '2s';
           ALTER ROLE app_runtime SET row_security = 'on';
+          ALTER ROLE app_test_runtime SET row_security = 'on';
+          ALTER ROLE app_test_runtime SET statement_timeout = '5s';
+          ALTER ROLE app_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE app_test_runtime SET idle_in_transaction_session_timeout = '15s';
 
           GRANT app_rls_executor TO migration_owner
             WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
           GRANT app_security_owner TO migration_owner
             WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
 
-          -- Test-harness-only downward role edge. migration_owner does not
-          -- inherit test_runner and has no ADMIN option; it may only assume
-          -- the reduced test identity for explicit negative/security proofs.
+          -- Test-harness-only downward role edge for explicit reduced-identity
+          -- security proofs. It does not make test_runner a runtime privilege.
           GRANT test_runner TO migration_owner
             WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
 
+          -- Application runtime privileges are inherited, never SET-able. The
+          -- legacy app_user group remains required by historical hardened
+          -- migrations such as 0020; app_runtime is the target modern group.
+          GRANT app_runtime TO app_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
           CREATE DATABASE gymflow_migration_test OWNER migration_owner;
           CREATE DATABASE gymflow_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_test TO app_test_runtime;
           SQL
 
       - name: Provision infrastructure-owned extensions
@@ -219,7 +245,7 @@ jobs:
           SQL
           done
 
-      - name: Prove reduced roles and bounded test edge
+      - name: Prove reduced migration roles and bounded edges
         run: |
           PGPASSWORD="$MIGRATION_PASSWORD" psql \
             -X -v ON_ERROR_STOP=1 \
@@ -256,12 +282,13 @@ jobs:
               RAISE EXCEPTION 'test_runner is over-privileged';
             END IF;
 
-            IF NOT pg_catalog.pg_has_role(
-                'migration_owner',
-                'test_runner',
-                'SET'
-            ) THEN
+            IF NOT pg_catalog.pg_has_role('migration_owner', 'test_runner', 'SET') THEN
               RAISE EXCEPTION 'missing bounded SET test_runner edge';
+            END IF;
+
+            IF pg_catalog.pg_has_role('migration_owner', 'app_user', 'MEMBER')
+               OR pg_catalog.pg_has_role('migration_owner', 'app_runtime', 'MEMBER') THEN
+              RAISE EXCEPTION 'migration_owner must not be an application runtime member';
             END IF;
           END
           $$;
@@ -276,6 +303,92 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
         run: |
           python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Prove general application runtime posture
+        run: |
+          PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql \
+            -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_test_runtime \
+            -d gymflow_test <<'SQL'
+          DO $$
+          DECLARE
+            runtime_record record;
+          BEGIN
+            SELECT * INTO runtime_record
+            FROM pg_catalog.pg_roles
+            WHERE rolname = current_user;
+
+            IF current_user <> 'app_test_runtime' THEN
+              RAISE EXCEPTION 'unexpected general runtime identity';
+            END IF;
+            IF current_database() <> 'gymflow_test' THEN
+              RAISE EXCEPTION 'unexpected general runtime database';
+            END IF;
+            IF NOT runtime_record.rolcanlogin
+               OR runtime_record.rolsuper
+               OR runtime_record.rolcreatedb
+               OR runtime_record.rolcreaterole
+               OR runtime_record.rolinherit
+               OR runtime_record.rolreplication
+               OR runtime_record.rolbypassrls THEN
+              RAISE EXCEPTION 'general runtime role attributes are unsafe';
+            END IF;
+
+            IF EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_database
+              WHERE datname = current_database()
+                AND pg_catalog.pg_get_userbyid(datdba) = current_user
+            ) THEN
+              RAISE EXCEPTION 'general runtime owns its database';
+            END IF;
+
+            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE')
+               OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN
+              RAISE EXCEPTION 'general runtime has object-creation capability';
+            END IF;
+
+            IF NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'SELECT')
+               OR NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'INSERT')
+               OR NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'UPDATE') THEN
+              RAISE EXCEPTION 'general runtime lacks required branch_contacts DML';
+            END IF;
+
+            IF pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'DELETE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'TRUNCATE') THEN
+              RAISE EXCEPTION 'general runtime has forbidden branch_contacts privileges';
+            END IF;
+
+            IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'SET')
+               OR pg_catalog.pg_has_role(current_user, 'app_user', 'SET') THEN
+              RAISE EXCEPTION 'general runtime may SET ROLE to a privilege group';
+            END IF;
+
+            IF NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'INSERT') THEN
+              RAISE EXCEPTION 'app_user inheritance did not supply branch_contacts INSERT';
+            END IF;
+
+            IF EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_class AS relation_data
+              JOIN pg_catalog.pg_namespace AS namespace_data
+                ON namespace_data.oid = relation_data.relnamespace
+              CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                  relation_data.relacl,
+                  pg_catalog.acldefault('r', relation_data.relowner)
+                )
+              ) AS acl_data
+              JOIN pg_catalog.pg_roles AS grantee
+                ON grantee.oid = acl_data.grantee
+              WHERE namespace_data.nspname = 'public'
+                AND grantee.rolname = current_user
+            ) THEN
+              RAISE EXCEPTION 'general runtime has unexpected direct table ACLs';
+            END IF;
+          END
+          $$;
+          SQL
 
       - name: Run general regression suite fail-fast
         run: |
