@@ -6,6 +6,7 @@ from typing import AsyncGenerator
 
 import pytest
 import pytest_asyncio
+from fastapi import Request
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -127,13 +128,14 @@ async def cleanup_test_database_tables(table_names: list[str]) -> None:
         await session.commit()
 
 
-async def override_get_db(request=None) -> AsyncGenerator[AsyncSession, None]:  # type: ignore[misc]
+async def override_get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     """Use the disposable test pool while preserving production request context.
 
     Forced-RLS integration tests must exercise the same user/org/gym/role GUCs
-    that production ``get_db`` derives from ``request.state``. Hard-coding an
-    anonymous context here makes authenticated requests behave unlike
-    production and either causes false failures or tempts tests to weaken RLS.
+    that production ``get_db`` derives from ``request.state``. FastAPI injects
+    ``Request`` because the dependency parameter is explicitly typed, matching
+    production dependency semantics rather than silently falling back to an
+    anonymous context.
     """
     user_id = "00000000-0000-0000-0000-000000000000"
     org_id = None
@@ -141,16 +143,15 @@ async def override_get_db(request=None) -> AsyncGenerator[AsyncSession, None]:  
     role = "unknown"
     trace_id = "test"
 
-    if request is not None:
-        state = request.state
-        user_id = getattr(state, "staff_id", user_id)
-        org_id = getattr(state, "org_id", None)
-        gym_id = getattr(state, "gym_id", None)
-        role = getattr(state, "role", "unknown")
-        trace_id = (
-            getattr(state, "otel_trace_id", None)
-            or getattr(state, "correlation_id", "test")
-        )
+    state = request.state
+    user_id = getattr(state, "staff_id", user_id)
+    org_id = getattr(state, "org_id", None)
+    gym_id = getattr(state, "gym_id", None)
+    role = getattr(state, "role", "unknown")
+    trace_id = (
+        getattr(state, "otel_trace_id", None)
+        or getattr(state, "correlation_id", "test")
+    )
 
     async with TestSessionLocal() as session:
         try:
