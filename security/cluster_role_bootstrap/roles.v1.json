@@ -72,6 +72,20 @@
       "purpose": "Restricted audit append capability.",
       "role": "audit_writer"
     },
+    "auth_runtime": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "Dedicated privilege group for pre-tenant authentication bootstrap and session lifecycle. Deployment logins may inherit this role together with ordinary application groups, but auth_runtime itself is NOLOGIN and must never own schema objects, bypass RLS, or be granted to migration_owner.",
+      "purpose": "Least-privilege tenant-root authentication/bootstrap and auth-session capability.",
+      "role": "auth_runtime"
+    },
     "branch_admin": {
       "attributes": {
         "bypass_rls": false,
@@ -100,16 +114,16 @@
     },
     "migration_owner": {
       "attributes": {
-        "bypass_rls": true,
+        "bypass_rls": false,
         "can_login": true,
         "create_db": false,
         "create_role": false,
-        "inherit": true,
+        "inherit": false,
         "replication": false,
         "superuser": false
       },
-      "decision": "Global INHERIT remains explicitly allowed, but each owner-role membership is INHERIT FALSE. CREATEROLE is removed after bootstrap. BYPASSRLS remains migration-only and must not be used by runtime identities.",
-      "purpose": "Ordinary Alembic migration identity after privileged cluster bootstrap.",
+      "decision": "Production migration_owner is a reduced NOINHERIT/NOBYPASSRLS login. Required owner transitions are explicit per-membership SET edges with INHERIT FALSE; Alembic must fail closed rather than rely on implicit role inheritance or RLS bypass.",
+      "purpose": "Ordinary reduced Alembic migration identity after privileged cluster bootstrap.",
       "role": "migration_owner"
     },
     "ops_support": {
