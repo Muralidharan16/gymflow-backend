@@ -8,9 +8,8 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.core.database import AsyncSessionLocal
+from tests.finance_core.admin_database import finance_admin_session
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -21,19 +20,20 @@ SHA = "a" * 64
 
 
 async def fetch_all(sql: str, params: dict[str, object] | None = None):
-    async with AsyncSessionLocal() as session:
+    """Read migration/schema evidence through the guarded test-admin identity."""
+    async with finance_admin_session() as session:
         result = await session.execute(text(sql), params or {})
         return result.fetchall()
 
 
 async def fetch_scalar(sql: str, params: dict[str, object] | None = None) -> object:
-    async with AsyncSessionLocal() as session:
+    async with finance_admin_session() as session:
         result = await session.execute(text(sql), params or {})
         return result.scalar_one()
 
 
 async def expect_db_error(sql: str, params: dict[str, object] | None = None) -> None:
-    async with AsyncSessionLocal() as session:
+    async with finance_admin_session() as session:
         with pytest.raises(Exception):
             await session.execute(text(sql), params or {})
             await session.commit()
@@ -122,7 +122,7 @@ async def test_phase6an_d10_table_columns_constraints_and_grants_exist():
 
 @pytest.mark.asyncio
 async def test_phase6an_d10_immutability_and_constraints_reject_mutation_inside_rollback():
-    async with AsyncSessionLocal() as session:
+    async with finance_admin_session() as session:
         tx = await session.begin()
         await session.execute(
             text(
