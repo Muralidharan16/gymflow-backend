@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / "tests/test_address.py"
+DATABASE = ROOT / "app/core/database.py"
 TEST_NAME = "test_audit_log_captured_on_update"
 
 
@@ -25,28 +26,44 @@ def _string_constants(node: ast.AST) -> list[str]:
     ]
 
 
-def test_address_audit_integration_establishes_tenant_context_per_transaction():
+def test_address_audit_integration_uses_session_owned_typed_context():
     test = _test_function()
-    helpers = [
-        node
-        for node in ast.walk(test)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "set_tenant_context"
-    ]
-    assert len(helpers) == 1
+    source = ast.unparse(test)
 
-    helper_strings = "\n".join(_string_constants(helpers[0]))
-    assert "pg_catalog.set_config('app.current_org_id'" in helper_strings
+    # The integration path must use the same centralized context API as runtime
+    # requests, not define a test-only helper that duplicates raw PostgreSQL GUCs.
+    assert "update_session_context" in source
+    assert "set_tenant_context" not in source
+    assert "pg_catalog.set_config" not in source
 
-    calls = [
+    assert "principal_id=str(owner_id)" in source
+    assert "principal_type='legacy_gym_owner'" in source
+    assert "org_id=str(org_id)" in source
+
+
+def test_address_audit_context_survives_commit_without_manual_reapplication():
+    test = _test_function()
+    source = ast.unparse(test)
+
+    context_calls = [
         node
         for node in ast.walk(test)
         if isinstance(node, ast.Await)
         and isinstance(node.value, ast.Call)
         and isinstance(node.value.func, ast.Name)
-        and node.value.func.id == "set_tenant_context"
+        and node.value.func.id == "update_session_context"
     ]
-    # branch/state insert, address insert, address update, audit read
-    assert len(calls) >= 4
+
+    # One org-only setup and one typed-actor upgrade are sufficient. Subsequent
+    # commits must rely on the Session.after_begin hook rather than manually
+    # replaying tenant context for every transaction.
+    assert len(context_calls) == 2
+    assert source.count("await db.commit()") >= 4
+
+    database_source = DATABASE.read_text(encoding="utf-8")
+    assert '@event.listens_for(Session, "after_begin")' in database_source
+    assert "_apply_context_sync(connection, context)" in database_source
+    assert "pg_catalog.set_config(:setting_name, :setting_value, true)" in database_source
 
 
 def test_address_audit_integration_does_not_bypass_rls():
