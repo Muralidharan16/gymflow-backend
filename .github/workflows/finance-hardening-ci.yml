@@ -1,0 +1,288 @@
+name: Finance Core Hardening CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: finance-hardening-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  finance-core-regressions:
+    name: Isolated Finance Core regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      FINANCE_RUNTIME_PASSWORD: ci-finance-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_finance_test_ci
+      TEST_DATABASE_URL: postgresql+asyncpg://finance_test_runtime:ci-finance-runtime@127.0.0.1:5432/gymflow_finance_test_ci
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_finance_test_ci
+      FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_test_runtime:ci-finance-runtime@127.0.0.1:5432/gymflow_finance_test_ci
+      FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_finance_test_ci
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+
+      - name: Install PostgreSQL 16 extension packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+          test -f /usr/share/postgresql/16/extension/pg_partman.control
+
+      - name: Bootstrap migration and Finance Core runtime identities
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          CREATE ROLE migration_owner
+            LOGIN PASSWORD 'ci-migration-owner'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          CREATE ROLE app_rls_executor
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_security_owner
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_runtime
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_user
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE audit_writer
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_admin
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_viewer
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE internal_billing_worker
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE ops_support
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE readonly_analytics
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE test_runner
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          CREATE ROLE finance_test_runtime
+            LOGIN PASSWORD 'ci-finance-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_runtime SET statement_timeout = '5s';
+          ALTER ROLE app_runtime SET lock_timeout = '2s';
+          ALTER ROLE app_runtime SET row_security = 'on';
+          ALTER ROLE finance_test_runtime SET row_security = 'on';
+          ALTER ROLE finance_test_runtime SET statement_timeout = '10s';
+          ALTER ROLE finance_test_runtime SET lock_timeout = '3s';
+          ALTER ROLE finance_test_runtime SET idle_in_transaction_session_timeout = '15s';
+
+          GRANT app_rls_executor TO migration_owner
+            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+          GRANT app_security_owner TO migration_owner
+            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+
+          -- Finance API execution still needs ordinary tenant/application reads,
+          -- but the login may not SET ROLE to either privilege group.
+          GRANT app_runtime TO finance_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO finance_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_finance_test_ci OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO finance_test_runtime;
+          SQL
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_finance_test_ci <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE
+            ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE
+            ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Fresh Alembic lineage on isolated Finance Core database
+        env:
+          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_finance_test_ci
+        run: |
+          python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Grant test-only Finance Core runtime DML surface
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql \
+            -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner \
+            -d gymflow_finance_test_ci <<'SQL'
+          GRANT USAGE ON SCHEMA finance TO finance_test_runtime;
+          GRANT SELECT, INSERT, UPDATE, DELETE
+            ON ALL TABLES IN SCHEMA finance TO finance_test_runtime;
+          GRANT SELECT ON TABLE public.organizations TO finance_test_runtime;
+          SQL
+
+      - name: Prove isolated Finance Core runtime posture
+        run: |
+          PGPASSWORD="$FINANCE_RUNTIME_PASSWORD" psql \
+            -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U finance_test_runtime \
+            -d gymflow_finance_test_ci <<'SQL'
+          DO $$
+          DECLARE
+            runtime_record record;
+          BEGIN
+            SELECT * INTO runtime_record
+            FROM pg_catalog.pg_roles
+            WHERE rolname = current_user;
+
+            IF current_user <> 'finance_test_runtime' THEN
+              RAISE EXCEPTION 'unexpected Finance Core runtime identity';
+            END IF;
+            IF current_database() <> 'gymflow_finance_test_ci' THEN
+              RAISE EXCEPTION 'unexpected Finance Core runtime database';
+            END IF;
+            IF NOT runtime_record.rolcanlogin
+               OR runtime_record.rolsuper
+               OR runtime_record.rolcreatedb
+               OR runtime_record.rolcreaterole
+               OR runtime_record.rolinherit
+               OR runtime_record.rolreplication
+               OR runtime_record.rolbypassrls THEN
+              RAISE EXCEPTION 'Finance Core runtime role attributes are unsafe';
+            END IF;
+
+            IF EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_database
+              WHERE datname = current_database()
+                AND pg_catalog.pg_get_userbyid(datdba) = current_user
+            ) THEN
+              RAISE EXCEPTION 'Finance Core runtime owns its database';
+            END IF;
+
+            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE')
+               OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE')
+               OR pg_catalog.has_schema_privilege(current_user, 'finance', 'CREATE') THEN
+              RAISE EXCEPTION 'Finance Core runtime has object-creation capability';
+            END IF;
+
+            IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'SET')
+               OR pg_catalog.pg_has_role(current_user, 'app_user', 'SET') THEN
+              RAISE EXCEPTION 'Finance Core runtime may SET ROLE to an application group';
+            END IF;
+
+            IF NOT pg_catalog.has_schema_privilege(current_user, 'finance', 'USAGE') THEN
+              RAISE EXCEPTION 'Finance Core runtime lacks finance schema USAGE';
+            END IF;
+
+            IF EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_class AS relation_data
+              JOIN pg_catalog.pg_namespace AS namespace_data
+                ON namespace_data.oid = relation_data.relnamespace
+              WHERE namespace_data.nspname = 'finance'
+                AND relation_data.relkind IN ('r', 'p')
+                AND (
+                  NOT pg_catalog.has_table_privilege(
+                    current_user, relation_data.oid, 'SELECT'
+                  )
+                  OR NOT pg_catalog.has_table_privilege(
+                    current_user, relation_data.oid, 'INSERT'
+                  )
+                  OR NOT pg_catalog.has_table_privilege(
+                    current_user, relation_data.oid, 'UPDATE'
+                  )
+                  OR NOT pg_catalog.has_table_privilege(
+                    current_user, relation_data.oid, 'DELETE'
+                  )
+                )
+            ) THEN
+              RAISE EXCEPTION 'Finance Core runtime DML surface is incomplete';
+            END IF;
+
+            IF EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_class AS relation_data
+              JOIN pg_catalog.pg_namespace AS namespace_data
+                ON namespace_data.oid = relation_data.relnamespace
+              WHERE namespace_data.nspname = 'finance'
+                AND relation_data.relkind IN ('r', 'p')
+                AND pg_catalog.has_table_privilege(
+                  current_user, relation_data.oid, 'TRUNCATE'
+                )
+            ) THEN
+              RAISE EXCEPTION 'Finance Core runtime may TRUNCATE finance tables';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Run isolated Finance Core regressions fail-fast
+        run: |
+          python -m pytest -q --maxfail=1 tests/finance_core
