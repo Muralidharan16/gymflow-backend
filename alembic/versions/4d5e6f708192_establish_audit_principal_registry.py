@@ -21,9 +21,22 @@ The revision deliberately does not merge authentication domains or guess that
 two rows with the same email represent one person. That larger identity-domain
 convergence can happen independently. Here we make the currently supported
 coexistence explicit, typed, and referentially safe.
+
+Security ownership model
+------------------------
+Private trigger functions are owned by ``app_security_owner`` and PUBLIC has no
+EXECUTE privilege. PostgreSQL requires the role issuing CREATE TRIGGER to have
+EXECUTE on the trigger function. The tables are migration-owner objects, so this
+revision grants ``migration_owner`` EXECUTE only for the short trigger-creation
+window, immediately revokes it, and then validates the final ACL/owner/search
+path contract from pg_catalog. Because Alembic executes this revision inside one
+transaction, any error before revocation rolls the temporary grant back with the
+entire revision; no partial privilege elevation can survive a failed migration.
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 from alembic import op
 import sqlalchemy as sa
@@ -36,10 +49,22 @@ depends_on = None
 _MIGRATION_OWNER = "migration_owner"
 _SECURITY_OWNER = "app_security_owner"
 _ALLOWED_TYPES = ("owner", "organization_user", "legacy_gym_owner")
+_TRIGGER_FUNCTIONS = (
+    "app_private.register_audit_principal()",
+    "app_private.prevent_principal_identity_reassignment()",
+    "app_private.prevent_audit_principal_mutation()",
+)
 
 
 def _scalar(bind, sql: str, params=None):
     return bind.execute(sa.text(sql), params or {}).scalar_one()
+
+
+def _rows(bind, sql: str, params=None):
+    return [
+        dict(row)
+        for row in bind.execute(sa.text(sql), params or {}).mappings().all()
+    ]
 
 
 def _require_preflight(bind) -> None:
@@ -270,27 +295,160 @@ def _create_private_functions(bind) -> None:
                 """
             )
         )
-        bind.execute(
-            sa.text(
-                "REVOKE ALL ON FUNCTION app_private.register_audit_principal() FROM PUBLIC"
+        for signature in _TRIGGER_FUNCTIONS:
+            bind.execute(
+                sa.text(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC")
             )
-        )
-        bind.execute(
-            sa.text(
-                "REVOKE ALL ON FUNCTION app_private.prevent_principal_identity_reassignment() FROM PUBLIC"
-            )
-        )
-        bind.execute(
-            sa.text(
-                "REVOKE ALL ON FUNCTION app_private.prevent_audit_principal_mutation() FROM PUBLIC"
-            )
-        )
     finally:
         bind.execute(sa.text("RESET ROLE"))
         if not had_create:
             bind.execute(
                 sa.text("REVOKE CREATE ON SCHEMA app_private FROM app_security_owner")
             )
+
+
+def _grant_trigger_creation_execute(bind) -> None:
+    """Grant only the privilege PostgreSQL needs while CREATE TRIGGER executes."""
+    for signature in _TRIGGER_FUNCTIONS:
+        bind.execute(
+            sa.text(
+                f"GRANT EXECUTE ON FUNCTION {signature} TO {_MIGRATION_OWNER}"
+            )
+        )
+
+
+def _revoke_trigger_creation_execute(bind) -> None:
+    for signature in _TRIGGER_FUNCTIONS:
+        bind.execute(
+            sa.text(
+                f"REVOKE EXECUTE ON FUNCTION {signature} FROM {_MIGRATION_OWNER}"
+            )
+        )
+
+
+def _require_private_function_security_contract(bind) -> None:
+    rows = _rows(
+        bind,
+        """
+        SELECT
+            namespace.nspname::text AS schema_name,
+            procedure.proname::text AS function_name,
+            owner.rolname::text AS owner_name,
+            procedure.prosecdef AS security_definer,
+            procedure.proconfig AS configuration,
+            pg_catalog.has_function_privilege(
+                CAST(:migration_owner AS name),
+                procedure.oid,
+                'EXECUTE'
+            ) AS migration_owner_execute,
+            EXISTS (
+                SELECT 1
+                FROM pg_catalog.aclexplode(
+                    COALESCE(
+                        procedure.proacl,
+                        pg_catalog.acldefault('f', procedure.proowner)
+                    )
+                ) AS acl
+                WHERE acl.grantee = 0
+                  AND acl.privilege_type = 'EXECUTE'
+            ) AS public_execute
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        JOIN pg_catalog.pg_roles AS owner
+          ON owner.oid = procedure.proowner
+        WHERE namespace.nspname = 'app_private'
+          AND procedure.proname = ANY(:function_names)
+          AND procedure.pronargs = 0
+        ORDER BY procedure.proname
+        """,
+        {
+            "migration_owner": _MIGRATION_OWNER,
+            "function_names": [
+                "prevent_audit_principal_mutation",
+                "prevent_principal_identity_reassignment",
+                "register_audit_principal",
+            ],
+        },
+    )
+    expected_names = {
+        "prevent_audit_principal_mutation",
+        "prevent_principal_identity_reassignment",
+        "register_audit_principal",
+    }
+    if {row["function_name"] for row in rows} != expected_names:
+        raise RuntimeError(
+            "Audit-principal private function set is incomplete or duplicated: "
+            f"{rows!r}."
+        )
+    for row in rows:
+        if row["owner_name"] != _SECURITY_OWNER:
+            raise RuntimeError(
+                "Audit-principal trigger function ownership drifted: "
+                f"{row!r}."
+            )
+        if row["security_definer"] is not True:
+            raise RuntimeError(
+                "Audit-principal trigger function lost SECURITY DEFINER: "
+                f"{row!r}."
+            )
+        if row["configuration"] != ["search_path=pg_catalog"]:
+            raise RuntimeError(
+                "Audit-principal trigger function search_path drifted: "
+                f"{row!r}."
+            )
+        if row["migration_owner_execute"] is not False:
+            raise RuntimeError(
+                "Temporary migration_owner EXECUTE privilege was not revoked: "
+                f"{row!r}."
+            )
+        if row["public_execute"] is not False:
+            raise RuntimeError(
+                "PUBLIC unexpectedly retains EXECUTE on a private trigger function: "
+                f"{row!r}."
+            )
+
+
+def _create_principal_triggers(bind) -> None:
+    # The grant and every CREATE TRIGGER below are in the same Alembic/PostgreSQL
+    # transaction. If any CREATE TRIGGER fails, the transaction rollback removes
+    # the temporary grants automatically. On the success path we revoke them
+    # immediately and verify the final ACL before continuing.
+    _grant_trigger_creation_execute(bind)
+
+    bind.execute(
+        sa.text(
+            "CREATE TRIGGER trg_audit_principals_immutable "
+            "BEFORE UPDATE OR DELETE ON public.audit_principals "
+            "FOR EACH ROW EXECUTE FUNCTION "
+            "app_private.prevent_audit_principal_mutation()"
+        )
+    )
+
+    for table_name, principal_type in (
+        ("owners", "owner"),
+        ("organization_users", "organization_user"),
+        ("gym_owners", "legacy_gym_owner"),
+    ):
+        bind.execute(
+            sa.text(
+                f"CREATE TRIGGER trg_register_audit_principal_{table_name} "
+                f"AFTER INSERT ON public.{table_name} FOR EACH ROW "
+                "EXECUTE FUNCTION app_private.register_audit_principal"
+                f"('{principal_type}')"
+            )
+        )
+        bind.execute(
+            sa.text(
+                f"CREATE TRIGGER trg_prevent_principal_reassignment_{table_name} "
+                f"BEFORE UPDATE OF id, org_id ON public.{table_name} FOR EACH ROW "
+                "EXECUTE FUNCTION "
+                "app_private.prevent_principal_identity_reassignment()"
+            )
+        )
+
+    _revoke_trigger_creation_execute(bind)
+    _require_private_function_security_contract(bind)
 
 
 def _replace_address_snapshot_functions(bind, *, typed: bool) -> None:
@@ -445,6 +603,35 @@ def _replace_address_snapshot_functions(bind, *, typed: bool) -> None:
     )
 
 
+def _add_validated_check(
+    table_name: str,
+    constraint_name: str,
+    definition: str,
+) -> None:
+    op.execute(
+        f"ALTER TABLE public.{table_name} ADD CONSTRAINT "
+        f"{constraint_name} {definition} NOT VALID"
+    )
+    op.execute(
+        f"ALTER TABLE public.{table_name} VALIDATE CONSTRAINT {constraint_name}"
+    )
+
+
+def _add_validated_principal_fk(
+    table_name: str,
+    constraint_name: str,
+    columns: str,
+) -> None:
+    op.execute(
+        f"ALTER TABLE public.{table_name} ADD CONSTRAINT {constraint_name} "
+        f"FOREIGN KEY ({columns}) REFERENCES public.audit_principals "
+        "(principal_id, org_id, principal_type) ON DELETE RESTRICT NOT VALID"
+    )
+    op.execute(
+        f"ALTER TABLE public.{table_name} VALIDATE CONSTRAINT {constraint_name}"
+    )
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     _require_preflight(bind)
@@ -593,56 +780,51 @@ def upgrade() -> None:
         "DROP CONSTRAINT IF EXISTS organization_addresses_deleted_by_fkey"
     )
 
-    # NOT VALID keeps the blocking phase small on large history tables; validation
-    # is explicit and completes before the revision is marked applied.
-    constraint_sql = (
+    for table_name, constraint_name, expression in (
         (
             "branch_address_history",
             "ck_branch_address_history_actor_pair",
-            "CHECK ((changed_by IS NULL AND changed_by_type IS NULL) OR "
-            "(changed_by IS NOT NULL AND changed_by_type IS NOT NULL)) NOT VALID",
+            "(changed_by IS NULL AND changed_by_type IS NULL) OR "
+            "(changed_by IS NOT NULL AND changed_by_type IS NOT NULL)",
         ),
         (
             "branch_address_history",
             "ck_branch_address_history_actor_type",
-            "CHECK (changed_by_type IS NULL OR changed_by_type IN "
-            "('owner','organization_user','legacy_gym_owner')) NOT VALID",
+            "changed_by_type IS NULL OR changed_by_type IN "
+            "('owner','organization_user','legacy_gym_owner')",
         ),
         (
             "branch_address_audit_log",
             "ck_branch_address_audit_actor_pair",
-            "CHECK ((changed_by IS NULL AND changed_by_type IS NULL) OR "
-            "(changed_by IS NOT NULL AND changed_by_type IS NOT NULL)) NOT VALID",
+            "(changed_by IS NULL AND changed_by_type IS NULL) OR "
+            "(changed_by IS NOT NULL AND changed_by_type IS NOT NULL)",
         ),
         (
             "branch_address_audit_log",
             "ck_branch_address_audit_actor_type",
-            "CHECK (changed_by_type IS NULL OR changed_by_type IN "
-            "('owner','organization_user','legacy_gym_owner')) NOT VALID",
+            "changed_by_type IS NULL OR changed_by_type IN "
+            "('owner','organization_user','legacy_gym_owner')",
         ),
         (
             "organization_addresses",
             "ck_organization_addresses_deleted_actor_pair",
-            "CHECK ((deleted_by IS NULL AND deleted_by_type IS NULL) OR "
-            "(deleted_by IS NOT NULL AND deleted_by_type IS NOT NULL)) NOT VALID",
+            "(deleted_by IS NULL AND deleted_by_type IS NULL) OR "
+            "(deleted_by IS NOT NULL AND deleted_by_type IS NOT NULL)",
         ),
         (
             "organization_addresses",
             "ck_organization_addresses_deleted_actor_type",
-            "CHECK (deleted_by_type IS NULL OR deleted_by_type IN "
-            "('owner','organization_user','legacy_gym_owner')) NOT VALID",
+            "deleted_by_type IS NULL OR deleted_by_type IN "
+            "('owner','organization_user','legacy_gym_owner')",
         ),
-    )
-    for table_name, constraint_name, definition in constraint_sql:
-        op.execute(
-            f"ALTER TABLE public.{table_name} ADD CONSTRAINT "
-            f"{constraint_name} {definition}"
-        )
-        op.execute(
-            f"ALTER TABLE public.{table_name} VALIDATE CONSTRAINT {constraint_name}"
+    ):
+        _add_validated_check(
+            table_name,
+            constraint_name,
+            f"CHECK ({expression})",
         )
 
-    fk_sql = (
+    for table_name, constraint_name, columns in (
         (
             "branch_address_history",
             "fk_branch_address_history_audit_principal",
@@ -658,41 +840,11 @@ def upgrade() -> None:
             "fk_organization_addresses_deleted_audit_principal",
             "deleted_by, org_id, deleted_by_type",
         ),
-    )
-    for table_name, constraint_name, columns in fk_sql:
-        op.execute(
-            f"ALTER TABLE public.{table_name} ADD CONSTRAINT {constraint_name} "
-            f"FOREIGN KEY ({columns}) REFERENCES public.audit_principals "
-            "(principal_id, org_id, principal_type) ON DELETE RESTRICT NOT VALID"
-        )
-        op.execute(
-            f"ALTER TABLE public.{table_name} VALIDATE CONSTRAINT {constraint_name}"
-        )
+    ):
+        _add_validated_principal_fk(table_name, constraint_name, columns)
 
     _create_private_functions(bind)
-
-    op.execute(
-        "CREATE TRIGGER trg_audit_principals_immutable "
-        "BEFORE UPDATE OR DELETE ON public.audit_principals "
-        "FOR EACH ROW EXECUTE FUNCTION app_private.prevent_audit_principal_mutation()"
-    )
-
-    for table_name, principal_type in (
-        ("owners", "owner"),
-        ("organization_users", "organization_user"),
-        ("gym_owners", "legacy_gym_owner"),
-    ):
-        op.execute(
-            f"CREATE TRIGGER trg_register_audit_principal_{table_name} "
-            f"AFTER INSERT ON public.{table_name} FOR EACH ROW "
-            f"EXECUTE FUNCTION app_private.register_audit_principal('{principal_type}')"
-        )
-        op.execute(
-            f"CREATE TRIGGER trg_prevent_principal_reassignment_{table_name} "
-            f"BEFORE UPDATE OF id, org_id ON public.{table_name} FOR EACH ROW "
-            "EXECUTE FUNCTION app_private.prevent_principal_identity_reassignment()"
-        )
-
+    _create_principal_triggers(bind)
     _replace_address_snapshot_functions(bind, typed=True)
 
 
@@ -751,7 +903,8 @@ def downgrade() -> None:
             f"ON public.{table_name}"
         )
     op.execute(
-        "DROP TRIGGER IF EXISTS trg_audit_principals_immutable ON public.audit_principals"
+        "DROP TRIGGER IF EXISTS trg_audit_principals_immutable "
+        "ON public.audit_principals"
     )
 
     for table_name, constraint_name in (
@@ -766,7 +919,8 @@ def downgrade() -> None:
         ("organization_addresses", "ck_organization_addresses_deleted_actor_type"),
     ):
         op.execute(
-            f"ALTER TABLE public.{table_name} DROP CONSTRAINT IF EXISTS {constraint_name}"
+            f"ALTER TABLE public.{table_name} "
+            f"DROP CONSTRAINT IF EXISTS {constraint_name}"
         )
 
     op.drop_column("organization_addresses", "deleted_by_type")
@@ -800,12 +954,18 @@ def downgrade() -> None:
     bind.execute(sa.text("SET LOCAL ROLE app_security_owner"))
     try:
         bind.execute(
-            sa.text("DROP FUNCTION app_private.prevent_audit_principal_mutation()")
+            sa.text(
+                "DROP FUNCTION app_private.prevent_audit_principal_mutation()"
+            )
         )
         bind.execute(
-            sa.text("DROP FUNCTION app_private.prevent_principal_identity_reassignment()")
+            sa.text(
+                "DROP FUNCTION app_private.prevent_principal_identity_reassignment()"
+            )
         )
-        bind.execute(sa.text("DROP FUNCTION app_private.register_audit_principal()"))
+        bind.execute(
+            sa.text("DROP FUNCTION app_private.register_audit_principal()")
+        )
     finally:
         bind.execute(sa.text("RESET ROLE"))
         if not had_create:
