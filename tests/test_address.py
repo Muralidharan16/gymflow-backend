@@ -329,22 +329,23 @@ def test_spatial_and_filtering_indexes_exist() -> None:
 # =====================================================================
 
 @pytest.mark.asyncio
-async def test_audit_log_captured_on_update() -> None:
+async def test_audit_log_captured_on_update(admin_db_session) -> None:
     """
     Validates that typed actor provenance and tenant context survive transaction
     boundaries while address triggers record immutable audit snapshots.
+
+    Tenant-root fixture creation is an administrative test setup capability. The
+    branch/address/audit behavior itself remains on the reduced application
+    runtime identity so this test cannot hide an RLS or DML privilege defect.
     """
     from app.core.database import AsyncSessionLocal, update_session_context
 
+    org_id = uuid.uuid4()
+    from app.models.organization import Organization
+    admin_db_session.add(Organization(id=org_id, name="Test Gym Org"))
+    await admin_db_session.commit()
+
     async with AsyncSessionLocal() as db:
-        org_id = uuid.uuid4()
-
-        # Seed an organization first. organizations is not tenant-RLS scoped.
-        from app.models.organization import Organization
-        org = Organization(id=org_id, name="Test Gym Org")
-        db.add(org)
-        await db.commit()
-
         # The session owns tenant context. The after_begin hook re-applies it to
         # every transaction, so a commit cannot silently drop the RLS boundary.
         await update_session_context(db, org_id=str(org_id))
