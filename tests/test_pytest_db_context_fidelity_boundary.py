@@ -3,6 +3,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+from sqlalchemy.engine import make_url
+
 
 CONFTEST = Path("tests/conftest.py")
 PRODUCTION_DB = Path("app/core/database.py")
@@ -16,11 +19,26 @@ def _function(path: Path, name: str) -> ast.AsyncFunctionDef:
     raise AssertionError(f"missing async function {name} in {path}")
 
 
+def _sync_function(path: Path, name: str) -> ast.FunctionDef:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"missing function {name} in {path}")
+
+
 def _source_segment(path: Path, node: ast.AST) -> str:
     source = path.read_text(encoding="utf-8")
     segment = ast.get_source_segment(source, node)
     assert segment is not None
     return segment
+
+
+def _load_test_url_validator():
+    node = _sync_function(CONFTEST, "validate_test_database_url")
+    namespace = {"make_url": make_url}
+    exec(_source_segment(CONFTEST, node), namespace)
+    return namespace["validate_test_database_url"]
 
 
 def test_pytest_db_override_requires_fastapi_request_injection() -> None:
@@ -66,3 +84,52 @@ def test_pytest_db_override_does_not_bypass_rls_or_impersonate_privileged_roles(
     )
     for token in forbidden:
         assert token not in override
+
+
+def test_test_url_validator_allows_same_disposable_db_with_distinct_identity() -> None:
+    validate = _load_test_url_validator()
+    runtime = (
+        "postgresql+asyncpg://finance_test_runtime:runtime@127.0.0.1:5432/"
+        "gymflow_finance_test_ci"
+    )
+    migration = (
+        "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/"
+        "gymflow_finance_test_ci"
+    )
+
+    assert validate(runtime, migration) == runtime
+
+
+def test_test_url_validator_rejects_same_identity_on_shared_disposable_db() -> None:
+    validate = _load_test_url_validator()
+    runtime = (
+        "postgresql+asyncpg://migration_owner:runtime@127.0.0.1:5432/"
+        "gymflow_finance_test_ci"
+    )
+    migration = (
+        "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/"
+        "gymflow_finance_test_ci"
+    )
+
+    with pytest.raises(RuntimeError, match="distinct runtime identity"):
+        validate(runtime, migration)
+
+
+def test_test_url_validator_rejects_exact_database_url_reuse() -> None:
+    validate = _load_test_url_validator()
+    url = (
+        "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/"
+        "gymflow_test"
+    )
+
+    with pytest.raises(RuntimeError, match="exact DATABASE_URL reuse"):
+        validate(url, url)
+
+
+def test_test_url_validator_still_rejects_non_test_database() -> None:
+    validate = _load_test_url_validator()
+    runtime = "postgresql+asyncpg://app_runtime:runtime@127.0.0.1:5432/gymflow"
+    migration = "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/gymflow"
+
+    with pytest.raises(RuntimeError, match="must contain 'test'"):
+        validate(runtime, migration)
