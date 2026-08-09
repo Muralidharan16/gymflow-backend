@@ -32,7 +32,6 @@ _CANONICAL_SPATIAL_INDEXES = (
         "idx_member_addresses_coordinates",
     ),
 )
-_REDUNDANT_ORG_INDEX = "idx_org_addresses_coordinates"
 
 
 def _postgis_enabled(bind) -> bool:
