@@ -45,7 +45,6 @@ def _enable_rls(table_name: str) -> None:
 
 
 def upgrade() -> None:
-    op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
     op.execute("CREATE EXTENSION IF NOT EXISTS btree_gist;")
 
     op.execute(

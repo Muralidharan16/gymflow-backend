@@ -40,14 +40,43 @@ def upgrade() -> None:
         op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm;")
 
     # RBAC Roles
-    op.execute('''
-    DO $$ 
-    BEGIN 
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'branch_admin') THEN CREATE ROLE branch_admin; END IF;
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'branch_viewer') THEN CREATE ROLE branch_viewer; END IF;
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ops_support') THEN CREATE ROLE ops_support WITH BYPASSRLS NOLOGIN; END IF;
-    END $$;
-    ''')
+    op.execute(r"""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM (VALUES
+                ('branch_admin'),
+                ('branch_viewer'),
+                ('ops_support')
+                ) AS required(role_name)
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_roles AS role_data
+                    WHERE role_data.rolname = required.role_name
+                )
+            ) THEN
+                RAISE EXCEPTION
+                    'Required managed cluster roles are missing; security/cluster_role_bootstrap contract must be applied before Alembic migrations.';
+            END IF;
+
+            IF EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_roles AS role_data
+                WHERE role_data.rolname IN ('branch_admin', 'branch_viewer', 'ops_support')
+                  AND (
+                        role_data.rolsuper
+                     OR role_data.rolbypassrls
+                     OR role_data.rolcanlogin
+                     OR role_data.rolinherit
+                  )
+            ) THEN
+                RAISE EXCEPTION
+                    'Managed cluster role attributes violate the approved security/cluster_role_bootstrap contract.';
+            END IF;
+        END
+        $$;
+    """)
 
     # Drop view temporarily to allow altering column types
     op.execute("DROP VIEW IF EXISTS v_active_org_branches;")

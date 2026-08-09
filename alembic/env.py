@@ -1,3 +1,4 @@
+import os
 import asyncio
 from logging.config import fileConfig
 
@@ -10,7 +11,7 @@ from alembic import context
 from app.models import Base  # noqa: F401
 import app.finance_core.models  # noqa: F401
 import app.platform_billing.models  # noqa: F401
-from app.core.config import settings
+
 
 config = context.config
 
@@ -19,11 +20,19 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# Override sqlalchemy.url from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
+# Override sqlalchemy.url from the required DATABASE_URL environment variable
+database_url = os.environ.get("DATABASE_URL")
+if not database_url or not database_url.strip():
+    raise RuntimeError(
+        "DATABASE_URL is required for Alembic migrations."
+    )
+
+config.set_main_option(
+    "sqlalchemy.url",
+    database_url.replace("%", "%%"),
+)
 
 
-import os
 import sys
 
 def check_destructive_migrations() -> None:

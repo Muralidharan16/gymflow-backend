@@ -14,7 +14,6 @@ from sqlalchemy.orm.attributes import get_history
 import geoalchemy2
 
 from app.models.base import Base, TimestampMixin, new_uuid
-from app.tasks.geocoding import geocode_address_task
 
 class AddressType(str, enum.Enum):
     registered = "registered"
