@@ -18,6 +18,7 @@ from app.finance_core.domain.invoice_engine import (
     IssueInvoiceCommand,
 )
 from app.finance_core.services.invoice_engine import FinanceInvoiceEngine
+from tests.finance_core.admin_database import finance_admin_session
 
 
 ORG_ID = uuid.UUID("91000000-0000-0000-0000-000000000901")
@@ -31,7 +32,7 @@ FY = "2425"
 
 
 async def cleanup_finance_tables() -> None:
-    async with AsyncSessionLocal() as session:
+    async with finance_admin_session() as session:
         await session.execute(
             text(
                 """
@@ -73,7 +74,7 @@ async def cleanup_finance_tables() -> None:
 
 async def seed_master_data(*, buyer_state_code: str = "33", b2b: bool = False) -> uuid.UUID:
     await cleanup_finance_tables()
-    async with AsyncSessionLocal() as session:
+    async with finance_admin_session() as session:
         params = {
             "legal_entity_id": LEGAL_ENTITY_ID,
             "gst_registration_id": GST_REGISTRATION_ID,
