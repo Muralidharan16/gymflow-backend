@@ -11,10 +11,15 @@ on:
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: migration-hardening-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  HARDENING_PR_NUMBER: '2'
 
 jobs:
   static-hardening-contracts:
@@ -24,21 +29,27 @@ jobs:
 
     steps:
       - name: Checkout
+        id: checkout
         uses: actions/checkout@v4
 
       - name: Set up Python 3.12
+        id: python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
 
       - name: Install test tooling
+        id: tooling
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pytest pytest-asyncio
+          set -o pipefail
+          python -m pip install --upgrade pip 2>&1 | tee /tmp/static-tooling.log
+          python -m pip install pytest pytest-asyncio 2>&1 | tee -a /tmp/static-tooling.log
 
       - name: Compile hardened migration surface
+        id: compile
         run: |
+          set -o pipefail
           python -m py_compile \
             alembic/env.py \
             alembic/versions/0020_contacts_hardened.py \
@@ -52,12 +63,15 @@ jobs:
             alembic/versions/0029_rbac_p8_contract.py \
             alembic/versions/a1b2c3d4e5f6_rbac_hardening_phase_15_to_18.py \
             alembic/versions/dafd2b02005e_add_branch_staff_roles_deactivation_.py \
-            alembic/versions/361c32e72e93_add_geo_fields_to_branches.py
+            alembic/versions/361c32e72e93_add_geo_fields_to_branches.py \
+            2>&1 | tee /tmp/static-compile.log
 
       - name: Run migration hardening static regressions
+        id: static_tests
         env:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
         run: |
+          set -o pipefail
           python -m pytest --noconftest -q \
             tests/test_0027_complete_owner_context_boundary.py \
             tests/test_alembic_env_config_boundary.py \
@@ -67,7 +81,57 @@ jobs:
             tests/test_migration_app_secure_owner_context_boundary.py \
             tests/test_migration_managed_role_boundary.py \
             tests/test_migration_shared_infrastructure_boundary.py \
-            tests/test_rbac_expand_contract_root_cause.py
+            tests/test_rbac_expand_contract_root_cause.py \
+            2>&1 | tee /tmp/static-tests.log
+
+      - name: Report static hardening result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          PYTHON_OUTCOME: ${{ steps.python.outcome }}
+          TOOLING_OUTCOME: ${{ steps.tooling.outcome }}
+          COMPILE_OUTCOME: ${{ steps.compile.outcome }}
+          TEST_OUTCOME: ${{ steps.static_tests.outcome }}
+        run: |
+          python3 - <<'PY' >/tmp/static-report.json
+          import json, os
+          from pathlib import Path
+
+          def tail(path, limit=80):
+              p = Path(path)
+              if not p.exists():
+                  return "(no captured log)"
+              lines = p.read_text(errors="replace").splitlines()
+              return "\n".join(lines[-limit:])
+
+          outcomes = {
+              "checkout": os.environ.get("CHECKOUT_OUTCOME", "unknown"),
+              "python": os.environ.get("PYTHON_OUTCOME", "unknown"),
+              "tooling": os.environ.get("TOOLING_OUTCOME", "unknown"),
+              "compile": os.environ.get("COMPILE_OUTCOME", "unknown"),
+              "static_tests": os.environ.get("TEST_OUTCOME", "unknown"),
+          }
+          log = tail("/tmp/static-tests.log")
+          if outcomes["static_tests"] in {"skipped", "unknown"}:
+              log = tail("/tmp/static-compile.log") + "\n" + tail("/tmp/static-tooling.log")
+          body = (
+              "### Migration Hardening CI — static contracts\n"
+              f"Commit: `{os.environ.get('GITHUB_SHA', '')}`\n\n"
+              f"Outcomes: `{json.dumps(outcomes, sort_keys=True)}`\n\n"
+              "<details><summary>Captured tail</summary>\n\n```text\n"
+              + log[:12000]
+              + "\n```\n</details>"
+          )
+          print(json.dumps({"body": body}))
+          PY
+          curl --fail-with-body -sS -L \
+            -X POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$HARDENING_PR_NUMBER/comments" \
+            --data-binary @/tmp/static-report.json
 
   fresh-lineage-and-regressions:
     name: Fresh PG16 lineage and full regressions
@@ -101,38 +165,48 @@ jobs:
 
     steps:
       - name: Checkout
+        id: checkout
         uses: actions/checkout@v4
 
       - name: Set up Python 3.12
+        id: python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
 
       - name: Install Python dependencies
+        id: dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install pytest pytest-asyncio
+          set -o pipefail
+          python -m pip install --upgrade pip 2>&1 | tee /tmp/dependencies.log
+          python -m pip install -r requirements.txt 2>&1 | tee -a /tmp/dependencies.log
+          python -m pip install pytest pytest-asyncio 2>&1 | tee -a /tmp/dependencies.log
 
       - name: Install PostgreSQL 16 extension packages
+        id: postgres_packages
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            postgresql-16 \
-            postgresql-client-16 \
-            postgresql-contrib \
-            postgresql-16-partman \
-            postgresql-16-postgis-3
-          sudo systemctl start postgresql
-          pg_config --version
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
-          test -f /usr/share/postgresql/16/extension/pg_partman.control
-          cat /usr/share/postgresql/16/extension/pg_partman.control
+          set -o pipefail
+          {
+            sudo apt-get update
+            sudo apt-get install -y \
+              postgresql-16 \
+              postgresql-client-16 \
+              postgresql-contrib \
+              postgresql-16-partman \
+              postgresql-16-postgis-3
+            sudo systemctl start postgresql
+            pg_config --version
+            sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+            test -f /usr/share/postgresql/16/extension/pg_partman.control
+            cat /usr/share/postgresql/16/extension/pg_partman.control
+          } 2>&1 | tee /tmp/postgres-packages.log
 
       - name: Bootstrap reduced migration roles and databases
+        id: bootstrap
         run: |
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          set -o pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres 2>&1 <<'SQL' | tee /tmp/bootstrap.log
           CREATE ROLE migration_owner
             LOGIN PASSWORD 'ci-migration-owner'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
@@ -187,9 +261,12 @@ jobs:
           SQL
 
       - name: Provision infrastructure-owned extensions
+        id: extensions
         run: |
-          for database in gymflow_migration_test gymflow_test; do
-            sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$database" <<'SQL'
+          set -o pipefail
+          {
+            for database in gymflow_migration_test gymflow_test; do
+              sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$database" <<'SQL'
           CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
           CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
           CREATE EXTENSION IF NOT EXISTS btree_gist;
@@ -207,14 +284,17 @@ jobs:
           GRANT EXECUTE
             ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
           SQL
-          done
+            done
+          } 2>&1 | tee /tmp/extensions.log
 
       - name: Prove migration role is reduced
+        id: reduced_role
         run: |
+          set -o pipefail
           PGPASSWORD="$MIGRATION_PASSWORD" psql \
             -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner \
-            -d gymflow_migration_test <<'SQL'
+            -d gymflow_migration_test 2>&1 <<'SQL' | tee /tmp/reduced-role.log
           SELECT
             current_user,
             rolsuper,
@@ -247,15 +327,90 @@ jobs:
           SQL
 
       - name: Fresh Alembic lineage on migration database
+        id: migration_lineage
         run: |
-          python -s -m alembic -c alembic.ini upgrade head
+          set -o pipefail
+          python -s -m alembic -c alembic.ini upgrade head 2>&1 | tee /tmp/migration-lineage.log
 
       - name: Fresh Alembic lineage on test database
+        id: test_lineage
         env:
           DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
         run: |
-          python -s -m alembic -c alembic.ini upgrade head
+          set -o pipefail
+          python -s -m alembic -c alembic.ini upgrade head 2>&1 | tee /tmp/test-lineage.log
 
       - name: Run full regression suite
+        id: regression
         run: |
-          python -m pytest -q
+          set -o pipefail
+          python -m pytest -q 2>&1 | tee /tmp/full-regression.log
+
+      - name: Report runtime hardening result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          PYTHON_OUTCOME: ${{ steps.python.outcome }}
+          DEPENDENCIES_OUTCOME: ${{ steps.dependencies.outcome }}
+          PACKAGES_OUTCOME: ${{ steps.postgres_packages.outcome }}
+          BOOTSTRAP_OUTCOME: ${{ steps.bootstrap.outcome }}
+          EXTENSIONS_OUTCOME: ${{ steps.extensions.outcome }}
+          REDUCED_ROLE_OUTCOME: ${{ steps.reduced_role.outcome }}
+          MIGRATION_OUTCOME: ${{ steps.migration_lineage.outcome }}
+          TEST_LINEAGE_OUTCOME: ${{ steps.test_lineage.outcome }}
+          REGRESSION_OUTCOME: ${{ steps.regression.outcome }}
+        run: |
+          python3 - <<'PY' >/tmp/runtime-report.json
+          import json, os
+          from pathlib import Path
+
+          stages = [
+              ("checkout", os.environ.get("CHECKOUT_OUTCOME"), None),
+              ("python", os.environ.get("PYTHON_OUTCOME"), None),
+              ("dependencies", os.environ.get("DEPENDENCIES_OUTCOME"), "/tmp/dependencies.log"),
+              ("postgres_packages", os.environ.get("PACKAGES_OUTCOME"), "/tmp/postgres-packages.log"),
+              ("bootstrap", os.environ.get("BOOTSTRAP_OUTCOME"), "/tmp/bootstrap.log"),
+              ("extensions", os.environ.get("EXTENSIONS_OUTCOME"), "/tmp/extensions.log"),
+              ("reduced_role", os.environ.get("REDUCED_ROLE_OUTCOME"), "/tmp/reduced-role.log"),
+              ("migration_lineage", os.environ.get("MIGRATION_OUTCOME"), "/tmp/migration-lineage.log"),
+              ("test_lineage", os.environ.get("TEST_LINEAGE_OUTCOME"), "/tmp/test-lineage.log"),
+              ("regression", os.environ.get("REGRESSION_OUTCOME"), "/tmp/full-regression.log"),
+          ]
+          outcomes = {name: outcome or "unknown" for name, outcome, _ in stages}
+          selected = []
+          for name, outcome, path in stages:
+              if outcome == "failure" and path:
+                  selected.append((name, path))
+          if not selected:
+              for name, outcome, path in reversed(stages):
+                  if path and outcome not in {None, "skipped", "unknown"}:
+                      selected.append((name, path))
+                      break
+
+          excerpts = []
+          for name, path in selected:
+              p = Path(path)
+              text = "(no captured log)"
+              if p.exists():
+                  lines = p.read_text(errors="replace").splitlines()
+                  text = "\n".join(lines[-120:])
+              excerpts.append(f"[{name}]\n{text}")
+
+          body = (
+              "### Migration Hardening CI — runtime lineage/regressions\n"
+              f"Commit: `{os.environ.get('GITHUB_SHA', '')}`\n\n"
+              f"Outcomes: `{json.dumps(outcomes, sort_keys=True)}`\n\n"
+              "<details><summary>Failure/current-stage tail</summary>\n\n```text\n"
+              + "\n\n".join(excerpts)[:18000]
+              + "\n```\n</details>"
+          )
+          print(json.dumps({"body": body}))
+          PY
+          curl --fail-with-body -sS -L \
+            -X POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$HARDENING_PR_NUMBER/comments" \
+            --data-binary @/tmp/runtime-report.json
