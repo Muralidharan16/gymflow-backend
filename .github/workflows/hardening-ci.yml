@@ -41,8 +41,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pip install --upgrade pip 2>&1 | tee /tmp/static-tooling.log
-          python -m pip install -r requirements.txt 2>&1 | tee -a /tmp/static-tooling.log
-          python -m pip install pytest pytest-asyncio 2>&1 | tee -a /tmp/static-tooling.log
+          python -m pip install -r requirements-test.txt 2>&1 | tee -a /tmp/static-tooling.log
 
       - name: Compile hardened migration surface
         id: compile
@@ -62,7 +61,9 @@ jobs:
             alembic/versions/a1b2c3d4e5f6_rbac_hardening_phase_15_to_18.py \
             alembic/versions/dafd2b02005e_add_branch_staff_roles_deactivation_.py \
             alembic/versions/66a95af89112_init_partman_for_branch_lifecycle_events.py \
+            alembic/versions/371b1a44a333_add_spatial_and_filtering_indexes.py \
             alembic/versions/361c32e72e93_add_geo_fields_to_branches.py \
+            app/core/database.py \
             2>&1 | tee /tmp/static-compile.log
 
       - name: Run migration hardening static regressions
@@ -74,6 +75,8 @@ jobs:
           python -m pytest --noconftest -q \
             tests/test_0027_complete_owner_context_boundary.py \
             tests/test_66a_pg_partman_boundary.py \
+            tests/test_371b333_spatial_index_lineage.py \
+            tests/test_database_sync_driver_boundary.py \
             tests/test_alembic_env_config_boundary.py \
             tests/test_alembic_model_import_boundary.py \
             tests/test_dafd_app_private_owner_context_boundary.py \
@@ -183,8 +186,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pip install --upgrade pip 2>&1 | tee /tmp/dependencies.log
-          python -m pip install -r requirements.txt 2>&1 | tee -a /tmp/dependencies.log
-          python -m pip install pytest pytest-asyncio 2>&1 | tee -a /tmp/dependencies.log
+          python -m pip install -r requirements-test.txt 2>&1 | tee -a /tmp/dependencies.log
 
       - name: Install PostgreSQL 16 extension packages
         id: postgres_packages
