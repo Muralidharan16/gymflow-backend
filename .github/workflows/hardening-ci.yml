@@ -1,0 +1,258 @@
+name: Migration Hardening CI
+
+on:
+  push:
+    branches:
+      - hardening/complete-migration-lineage
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-hardening-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-hardening-contracts:
+    name: Static hardening contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install test tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-asyncio
+
+      - name: Compile hardened migration surface
+        run: |
+          python -m py_compile \
+            alembic/env.py \
+            alembic/versions/0020_contacts_hardened.py \
+            alembic/versions/0021_staff_roles.py \
+            alembic/versions/0022_rbac_phase1_roles_extensions.py \
+            alembic/versions/0024_rbac_p3_org_members.py \
+            alembic/versions/0025_rbac_p4_bsr_expand.py \
+            alembic/versions/0026_rbac_p5_audit_log.py \
+            alembic/versions/0027_rbac_p6_perm_snapshots.py \
+            alembic/versions/0028_rbac_p7_role_events.py \
+            alembic/versions/0029_rbac_p8_contract.py \
+            alembic/versions/a1b2c3d4e5f6_rbac_hardening_phase_15_to_18.py \
+            alembic/versions/dafd2b02005e_add_branch_staff_roles_deactivation_.py \
+            alembic/versions/361c32e72e93_add_geo_fields_to_branches.py
+
+      - name: Run migration hardening static regressions
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          python -m pytest --noconftest -q \
+            tests/test_0027_complete_owner_context_boundary.py \
+            tests/test_alembic_env_config_boundary.py \
+            tests/test_alembic_model_import_boundary.py \
+            tests/test_dafd_app_private_owner_context_boundary.py \
+            tests/test_migration_app_private_owner_context_boundary.py \
+            tests/test_migration_app_secure_owner_context_boundary.py \
+            tests/test_migration_managed_role_boundary.py \
+            tests/test_migration_shared_infrastructure_boundary.py \
+            tests/test_rbac_expand_contract_root_cause.py
+
+  fresh-lineage-and-regressions:
+    name: Fresh PG16 lineage and full regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
+      TEST_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest pytest-asyncio
+
+      - name: Install PostgreSQL 16 extension packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+          test -f /usr/share/postgresql/16/extension/pg_partman.control
+          cat /usr/share/postgresql/16/extension/pg_partman.control
+
+      - name: Bootstrap reduced migration roles and databases
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          CREATE ROLE migration_owner
+            LOGIN PASSWORD 'ci-migration-owner'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          CREATE ROLE app_rls_executor
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_security_owner
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_runtime
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_user
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE audit_writer
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_admin
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_viewer
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE internal_billing_worker
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE ops_support
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE readonly_analytics
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE test_runner
+            LOGIN PASSWORD 'ci-test-runner'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_runtime SET statement_timeout = '5s';
+          ALTER ROLE app_runtime SET lock_timeout = '2s';
+          ALTER ROLE app_runtime SET row_security = 'on';
+
+          GRANT app_rls_executor TO migration_owner
+            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+          GRANT app_security_owner TO migration_owner
+            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+
+          CREATE DATABASE gymflow_migration_test OWNER migration_owner;
+          CREATE DATABASE gymflow_test OWNER migration_owner;
+          SQL
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          for database in gymflow_migration_test gymflow_test; do
+            sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$database" <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE
+            ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE
+            ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE
+            ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE
+            ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+          done
+
+      - name: Prove migration role is reduced
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql \
+            -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner \
+            -d gymflow_migration_test <<'SQL'
+          SELECT
+            current_user,
+            rolsuper,
+            rolcreatedb,
+            rolcreaterole,
+            rolinherit,
+            rolreplication,
+            rolbypassrls
+          FROM pg_catalog.pg_roles
+          WHERE rolname = current_user;
+
+          DO $$
+          DECLARE
+            role_record record;
+          BEGIN
+            SELECT * INTO role_record
+            FROM pg_catalog.pg_roles
+            WHERE rolname = current_user;
+
+            IF role_record.rolsuper
+               OR role_record.rolcreatedb
+               OR role_record.rolcreaterole
+               OR role_record.rolinherit
+               OR role_record.rolreplication
+               OR role_record.rolbypassrls THEN
+              RAISE EXCEPTION 'migration_owner is over-privileged';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Fresh Alembic lineage on migration database
+        run: |
+          python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Fresh Alembic lineage on test database
+        env:
+          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+        run: |
+          python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Run full regression suite
+        run: |
+          python -m pytest -q
