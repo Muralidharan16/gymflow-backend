@@ -9,6 +9,7 @@ from sqlalchemy.engine import make_url
 
 CONFTEST = Path("tests/conftest.py")
 PRODUCTION_DB = Path("app/core/database.py")
+AUTH_DB = Path("app/core/auth_database.py")
 
 
 def _function(path: Path, name: str) -> ast.AsyncFunctionDef:
@@ -43,7 +44,6 @@ def _load_test_url_validator():
 
 def test_pytest_db_override_requires_fastapi_request_injection() -> None:
     override = _function(CONFTEST, "override_get_db")
-
     assert len(override.args.args) == 1
     request_arg = override.args.args[0]
     assert request_arg.arg == "request"
@@ -52,12 +52,16 @@ def test_pytest_db_override_requires_fastapi_request_injection() -> None:
     assert override.args.defaults == []
 
 
-def test_pytest_db_override_preserves_production_request_state_context() -> None:
-    production = _source_segment(PRODUCTION_DB, _function(PRODUCTION_DB, "get_db"))
-    override = _source_segment(CONFTEST, _function(CONFTEST, "override_get_db"))
+def test_production_context_initializer_is_the_single_request_state_contract() -> None:
+    initializer = _source_segment(
+        PRODUCTION_DB,
+        _function(PRODUCTION_DB, "initialize_request_session"),
+    )
+    ordinary = _source_segment(PRODUCTION_DB, _function(PRODUCTION_DB, "get_db"))
+    auth = _source_segment(AUTH_DB, _function(AUTH_DB, "get_auth_db"))
 
     for token in (
-        'getattr(state, "staff_id", user_id)',
+        'getattr(state, "staff_id", principal_id)',
         'getattr(state, "org_id", None)',
         'getattr(state, "gym_id", None)',
         'getattr(state, "role", "unknown")',
@@ -67,13 +71,33 @@ def test_pytest_db_override_preserves_production_request_state_context() -> None
         "org_id=str(org_id) if org_id else None",
         "gym_id=str(gym_id) if gym_id else None",
     ):
+        assert token in initializer
+
+    assert "await initialize_request_session(session, request)" in ordinary
+    assert "await initialize_request_session(session, request)" in auth
+
+
+def test_pytest_override_preserves_same_typed_context_fields() -> None:
+    production = _source_segment(
+        PRODUCTION_DB,
+        _function(PRODUCTION_DB, "initialize_request_session"),
+    )
+    override = _source_segment(CONFTEST, _function(CONFTEST, "override_get_db"))
+
+    for token in (
+        'getattr(state, "org_id", None)',
+        'getattr(state, "gym_id", None)',
+        'getattr(state, "role", "unknown")',
+        'getattr(state, "otel_trace_id", None)',
+        "principal_type",
+        "SessionContextInitializer.initialize",
+    ):
         assert token in production
         assert token in override
 
 
 def test_pytest_db_override_does_not_bypass_rls_or_impersonate_privileged_roles() -> None:
     override = _source_segment(CONFTEST, _function(CONFTEST, "override_get_db")).upper()
-
     forbidden = (
         "BYPASSRLS",
         "DISABLE ROW LEVEL SECURITY",
@@ -96,7 +120,6 @@ def test_test_url_validator_allows_same_disposable_db_with_distinct_identity() -
         "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/"
         "gymflow_finance_test_ci"
     )
-
     assert validate(runtime, migration) == runtime
 
 
@@ -110,7 +133,6 @@ def test_test_url_validator_rejects_same_identity_on_shared_disposable_db() -> N
         "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/"
         "gymflow_finance_test_ci"
     )
-
     with pytest.raises(RuntimeError, match="distinct runtime identity"):
         validate(runtime, migration)
 
@@ -121,7 +143,6 @@ def test_test_url_validator_rejects_exact_database_url_reuse() -> None:
         "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/"
         "gymflow_test"
     )
-
     with pytest.raises(RuntimeError, match="exact DATABASE_URL reuse"):
         validate(url, url)
 
@@ -130,6 +151,5 @@ def test_test_url_validator_still_rejects_non_test_database() -> None:
     validate = _load_test_url_validator()
     runtime = "postgresql+asyncpg://app_runtime:runtime@127.0.0.1:5432/gymflow"
     migration = "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/gymflow"
-
     with pytest.raises(RuntimeError, match="must contain 'test'"):
         validate(runtime, migration)
