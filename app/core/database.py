@@ -171,7 +171,10 @@ async def get_db(request=None) -> AsyncGenerator[AsyncSession, None]:  # type: i
 # Sync engine (Celery tasks)
 # ─────────────────────────────────────────────────────────────────────────────
 
-SYNC_DATABASE_URL = settings.DATABASE_URL.replace("+asyncpg", "")
+# Keep the synchronous worker path on an explicitly declared driver. Removing
+# "+asyncpg" entirely makes SQLAlchemy fall back to its default PostgreSQL
+# driver (psycopg2), which is not the application's declared dependency.
+SYNC_DATABASE_URL = settings.DATABASE_URL.replace("+asyncpg", "+psycopg")
 sync_engine       = None
 SyncSessionLocal  = None
 
