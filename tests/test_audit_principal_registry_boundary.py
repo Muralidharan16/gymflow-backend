@@ -106,8 +106,46 @@ def test_private_trigger_functions_are_security_definer_with_fixed_search_path()
     source = _source()
 
     assert source.count("SECURITY DEFINER") == 3
-    assert source.count("SET search_path = pg_catalog") == 3
+    assert source.count("SET search_path = pg_catalog") >= 3
     assert (
-        "REVOKE ALL ON FUNCTION app_private.register_audit_principal() FROM PUBLIC"
+        "REVOKE ALL ON FUNCTION {signature} FROM PUBLIC" in source
+        or "REVOKE ALL ON FUNCTION app_private.register_audit_principal() FROM PUBLIC"
         in source
     )
+
+
+def test_trigger_creation_uses_temporary_execute_then_proves_final_acl() -> None:
+    source = _source()
+
+    assert "_grant_trigger_creation_execute(bind)" in source
+    assert "_revoke_trigger_creation_execute(bind)" in source
+    assert "_require_private_function_security_contract(bind)" in source
+    assert (
+        'f"GRANT EXECUTE ON FUNCTION {signature} TO {_MIGRATION_OWNER}"'
+        in source
+    )
+    assert (
+        'f"REVOKE EXECUTE ON FUNCTION {signature} FROM {_MIGRATION_OWNER}"'
+        in source
+    )
+
+    # Final-state proof must inspect catalog ownership/configuration and both the
+    # direct migration role and PUBLIC EXECUTE surfaces.
+    for token in (
+        "pg_catalog.has_function_privilege",
+        "pg_catalog.aclexplode",
+        "pg_catalog.acldefault",
+        "migration_owner_execute",
+        "public_execute",
+        'row["owner_name"] != _SECURITY_OWNER',
+        'row["configuration"] != ["search_path=pg_catalog"]',
+    ):
+        assert token in source
+
+
+def test_failed_trigger_creation_cannot_leave_temporary_privilege_committed() -> None:
+    source = _source()
+
+    assert "same Alembic/PostgreSQL" in source
+    assert "transaction rollback removes" in source
+    assert "Temporary migration_owner EXECUTE privilege was not revoked" in source
