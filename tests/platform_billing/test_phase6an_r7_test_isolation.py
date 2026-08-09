@@ -137,6 +137,11 @@ class _FakeResult:
     def __iter__(self):
         return iter(self._rows)
 
+    def scalar_one(self):
+        if len(self._rows) != 1 or len(self._rows[0]) != 1:
+            raise AssertionError("fake scalar_one() requires exactly one scalar row")
+        return self._rows[0][0]
+
 
 class _FakeEngine:
     def __init__(self):
@@ -164,6 +169,8 @@ class _FakeSession:
         self.executed.append(sql)
         if "information_schema.tables" in sql:
             return _FakeResult([("organizations",), ("platform_products",)])
+        if "SELECT count(*) FROM organizations" in sql:
+            return _FakeResult([(0,)])
         if "TRUNCATE TABLE" in sql and self.fail_on_truncate:
             raise RuntimeError("forced cleanup failure")
         return _FakeResult()
