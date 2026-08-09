@@ -311,9 +311,9 @@ def _app_private_ddl_categories(path: Path) -> set[str]:
     }
 
 
-def test_complete_65_revision_private_and_executor_inventories_are_closed() -> None:
+def test_complete_66_revision_private_and_executor_inventories_are_closed() -> None:
     migrations = sorted(VERSIONS.glob("*.py"))
-    assert len(migrations) == 65
+    assert len(migrations) == 66
     app_private = {
         path.name
         for path in migrations
@@ -557,7 +557,6 @@ def test_dafd_is_revision_local_validation_only_in_both_directions() -> None:
     source = _source(DAFD)
     assert "from alembic.versions" not in source
     assert not re.search(r"(?:from|import)\s+app(?:\.|\s|$)", source)
-
     assert _module_literal_assignment(DAFD, "_CANONICAL_FUNCTION") == (
         "handle_user_deactivation_cascade"
     )
