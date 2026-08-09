@@ -23,6 +23,17 @@ def _source_segment(path: Path, node: ast.AST) -> str:
     return segment
 
 
+def test_pytest_db_override_requires_fastapi_request_injection() -> None:
+    override = _function(CONFTEST, "override_get_db")
+
+    assert len(override.args.args) == 1
+    request_arg = override.args.args[0]
+    assert request_arg.arg == "request"
+    assert isinstance(request_arg.annotation, ast.Name)
+    assert request_arg.annotation.id == "Request"
+    assert override.args.defaults == []
+
+
 def test_pytest_db_override_preserves_production_request_state_context() -> None:
     production = _source_segment(PRODUCTION_DB, _function(PRODUCTION_DB, "get_db"))
     override = _source_segment(CONFTEST, _function(CONFTEST, "override_get_db"))
