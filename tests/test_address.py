@@ -345,11 +345,22 @@ async def test_audit_log_captured_on_update() -> None:
     from app.core.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         org_id = uuid.uuid4()
-        # Seed an organization first
+
+        async def set_tenant_context() -> None:
+            await db.execute(
+                text("SELECT pg_catalog.set_config('app.current_org_id', :org_id, true)"),
+                {"org_id": str(org_id)},
+            )
+
+        # Seed an organization first. organizations is not tenant-RLS scoped.
         from app.models.organization import Organization
         org = Organization(id=org_id, name="Test Gym Org")
         db.add(org)
         await db.commit()
+
+        # Every new transaction touching tenant-scoped branch/address rows must
+        # establish the same organization context required by production.
+        await set_tenant_context()
 
         # Seed a branch first
         from app.models.org_branch import OrgBranch, OrgBranchState
@@ -392,7 +403,8 @@ async def test_audit_log_captured_on_update() -> None:
         db.add(owner)
         await db.commit()
 
-        # Set session context GUCs for the database triggers (insert)
+        # Set tenant/session context GUCs for the database triggers (insert).
+        await set_tenant_context()
         await db.execute(text("SELECT pg_catalog.set_config('app.current_user_id', :uid, true)"), {"uid": str(owner_id)})
         await db.execute(text("SELECT pg_catalog.set_config('app.ip_address', :ip, true)"), {"ip": "192.168.1.50"})
         await db.execute(text("SELECT pg_catalog.set_config('app.user_agent', :ua, true)"), {"ua": "pytest-agent"})
@@ -414,7 +426,8 @@ async def test_audit_log_captured_on_update() -> None:
         db.add(addr)
         await db.commit()
 
-        # Set session context GUCs for the database triggers (update)
+        # Set tenant/session context GUCs for the database triggers (update).
+        await set_tenant_context()
         await db.execute(text("SELECT pg_catalog.set_config('app.current_user_id', :uid, true)"), {"uid": str(owner_id)})
         await db.execute(text("SELECT pg_catalog.set_config('app.ip_address', :ip, true)"), {"ip": "192.168.1.50"})
         await db.execute(text("SELECT pg_catalog.set_config('app.user_agent', :ua, true)"), {"ua": "pytest-agent"})
@@ -424,7 +437,8 @@ async def test_audit_log_captured_on_update() -> None:
         addr.address_line1 = "enc:New Address Road"
         await db.commit()
 
-        # Verify Audit Log row
+        # Verify Audit Log row under the same tenant context.
+        await set_tenant_context()
         stmt = select(AddressAuditLog).where(AddressAuditLog.org_id == org_id)
         res = await db.execute(stmt)
         logs = res.scalars().all()
