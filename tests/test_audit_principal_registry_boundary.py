@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 
@@ -10,6 +11,20 @@ MIGRATION = Path(
 
 def _source() -> str:
     return MIGRATION.read_text(encoding="utf-8")
+
+
+def _tree() -> ast.Module:
+    return ast.parse(_source(), filename=str(MIGRATION))
+
+
+def _function_source(name: str) -> str:
+    source = _source()
+    lines = source.splitlines(keepends=True)
+    for node in _tree().body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            assert node.end_lineno is not None
+            return "".join(lines[node.lineno - 1 : node.end_lineno])
+    raise AssertionError(f"Missing function {name}")
 
 
 def test_revision_extends_current_head_without_owning_infrastructure_extensions() -> None:
@@ -103,49 +118,66 @@ def test_downgrade_refuses_to_discard_new_actor_provenance() -> None:
 
 
 def test_private_trigger_functions_are_security_definer_with_fixed_search_path() -> None:
-    source = _source()
+    function_builder = _function_source("_create_private_functions")
 
-    assert source.count("SECURITY DEFINER") == 3
-    assert source.count("SET search_path = pg_catalog") >= 3
-    assert (
-        "REVOKE ALL ON FUNCTION {signature} FROM PUBLIC" in source
-        or "REVOKE ALL ON FUNCTION app_private.register_audit_principal() FROM PUBLIC"
-        in source
-    )
-
-
-def test_trigger_creation_uses_temporary_execute_then_proves_final_acl() -> None:
-    source = _source()
-
-    assert "_grant_trigger_creation_execute(bind)" in source
-    assert "_revoke_trigger_creation_execute(bind)" in source
-    assert "_require_private_function_security_contract(bind)" in source
-    assert (
-        'f"GRANT EXECUTE ON FUNCTION {signature} TO {_MIGRATION_OWNER}"'
-        in source
-    )
-    assert (
-        'f"REVOKE EXECUTE ON FUNCTION {signature} FROM {_MIGRATION_OWNER}"'
-        in source
-    )
-
-    # Final-state proof must inspect catalog ownership/configuration and both the
-    # direct migration role and PUBLIC EXECUTE surfaces.
-    for token in (
-        "pg_catalog.has_function_privilege",
-        "pg_catalog.aclexplode",
-        "pg_catalog.acldefault",
-        "migration_owner_execute",
-        "public_execute",
-        'row["owner_name"] != _SECURITY_OWNER',
-        'row["configuration"] != ["search_path=pg_catalog"]',
+    for function_name in (
+        "register_audit_principal",
+        "prevent_principal_identity_reassignment",
+        "prevent_audit_principal_mutation",
     ):
-        assert token in source
+        marker = f"CREATE FUNCTION app_private.{function_name}()"
+        assert marker in function_builder
+        block = function_builder[function_builder.index(marker) :]
+        next_create = block.find("CREATE FUNCTION app_private.", len(marker))
+        if next_create != -1:
+            block = block[:next_create]
+        assert "SECURITY DEFINER" in block
+        assert "SET search_path = pg_catalog" in block
+
+    assert "REVOKE ALL ON FUNCTION {signature} FROM PUBLIC" in function_builder
+
+
+def test_trigger_creation_uses_owner_grant_window_and_proves_direct_final_acl() -> None:
+    source = _source()
+    grant = _function_source("_grant_trigger_creation_execute")
+    revoke = _function_source("_revoke_trigger_creation_execute")
+    create = _function_source("_create_principal_triggers")
+    verify = _function_source("_require_private_function_security_contract")
+
+    # Only the private-function owner grants/revokes; migration_owner remains the
+    # table owner that issues CREATE TRIGGER.
+    assert "_as_security_owner(" in grant
+    assert 'f"GRANT EXECUTE ON FUNCTION {signature} TO {_MIGRATION_OWNER}"' in grant
+    assert "_as_security_owner(" in revoke
+    assert 'f"REVOKE EXECUTE ON FUNCTION {signature} FROM {_MIGRATION_OWNER}"' in revoke
+
+    grant_index = create.index("_grant_trigger_creation_execute(bind)")
+    first_trigger_index = create.index("CREATE TRIGGER")
+    revoke_index = create.index("_revoke_trigger_creation_execute(bind)")
+    verify_index = create.index("_require_private_function_security_contract(bind)")
+    assert grant_index < first_trigger_index < revoke_index < verify_index
+
+    # Final-state proof uses direct ACL inspection, not effective privileges that
+    # could be inherited through a role edge.
+    assert "pg_catalog.aclexplode" in verify
+    assert "pg_catalog.acldefault" in verify
+    assert "pg_catalog.has_function_privilege" not in verify
+    assert "migration_owner_direct_execute" in verify
+    assert "public_execute" in verify
+    assert 'row["owner_name"] != _SECURITY_OWNER' in verify
+    assert 'row["configuration"] != ["search_path=pg_catalog"]' in verify
+
+    assert "SET LOCAL ROLE app_security_owner" in source
+    assert "RESET ROLE" in source
 
 
 def test_failed_trigger_creation_cannot_leave_temporary_privilege_committed() -> None:
+    create = _function_source("_create_principal_triggers")
     source = _source()
 
-    assert "same Alembic/PostgreSQL" in source
-    assert "transaction rollback removes" in source
-    assert "Temporary migration_owner EXECUTE privilege was not revoked" in source
+    assert "same transaction" in create
+    assert "Any failure rolls the" in create
+    assert "privilege window back" in create
+    assert "_grant_trigger_creation_execute(bind)" in create
+    assert "_revoke_trigger_creation_execute(bind)" in create
+    assert "Temporary direct migration_owner EXECUTE was not revoked" in source
