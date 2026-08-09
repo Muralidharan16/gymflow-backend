@@ -72,6 +72,8 @@ jobs:
             tests/test_migration_app_secure_owner_context_boundary.py \
             tests/test_migration_managed_role_boundary.py \
             tests/test_migration_shared_infrastructure_boundary.py \
+            tests/test_platform_billing_cleanup_boundary.py \
+            tests/test_address_audit_rls_context_boundary.py \
             tests/test_rbac_expand_contract_root_cause.py
 
   fresh-lineage-and-regressions:
