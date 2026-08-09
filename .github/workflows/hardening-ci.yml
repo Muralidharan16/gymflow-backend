@@ -349,11 +349,11 @@ jobs:
           set -o pipefail
           python -s -m alembic -c alembic.ini upgrade head 2>&1 | tee /tmp/test-lineage.log
 
-      - name: Run full regression suite
+      - name: Run regression suite fail-fast
         id: regression
         run: |
           set -o pipefail
-          python -m pytest -q 2>&1 | tee /tmp/full-regression.log
+          python -m pytest -q --maxfail=1 2>&1 | tee /tmp/full-regression.log
 
       - name: Report runtime hardening result
         if: always()
