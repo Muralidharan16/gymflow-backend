@@ -46,6 +46,26 @@ _TRIGGER_FUNCTIONS = (
     "app_private.prevent_principal_identity_reassignment()",
     "app_private.prevent_audit_principal_mutation()",
 )
+
+# Privilege-sensitive DDL is deliberately literal rather than generated. This
+# keeps the temporary EXECUTE window reviewable by the closed migration DDL
+# inventory as well as the runtime catalog assertions below.
+_PUBLIC_EXECUTE_REVOKES = (
+    "REVOKE ALL ON FUNCTION app_private.register_audit_principal() FROM PUBLIC",
+    "REVOKE ALL ON FUNCTION app_private.prevent_principal_identity_reassignment() FROM PUBLIC",
+    "REVOKE ALL ON FUNCTION app_private.prevent_audit_principal_mutation() FROM PUBLIC",
+)
+_MIGRATION_EXECUTE_GRANTS = (
+    "GRANT EXECUTE ON FUNCTION app_private.register_audit_principal() TO migration_owner",
+    "GRANT EXECUTE ON FUNCTION app_private.prevent_principal_identity_reassignment() TO migration_owner",
+    "GRANT EXECUTE ON FUNCTION app_private.prevent_audit_principal_mutation() TO migration_owner",
+)
+_MIGRATION_EXECUTE_REVOKES = (
+    "REVOKE EXECUTE ON FUNCTION app_private.register_audit_principal() FROM migration_owner",
+    "REVOKE EXECUTE ON FUNCTION app_private.prevent_principal_identity_reassignment() FROM migration_owner",
+    "REVOKE EXECUTE ON FUNCTION app_private.prevent_audit_principal_mutation() FROM migration_owner",
+)
+
 _SOURCE_IDENTITIES = (
     ("owners", "owner"),
     ("organization_users", "organization_user"),
@@ -284,10 +304,7 @@ def _create_private_functions(bind) -> None:
                 END;
                 $$
                 """,
-                *tuple(
-                    f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC"
-                    for signature in _TRIGGER_FUNCTIONS
-                ),
+                *_PUBLIC_EXECUTE_REVOKES,
             ),
         )
     finally:
@@ -301,23 +318,11 @@ def _grant_trigger_creation_execute(bind) -> None:
     # Only the function owner may grant function privileges. The role transition
     # uses the pre-existing bounded SET edge; migration_owner never inherits the
     # security-owner role.
-    _as_security_owner(
-        bind,
-        tuple(
-            f"GRANT EXECUTE ON FUNCTION {signature} TO {_MIGRATION_OWNER}"
-            for signature in _TRIGGER_FUNCTIONS
-        ),
-    )
+    _as_security_owner(bind, _MIGRATION_EXECUTE_GRANTS)
 
 
 def _revoke_trigger_creation_execute(bind) -> None:
-    _as_security_owner(
-        bind,
-        tuple(
-            f"REVOKE EXECUTE ON FUNCTION {signature} FROM {_MIGRATION_OWNER}"
-            for signature in _TRIGGER_FUNCTIONS
-        ),
-    )
+    _as_security_owner(bind, _MIGRATION_EXECUTE_REVOKES)
 
 
 def _require_private_function_security_contract(bind) -> None:
