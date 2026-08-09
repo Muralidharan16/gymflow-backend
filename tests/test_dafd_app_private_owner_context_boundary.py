@@ -28,6 +28,7 @@ APP_PRIVATE_FILES = {
     "0028_rbac_p7_role_events.py",
     "0029_rbac_p8_contract.py",
     "45df3b75ed74_rbac_hardening_phase_10_audit_functions.py",
+    "4d5e6f708192_establish_audit_principal_registry.py",
     "a1b2c3d4e5f6_rbac_hardening_phase_15_to_18.py",
     DAFD.name,
     "dbeb400472ec_add_branch_operating_hours.py",
@@ -311,9 +312,9 @@ def _app_private_ddl_categories(path: Path) -> set[str]:
     }
 
 
-def test_complete_66_revision_private_and_executor_inventories_are_closed() -> None:
+def test_complete_67_revision_private_and_executor_inventories_are_closed() -> None:
     migrations = sorted(VERSIONS.glob("*.py"))
-    assert len(migrations) == 66
+    assert len(migrations) == 67
     app_private = {
         path.name
         for path in migrations
@@ -433,6 +434,15 @@ def test_complete_app_private_ddl_category_allowlist_is_exact() -> None:
         },
         "45df3b75ed74_rbac_hardening_phase_10_audit_functions.py": {
             "create_function",
+            "grant_function",
+            "grant_schema",
+            "revoke_function",
+            "revoke_schema",
+        },
+        "4d5e6f708192_establish_audit_principal_registry.py": {
+            "create_function",
+            "create_trigger",
+            "drop_function",
             "grant_function",
             "grant_schema",
             "revoke_function",
