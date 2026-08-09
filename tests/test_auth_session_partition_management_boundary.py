@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 
@@ -41,7 +42,7 @@ def test_extension_remains_infrastructure_owned() -> None:
 
 def test_migration_refuses_privilege_escalation_and_broad_grants() -> None:
     source = _source()
-    literal_text = _literal_text().upper()
+    literal_text = _literal_text()
 
     for token in (
         "is_superuser",
@@ -52,10 +53,24 @@ def test_migration_refuses_privilege_escalation_and_broad_grants() -> None:
     ):
         assert token in source
 
-    assert "GRANT ALL" not in literal_text
-    assert "SUPERUSER" not in literal_text
-    assert "BYPASSRLS" not in literal_text
-    assert "CREATE ROLE" not in literal_text
+    # Catalog aliases such as ``is_superuser`` and ``bypasses_rls`` are
+    # evidence that the migration rejects elevated execution identities. They
+    # must not be confused with DDL that *grants* those attributes.
+    forbidden_role_escalation = (
+        r"\bCREATE\s+(?:ROLE|USER)\b[^;]*\bSUPERUSER\b",
+        r"\bALTER\s+(?:ROLE|USER)\b[^;]*\bSUPERUSER\b",
+        r"\bCREATE\s+(?:ROLE|USER)\b[^;]*\bBYPASSRLS\b",
+        r"\bALTER\s+(?:ROLE|USER)\b[^;]*\bBYPASSRLS\b",
+        r"\bCREATE\s+(?:ROLE|USER)\b[^;]*\bCREATEDB\b",
+        r"\bALTER\s+(?:ROLE|USER)\b[^;]*\bCREATEDB\b",
+        r"\bCREATE\s+(?:ROLE|USER)\b[^;]*\bCREATEROLE\b",
+        r"\bALTER\s+(?:ROLE|USER)\b[^;]*\bCREATEROLE\b",
+        r"\bGRANT\s+ALL\b",
+        r"\bSET(?:\s+LOCAL)?\s+ROLE\b",
+        r"\bSET\s+SESSION\s+AUTHORIZATION\b",
+    )
+    for pattern in forbidden_role_escalation:
+        assert not re.search(pattern, literal_text, re.IGNORECASE | re.DOTALL)
 
 
 def test_upgrade_adopts_legacy_partition_without_dropping_it() -> None:
