@@ -1,9 +1,13 @@
 name: Migration Hardening CI
 
 on:
-  push:
+  pull_request:
     branches:
-      - hardening/complete-migration-lineage
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
   workflow_dispatch:
 
 permissions:
@@ -12,7 +16,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: migration-hardening-${{ github.ref }}
+  group: migration-hardening-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
