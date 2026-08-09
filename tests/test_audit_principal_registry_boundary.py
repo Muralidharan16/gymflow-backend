@@ -152,7 +152,9 @@ def test_trigger_creation_uses_owner_grant_window_and_proves_direct_final_acl() 
     assert 'f"REVOKE EXECUTE ON FUNCTION {signature} FROM {_MIGRATION_OWNER}"' in revoke
 
     grant_index = create.index("_grant_trigger_creation_execute(bind)")
-    first_trigger_index = create.index("CREATE TRIGGER")
+    first_trigger_index = create.index(
+        '"CREATE TRIGGER trg_audit_principals_immutable "'
+    )
     revoke_index = create.index("_revoke_trigger_creation_execute(bind)")
     verify_index = create.index("_require_private_function_security_contract(bind)")
     assert grant_index < first_trigger_index < revoke_index < verify_index
