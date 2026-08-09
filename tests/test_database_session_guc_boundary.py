@@ -56,8 +56,13 @@ def test_request_context_gucs_reapply_on_every_transaction_begin() -> None:
 def test_initializer_does_not_end_context_before_request_work_begins() -> None:
     source = _source()
     start = source.index("class SessionContextInitializer:")
-    end = source.index("# ── Register initial pool", start)
+    end = source.index("async def initialize_request_session", start)
     initializer = source[start:end]
 
+    # Context initialization must only attach verified identity/tenant state to
+    # Session.info. It must not open/commit a transaction whose SET LOCAL state
+    # disappears before the request performs protected work.
     assert "async with session.begin():" not in initializer
     assert "session.info[_SESSION_CONTEXT_KEY]" in initializer
+    assert "commit(" not in initializer
+    assert "rollback(" not in initializer
