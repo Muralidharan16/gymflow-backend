@@ -93,6 +93,8 @@ def validate_test_admin_database_url(
 
 APP_DATABASE_URL = os.environ.get("DATABASE_URL") or _read_dotenv_value("DATABASE_URL")
 PLATFORM_BILLING_TEST_DATABASE_URL = os.environ.get("PLATFORM_BILLING_TEST_DATABASE_URL")
+FINANCE_CORE_TEST_DATABASE_URL = os.environ.get("FINANCE_CORE_TEST_DATABASE_URL")
+
 if PLATFORM_BILLING_TEST_DATABASE_URL:
     TEST_DATABASE_URL = validate_test_database_url(
         PLATFORM_BILLING_TEST_DATABASE_URL,
@@ -100,6 +102,15 @@ if PLATFORM_BILLING_TEST_DATABASE_URL:
     )
     TEST_ADMIN_DATABASE_URL = validate_test_admin_database_url(
         os.environ.get("PLATFORM_BILLING_TEST_ADMIN_DATABASE_URL"),
+        TEST_DATABASE_URL,
+    )
+elif FINANCE_CORE_TEST_DATABASE_URL:
+    TEST_DATABASE_URL = validate_test_database_url(
+        FINANCE_CORE_TEST_DATABASE_URL,
+        APP_DATABASE_URL,
+    )
+    TEST_ADMIN_DATABASE_URL = validate_test_admin_database_url(
+        os.environ.get("FINANCE_CORE_TEST_ADMIN_DATABASE_URL"),
         TEST_DATABASE_URL,
     )
 else:
