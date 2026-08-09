@@ -111,14 +111,25 @@ def test_upgrade_proves_current_month_partition_and_no_default() -> None:
 
 def test_downgrade_fails_closed_before_removing_session_partitions() -> None:
     source = _source()
+    safety = source.split("def _require_downgrade_safe", 1)[1].split(
+        "\ndef upgrade() -> None:", 1
+    )[0]
 
-    assert "_require_downgrade_safe(bind)" in source
-    assert "Session data must never be dropped by rollback" in source
-    assert "if row_count != 0" in source
-    assert "DELETE FROM partman.part_config" in source
-    assert "DROP TABLE" in source
+    # Every non-historical generated child is counted before it is admitted to
+    # the removable set. A non-zero row count raises before downgrade reaches
+    # partman config deletion or DROP TABLE.
+    assert "SELECT count(*) FROM" in safety
+    assert "if row_count != 0:" in safety
+    assert "raise RuntimeError(" in safety
+    assert "contains {row_count} row(s)" in safety
+    assert "be dropped by rollback." in safety
+    assert "removable.append(name)" in safety
+    assert safety.index("if row_count != 0:") < safety.index("removable.append(name)")
 
     downgrade = source.split("def downgrade() -> None:", 1)[1]
+    assert "_require_downgrade_safe(bind)" in downgrade
+    assert "DELETE FROM partman.part_config" in downgrade
+    assert "DROP TABLE" in downgrade
     assert downgrade.index("_require_downgrade_safe(bind)") < downgrade.index(
         "DELETE FROM partman.part_config"
     )
