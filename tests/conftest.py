@@ -52,16 +52,69 @@ def validate_test_database_url(test_database_url: str | None, database_url: str 
     return test_database_url
 
 
+def validate_test_admin_database_url(
+    admin_database_url: str | None,
+    runtime_database_url: str,
+) -> str:
+    """Require an explicit admin connection to the same disposable test DB.
+
+    Application requests and repository/service tests run through the reduced
+    runtime login. Destructive fixture cleanup is a separate test-harness
+    capability and must never be obtained by widening the runtime role.
+    """
+    if not admin_database_url:
+        raise RuntimeError(
+            "TEST_ADMIN_DATABASE_URL is required for pytest cleanup. "
+            "Refusing to grant destructive cleanup capability to the runtime identity."
+        )
+
+    runtime_url = make_url(runtime_database_url)
+    admin_url = make_url(admin_database_url)
+    runtime_db = runtime_url.database or ""
+    admin_db = admin_url.database or ""
+
+    if "test" not in admin_db.lower():
+        raise RuntimeError(
+            f"TEST_ADMIN_DATABASE_URL database name must contain 'test': {admin_db}"
+        )
+    if admin_db != runtime_db:
+        raise RuntimeError(
+            "TEST_ADMIN_DATABASE_URL must target the same disposable database "
+            f"as TEST_DATABASE_URL: runtime={runtime_db!r}, admin={admin_db!r}"
+        )
+    if admin_database_url == runtime_database_url:
+        raise RuntimeError(
+            "TEST_ADMIN_DATABASE_URL must use a distinct privileged identity; "
+            "runtime and cleanup connections must not be identical."
+        )
+
+    return admin_database_url
+
+
 APP_DATABASE_URL = os.environ.get("DATABASE_URL") or _read_dotenv_value("DATABASE_URL")
 PLATFORM_BILLING_TEST_DATABASE_URL = os.environ.get("PLATFORM_BILLING_TEST_DATABASE_URL")
 if PLATFORM_BILLING_TEST_DATABASE_URL:
-    TEST_DATABASE_URL = validate_test_database_url(PLATFORM_BILLING_TEST_DATABASE_URL, APP_DATABASE_URL)
+    TEST_DATABASE_URL = validate_test_database_url(
+        PLATFORM_BILLING_TEST_DATABASE_URL,
+        APP_DATABASE_URL,
+    )
+    TEST_ADMIN_DATABASE_URL = validate_test_admin_database_url(
+        os.environ.get("PLATFORM_BILLING_TEST_ADMIN_DATABASE_URL"),
+        TEST_DATABASE_URL,
+    )
 else:
-    TEST_DATABASE_URL = validate_test_database_url(os.environ.get("TEST_DATABASE_URL"), APP_DATABASE_URL)
+    TEST_DATABASE_URL = validate_test_database_url(
+        os.environ.get("TEST_DATABASE_URL"),
+        APP_DATABASE_URL,
+    )
+    TEST_ADMIN_DATABASE_URL = validate_test_admin_database_url(
+        os.environ.get("TEST_ADMIN_DATABASE_URL"),
+        TEST_DATABASE_URL,
+    )
 
 # Force this pytest process, including app.core.database import-time engine creation,
-# onto the guarded test database. Platform Billing can opt into a dedicated
-# disposable runtime DB before app.core.database is imported.
+# onto the guarded *runtime* test identity. Administrative fixture cleanup uses a
+# separate engine below and is never exposed to application dependencies.
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
 from app.core import database as app_database  # noqa: E402
@@ -81,7 +134,21 @@ TestSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
-# Keep direct legacy imports from tests safe while they are migrated.
+admin_test_async_engine = create_async_engine(
+    TEST_ADMIN_DATABASE_URL,
+    poolclass=NullPool,
+    pool_pre_ping=True,
+    echo=False,
+)
+
+AdminTestSessionLocal = async_sessionmaker(
+    admin_test_async_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
+# Keep direct legacy application-session imports from tests safe while they are
+# migrated. These aliases intentionally point only at the reduced runtime pool.
 app_database.async_engine = test_async_engine
 app_database.AsyncSessionLocal = TestSessionLocal
 app_database.async_session_maker = TestSessionLocal
@@ -122,29 +189,34 @@ async def truncate_test_tables(session: AsyncSession, table_names: list[str]) ->
 
 
 async def cleanup_test_database_tables(table_names: list[str]) -> None:
-    async with TestSessionLocal() as session:
+    """Perform destructive fixture cleanup only through the admin test identity."""
+    async with AdminTestSessionLocal() as session:
         await session.execute(text("RESET ROLE"))
         await truncate_test_tables(session, table_names)
         await session.commit()
 
 
 async def override_get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
-    """Use the disposable test pool while preserving production request context.
+    """Use the disposable runtime pool while preserving production request context.
 
-    Forced-RLS integration tests must exercise the same user/org/gym/role GUCs
-    that production ``get_db`` derives from ``request.state``. FastAPI injects
-    ``Request`` because the dependency parameter is explicitly typed, matching
-    production dependency semantics rather than silently falling back to an
-    anonymous context.
+    Forced-RLS integration tests exercise the same typed principal + tenant GUCs
+    that production ``get_db`` derives from ``request.state``. The test harness
+    must not collapse owner/staff identities back into an untyped UUID.
     """
-    user_id = "00000000-0000-0000-0000-000000000000"
+    principal_id = "00000000-0000-0000-0000-000000000000"
+    principal_type = None
     org_id = None
     gym_id = None
     role = "unknown"
     trace_id = "test"
 
     state = request.state
-    user_id = getattr(state, "staff_id", user_id)
+    principal_id = getattr(
+        state,
+        "principal_id",
+        getattr(state, "staff_id", principal_id),
+    )
+    principal_type = getattr(state, "principal_type", None)
     org_id = getattr(state, "org_id", None)
     gym_id = getattr(state, "gym_id", None)
     role = getattr(state, "role", "unknown")
@@ -157,7 +229,8 @@ async def override_get_db(request: Request) -> AsyncGenerator[AsyncSession, None
         try:
             await app_database.SessionContextInitializer.initialize(
                 session,
-                user_id=str(user_id),
+                user_id=str(principal_id),
+                principal_type=str(principal_type) if principal_type else None,
                 org_id=str(org_id) if org_id else None,
                 gym_id=str(gym_id) if gym_id else None,
                 trace_id=str(trace_id),
@@ -180,7 +253,16 @@ def require_test_database_url() -> str:
 
 @pytest_asyncio.fixture
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Application-facing DB session: always the reduced runtime identity."""
     async with TestSessionLocal() as session:
+        await assert_test_database(session)
+        yield session
+
+
+@pytest_asyncio.fixture
+async def admin_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Explicit fixture/setup session; never injected into application routes."""
+    async with AdminTestSessionLocal() as session:
         await assert_test_database(session)
         yield session
 
