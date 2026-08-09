@@ -581,16 +581,11 @@ async def test_tenant_rls_and_composite_foreign_keys():
         ids | {"org2": ORG_2},
     )
 
+    config = get_platform_billing_test_config()
     async with AsyncSessionLocal() as session:
-        role_exists = (
-            await session.execute(
-                text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_runtime')")
-            )
-        ).scalar_one()
-        if not role_exists:
-            pytest.skip("app_runtime role is not present in this database")
+        current_user = (await session.execute(text("SELECT current_user"))).scalar_one()
+        assert current_user == config.runtime_user
 
-        await session.execute(text("SET ROLE app_runtime"))
         await session.execute(text("SELECT pg_catalog.set_config('app.current_org_id', :org1, true)"), {"org1": ORG_1})
         own_count = (
             await session.execute(text("SELECT count(*) FROM platform_billing_accounts"))
@@ -602,5 +597,3 @@ async def test_tenant_rls_and_composite_foreign_keys():
             await session.execute(text("SELECT count(*) FROM platform_billing_accounts"))
         ).scalar_one()
         assert other_count == 0
-
-        await session.execute(text("RESET ROLE"))
