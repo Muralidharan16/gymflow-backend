@@ -82,3 +82,30 @@ def test_platform_billing_cleanup_has_no_rls_or_role_bypass():
     assert "DISABLE ROW LEVEL SECURITY" not in strings
     assert "SET ROLE POSTGRES" not in strings
     assert "SET ROLE MIGRATION_OWNER" not in strings
+
+
+def test_platform_billing_rls_uses_configured_runtime_identity_without_role_switch():
+    rls_test = _async_function("test_tenant_rls_and_composite_foreign_keys")
+    strings = "\n".join(_string_constants(rls_test)).upper()
+
+    assert "SELECT CURRENT_USER" in strings
+    assert "SET ROLE APP_RUNTIME" not in strings
+    assert "SET ROLE MIGRATION_OWNER" not in strings
+    assert "ROW_SECURITY = OFF" not in strings
+
+    calls_config = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "get_platform_billing_test_config"
+        for node in ast.walk(rls_test)
+    )
+    assert calls_config
+
+    compares_runtime_user = any(
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "config"
+        and node.attr == "runtime_user"
+        for node in ast.walk(rls_test)
+    )
+    assert compares_runtime_user
