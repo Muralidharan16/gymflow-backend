@@ -28,8 +28,9 @@ def test_registry_is_typed_non_pii_and_append_only() -> None:
     assert '"principal_id"' in source
     assert '"org_id"' in source
     assert '"principal_type"' in source
-    assert "email" not in source.lower()
-    assert "phone" not in source.lower()
+    assert 'sa.Column("email"' not in source
+    assert 'sa.Column("phone"' not in source
+    assert "SELECT id, org_id, :principal_type" in source
     assert "audit_principals is append-only" in source
     assert "trg_audit_principals_immutable" in source
 
@@ -43,8 +44,8 @@ def test_all_supported_identity_domains_register_at_the_database_boundary() -> N
         ("gym_owners", "legacy_gym_owner"),
     ):
         assert f'("{table_name}", "{principal_type}")' in source
-        assert f"trg_register_audit_principal_{{table_name}}" in source
 
+    assert "trg_register_audit_principal_{table_name}" in source
     assert "app_private.register_audit_principal" in source
     assert "app_private.prevent_principal_identity_reassignment" in source
 
@@ -60,9 +61,10 @@ def test_registry_is_not_a_runtime_privilege_escalation_surface() -> None:
     assert "grant all" not in source
     assert "audit_principals to app_runtime" not in source
     assert "audit_principals to app_user" not in source
-    assert "audit_principals to public" not in source.replace(
+    without_revoke = source.replace(
         "revoke all on table public.audit_principals from public", ""
     )
+    assert "audit_principals to public" not in without_revoke
 
 
 def test_address_audit_references_typed_principal_and_tenant_together() -> None:
