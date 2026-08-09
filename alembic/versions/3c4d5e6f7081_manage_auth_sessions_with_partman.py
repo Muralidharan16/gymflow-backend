@@ -5,13 +5,16 @@ Revises: 2b3c4d5e6f70
 Create Date: 2026-08-09 00:00:00.000000
 
 Phase 9 created ``public.auth_sessions`` as a declarative RANGE-partitioned
-relation but provisioned only a single May-2026 child.  That historical shape
-cannot accept sessions once the hard-coded partition ages out.  This revision
+relation but provisioned only a single May-2026 child. That historical shape
+cannot accept sessions once the hard-coded partition ages out. This revision
 adopts the existing partition set into the already-provisioned pg_partman 5.0.1
 infrastructure and establishes an explicit monthly maintenance contract.
 
-The pg_partman extension remains infrastructure-owned.  Alembic never creates,
-drops, or assumes ownership of the extension.
+The pg_partman extension remains infrastructure-owned. Alembic never creates,
+drops, or assumes ownership of the extension. No DEFAULT partition is created:
+production must execute pg_partman maintenance on schedule and monitor the
+future-partition runway. A twelve-month premake window provides operational
+headroom without allowing a catch-all partition to hide maintenance failure.
 """
 
 from __future__ import annotations
@@ -38,8 +41,7 @@ _PARENT_NAME = "auth_sessions"
 _PARENT = f"{_PARENT_SCHEMA}.{_PARENT_NAME}"
 _LEGACY_CHILD = "auth_sessions_y2026_m05"
 _CANONICAL_LEGACY_CHILD = "auth_sessions_p20260501"
-_DEFAULT_CHILD = "auth_sessions_default"
-_PARTITION_INTERVAL = "1 month"
+_DEFAULT_RELATION = "public.auth_sessions_default"
 _PREMAKE = 12
 _START_PARTITION = "2026-05-01 00:00:00+00"
 _GENERATED_CHILD_RE = re.compile(r"^auth_sessions_p\d{8}$")
@@ -321,14 +323,12 @@ def _lock_and_require_predecessor(bind) -> None:
         JOIN pg_catalog.pg_namespace AS namespace
           ON namespace.oid = relation.relnamespace
         WHERE namespace.nspname = :schema_name
-          AND relation.relname IN (:canonical_name, :default_name)
-        ORDER BY relation.relname
+          AND relation.relname = :canonical_name
         LIMIT 1
         """,
         {
             "schema_name": _PARENT_SCHEMA,
             "canonical_name": _CANONICAL_LEGACY_CHILD,
-            "default_name": _DEFAULT_CHILD,
         },
     )
     if conflict is not None:
@@ -360,7 +360,7 @@ def _configure_partman(bind) -> None:
                 p_epoch := 'none',
                 p_premake := :premake,
                 p_start_partition := :start_partition,
-                p_default_table := true,
+                p_default_table := false,
                 p_automatic_maintenance := 'on',
                 p_template_table := 'false',
                 p_jobmon := false
@@ -439,7 +439,7 @@ def _require_partman_config(bind) -> None:
         "retention_is_null": True,
         "retention_keep_table": True,
         "infinite_time_partitions": True,
-        "default_table": True,
+        "default_table": False,
         "jobmon": False,
     }
     if config != expected:
@@ -481,13 +481,14 @@ def _require_current_partition(bind) -> None:
             f"{current!r}."
         )
 
-    default_count = bind.execute(
-        sa.text(f"SELECT count(*) FROM {_qualified(_DEFAULT_CHILD)}")
+    default_relation = bind.execute(
+        sa.text("SELECT pg_catalog.to_regclass(:relation_name)::text"),
+        {"relation_name": _DEFAULT_RELATION},
     ).scalar_one()
-    if default_count != 0:
+    if default_relation is not None:
         raise RuntimeError(
-            "Auth-session default partition unexpectedly contains rows "
-            f"immediately after adoption: count={default_count}."
+            "Auth-session adoption unexpectedly created a DEFAULT partition: "
+            f"{default_relation!r}."
         )
 
 
@@ -527,7 +528,7 @@ def _require_downgrade_safe(bind) -> list[str]:
             )
         if name == _CANONICAL_LEGACY_CHILD:
             continue
-        if name != _DEFAULT_CHILD and not _GENERATED_CHILD_RE.fullmatch(name):
+        if not _GENERATED_CHILD_RE.fullmatch(name):
             raise RuntimeError(
                 "Cannot downgrade auth-session partition adoption with an "
                 f"unknown child relation: {row!r}."
