@@ -93,8 +93,8 @@ async def test_phase6an_d10_table_columns_constraints_and_grants_exist():
         "fk_org_creation_idem_organization",
         "chk_org_creation_idem_operation",
         "chk_org_creation_idem_key_format",
-        "chk_org_creation_idem_request_hash",
         "chk_org_creation_idem_canonical_version",
+        "chk_org_creation_idem_request_hash",
         "chk_org_creation_idem_trusted_source",
         "chk_org_creation_idem_completed_after_created",
     } <= constraints
@@ -123,7 +123,9 @@ async def test_phase6an_d10_table_columns_constraints_and_grants_exist():
 @pytest.mark.asyncio
 async def test_phase6an_d10_immutability_and_constraints_reject_mutation_inside_rollback():
     async with finance_admin_session() as session:
-        tx = await session.begin()
+        # The helper's safety query intentionally autobegins this admin
+        # transaction. Reuse that transaction so the whole mutation proof is
+        # rolled back atomically instead of nesting an invalid Session.begin().
         await session.execute(
             text(
                 """
@@ -152,7 +154,7 @@ async def test_phase6an_d10_immutability_and_constraints_reject_mutation_inside_
                 text("UPDATE organization_creation_idempotency SET trusted_source = trusted_source WHERE organization_id = :org_id"),
                 {"org_id": ORG_ID},
             )
-        await tx.rollback()
+        await session.rollback()
 
     await expect_db_error(
         """
