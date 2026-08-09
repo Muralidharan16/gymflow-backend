@@ -15,6 +15,7 @@
     "app_security_owner": {},
     "app_user": {},
     "audit_writer": {},
+    "auth_runtime": {},
     "branch_admin": {},
     "branch_viewer": {},
     "migration_owner": {},
