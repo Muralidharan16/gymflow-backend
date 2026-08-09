@@ -20,6 +20,7 @@ ORG_2 = "81000000-0000-0000-0000-000000000002"
 OWNER_1 = "82000000-0000-0000-0000-000000000001"
 SHA_A = "a" * 64
 SHA_B = "b" * 64
+TEST_ORGANIZATION_IDS = (ORG_1, ORG_2)
 
 PHASE_2_TABLES = [
     "platform_usage_projection",
@@ -51,7 +52,6 @@ PHASE_1_TABLES = [
     "platform_plan_versions",
     "platform_policy_versions",
     "platform_products",
-    "organizations",
 ]
 
 
@@ -83,7 +83,24 @@ async def cleanup_phase1_tables() -> None:
                 ordered_tables = [table for table in table_names if table in existing_tables]
                 if ordered_tables:
                     quoted_tables = ", ".join(f'"{table}"' for table in ordered_tables)
-                    await session.execute(text(f"TRUNCATE TABLE {quoted_tables} CASCADE"))
+                    # Keep cleanup inside the Platform Billing domain. Omitting
+                    # CASCADE intentionally makes a new cross-domain FK fail
+                    # closed instead of silently truncating unrelated tables.
+                    await session.execute(text(f"TRUNCATE TABLE {quoted_tables}"))
+
+                await session.execute(
+                    text("DELETE FROM organizations WHERE id = ANY(:organization_ids)"),
+                    {"organization_ids": list(TEST_ORGANIZATION_IDS)},
+                )
+                remaining_test_orgs = (
+                    await session.execute(
+                        text("SELECT count(*) FROM organizations WHERE id = ANY(:organization_ids)"),
+                        {"organization_ids": list(TEST_ORGANIZATION_IDS)},
+                    )
+                ).scalar_one()
+                if remaining_test_orgs != 0:
+                    raise AssertionError("Platform Billing test organizations were not removed")
+
                 await assert_no_protected_d11_identity(session)
                 await session.commit()
             except Exception:
