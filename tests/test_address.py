@@ -52,18 +52,14 @@ def test_listener_address_field_changed() -> None:
 
     with patch("app.tasks.geocoding.geocode_address_task.delay") as mock_task:
         with patch("sqlalchemy.orm.attributes.get_history") as mock_hist:
-            # Simulate a changed address parameter
             mock_change = MagicMock()
             mock_change.has_changes.return_value = True
             mock_hist.return_value = mock_change
-            
+
             from app.models.address import receive_after_update
             connection = MagicMock()
-
-            # Fire listener
             receive_after_update(None, connection, address)
-            
-            # Assert reset statement and audit statement were executed and background task queued
+
             assert connection.execute.call_count == 2
             mock_task.assert_called_once_with(str(address.id))
 
@@ -100,7 +96,7 @@ async def test_private_address_endpoint_rbac() -> None:
         return Staff(id=uuid.uuid4(), org_id=uuid.uuid4(), gym_id=None, role="admin")
 
     app.dependency_overrides[get_current_active_staff] = mock_admin_staff
-    
+
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         with patch("sqlalchemy.ext.asyncio.AsyncSession.get", return_value=mock_address):
             response = await client.get("/addresses/c3f8152e-fbca-4c8d-b3e3-64a6d1a1b411/private")
@@ -130,11 +126,12 @@ def test_jwt_token_payload_excludes_address_pii() -> None:
         email=raw_auth_profile["email"],
         role=raw_auth_profile["role"]
     )
-    
+
     decoded = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
 
     assert decoded["sub"] == "8a7c5a03-6dc8-4fdf-adb8-1dafa681eaa6"
     assert decoded["org_id"] == "d0e5800e-a4a2-43bd-ba03-57bbb0c41f22"
+    assert decoded["principal_type"] == "owner"
     assert "address_line1" not in decoded
     assert "postal_code" not in decoded
 
@@ -158,14 +155,15 @@ def test_track_event_safe_scrubs_pii_but_keeps_city() -> None:
 
     with patch("app.core.telemetry.track_event") as mock_track:
         track_event_safe("member_signup", event_data)
-        
+
         mock_track.assert_called_once()
         sent_properties = mock_track.call_args[0][1]
-        
+
         assert sent_properties["city"] == "Chennai"
         assert "address_line1" not in sent_properties
         assert "postal_code" not in sent_properties
         assert "ip_address" not in sent_properties
+
 
 def test_sentry_before_send_scrubs_nested_pii() -> None:
     """
@@ -193,7 +191,7 @@ def test_sentry_before_send_scrubs_nested_pii() -> None:
 
     scrubbed = sentry_before_send(sentry_mock_payload, {})
     vars_node = scrubbed["exception"]["values"][0]["stacktrace"]["frames"][0]["vars"]
-    
+
     assert vars_node["address_line1"] == "[REDACTED]"
     assert vars_node["postal_code"] == "[REDACTED]"
     assert vars_node["city"] == "Chennai"
@@ -206,7 +204,6 @@ def test_address_type_billing_requires_address_line1() -> None:
     """
     Asserts a validation error is thrown when address_type is 'billing' and address_line1 is empty.
     """
-    # Should work for operational/registered even if address_line1 has normal text
     CreateAddressSchema(
         address_type="operational",
         address_line1="12 Anna Salai",
@@ -215,7 +212,6 @@ def test_address_type_billing_requires_address_line1() -> None:
         country_code="IN"
     )
 
-    # Should raise error for billing if empty
     with pytest.raises(ValidationError) as exc:
         CreateAddressSchema(
             address_type="billing",
@@ -238,20 +234,19 @@ async def test_set_primary_address_success() -> None:
     db = MagicMock()
     org_id = uuid.uuid4()
     target_addr_id = uuid.uuid4()
-    
+
     target_addr = OrganizationAddress(id=target_addr_id, org_id=org_id, is_primary=False)
-    
+
     async def mock_execute(stmt, *args, **kwargs):
-        # Return mock scalar for target
         mock_res = MagicMock()
         mock_res.scalar_one_or_none.return_value = target_addr
         return mock_res
-        
+
     db.execute = AsyncMock(side_effect=mock_execute)
     db.flush = AsyncMock()
 
     updated = await set_primary_address(target_addr_id, org_id, db)
-    
+
     db.execute.assert_called()
     assert updated.is_primary is True
     db.flush.assert_called_once()
@@ -264,9 +259,7 @@ def test_geocoding_retry_on_api_failure() -> None:
     """
     Ensures celery geocoding task triggers retry when API exceptions are raised.
     """
-    # Mock geocode delay to test task handler retries
     with patch("app.tasks.geocoding.geocode_address_task.retry") as mock_retry:
-        # Mock _async_geocode to raise API Error
         with patch("asyncio.AbstractEventLoop.run_until_complete", side_effect=GeocodingAPIError("Connection Timeout")):
             geocode_address_task("some-address-uuid")
             mock_retry.assert_called_once()
@@ -280,10 +273,9 @@ async def test_invoice_snapshot_is_immutable() -> None:
     """
     Verifies that capturing address snapshots creates an immutable, coordinate-free schema representation.
     """
-    db = MagicMock()
     address_id = uuid.uuid4()
     org_id = uuid.uuid4()
-    
+
     mock_addr = OrganizationAddress(
         id=address_id,
         org_id=org_id,
@@ -295,9 +287,9 @@ async def test_invoice_snapshot_is_immutable() -> None:
         country_code="IN",
         formatted_address="12 Anna Salai, Chennai, TN, 600002"
     )
-    
+
     snapshot = capture_address_snapshot(mock_addr)
-    
+
     assert "latitude" not in snapshot
     assert "longitude" not in snapshot
     assert snapshot["address_line1"] == "12 Anna Salai"
@@ -314,7 +306,7 @@ async def test_gist_index_exists() -> None:
     """
     from app.core.database import sync_engine
     from sqlalchemy import inspect
-    
+
     if sync_engine:
         inspector = inspect(sync_engine)
         indexes = [idx["name"] for idx in inspector.get_indexes("branch_name_translations")]
@@ -332,7 +324,6 @@ def test_spatial_and_filtering_indexes_exist() -> None:
     assert "ix_org_branches_name_trgm" in indexes
 
 
-
 # =====================================================================
 # FIX 6 TESTS: AUDIT LOGS TRIGGER
 # =====================================================================
@@ -340,17 +331,13 @@ def test_spatial_and_filtering_indexes_exist() -> None:
 @pytest.mark.asyncio
 async def test_audit_log_captured_on_update() -> None:
     """
-    Validates update operations auto-record snapshots via database triggers.
+    Validates that typed actor provenance and tenant context survive transaction
+    boundaries while address triggers record immutable audit snapshots.
     """
-    from app.core.database import AsyncSessionLocal
+    from app.core.database import AsyncSessionLocal, update_session_context
+
     async with AsyncSessionLocal() as db:
         org_id = uuid.uuid4()
-
-        async def set_tenant_context() -> None:
-            await db.execute(
-                text("SELECT pg_catalog.set_config('app.current_org_id', :org_id, true)"),
-                {"org_id": str(org_id)},
-            )
 
         # Seed an organization first. organizations is not tenant-RLS scoped.
         from app.models.organization import Organization
@@ -358,11 +345,10 @@ async def test_audit_log_captured_on_update() -> None:
         db.add(org)
         await db.commit()
 
-        # Every new transaction touching tenant-scoped branch/address rows must
-        # establish the same organization context required by production.
-        await set_tenant_context()
+        # The session owns tenant context. The after_begin hook re-applies it to
+        # every transaction, so a commit cannot silently drop the RLS boundary.
+        await update_session_context(db, org_id=str(org_id))
 
-        # Seed a branch first
         from app.models.org_branch import OrgBranch, OrgBranchState
         branch_id = uuid.uuid4()
         branch = OrgBranch(
@@ -387,7 +373,8 @@ async def test_audit_log_captured_on_update() -> None:
         )
         db.add(branch_state)
 
-        # Seed staff member for changed_by
+        # Seed a legacy staff actor. The audit-principal source trigger registers
+        # the identity in the typed registry when this transaction commits.
         from app.models.staff import GymOwner
         owner_id = uuid.uuid4()
         owner = GymOwner(
@@ -403,14 +390,19 @@ async def test_audit_log_captured_on_update() -> None:
         db.add(owner)
         await db.commit()
 
-        # Set tenant/session context GUCs for the database triggers (insert).
-        await set_tenant_context()
-        await db.execute(text("SELECT pg_catalog.set_config('app.current_user_id', :uid, true)"), {"uid": str(owner_id)})
-        await db.execute(text("SELECT pg_catalog.set_config('app.ip_address', :ip, true)"), {"ip": "192.168.1.50"})
-        await db.execute(text("SELECT pg_catalog.set_config('app.user_agent', :ua, true)"), {"ua": "pytest-agent"})
-        await db.execute(text("SELECT pg_catalog.set_config('app.request_id', :req_id, true)"), {"req_id": str(uuid.uuid4())})
+        # Attach complete, typed actor provenance once. This is the same session
+        # contract production requests use; no raw GUC setup is duplicated here.
+        await update_session_context(
+            db,
+            principal_id=str(owner_id),
+            principal_type="legacy_gym_owner",
+            org_id=str(org_id),
+            role="owner",
+            ip_address="192.168.1.50",
+            user_agent="pytest-agent",
+            request_id=str(uuid.uuid4()),
+        )
 
-        # Add initial organization address
         addr = OrganizationAddress(
             org_id=org_id,
             branch_id=branch_id,
@@ -426,26 +418,17 @@ async def test_audit_log_captured_on_update() -> None:
         db.add(addr)
         await db.commit()
 
-        # Set tenant/session context GUCs for the database triggers (update).
-        await set_tenant_context()
-        await db.execute(text("SELECT pg_catalog.set_config('app.current_user_id', :uid, true)"), {"uid": str(owner_id)})
-        await db.execute(text("SELECT pg_catalog.set_config('app.ip_address', :ip, true)"), {"ip": "192.168.1.50"})
-        await db.execute(text("SELECT pg_catalog.set_config('app.user_agent', :ua, true)"), {"ua": "pytest-agent"})
-        await db.execute(text("SELECT pg_catalog.set_config('app.request_id', :req_id, true)"), {"req_id": str(uuid.uuid4())})
-
-        # Perform update to fire trigger
+        # A new transaction begins after commit. No manual set_config call is
+        # allowed: the Session after_begin hook must restore tenant + typed actor.
         addr.address_line1 = "enc:New Address Road"
         await db.commit()
 
-        # Verify Audit Log row under the same tenant context.
-        await set_tenant_context()
         stmt = select(AddressAuditLog).where(AddressAuditLog.org_id == org_id)
         res = await db.execute(stmt)
         logs = res.scalars().all()
-        
+
         assert len(logs) > 0
-        
-        # Deserialize JSON snapshots if returned as strings (typical in SQLite testing)
+
         import json
         old_snap = logs[0].old_address
         if isinstance(old_snap, str):
@@ -453,7 +436,7 @@ async def test_audit_log_captured_on_update() -> None:
         new_snap = logs[0].new_address
         if isinstance(new_snap, str):
             new_snap = json.loads(new_snap)
-            
+
         import hashlib
         expected_old_hash = hashlib.sha256(b"enc:12 Anna Salai").hexdigest()
         expected_new_hash = hashlib.sha256(b"enc:New Address Road").hexdigest()
@@ -470,7 +453,6 @@ def test_member_address_exposure_guard() -> None:
     """
     Verifies that public schemas exclude coordinate details and address lines, while administrative access preserves them.
     """
-    # Public schema verification - must exclude coordinate/line details
     public_payload = {
         "city": "Chennai",
         "state_province": "Tamil Nadu",
@@ -483,7 +465,6 @@ def test_member_address_exposure_guard() -> None:
     assert not hasattr(pub_schema, "longitude")
     assert not hasattr(pub_schema, "address_line1")
 
-    # Private schema verification - must preserve coordinate/line details
     private_payload = {
         "id": uuid.uuid4(),
         "member_id": uuid.uuid4(),
@@ -512,17 +493,17 @@ async def test_only_one_primary_exists_after_swap() -> None:
     db = MagicMock()
     org_id = uuid.uuid4()
     addr1_id = uuid.uuid4()
-    
+
     addr1 = OrganizationAddress(id=addr1_id, org_id=org_id, is_primary=False)
-    
+
     async def mock_execute(stmt, *args, **kwargs):
         mock_res = MagicMock()
         mock_res.scalar_one_or_none.return_value = addr1
         return mock_res
-        
+
     db.execute = AsyncMock(side_effect=mock_execute)
     db.flush = AsyncMock()
-    
+
     updated = await set_primary_address(addr1_id, org_id, db)
     assert updated.is_primary is True
 
@@ -542,7 +523,7 @@ def test_geocoding_sets_failed_flag_after_max_retries() -> None:
     Asserts that geocoding_failed is set to True after maximum retries are exceeded.
     """
     from app.tasks.geocoding import geocode_address_task
-    
+
     with patch("app.tasks.geocoding.geocode_address_task.retry", side_effect=MaxRetriesExceededError("Max retries exceeded")):
         mock_req = MagicMock()
         mock_req.retries = 3
@@ -550,13 +531,13 @@ def test_geocoding_sets_failed_flag_after_max_retries() -> None:
             with patch("app.core.database.SessionLocal") as mock_session_local:
                 db_mock = MagicMock()
                 mock_session_local.return_value.__enter__.return_value = db_mock
-                
+
                 addr_mock = OrganizationAddress(id=uuid.uuid4(), org_id=uuid.uuid4(), address_line1="FAIL")
                 db_mock.query.return_value.filter.return_value.first.side_effect = [addr_mock, addr_mock]
-                
+
                 with pytest.raises(MaxRetriesExceededError):
                     geocode_address_task.run(str(addr_mock.id))
-                    
+
                 assert addr_mock.geocoding_failed is True
 
 
@@ -565,7 +546,7 @@ def test_geocoding_creates_notification_after_max_retries() -> None:
     Verifies that a notification warning is registered when max retries is exhausted.
     """
     from app.tasks.geocoding import geocode_address_task
-    
+
     with patch("app.tasks.geocoding.geocode_address_task.retry", side_effect=MaxRetriesExceededError("Max retries exceeded")):
         mock_req = MagicMock()
         mock_req.retries = 3
@@ -573,15 +554,13 @@ def test_geocoding_creates_notification_after_max_retries() -> None:
             with patch("app.core.database.SessionLocal") as mock_session_local:
                 db_mock = MagicMock()
                 mock_session_local.return_value.__enter__.return_value = db_mock
-                
+
                 addr_mock = OrganizationAddress(id=uuid.uuid4(), org_id=uuid.uuid4(), address_line1="FAIL")
                 db_mock.query.return_value.filter.return_value.first.side_effect = [addr_mock, addr_mock]
-                
+
                 with pytest.raises(MaxRetriesExceededError):
                     geocode_address_task.run(str(addr_mock.id))
-                    
+
                 db_mock.add.assert_called_once()
                 notification = db_mock.add.call_args[0][0]
                 assert isinstance(notification, Notification)
-
-
