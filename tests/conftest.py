@@ -128,15 +128,39 @@ async def cleanup_test_database_tables(table_names: list[str]) -> None:
 
 
 async def override_get_db(request=None) -> AsyncGenerator[AsyncSession, None]:  # type: ignore[misc]
+    """Use the disposable test pool while preserving production request context.
+
+    Forced-RLS integration tests must exercise the same user/org/gym/role GUCs
+    that production ``get_db`` derives from ``request.state``. Hard-coding an
+    anonymous context here makes authenticated requests behave unlike
+    production and either causes false failures or tempts tests to weaken RLS.
+    """
+    user_id = "00000000-0000-0000-0000-000000000000"
+    org_id = None
+    gym_id = None
+    role = "unknown"
+    trace_id = "test"
+
+    if request is not None:
+        state = request.state
+        user_id = getattr(state, "staff_id", user_id)
+        org_id = getattr(state, "org_id", None)
+        gym_id = getattr(state, "gym_id", None)
+        role = getattr(state, "role", "unknown")
+        trace_id = (
+            getattr(state, "otel_trace_id", None)
+            or getattr(state, "correlation_id", "test")
+        )
+
     async with TestSessionLocal() as session:
         try:
             await app_database.SessionContextInitializer.initialize(
                 session,
-                user_id="00000000-0000-0000-0000-000000000000",
-                org_id=None,
-                gym_id=None,
-                trace_id="test",
-                role="unknown",
+                user_id=str(user_id),
+                org_id=str(org_id) if org_id else None,
+                gym_id=str(gym_id) if gym_id else None,
+                trace_id=str(trace_id),
+                role=str(role),
             )
             yield session
             await session.commit()
