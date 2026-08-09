@@ -39,6 +39,7 @@ logger = logging.getLogger("doers.middleware")
 
 EXEMPT_PATHS = {
     "/auth/signup",
+    "/auth/signup-status",
     "/auth/register",
     "/auth/login",
     "/auth/refresh",
