@@ -23,6 +23,11 @@ password_hash = PasswordHash.recommended()
 _BCRYPT_PREFIXES = ("$2a$", "$2b$", "$2y$")
 _BCRYPT_MAX_PASSWORD_BYTES = 72
 
+# Access-token subjects are explicitly typed. UUIDs alone are not a sufficient
+# identity contract because this codebase currently contains both the owner
+# authentication domain and the organization-user RBAC domain.
+ACCESS_TOKEN_PRINCIPAL_TYPES = frozenset({"owner", "organization_user"})
+
 
 def generate_magic_token() -> str:
     """Generate 64-char URL-safe string."""
@@ -45,6 +50,7 @@ def hash_token(token: str) -> str:
 SECURITY_POLICY = {
     "token_payload_minimalist": True,
     "address_exclusion": "Addresses are never serialized into tokens. Address data is always fetched fresh from DB per request via RLS-scoped session.",
+    "typed_principals": True,
 }
 
 
@@ -54,10 +60,18 @@ def create_access_token(
     email: str,
     role: str = "owner",
     branch_ids: list[str] = None,
+    principal_type: str = "owner",
 ) -> str:
-    """Create JWT access token as per spec."""
+    """Create a short-lived access token with an explicit subject namespace."""
+    normalized_principal_type = str(principal_type).strip().lower()
+    if normalized_principal_type not in ACCESS_TOKEN_PRINCIPAL_TYPES:
+        raise ValueError(
+            f"Unsupported access-token principal type: {principal_type!r}"
+        )
+
     payload = {
         "sub": str(owner_id),
+        "principal_type": normalized_principal_type,
         "org_id": str(org_id),
         "email": email,
         "role": role,
@@ -70,7 +84,7 @@ def create_access_token(
 
 
 def create_refresh_token(owner_id: str) -> str:
-    """Create JWT refresh token as per spec."""
+    """Create refresh token for the current owner-authentication flow."""
     payload = {
         "sub": str(owner_id),
         "type": "refresh",
