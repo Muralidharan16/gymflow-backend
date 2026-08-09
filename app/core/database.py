@@ -6,7 +6,9 @@ Enterprise database session management for the Doers SaaS platform.
 Key design decisions:
   • Session context initializer injects GUCs inside an explicit transaction scope
     so SET LOCAL settings survive for the full request lifetime (not silently dropped).
-  • statement_timeout / lock_timeout / deadlock_timeout enforced per session.
+  • User-settable statement, lock, and idle-in-transaction timeouts are enforced per request.
+  • Cluster-level/privileged lock-detection settings such as deadlock_timeout remain an
+    administrator-owned PostgreSQL configuration boundary.
   • Sync engine preserved for Celery tasks.
 """
 
@@ -57,12 +59,13 @@ async_session_maker = AsyncSessionLocal
 
 class SessionContextInitializer:
     """
-    Enforces safe GUC initialization on every AsyncSession.
+    Enforces safe request-scoped GUC initialization on every AsyncSession.
 
     All SET LOCAL calls are wrapped in an explicit transaction block to guarantee
-    they survive for the full request lifetime. Without this, SET LOCAL settings
-    can silently disappear if SQLAlchemy autobegin closes a transaction boundary
-    prematurely.
+    they survive for the full request lifetime. Only parameters intended to be
+    set by ordinary application roles belong here. Privileged PostgreSQL settings
+    such as ``deadlock_timeout`` are deliberately excluded and must be managed by
+    database infrastructure rather than by request code.
     """
 
     @staticmethod
@@ -74,10 +77,8 @@ class SessionContextInitializer:
         trace_id:  str           = "unknown",
         role:      str           = "unknown",
     ):
-        # Validate lock_timeout value before embedding as literal
         _LOCK_TIMEOUT_MS = 500
         _STMT_TIMEOUT_MS = 5000
-        _DEADLOCK_MS     = 200
         _IDLE_TIMEOUT_MS = 15000
 
         async with session.begin():
@@ -107,10 +108,9 @@ class SessionContextInitializer:
                 sa.text("SELECT pg_catalog.set_config('app.current_role', :role, true)"),
                 {"role": role},
             )
-            # Enforce per-request safety limits
+            # Request-level limits must remain assignable by the reduced runtime role.
             await session.execute(sa.text(f"SET LOCAL statement_timeout = '{_STMT_TIMEOUT_MS}ms'"))
             await session.execute(sa.text(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT_MS}ms'"))
-            await session.execute(sa.text(f"SET LOCAL deadlock_timeout = '{_DEADLOCK_MS}ms'"))
             await session.execute(sa.text(f"SET LOCAL idle_in_transaction_session_timeout = '{_IDLE_TIMEOUT_MS}ms'"))
 
 
