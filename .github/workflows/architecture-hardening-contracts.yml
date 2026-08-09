@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   architecture-contracts:
-    name: Identity, transaction and audit contracts
+    name: Identity, transaction, auth and audit contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
@@ -38,10 +38,15 @@ jobs:
       - name: Compile architecture hardening surface
         run: |
           python -m py_compile \
+            app/core/config.py \
             app/core/database.py \
+            app/core/auth_database.py \
             app/core/security.py \
+            app/routers/auth.py \
+            app/routers/onboarding.py \
             app/services/onboarding_service.py \
-            alembic/versions/4d5e6f708192_establish_audit_principal_registry.py
+            alembic/versions/4d5e6f708192_establish_audit_principal_registry.py \
+            alembic/versions/5e6f708192a3_auth_runtime_privilege_boundary.py
 
       - name: Run architecture boundary contracts
         env:
@@ -51,4 +56,6 @@ jobs:
             tests/test_database_session_guc_boundary.py \
             tests/test_database_transaction_context_boundary.py \
             tests/test_onboarding_rls_context_boundary.py \
-            tests/test_audit_principal_registry_boundary.py
+            tests/test_audit_principal_registry_boundary.py \
+            tests/test_auth_database_boundary.py \
+            tests/test_cluster_role_contract_manifests.py
