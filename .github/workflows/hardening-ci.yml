@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - hardening/complete-migration-lineage
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -25,7 +22,7 @@ jobs:
   static-hardening-contracts:
     name: Static hardening contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -39,11 +36,12 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Install test tooling
+      - name: Install project and test dependencies
         id: tooling
         run: |
           set -o pipefail
           python -m pip install --upgrade pip 2>&1 | tee /tmp/static-tooling.log
+          python -m pip install -r requirements.txt 2>&1 | tee -a /tmp/static-tooling.log
           python -m pip install pytest pytest-asyncio 2>&1 | tee -a /tmp/static-tooling.log
 
       - name: Compile hardened migration surface
@@ -63,6 +61,7 @@ jobs:
             alembic/versions/0029_rbac_p8_contract.py \
             alembic/versions/a1b2c3d4e5f6_rbac_hardening_phase_15_to_18.py \
             alembic/versions/dafd2b02005e_add_branch_staff_roles_deactivation_.py \
+            alembic/versions/66a95af89112_init_partman_for_branch_lifecycle_events.py \
             alembic/versions/361c32e72e93_add_geo_fields_to_branches.py \
             2>&1 | tee /tmp/static-compile.log
 
@@ -74,6 +73,7 @@ jobs:
           set -o pipefail
           python -m pytest --noconftest -q \
             tests/test_0027_complete_owner_context_boundary.py \
+            tests/test_66a_pg_partman_boundary.py \
             tests/test_alembic_env_config_boundary.py \
             tests/test_alembic_model_import_boundary.py \
             tests/test_dafd_app_private_owner_context_boundary.py \
@@ -95,15 +95,17 @@ jobs:
           TEST_OUTCOME: ${{ steps.static_tests.outcome }}
         run: |
           python3 - <<'PY' >/tmp/static-report.json
-          import json, os
+          import json
+          import os
           from pathlib import Path
 
-          def tail(path, limit=80):
-              p = Path(path)
-              if not p.exists():
+          def tail(path: str, limit: int = 100) -> str:
+              candidate = Path(path)
+              if not candidate.exists():
                   return "(no captured log)"
-              lines = p.read_text(errors="replace").splitlines()
-              return "\n".join(lines[-limit:])
+              return "\n".join(
+                  candidate.read_text(errors="replace").splitlines()[-limit:]
+              )
 
           outcomes = {
               "checkout": os.environ.get("CHECKOUT_OUTCOME", "unknown"),
@@ -120,7 +122,7 @@ jobs:
               f"Commit: `{os.environ.get('GITHUB_SHA', '')}`\n\n"
               f"Outcomes: `{json.dumps(outcomes, sort_keys=True)}`\n\n"
               "<details><summary>Captured tail</summary>\n\n```text\n"
-              + log[:12000]
+              + log[:16000]
               + "\n```\n</details>"
           )
           print(json.dumps({"body": body}))
@@ -137,6 +139,7 @@ jobs:
     name: Fresh PG16 lineage and full regressions
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+
     services:
       redis:
         image: redis:7-alpine
@@ -362,7 +365,8 @@ jobs:
           REGRESSION_OUTCOME: ${{ steps.regression.outcome }}
         run: |
           python3 - <<'PY' >/tmp/runtime-report.json
-          import json, os
+          import json
+          import os
           from pathlib import Path
 
           stages = [
@@ -378,23 +382,26 @@ jobs:
               ("regression", os.environ.get("REGRESSION_OUTCOME"), "/tmp/full-regression.log"),
           ]
           outcomes = {name: outcome or "unknown" for name, outcome, _ in stages}
-          selected = []
-          for name, outcome, path in stages:
-              if outcome == "failure" and path:
-                  selected.append((name, path))
+          failed = [
+              (name, path)
+              for name, outcome, path in stages
+              if outcome == "failure" and path
+          ]
+          selected = failed
           if not selected:
               for name, outcome, path in reversed(stages):
                   if path and outcome not in {None, "skipped", "unknown"}:
-                      selected.append((name, path))
+                      selected = [(name, path)]
                       break
 
           excerpts = []
           for name, path in selected:
-              p = Path(path)
+              candidate = Path(path)
               text = "(no captured log)"
-              if p.exists():
-                  lines = p.read_text(errors="replace").splitlines()
-                  text = "\n".join(lines[-120:])
+              if candidate.exists():
+                  text = "\n".join(
+                      candidate.read_text(errors="replace").splitlines()[-150:]
+                  )
               excerpts.append(f"[{name}]\n{text}")
 
           body = (
@@ -402,7 +409,7 @@ jobs:
               f"Commit: `{os.environ.get('GITHUB_SHA', '')}`\n\n"
               f"Outcomes: `{json.dumps(outcomes, sort_keys=True)}`\n\n"
               "<details><summary>Failure/current-stage tail</summary>\n\n```text\n"
-              + "\n\n".join(excerpts)[:18000]
+              + "\n\n".join(excerpts)[:20000]
               + "\n```\n</details>"
           )
           print(json.dumps({"body": body}))
