@@ -87,39 +87,18 @@ jobs:
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
             NOREPLICATION NOBYPASSRLS;
 
-          CREATE ROLE app_rls_executor
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_security_owner
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_runtime
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_user
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE audit_writer
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_admin
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_viewer
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE internal_billing_worker
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE ops_support
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE readonly_analytics
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE test_runner
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_rls_executor NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_security_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_user NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE audit_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_viewer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE internal_billing_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE ops_support NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE readonly_analytics NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
 
           CREATE ROLE finance_test_runtime
             LOGIN PASSWORD 'ci-finance-runtime'
@@ -134,17 +113,10 @@ jobs:
           ALTER ROLE finance_test_runtime SET lock_timeout = '3s';
           ALTER ROLE finance_test_runtime SET idle_in_transaction_session_timeout = '15s';
 
-          GRANT app_rls_executor TO migration_owner
-            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT app_security_owner TO migration_owner
-            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-
-          -- Finance API execution still needs ordinary tenant/application reads,
-          -- but the login may not SET ROLE to either privilege group.
-          GRANT app_runtime TO finance_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO finance_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_rls_executor TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+          GRANT app_security_owner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+          GRANT app_runtime TO finance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO finance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 
           CREATE DATABASE gymflow_finance_test_ci OWNER migration_owner;
           GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO finance_test_runtime;
@@ -159,12 +131,9 @@ jobs:
           CREATE EXTENSION IF NOT EXISTS citext;
           CREATE EXTENSION IF NOT EXISTS pg_trgm;
           CREATE EXTENSION IF NOT EXISTS postgis;
-
           GRANT USAGE ON SCHEMA partman TO migration_owner;
-          GRANT SELECT, INSERT, UPDATE, DELETE
-            ON ALL TABLES IN SCHEMA partman TO migration_owner;
-          GRANT USAGE, SELECT, UPDATE
-            ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
           GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
           GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
           SQL
@@ -177,105 +146,68 @@ jobs:
 
       - name: Grant test-only Finance Core runtime DML surface
         run: |
-          PGPASSWORD="$MIGRATION_PASSWORD" psql \
-            -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U migration_owner \
-            -d gymflow_finance_test_ci <<'SQL'
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_finance_test_ci <<'SQL'
           GRANT USAGE ON SCHEMA finance TO finance_test_runtime;
-          GRANT SELECT, INSERT, UPDATE, DELETE
-            ON ALL TABLES IN SCHEMA finance TO finance_test_runtime;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA finance TO finance_test_runtime;
           GRANT SELECT ON TABLE public.organizations TO finance_test_runtime;
           SQL
 
       - name: Prove isolated Finance Core runtime posture
         run: |
-          PGPASSWORD="$FINANCE_RUNTIME_PASSWORD" psql \
-            -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U finance_test_runtime \
-            -d gymflow_finance_test_ci <<'SQL'
+          PGPASSWORD="$FINANCE_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U finance_test_runtime -d gymflow_finance_test_ci <<'SQL'
           DO $$
-          DECLARE
-            runtime_record record;
+          DECLARE runtime_record record;
           BEGIN
-            SELECT * INTO runtime_record
-            FROM pg_catalog.pg_roles
-            WHERE rolname = current_user;
-
-            IF current_user <> 'finance_test_runtime' THEN
-              RAISE EXCEPTION 'unexpected Finance Core runtime identity';
+            SELECT * INTO runtime_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
+            IF current_user <> 'finance_test_runtime' OR current_database() <> 'gymflow_finance_test_ci' THEN
+              RAISE EXCEPTION 'unexpected Finance Core runtime identity/database';
             END IF;
-            IF current_database() <> 'gymflow_finance_test_ci' THEN
-              RAISE EXCEPTION 'unexpected Finance Core runtime database';
-            END IF;
-            IF NOT runtime_record.rolcanlogin
-               OR runtime_record.rolsuper
-               OR runtime_record.rolcreatedb
-               OR runtime_record.rolcreaterole
-               OR runtime_record.rolinherit
-               OR runtime_record.rolreplication
-               OR runtime_record.rolbypassrls THEN
+            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb
+               OR runtime_record.rolcreaterole OR runtime_record.rolinherit
+               OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN
               RAISE EXCEPTION 'Finance Core runtime role attributes are unsafe';
             END IF;
-
             IF EXISTS (
-              SELECT 1
-              FROM pg_catalog.pg_database
-              WHERE datname = current_database()
-                AND pg_catalog.pg_get_userbyid(datdba) = current_user
+              SELECT 1 FROM pg_catalog.pg_database
+              WHERE datname = current_database() AND pg_catalog.pg_get_userbyid(datdba) = current_user
             ) THEN
               RAISE EXCEPTION 'Finance Core runtime owns its database';
             END IF;
-
             IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE')
                OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE')
                OR pg_catalog.has_schema_privilege(current_user, 'finance', 'CREATE') THEN
               RAISE EXCEPTION 'Finance Core runtime has object-creation capability';
             END IF;
-
             IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'SET')
-               OR pg_catalog.pg_has_role(current_user, 'app_user', 'SET') THEN
-              RAISE EXCEPTION 'Finance Core runtime may SET ROLE to an application group';
+               OR pg_catalog.pg_has_role(current_user, 'app_user', 'SET')
+               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER') THEN
+              RAISE EXCEPTION 'Finance Core runtime has an invalid application/auth role edge';
             END IF;
-
             IF NOT pg_catalog.has_schema_privilege(current_user, 'finance', 'USAGE') THEN
               RAISE EXCEPTION 'Finance Core runtime lacks finance schema USAGE';
             END IF;
-
             IF EXISTS (
               SELECT 1
               FROM pg_catalog.pg_class AS relation_data
-              JOIN pg_catalog.pg_namespace AS namespace_data
-                ON namespace_data.oid = relation_data.relnamespace
+              JOIN pg_catalog.pg_namespace AS namespace_data ON namespace_data.oid = relation_data.relnamespace
               WHERE namespace_data.nspname = 'finance'
                 AND relation_data.relkind IN ('r', 'p')
                 AND (
-                  NOT pg_catalog.has_table_privilege(
-                    current_user, relation_data.oid, 'SELECT'
-                  )
-                  OR NOT pg_catalog.has_table_privilege(
-                    current_user, relation_data.oid, 'INSERT'
-                  )
-                  OR NOT pg_catalog.has_table_privilege(
-                    current_user, relation_data.oid, 'UPDATE'
-                  )
-                  OR NOT pg_catalog.has_table_privilege(
-                    current_user, relation_data.oid, 'DELETE'
-                  )
+                  NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'SELECT')
+                  OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'INSERT')
+                  OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'UPDATE')
+                  OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'DELETE')
                 )
             ) THEN
               RAISE EXCEPTION 'Finance Core runtime DML surface is incomplete';
             END IF;
-
             IF EXISTS (
               SELECT 1
               FROM pg_catalog.pg_class AS relation_data
-              JOIN pg_catalog.pg_namespace AS namespace_data
-                ON namespace_data.oid = relation_data.relnamespace
+              JOIN pg_catalog.pg_namespace AS namespace_data ON namespace_data.oid = relation_data.relnamespace
               WHERE namespace_data.nspname = 'finance'
                 AND relation_data.relkind IN ('r', 'p')
-                AND pg_catalog.has_table_privilege(
-                  current_user, relation_data.oid, 'TRUNCATE'
-                )
+                AND pg_catalog.has_table_privilege(current_user, relation_data.oid, 'TRUNCATE')
             ) THEN
               RAISE EXCEPTION 'Finance Core runtime may TRUNCATE finance tables';
             END IF;
