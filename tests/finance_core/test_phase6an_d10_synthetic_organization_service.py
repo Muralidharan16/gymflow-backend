@@ -6,7 +6,6 @@ import math
 import uuid
 
 import pytest
-import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.dialects import postgresql
 
@@ -132,43 +131,6 @@ async def frozen_d11_snapshot(session) -> dict[str, object]:
     return dict(row) if row is not None else {}
 
 
-@pytest_asyncio.fixture
-async def persistent_d11_fixture() -> dict[str, object]:
-    """Ensure the immutable D11 replay evidence exists on a fresh test DB.
-
-    D11 evidence is intentionally append-only and cannot be cleaned up after the
-    test. The old test relied on a manually pre-seeded database, which made a
-    fresh migrated database fail before the replay boundary was exercised. Use
-    the production service contract to create-or-replay the canonical fixture,
-    commit it, and then validate its exact persisted identity before the reduced
-    test_runner replay proof begins.
-    """
-    async with AsyncSessionLocal() as session:
-        service = SyntheticOrganizationCreationService(
-            session,
-            environment="development",
-        )
-        seeded = await service.create_synthetic_organization(
-            command(
-                name=FROZEN_D11_NAME,
-                slug=FROZEN_D11_SLUG,
-                idempotency_key=FROZEN_D11_KEY,
-            )
-        )
-        await session.commit()
-
-    async with AsyncSessionLocal() as session:
-        snapshot = await frozen_d11_snapshot(session)
-
-    assert snapshot["slug"] == FROZEN_D11_SLUG
-    assert snapshot["is_active"] is True
-    assert snapshot["organization_id"] == snapshot["evidence_organization_id"]
-    assert snapshot["trusted_source"] == SYNTHETIC_ORGANIZATION_TRUSTED_SOURCE
-    assert str(seeded.organization_id) == snapshot["organization_id"]
-    assert seeded.slug == FROZEN_D11_SLUG
-    return snapshot
-
-
 def test_evidence_lookup_api_no_longer_exposes_row_lock_parameter():
     signature = inspect.signature(SyntheticOrganizationRepository.get_evidence)
     assert "for_update" not in signature.parameters
@@ -189,12 +151,10 @@ async def test_evidence_lookup_sql_is_plain_select_while_organization_lookup_can
 
 
 @pytest.mark.asyncio
-async def test_persistent_d11_replay_uses_select_only_evidence_privileges_without_mutation(
-    persistent_d11_fixture: dict[str, object],
-):
-    before = persistent_d11_fixture
-
+async def test_persistent_d11_replay_uses_select_only_evidence_privileges_without_mutation():
     async with AsyncSessionLocal() as session:
+        before = await frozen_d11_snapshot(session)
+        assert before["slug"] == FROZEN_D11_SLUG
         privileges = (
             await session.execute(
                 text(
@@ -388,81 +348,243 @@ async def test_caller_rollback_after_success_removes_org_and_evidence():
 
 
 @pytest.mark.asyncio
-async def test_pretransaction_is_rejected_without_mutation():
+async def test_concurrent_same_key_and_different_key_same_slug_are_bounded():
     async with AsyncSessionLocal() as session:
-        await session.execute(text("SELECT 1"))
-        assert session.in_transaction()
+        tx = await session.begin()
         service = SyntheticOrganizationCreationService(session, environment="development")
+        first = await service.create_synthetic_organization(command(slug="vitara-test-concurrent-org", idempotency_key="organization-create:synthetic:test:concurrent"))
+        replay = await service.create_synthetic_organization(command(slug="vitara-test-concurrent-org", idempotency_key="organization-create:synthetic:test:concurrent"))
+        assert replay.organization_id == first.organization_id
+        assert replay.replayed is True
         with pytest.raises(SyntheticOrganizationError) as exc:
-            await service.create_synthetic_organization(command())
-        assert exc.value.code == "SYNTHETIC_ORG_PRETRANSACTION_REJECTED"
-        await session.rollback()
+            await service.create_synthetic_organization(command(slug="vitara-test-concurrent-org", idempotency_key="organization-create:synthetic:test:concurrent-other"))
+        assert exc.value.code == "SYNTHETIC_ORG_DUPLICATE_IDENTITY"
+        assert await count_scalar(session, "SELECT count(*) FROM organizations WHERE slug = 'vitara-test-concurrent-org'") == 1
+        assert await evidence_count_for_key(session, "organization-create:synthetic:test:concurrent") == 1
+        await tx.rollback()
 
 
-@pytest.mark.asyncio
-async def test_timing_configuration_rejects_invalid_values_before_database_access():
-    cases = [
-        {"lock_timeout_seconds": 0.0},
-        {"lock_timeout_seconds": -1.0},
-        {"lock_timeout_seconds": math.nan},
-        {"lock_timeout_seconds": math.inf},
-        {"lock_poll_interval_seconds": 0.0},
-        {"lock_poll_interval_seconds": -0.01},
-        {"lock_poll_interval_seconds": math.nan},
-        {"lock_poll_interval_seconds": math.inf},
-        {"lock_timeout_seconds": 0.1, "lock_poll_interval_seconds": 0.1},
-    ]
-    for kwargs in cases:
-        session = _NoDbSession()
-        service = SyntheticOrganizationCreationService(session, environment="development", lock_sleep=_unexpected_sleep, **kwargs)
-        with pytest.raises(ValueError):
-            await service.create_synthetic_organization(command())
-        assert session.touched is False
-
-
-@pytest.mark.asyncio
-async def test_failed_try_advisory_lock_timeout_is_sanitized_and_bounded():
-    async with AsyncSessionLocal() as blocker:
-        blocker_tx = await blocker.begin()
-        await blocker.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": synthetic_organization_advisory_lock_key(KEY)})
-
-        async with AsyncSessionLocal() as contender:
-            contender_tx = await contender.begin()
-            service = SyntheticOrganizationCreationService(
-                contender,
-                environment="development",
-                lock_timeout_seconds=0.05,
-                lock_poll_interval_seconds=0.01,
-            )
-            with pytest.raises(SyntheticOrganizationLockContentionError) as exc:
-                await service.create_synthetic_organization(command())
-            assert exc.value.code == "SYNTHETIC_ORG_LOCK_CONTENTION"
-            await contender_tx.rollback()
-        await blocker_tx.rollback()
-
-
-@pytest.mark.asyncio
-async def test_same_key_concurrency_serializes_to_one_committed_identity():
+async def committed_count(sql: str, params: dict[str, object] | None = None) -> int:
     async with AsyncSessionLocal() as session:
-        await session.execute(text("DELETE FROM organization_creation_idempotency WHERE idempotency_key = :key"), {"key": KEY})
-        await session.execute(text("DELETE FROM organizations WHERE slug = :slug"), {"slug": SLUG})
-        await session.commit()
+        return await count_scalar(session, sql, params)
 
-    async def create_once():
+
+def contended_sleep_marker(event: asyncio.Event):
+    async def _sleep(delay: float) -> None:
+        event.set()
+        await asyncio.sleep(delay)
+
+    return _sleep
+
+
+@pytest.mark.asyncio
+async def test_real_concurrent_same_key_same_payload_waits_then_replays():
+    waited = asyncio.Event()
+    lock_key = synthetic_organization_advisory_lock_key(f"org-create:idempotency:{FROZEN_D11_KEY}")
+
+    async with AsyncSessionLocal() as session_a:
+        tx_a = await session_a.begin()
+        await session_a.execute(text("SELECT pg_catalog.pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
+
+        async with AsyncSessionLocal() as session_b:
+            tx_b = await session_b.begin()
+            service_b = SyntheticOrganizationCreationService(
+                session_b,
+                environment="development",
+                lock_timeout_seconds=2.0,
+                lock_poll_interval_seconds=0.02,
+                lock_sleep=contended_sleep_marker(waited),
+            )
+            task = asyncio.create_task(
+                service_b.create_synthetic_organization(
+                    command(name=FROZEN_D11_NAME, slug=FROZEN_D11_SLUG, idempotency_key=FROZEN_D11_KEY)
+                )
+            )
+            await asyncio.wait_for(waited.wait(), timeout=1.0)
+            assert not task.done()
+
+            await tx_a.rollback()
+            replayed = await asyncio.wait_for(task, timeout=2.0)
+            assert replayed.slug == FROZEN_D11_SLUG
+            assert replayed.replayed is True
+            await tx_b.rollback()
+
+    async with AsyncSessionLocal() as session:
+        assert await count_scalar(session, "SELECT count(*) FROM organizations WHERE slug = :slug", {"slug": FROZEN_D11_SLUG}) == 1
+        assert await evidence_count_for_key(session, FROZEN_D11_KEY) == 1
+
+
+@pytest.mark.asyncio
+async def test_real_concurrent_same_key_changed_payload_waits_then_conflicts():
+    waited = asyncio.Event()
+    lock_key = synthetic_organization_advisory_lock_key(f"org-create:idempotency:{FROZEN_D11_KEY}")
+
+    async with AsyncSessionLocal() as session_a:
+        tx_a = await session_a.begin()
+        await session_a.execute(text("SELECT pg_catalog.pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
+
+        async with AsyncSessionLocal() as session_b:
+            tx_b = await session_b.begin()
+            service_b = SyntheticOrganizationCreationService(
+                session_b,
+                environment="development",
+                lock_timeout_seconds=2.0,
+                lock_poll_interval_seconds=0.02,
+                lock_sleep=contended_sleep_marker(waited),
+            )
+            task = asyncio.create_task(
+                service_b.create_synthetic_organization(
+                    command(name="DOERS RAZORPAY SANDBOX CHANGED ORGANIZATION", slug=FROZEN_D11_SLUG, idempotency_key=FROZEN_D11_KEY)
+                )
+            )
+            await asyncio.wait_for(waited.wait(), timeout=1.0)
+            assert not task.done()
+
+            await tx_a.rollback()
+            with pytest.raises(SyntheticOrganizationError) as exc:
+                await asyncio.wait_for(task, timeout=2.0)
+            assert exc.value.code == "SYNTHETIC_ORG_IDEMPOTENCY_CONFLICT"
+            await tx_b.rollback()
+
+    async with AsyncSessionLocal() as session:
+        assert await count_scalar(session, "SELECT count(*) FROM organizations WHERE slug = :slug", {"slug": FROZEN_D11_SLUG}) == 1
+        assert await evidence_count_for_key(session, FROZEN_D11_KEY) == 1
+
+
+@pytest.mark.asyncio
+async def test_real_concurrent_different_key_same_slug_waits_then_duplicate_conflict():
+    waited = asyncio.Event()
+    key_b = "organization-create:synthetic:test:r3-same-slug-b"
+    lock_key = synthetic_organization_advisory_lock_key(f"org-create:slug:{FROZEN_D11_SLUG}")
+
+    async with AsyncSessionLocal() as session_a:
+        tx_a = await session_a.begin()
+        await session_a.execute(text("SELECT pg_catalog.pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
+
+        async with AsyncSessionLocal() as session_b:
+            tx_b = await session_b.begin()
+            service_b = SyntheticOrganizationCreationService(
+                session_b,
+                environment="development",
+                lock_timeout_seconds=2.0,
+                lock_poll_interval_seconds=0.02,
+                lock_sleep=contended_sleep_marker(waited),
+            )
+            task = asyncio.create_task(
+                service_b.create_synthetic_organization(
+                    command(name=FROZEN_D11_NAME, slug=FROZEN_D11_SLUG, idempotency_key=key_b)
+                )
+            )
+            await asyncio.wait_for(waited.wait(), timeout=1.0)
+            assert not task.done()
+
+            await tx_a.rollback()
+            with pytest.raises(SyntheticOrganizationError) as exc:
+                await asyncio.wait_for(task, timeout=2.0)
+            assert exc.value.code == "SYNTHETIC_ORG_DUPLICATE_IDENTITY"
+            await tx_b.rollback()
+
+    async with AsyncSessionLocal() as session:
+        assert await count_scalar(session, "SELECT count(*) FROM organizations WHERE slug = :slug", {"slug": FROZEN_D11_SLUG}) == 1
+        assert await evidence_count_for_key(session, FROZEN_D11_KEY) == 1
+        assert await evidence_count_for_key(session, key_b) == 0
+
+
+@pytest.mark.asyncio
+async def test_bounded_lock_timeout_is_sanitized_and_leaves_caller_transaction_manageable():
+    suffix = uuid.uuid4().hex[:8]
+    slug = f"vitara-test-r3-timeout-{suffix}"
+    key = f"organization-create:synthetic:test:r3-timeout-{suffix}"
+    lock_key = synthetic_organization_advisory_lock_key(f"org-create:idempotency:{key}")
+
+    try:
+        async with AsyncSessionLocal() as blocker:
+            blocker_tx = await blocker.begin()
+            await blocker.execute(text("SELECT pg_catalog.pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
+
+            async with AsyncSessionLocal() as session_b:
+                tx_b = await session_b.begin()
+                service_b = SyntheticOrganizationCreationService(
+                    session_b,
+                    environment="development",
+                    lock_timeout_seconds=0.05,
+                    lock_poll_interval_seconds=0.01,
+                )
+                started = asyncio.get_running_loop().time()
+                with pytest.raises(SyntheticOrganizationLockContentionError) as exc:
+                    await service_b.create_synthetic_organization(command(slug=slug, idempotency_key=key))
+                elapsed = asyncio.get_running_loop().time() - started
+                assert exc.value.code == "SYNTHETIC_ORG_LOCK_CONTENTION"
+                assert elapsed < 1.0
+                assert await count_scalar(session_b, "SELECT 1") == 1
+                await tx_b.rollback()
+
+            await blocker_tx.rollback()
+
+        assert await committed_count("SELECT count(*) FROM organizations WHERE slug = :slug", {"slug": slug}) == 0
+        assert await committed_count("SELECT count(*) FROM organization_creation_idempotency WHERE idempotency_key = :key", {"key": key}) == 0
+
         async with AsyncSessionLocal() as session:
             tx = await session.begin()
-            result = await SyntheticOrganizationCreationService(session, environment="development").create_synthetic_organization(command())
-            await tx.commit()
-            return result
+            service = SyntheticOrganizationCreationService(session, environment="development")
+            result = await service.create_synthetic_organization(command(slug=slug, idempotency_key=key))
+            await tx.rollback()
+        assert await committed_count("SELECT count(*) FROM organizations WHERE id = :id", {"id": result.organization_id}) == 0
+    finally:
+        assert await committed_count("SELECT count(*) FROM organizations WHERE slug = :slug", {"slug": slug}) == 0
+        assert await committed_count("SELECT count(*) FROM organization_creation_idempotency WHERE idempotency_key = :key", {"key": key}) == 0
 
-    results = await asyncio.gather(create_once(), create_once())
-    ids = {result.organization_id for result in results}
-    assert len(ids) == 1
-    assert sorted(result.replayed for result in results) == [False, True]
 
-    async with AsyncSessionLocal() as session:
-        assert await count_scalar(session, "SELECT count(*) FROM organizations WHERE slug = :slug", {"slug": SLUG}) == 1
-        assert await evidence_count_for_key(session) == 1
-        await session.execute(text("DELETE FROM organization_creation_idempotency WHERE idempotency_key = :key"), {"key": KEY})
-        await session.execute(text("DELETE FROM organizations WHERE slug = :slug"), {"slug": SLUG})
-        await session.commit()
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("lock_timeout_seconds", float("nan"), id="timeout-nan"),
+        pytest.param("lock_timeout_seconds", float("inf"), id="timeout-pos-inf"),
+        pytest.param("lock_timeout_seconds", float("-inf"), id="timeout-neg-inf"),
+        pytest.param("lock_timeout_seconds", 0, id="timeout-zero-int"),
+        pytest.param("lock_timeout_seconds", 0.0, id="timeout-zero-float"),
+        pytest.param("lock_timeout_seconds", -0.01, id="timeout-negative"),
+        pytest.param("lock_timeout_seconds", 30.1, id="timeout-above-max"),
+        pytest.param("lock_timeout_seconds", True, id="timeout-true"),
+        pytest.param("lock_timeout_seconds", False, id="timeout-false"),
+        pytest.param("lock_timeout_seconds", None, id="timeout-none"),
+        pytest.param("lock_timeout_seconds", "1.0", id="timeout-string"),
+        pytest.param("lock_timeout_seconds", object(), id="timeout-object"),
+        pytest.param("lock_poll_interval_seconds", float("nan"), id="poll-nan"),
+        pytest.param("lock_poll_interval_seconds", float("inf"), id="poll-pos-inf"),
+        pytest.param("lock_poll_interval_seconds", float("-inf"), id="poll-neg-inf"),
+        pytest.param("lock_poll_interval_seconds", 0, id="poll-zero-int"),
+        pytest.param("lock_poll_interval_seconds", 0.0, id="poll-zero-float"),
+        pytest.param("lock_poll_interval_seconds", -0.01, id="poll-negative"),
+        pytest.param("lock_poll_interval_seconds", 1.1, id="poll-above-timeout"),
+        pytest.param("lock_poll_interval_seconds", True, id="poll-true"),
+        pytest.param("lock_poll_interval_seconds", False, id="poll-false"),
+        pytest.param("lock_poll_interval_seconds", None, id="poll-none"),
+        pytest.param("lock_poll_interval_seconds", "0.01", id="poll-string"),
+        pytest.param("lock_poll_interval_seconds", object(), id="poll-object"),
+    ],
+)
+def test_lock_timing_rejects_invalid_values_before_db_or_sleep(field, value):
+    session = _NoDbSession()
+    kwargs = {field: value, "lock_sleep": _unexpected_sleep}
+    with pytest.raises(ValueError, match="synthetic organization lock .* is invalid"):
+        SyntheticOrganizationRepository(session, **kwargs)
+    assert session.touched is False
+
+
+def test_lock_timing_accepts_defaults_and_valid_boundaries():
+    default_repo = SyntheticOrganizationRepository(_NoDbSession())
+    assert default_repo._lock_timeout_seconds == SYNTHETIC_ORGANIZATION_LOCK_TIMEOUT_SECONDS
+    assert default_repo._lock_poll_interval_seconds == SYNTHETIC_ORGANIZATION_LOCK_POLL_INTERVAL_SECONDS
+
+    tiny_repo = SyntheticOrganizationRepository(_NoDbSession(), lock_timeout_seconds=0.001, lock_poll_interval_seconds=0.0005)
+    assert math.isclose(tiny_repo._lock_timeout_seconds, 0.001)
+    assert math.isclose(tiny_repo._lock_poll_interval_seconds, 0.0005)
+
+    max_repo = SyntheticOrganizationRepository(_NoDbSession(), lock_timeout_seconds=30, lock_poll_interval_seconds=30)
+    assert max_repo._lock_timeout_seconds == 30.0
+    assert max_repo._lock_poll_interval_seconds == 30.0
+
+    ordinary_repo = SyntheticOrganizationRepository(_NoDbSession(), lock_timeout_seconds=2, lock_poll_interval_seconds=0.25)
+    assert ordinary_repo._lock_timeout_seconds == 2.0
+    assert ordinary_repo._lock_poll_interval_seconds == 0.25
