@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from app.models.auth import Owner
 from app.models.organization import Organization
 from app.models.trial import TrialSubscription
@@ -56,6 +56,19 @@ class OnboardingService:
         # 2. Atomic Transaction
         try:
             async with self.session.begin_nested():
+                # Establish transaction-local tenant/audit identity before any
+                # tenant-scoped write. org_branches and related onboarding
+                # tables use forced RLS, so setting these GUCs after flush
+                # would make the first principal-branch insert invalid.
+                await self.session.execute(
+                    text("SELECT pg_catalog.set_config('app.current_org_id', :org_id, true)"),
+                    {"org_id": str(org.id)}
+                )
+                await self.session.execute(
+                    text("SELECT pg_catalog.set_config('app.current_user_id', :user_id, true)"),
+                    {"user_id": str(owner.id)}
+                )
+
                 # a. Update Organization
                 org.phone = data.phone
                 org.address_line1 = data.address_line1
@@ -141,17 +154,6 @@ class OnboardingService:
 
                 # Link address_id back to branch
                 branch.address_id = org_address.id
-
-                # Set transaction-local GUCs consumed by RLS and audit triggers
-                from sqlalchemy import text
-                await self.session.execute(
-                    text("SELECT pg_catalog.set_config('app.current_org_id', :org_id, true)"),
-                    {"org_id": str(org.id)}
-                )
-                await self.session.execute(
-                    text("SELECT pg_catalog.set_config('app.current_user_id', :user_id, true)"),
-                    {"user_id": str(owner.id)}
-                )
 
                 # Create real contacts in branch_contacts table
                 from app.schemas.branch_contacts import BranchContactORM, ContactKind, VisibilityScope, normalize_phone, normalize_email
