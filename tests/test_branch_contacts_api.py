@@ -62,7 +62,8 @@ async def auth_session(client):
             f"/auth/verify?token={raw_token}",
             follow_redirects=False,
         )
-        assert verify_resp.status_code == 200
+        assert verify_resp.status_code == 307
+        assert verify_resp.headers["location"].endswith("/auth/verify-success")
 
     # Login
     login_payload = {
