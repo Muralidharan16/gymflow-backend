@@ -68,28 +68,30 @@ def test_upgrade_adopts_legacy_partition_without_dropping_it() -> None:
     assert "DROP TABLE public.auth_sessions_y2026_m05" not in source
 
 
-def test_partman_contract_is_monthly_forward_maintained_and_non_destructive() -> None:
+def test_partman_contract_is_monthly_forward_maintained_and_fail_visible() -> None:
     source = _source()
 
-    assert 'p_control := \'created_at\'' in source
-    assert 'p_interval := \'1 month\'' in source
-    assert "p_default_table := true" in source
+    assert "p_control := 'created_at'" in source
+    assert "p_interval := '1 month'" in source
+    assert "p_default_table := false" in source
     assert "p_automatic_maintenance := 'on'" in source
     assert "infinite_time_partitions = true" in source
     assert "retention = NULL" in source
     assert "retention_keep_table = true" in source
     assert "p_jobmon := false" in source
     assert "_PREMAKE = 12" in source
+    assert '"default_table": False' in source
 
 
-def test_upgrade_proves_current_month_partition_and_empty_default() -> None:
+def test_upgrade_proves_current_month_partition_and_no_default() -> None:
     source = _source()
 
     assert "partman.show_partition_name" in source
     assert "CURRENT_TIMESTAMP::text" in source
     assert 'if current is None or not current["table_exists"]' in source
-    assert "SELECT count(*) FROM" in source
-    assert "default partition unexpectedly contains rows" in source
+    assert '_DEFAULT_RELATION = "public.auth_sessions_default"' in source
+    assert "pg_catalog.to_regclass(:relation_name)::text" in source
+    assert "unexpectedly created a DEFAULT partition" in source
 
 
 def test_downgrade_fails_closed_before_removing_session_partitions() -> None:
