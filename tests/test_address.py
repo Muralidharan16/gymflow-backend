@@ -334,9 +334,12 @@ async def test_audit_log_captured_on_update(admin_db_session) -> None:
     Validates that typed actor provenance and tenant context survive transaction
     boundaries while address triggers record immutable audit snapshots.
 
-    Organization, branch and actor creation are administrative fixture setup.
+    Organization and actor creation are administrative root-fixture setup. The
+    branch/state rows are also fixture administration, but FORCE RLS still
+    applies: the admin fixture must attach the same explicit tenant/principal
+    context that production sessions use before inserting tenant-scoped rows.
     Address mutation and audit verification remain on the reduced application
-    runtime identity so this test cannot hide an RLS or DML privilege defect.
+    runtime identity.
     """
     from app.core.database import AsyncSessionLocal, update_session_context
     from app.models.organization import Organization
@@ -348,6 +351,33 @@ async def test_audit_log_captured_on_update(admin_db_session) -> None:
     owner_id = uuid.uuid4()
 
     admin_db_session.add(Organization(id=org_id, name="Test Gym Org"))
+    owner = GymOwner(
+        id=owner_id,
+        org_id=org_id,
+        name="Test Owner",
+        email="owner@test.com",
+        password_hash="hash",
+        role="owner",
+        is_active=True,
+        is_verified=True
+    )
+    admin_db_session.add(owner)
+    await admin_db_session.commit()
+
+    # migration_owner is intentionally NOBYPASSRLS and org_branches FORCEs RLS.
+    # Attach explicit tenant/actor context before administrative branch seeding;
+    # this proves even fixture administration obeys the production tenant policy.
+    await update_session_context(
+        admin_db_session,
+        principal_id=str(owner_id),
+        principal_type="legacy_gym_owner",
+        org_id=str(org_id),
+        role="owner",
+        ip_address="127.0.0.1",
+        user_agent="pytest-admin-fixture",
+        request_id=str(uuid.uuid4()),
+    )
+
     branch = OrgBranch(
         id=branch_id,
         org_id=org_id,
@@ -369,20 +399,6 @@ async def test_audit_log_captured_on_update(admin_db_session) -> None:
         search_epoch_ulid="01AN4V07BY79KA1307SR9XFMAT"
     )
     admin_db_session.add(branch_state)
-
-    # Register a legacy staff actor during fixture bootstrap. The source trigger
-    # writes the typed audit-principal registry before reduced-runtime behavior.
-    owner = GymOwner(
-        id=owner_id,
-        org_id=org_id,
-        name="Test Owner",
-        email="owner@test.com",
-        password_hash="hash",
-        role="owner",
-        is_active=True,
-        is_verified=True
-    )
-    admin_db_session.add(owner)
     await admin_db_session.commit()
 
     async with AsyncSessionLocal() as db:
