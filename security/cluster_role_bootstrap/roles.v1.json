@@ -83,7 +83,7 @@
         "superuser": false
       },
       "decision": "Dedicated privilege group for pre-tenant authentication bootstrap and session lifecycle. Deployment logins may inherit this role together with ordinary application groups, but auth_runtime itself is NOLOGIN and must never own schema objects, bypass RLS, or be granted to migration_owner.",
-      "purpose": "Least-privilege tenant-root authentication/bootstrap and auth-session capability.",
+      "purpose": "Least-privilege pre-tenant authentication/bootstrap and auth-session capability for tenant-root creation.",
       "role": "auth_runtime"
     },
     "branch_admin": {
