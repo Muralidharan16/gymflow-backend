@@ -49,9 +49,16 @@ def test_spatial_metadata_is_deterministic_and_schema_aligned() -> None:
     geo_start = source.index("class BranchGeolocationState(Base):")
     geo_end = source.index("class BranchGeocodeAttempt", geo_start)
     geo_model = source[geo_start:geo_end]
+    normalized_geo_model = " ".join(geo_model.split())
     assert "mapped_column(coordinate_type" not in geo_model
-    assert "coordinates: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)" in geo_model
-    assert "last_known_good_coordinates: Mapped[Optional[str]] = mapped_column(\n        String(255), nullable=True\n    )" in geo_model
+    assert (
+        "coordinates: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)"
+        in normalized_geo_model
+    )
+    assert (
+        "last_known_good_coordinates: Mapped[Optional[str]] = mapped_column( String(255), nullable=True )"
+        in normalized_geo_model
+    )
 
     assert (
         'sa.Column("coordinates", sa.String(length=255), nullable=True)'
