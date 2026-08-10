@@ -124,6 +124,47 @@ def test_branch_geolocation_read_requires_existing_tenant_policy() -> None:
     assert "branch geolocation tenant policy drifted" in policy
 
 
+def test_permissive_state_tenant_policy_is_removed_forward_and_exactly_restored() -> None:
+    source = _source()
+    preflight = _function_source("_require_predecessor_state_tenant_policy")
+    drop_predecessor = _function_source("_drop_predecessor_lifecycle_policies")
+    create_forward = _function_source("_create_forward_lifecycle_policies")
+    create_predecessor = _function_source("_create_predecessor_lifecycle_policies")
+
+    # 0006 created tenant_isolation_state as a permissive ALL policy for PUBLIC
+    # with tenant-only USING. Keeping it beside later permissive role policies
+    # would OR around those role restrictions.
+    assert '"tenant_isolation_state"' in source
+    assert "policy_data.polpermissive" in preflight
+    assert "policy_data.polroles = ARRAY[0::oid]" in preflight
+    assert 'row["command"] != "*"' in preflight
+    assert "row[\"check_expr\"] is not None" in preflight
+    assert "_TENANT_EXPR" in source
+
+    assert (
+        "DROP POLICY tenant_isolation_state ON public.org_branch_state"
+        in drop_predecessor
+    )
+    assert "tenant_isolation_state" not in create_forward
+
+    assert (
+        "CREATE POLICY tenant_isolation_state ON public.org_branch_state"
+        in create_predecessor
+    )
+    assert "app.current_org_id" in create_predecessor
+
+    predecessor_inventory = source[
+        source.index("_PREDECESSOR_POLICY_NAMES"):
+        source.index("_FORWARD_POLICY_NAMES")
+    ]
+    forward_inventory = source[
+        source.index("_FORWARD_POLICY_NAMES"):
+        source.index("def _scalar")
+    ]
+    assert "tenant_isolation_state" in predecessor_inventory
+    assert "tenant_isolation_state" not in forward_inventory
+
+
 def test_lifecycle_child_policies_are_tenant_scoped_and_force_rls() -> None:
     source = _source()
     forward = _function_source("_create_forward_lifecycle_policies")
