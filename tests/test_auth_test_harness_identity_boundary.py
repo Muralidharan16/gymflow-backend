@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 
@@ -84,9 +85,9 @@ def test_auth_cleanup_identity_set_covers_all_module_test_accounts():
         and value.lower().endswith("@example.com")
     }
 
-    # Dynamic rate{i}@example.com identities are explicitly represented by the
-    # range expression in the cleanup set; all literal email identities must be
-    # listed. Redis keys containing an email are deliberately excluded.
+    # Dynamic rate{i}@example.com identities are intentionally represented as a
+    # bounded family rather than six duplicate literals. Redis namespace strings
+    # containing an email are not account identities and are excluded above.
     cleanup_assignment = next(
         node
         for node in module.body
@@ -97,9 +98,15 @@ def test_auth_cleanup_identity_set_covers_all_module_test_accounts():
         )
     )
     cleanup_source = ast.unparse(cleanup_assignment)
+    assert "f'rate{i}@example.com'" in cleanup_source
+    assert "range(6)" in cleanup_source
+
     for email in literal_test_emails:
+        rate_match = re.fullmatch(r"rate([0-5])@example\.com", email)
+        if rate_match:
+            # The exact bounded generated family above covers rate0..rate5.
+            continue
         assert repr(email) in cleanup_source
-    assert "rate" in cleanup_source and "range(6)" in cleanup_source
 
 
 def test_pytest_auth_pool_is_dedicated_nullpool_without_changing_production_pooling():
