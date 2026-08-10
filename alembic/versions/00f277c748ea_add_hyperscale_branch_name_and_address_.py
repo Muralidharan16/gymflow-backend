@@ -234,7 +234,7 @@ def _backfill_legacy_addresses() -> None:
                         new_branch_id := (
                             md5(
                                 org_row.id::text || ':' ||
-                                address_row.id::text || ':00f-legacy-branch'
+                                address_row.id::text || '-00f-legacy-branch'
                             )
                         )::uuid;
 
@@ -327,7 +327,7 @@ def _backfill_legacy_addresses() -> None:
                         new_branch_id := (
                             md5(
                                 org_row.id::text || ':' ||
-                                canonical_address_id::text || ':00f-legacy-main'
+                                canonical_address_id::text || '-00f-legacy-main'
                             )
                         )::uuid;
 
