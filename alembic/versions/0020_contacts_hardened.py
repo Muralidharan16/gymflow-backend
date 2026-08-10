@@ -1970,6 +1970,369 @@ def _rb1l7_drop_0020_markers_and_maybe_schema(state):
 # RB1L7_SHARED_INFRASTRUCTURE_HELPERS_END
 
 
+_0020_DOMAIN_TYPES = (
+    "public.contact_kind_enum",
+    "public.visibility_scope_enum",
+    "public.audit_action_enum",
+    "public.verification_method_enum",
+)
+_0020_PUBLIC_RELATIONS = (
+    "branch_contacts",
+    "branch_contacts_audit",
+    "branch_contacts_audit_default",
+    "ix_contacts_org_branch_active",
+    "ix_active_branch_contacts",
+    "ix_public_contacts",
+    "ix_primary_contact_lookup",
+    "ix_contacts_search_phone",
+    "ix_contacts_search_email",
+    "ix_branch_contacts_primary_ordered",
+    "uq_public_primary_phone",
+    "uq_public_primary_email",
+    "uq_primary_contact_guard_idx",
+    "ix_audit_contact",
+    "ix_audit_branch_contacts_ordered",
+    "ix_audit_org_changed",
+)
+_0020_PRIVATE_RELATIONS = ("partition_metadata",)
+_0020_PRIVATE_FUNCTIONS = (
+    "app_private.prevent_soft_delete_resurrection()",
+    "app_private.prevent_audit_modification()",
+    "app_private.update_timestamp()",
+    "app_private.log_branch_contact_changes()",
+    "app_private.process_primary_contact_batch(uuid[])",
+    "app_private.ensure_primary_contact_insert()",
+    "app_private.ensure_primary_contact_update()",
+    "app_private.ensure_primary_contact_delete()",
+    "app_private.create_branch_contacts_audit_partition(date)",
+)
+_0020_TRIGGERS = (
+    ("branch_contacts", "trg_prevent_soft_delete_resurrection"),
+    ("branch_contacts_audit", "trg_prevent_audit_update"),
+    ("branch_contacts", "trg_branch_contacts_updated_at"),
+    ("branch_contacts", "trg_audit_branch_contacts"),
+    ("branch_contacts", "trg_ensure_primary_contact_insert"),
+    ("branch_contacts", "trg_ensure_primary_contact_update"),
+    ("branch_contacts", "trg_ensure_primary_contact_delete"),
+)
+_0020_POLICIES = (
+    ("branch_contacts", "tenant_isolation_contacts"),
+    ("branch_contacts_audit", "tenant_isolation_contacts_audit"),
+)
+
+
+def _0020_require_citext_infrastructure(bind):
+    row = _rb1l7_fetch_one(
+        bind,
+        """
+        SELECT
+            owner_role.rolname::text AS owner_name,
+            namespace_data.nspname::text AS schema_name,
+            extension_data.extversion::text AS extension_version
+        FROM pg_catalog.pg_extension AS extension_data
+        JOIN pg_catalog.pg_roles AS owner_role
+          ON owner_role.oid = extension_data.extowner
+        JOIN pg_catalog.pg_namespace AS namespace_data
+          ON namespace_data.oid = extension_data.extnamespace
+        WHERE extension_data.extname = 'citext'
+        """,
+    )
+    if (
+        row is None
+        or row["owner_name"] != "postgres"
+        or row["schema_name"] != "public"
+    ):
+        raise RuntimeError(
+            "0020 requires infrastructure-owned citext in public "
+            "with owner postgres; Alembic must not create/adopt it."
+        )
+
+
+def _0020_preflight_upgrade_domain():
+    bind = _rb1l7_bind()
+    _rb1l7_require_migration_owner(bind)
+    _0020_require_citext_infrastructure(bind)
+
+    collisions = []
+    for qualified_name in _0020_DOMAIN_TYPES:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regtype(:name) IS NOT NULL AS present",
+            {"name": qualified_name},
+        )
+        if row and row["present"]:
+            collisions.append(qualified_name)
+
+    for relation_name in _0020_PUBLIC_RELATIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regclass(:name) IS NOT NULL AS present",
+            {"name": "public." + relation_name},
+        )
+        if row and row["present"]:
+            collisions.append("public." + relation_name)
+
+    for relation_name in _0020_PRIVATE_RELATIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regclass(:name) IS NOT NULL AS present",
+            {"name": "app_private." + relation_name},
+        )
+        if row and row["present"]:
+            collisions.append("app_private." + relation_name)
+
+    for function_name in _0020_PRIVATE_FUNCTIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regprocedure(:name) IS NOT NULL AS present",
+            {"name": function_name},
+        )
+        if row and row["present"]:
+            collisions.append(function_name)
+
+    if collisions:
+        raise RuntimeError(
+            "0020 target-object collision; refusing silent adoption: "
+            + ", ".join(sorted(collisions))
+        )
+
+
+def _0020_assert_downgrade_domain_shape(bind):
+    _rb1l7_require_migration_owner(bind)
+    _0020_require_citext_infrastructure(bind)
+
+    missing = []
+    for qualified_name in _0020_DOMAIN_TYPES:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regtype(:name) IS NOT NULL AS present",
+            {"name": qualified_name},
+        )
+        if not row or not row["present"]:
+            missing.append(qualified_name)
+
+    for relation_name in _0020_PUBLIC_RELATIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regclass(:name) IS NOT NULL AS present",
+            {"name": "public." + relation_name},
+        )
+        if not row or not row["present"]:
+            missing.append("public." + relation_name)
+
+    for relation_name in _0020_PRIVATE_RELATIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regclass(:name) IS NOT NULL AS present",
+            {"name": "app_private." + relation_name},
+        )
+        if not row or not row["present"]:
+            missing.append("app_private." + relation_name)
+
+    for function_name in _0020_PRIVATE_FUNCTIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regprocedure(:name) IS NOT NULL AS present",
+            {"name": function_name},
+        )
+        if not row or not row["present"]:
+            missing.append(function_name)
+
+    for relation_name, trigger_name in _0020_TRIGGERS:
+        row = _rb1l7_fetch_one(
+            bind,
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_trigger AS trigger_data
+                JOIN pg_catalog.pg_class AS relation_data
+                  ON relation_data.oid = trigger_data.tgrelid
+                JOIN pg_catalog.pg_namespace AS namespace_data
+                  ON namespace_data.oid = relation_data.relnamespace
+                WHERE namespace_data.nspname = 'public'
+                  AND relation_data.relname = :relation_name
+                  AND trigger_data.tgname = :trigger_name
+                  AND NOT trigger_data.tgisinternal
+            ) AS present
+            """,
+            {"relation_name": relation_name, "trigger_name": trigger_name},
+        )
+        if not row or not row["present"]:
+            missing.append("trigger:" + trigger_name)
+
+    for relation_name, policy_name in _0020_POLICIES:
+        row = _rb1l7_fetch_one(
+            bind,
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_policy AS policy_data
+                JOIN pg_catalog.pg_class AS relation_data
+                  ON relation_data.oid = policy_data.polrelid
+                JOIN pg_catalog.pg_namespace AS namespace_data
+                  ON namespace_data.oid = relation_data.relnamespace
+                WHERE namespace_data.nspname = 'public'
+                  AND relation_data.relname = :relation_name
+                  AND policy_data.polname = :policy_name
+            ) AS present
+            """,
+            {"relation_name": relation_name, "policy_name": policy_name},
+        )
+        if not row or not row["present"]:
+            missing.append("policy:" + policy_name)
+
+    fk = _rb1l7_fetch_one(
+        bind,
+        """
+        SELECT constraint_data.convalidated AS validated
+        FROM pg_catalog.pg_constraint AS constraint_data
+        JOIN pg_catalog.pg_class AS relation_data
+          ON relation_data.oid = constraint_data.conrelid
+        JOIN pg_catalog.pg_namespace AS namespace_data
+          ON namespace_data.oid = relation_data.relnamespace
+        WHERE namespace_data.nspname = 'public'
+          AND relation_data.relname = 'branch_contacts_audit'
+          AND constraint_data.conname = 'fk_branch_contacts_audit_org'
+          AND constraint_data.contype = 'f'
+        """,
+    )
+    if fk is None or not fk["validated"]:
+        missing.append("constraint:fk_branch_contacts_audit_org(validated)")
+
+    if missing:
+        raise RuntimeError(
+            "0020 downgrade domain-shape drift before mutation: "
+            + ", ".join(sorted(missing))
+        )
+
+
+def _0020_preflight_downgrade_domain():
+    bind = _rb1l7_bind()
+    _rb1l7_require_migration_owner(bind)
+    _0020_assert_downgrade_domain_shape(bind)
+
+    org_rows = _rb1l7_fetch_all(
+        bind,
+        "SELECT id::text AS org_id FROM public.organizations ORDER BY id",
+    )
+
+    bind.execute(sa.text("SET LOCAL ROLE app_rls_executor"))
+    try:
+        for org_row in org_rows:
+            org_id = str(org_row["org_id"])
+            bind.execute(
+                sa.text(
+                    "SELECT pg_catalog.set_config("
+                    "'app.current_org_id', :org_id, true)"
+                ),
+                {"org_id": org_id},
+            )
+            for relation_name in ("branch_contacts", "branch_contacts_audit"):
+                row = _rb1l7_fetch_one(
+                    bind,
+                    "SELECT EXISTS (SELECT 1 FROM public."
+                    + relation_name
+                    + " WHERE org_id = :org_id LIMIT 1) AS present",
+                    {"org_id": org_id},
+                )
+                if row and row["present"]:
+                    raise RuntimeError(
+                        "0020 downgrade would discard populated business/audit "
+                        f"relation public.{relation_name} for organization {org_id}"
+                    )
+
+        unexpected_metadata = _rb1l7_fetch_one(
+            bind,
+            """
+            SELECT table_name, partition_name
+            FROM app_private.partition_metadata
+            WHERE table_name <> 'branch_contacts_audit'
+            ORDER BY table_name, partition_name
+            LIMIT 1
+            """,
+        )
+        if unexpected_metadata is not None:
+            raise RuntimeError(
+                "0020 downgrade refuses partition_metadata owned by another "
+                "table: " + str(unexpected_metadata)
+            )
+
+        orphan_metadata = _rb1l7_fetch_one(
+            bind,
+            """
+            SELECT metadata.partition_name
+            FROM app_private.partition_metadata AS metadata
+            WHERE metadata.table_name = 'branch_contacts_audit'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM pg_catalog.pg_inherits AS inheritance_data
+                  JOIN pg_catalog.pg_class AS child_data
+                    ON child_data.oid = inheritance_data.inhrelid
+                  JOIN pg_catalog.pg_class AS parent_data
+                  ON parent_data.oid = inheritance_data.inhparent
+                  JOIN pg_catalog.pg_namespace AS child_namespace
+                  ON child_namespace.oid = child_data.relnamespace
+                  JOIN pg_catalog.pg_namespace AS parent_namespace
+                    ON parent_namespace.oid = parent_data.relnamespace
+                  WHERE child_namespace.nspname = 'public'
+                    AND parent_namespace.nspname = 'public'
+                    AND parent_data.relname = 'branch_contacts_audit'
+                    AND child_data.relname = metadata.partition_name
+              )
+            ORDER BY metadata.partition_name
+            LIMIT 1
+            """,
+       )
+        if orphan_metadata is not None:
+            raise RuntimeError(
+                "0020 downgrade found partition metadata without attached "
+                "partition: " + str(orphan_metadata["partition_name"])
+            )
+
+        untracked_partition = _rb1l7_fetch_one(
+            bind,
+            """
+            SELECT child_data.relname::text AS partition_name
+            FROM pg_catalog.pg_inherits AS inheritance_data
+            JOIN pg_catalog.pg_class AS child_data
+              ON child_data.oid = inheritance_data.inhrelid
+            JOIN pg_catalog.pg_class AS parent_data
+              ON parent_data.oid = inheritance_data.inhparent
+            JOIN pg_catalog.pg_namespace AS child_namespace
+              ON child_namespace.oid = child_data.relnamespace
+            JOIN pg_catalog.pg_namespace AS parent_namespace
+              ON parent_namespace.oid = parent_data.relnamespace
+            WHERE child_namespace.nspname = 'public'
+              AND parent_namespace.nspname = 'public'
+              AND parent_data.relname = 'branch_contacts_audit'
+              AND child_data.relname <> 'branch_contacts_audit_default'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM app_private.partition_metadata AS metadata
+                  WHERE metadata.table_name = 'branch_contacts_audit'
+                    AND metadata.partition_name = child_data.relname
+              )
+            ORDER BY child_data.relname
+            LIMIT 1
+            """,
+        )
+        if untracked_partition is not None:
+            raise RuntimeError(
+                "0020 downgrade found untracked audit partition: "
+                + str(untracked_partition["partition_name"])
+            )
+
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.set_config("
+                "'app.current_org_id', "
+                "'00000000-0000-0000-0000-000000000000', true)"
+            )
+        )
+    finally:
+        bind.execute(sa.text("RESET ROLE"))
+        _rb1l7_require_migration_owner(bind)
+
 
 def upgrade():
     """
@@ -1982,43 +2345,22 @@ def upgrade():
     # SECTION 1: Extensions & Types
     # ===========================================================================
     op = _rb1l7_upgrade_operations(globals()["op"])
+    _0020_preflight_upgrade_domain()
     _rb1l7_prepare_0020_shared_infrastructure()
-    op.execute("CREATE EXTENSION IF NOT EXISTS citext;")
 
-    # Create custom types (IDEMPOTENT: DO $$ BEGIN ... EXCEPTION ...)
-    op.execute("""
-        DO $$ BEGIN
-            CREATE TYPE public.contact_kind_enum AS ENUM ('phone', 'email');
-        EXCEPTION
-            WHEN duplicate_object THEN NULL;
-        END $$;
-    """)
-
-    op.execute("""
-        DO $$ BEGIN
-            CREATE TYPE public.visibility_scope_enum AS ENUM 
-                ('public', 'internal', 'management', 'emergency', 'billing');
-        EXCEPTION
-            WHEN duplicate_object THEN NULL;
-        END $$;
-    """)
-
-    op.execute("""
-        DO $$ BEGIN
-            CREATE TYPE public.audit_action_enum AS ENUM ('INSERT', 'UPDATE', 'DELETE');
-        EXCEPTION
-            WHEN duplicate_object THEN NULL;
-        END $$;
-    """)
-
-    op.execute("""
-        DO $$ BEGIN
-            CREATE TYPE public.verification_method_enum AS ENUM 
-                ('dns_mx', 'manual', 'smtp_probe', 'twilio_verify');
-        EXCEPTION
-            WHEN duplicate_object THEN NULL;
-        END $$;
-    """)
+    # Custom types are revision-owned; collisions are rejected by preflight.
+    op.execute("CREATE TYPE public.contact_kind_enum AS ENUM ('phone', 'email');")
+    op.execute(
+        "CREATE TYPE public.visibility_scope_enum AS ENUM "
+        "('public', 'internal', 'management', 'emergency', 'billing');"
+    )
+    op.execute(
+        "CREATE TYPE public.audit_action_enum AS ENUM ('INSERT', 'UPDATE', 'DELETE');"
+    )
+    op.execute(
+        "CREATE TYPE public.verification_method_enum AS ENUM "
+        "('dns_mx', 'manual', 'smtp_probe', 'twilio_verify');"
+    )
 
     # ===========================================================================
     # SECTION 2: Externally managed cluster-role validation
@@ -2066,42 +2408,42 @@ def upgrade():
     # SECTION 3: Main Contacts Table
     # ===========================================================================
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.branch_contacts (
+        CREATE TABLE public.branch_contacts (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             org_id UUID NOT NULL,
             branch_id UUID NOT NULL,
             contact_kind public.contact_kind_enum NOT NULL,
-            
+
             -- Normalized phone data
             phone_e164 VARCHAR(20),
             normalized_digits VARCHAR(20),
             display_format VARCHAR(100),
-            
+
             -- Dual email strategy (raw + normalized for display vs. indexing)
             email_raw VARCHAR(255),
             email_normalized CITEXT,
-            
+
             country_code CHAR(2),
-            
+
             contact_label VARCHAR(50) NOT NULL DEFAULT 'General',
             visibility_scope public.visibility_scope_enum NOT NULL DEFAULT 'internal',
-            
+
             -- Channel capabilities as JSONB
             channel_capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
-            
+
             -- Generated column for optimized whatsapp lookups
             is_whatsapp_enabled BOOLEAN GENERATED ALWAYS AS (
                 COALESCE((channel_capabilities->>'whatsapp')::boolean, FALSE)
             ) STORED,
-            
+
             is_primary BOOLEAN NOT NULL DEFAULT FALSE,
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             email_reachability_verified BOOLEAN NOT NULL DEFAULT FALSE,
-            
+
             -- Verification metadata
             verified_at TIMESTAMPTZ,
             verification_method public.verification_method_enum,
-            
+
             -- Temporal soft-delete fields
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             created_by UUID,
@@ -2109,7 +2451,7 @@ def upgrade():
             updated_by UUID,
             deleted_at TIMESTAMPTZ,
             deleted_by UUID,
-            
+
             -- Primary contact guard (for efficient unique constraint)
             primary_guard UUID GENERATED ALWAYS AS (
                 CASE
@@ -2140,7 +2482,7 @@ def upgrade():
     # SECTION 4: Audit Table with Time Partitioning
     # ===========================================================================
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.branch_contacts_audit (
+        CREATE TABLE public.branch_contacts_audit (
             id UUID DEFAULT gen_random_uuid(),
             changed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             org_id UUID NOT NULL,
@@ -2156,15 +2498,26 @@ def upgrade():
         ) PARTITION BY RANGE (changed_at);
     """)
 
+    # The tenant registry must be authoritative for rollback preflight.
+    # This validated FK prevents orphan audit tenant IDs from becoming invisible
+    # to the tenant-by-tenant FORCE-RLS scan used by downgrade.
+    op.execute("""
+        ALTER TABLE public.branch_contacts_audit
+        ADD CONSTRAINT fk_branch_contacts_audit_org
+        FOREIGN KEY (org_id)
+        REFERENCES public.organizations(id)
+        ON DELETE RESTRICT;
+    """)
+
     # Default partition for seamless insertions
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.branch_contacts_audit_default 
+        CREATE TABLE public.branch_contacts_audit_default
         PARTITION OF public.branch_contacts_audit DEFAULT;
     """)
 
     # LZ4 compression for JSONB payloads
     op.execute("""
-        ALTER TABLE public.branch_contacts_audit ALTER COLUMN changed_fields 
+        ALTER TABLE public.branch_contacts_audit ALTER COLUMN changed_fields
         SET COMPRESSION lz4;
     """)
 
@@ -2231,69 +2584,69 @@ def upgrade():
 
     # Foreign Key Protection
     op.execute("""
-        ALTER TABLE public.branch_contacts 
-        ADD CONSTRAINT fk_branch_contacts_org_branch 
-            FOREIGN KEY (branch_id, org_id) 
-            REFERENCES public.org_branches(id, org_id) 
-            ON DELETE RESTRICT 
+        ALTER TABLE public.branch_contacts
+        ADD CONSTRAINT fk_branch_contacts_org_branch
+            FOREIGN KEY (branch_id, org_id)
+            REFERENCES public.org_branches(id, org_id)
+            ON DELETE RESTRICT
             NOT VALID;
     """)
 
     # XOR Constraint: phone XOR email
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_contact_kind_fields CHECK (
-            (contact_kind = 'phone' AND phone_e164 IS NOT NULL 
-                AND normalized_digits IS NOT NULL AND country_code IS NOT NULL 
+            (contact_kind = 'phone' AND phone_e164 IS NOT NULL
+                AND normalized_digits IS NOT NULL AND country_code IS NOT NULL
                 AND email_normalized IS NULL AND email_raw IS NULL) OR
-            (contact_kind = 'email' AND email_normalized IS NOT NULL 
-                AND email_raw IS NOT NULL AND phone_e164 IS NULL 
+            (contact_kind = 'email' AND email_normalized IS NOT NULL
+                AND email_raw IS NOT NULL AND phone_e164 IS NULL
                 AND normalized_digits IS NULL AND country_code IS NULL)
         ) NOT VALID;
     """)
 
     # Email verification strictness
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_email_verification_email_only CHECK (
-            contact_kind = 'email' OR 
-            (email_reachability_verified = FALSE AND verified_at IS NULL 
+            contact_kind = 'email' OR
+            (email_reachability_verified = FALSE AND verified_at IS NULL
                 AND verification_method IS NULL)
         ) NOT VALID;
     """)
 
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_verification_metadata CHECK (
-            (verified_at IS NULL AND verification_method IS NULL) OR 
+            (verified_at IS NULL AND verification_method IS NULL) OR
             (verified_at IS NOT NULL AND verification_method IS NOT NULL)
         ) NOT VALID;
     """)
 
     # JSONB deep validation
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_channel_capabilities_schema CHECK (
             jsonb_typeof(channel_capabilities) = 'object'
         ) NOT VALID;
     """)
 
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_channel_capabilities_values CHECK (
-            (NOT (channel_capabilities ? 'whatsapp') 
+            (NOT (channel_capabilities ? 'whatsapp')
                 OR jsonb_typeof(channel_capabilities->'whatsapp') = 'boolean') AND
-            (NOT (channel_capabilities ? 'sms') 
+            (NOT (channel_capabilities ? 'sms')
                 OR jsonb_typeof(channel_capabilities->'sms') = 'boolean') AND
-            (NOT (channel_capabilities ? 'voice') 
+            (NOT (channel_capabilities ? 'voice')
                 OR jsonb_typeof(channel_capabilities->'voice') = 'boolean') AND
-            (NOT (channel_capabilities ? 'fax') 
+            (NOT (channel_capabilities ? 'fax')
                 OR jsonb_typeof(channel_capabilities->'fax') = 'boolean')
         ) NOT VALID;
     """)
 
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_channel_capability_allowed_keys CHECK (
             channel_capabilities - ARRAY['whatsapp','sms','voice','fax'] = '{}'::jsonb
         ) NOT VALID;
@@ -2301,7 +2654,7 @@ def upgrade():
 
     # Payload size protection
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_channel_capabilities_size CHECK (
             pg_column_size(channel_capabilities) <= 1024
         ) NOT VALID;
@@ -2309,28 +2662,28 @@ def upgrade():
 
     # Format validation
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_phone_e164_format CHECK (
             phone_e164 IS NULL OR phone_e164 ~ '^\\+[1-9]\\d{1,14}$'
         ) NOT VALID;
     """)
 
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_normalized_digits_numeric CHECK (
             normalized_digits IS NULL OR normalized_digits ~ '^[0-9]+$'
         ) NOT VALID;
     """)
 
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_email_not_empty CHECK (
             email_normalized IS NULL OR length(trim(email_normalized::text)) > 0
         ) NOT VALID;
     """)
 
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_display_format_required CHECK (
             contact_kind != 'phone' OR display_format IS NOT NULL
         ) NOT VALID;
@@ -2338,21 +2691,21 @@ def upgrade():
 
     # Logical invariants
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_primary_requires_active CHECK (
             NOT (is_primary = TRUE AND is_active = FALSE)
         ) NOT VALID;
     """)
 
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_deleted_rows_inactive CHECK (
             deleted_at IS NULL OR is_active = FALSE
         ) NOT VALID;
     """)
 
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_deleted_rows_not_primary CHECK (
             deleted_at IS NULL OR is_primary = FALSE
         ) NOT VALID;
@@ -2360,7 +2713,7 @@ def upgrade():
 
     # NO-RESURRECTION constraint: immutable soft-delete
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_deleted_immutable CHECK (
             deleted_at IS NULL OR deleted_by IS NOT NULL
         ) NOT VALID;
@@ -2368,15 +2721,15 @@ def upgrade():
 
     # Metadata completeness
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_deleted_metadata CHECK (
-            (deleted_at IS NULL AND deleted_by IS NULL) OR 
+            (deleted_at IS NULL AND deleted_by IS NULL) OR
             (deleted_at IS NOT NULL AND deleted_by IS NOT NULL)
         ) NOT VALID;
     """)
 
     op.execute("""
-        ALTER TABLE public.branch_contacts 
+        ALTER TABLE public.branch_contacts
         ADD CONSTRAINT chk_updated_metadata CHECK (
             updated_at >= created_at
         ) NOT VALID;
@@ -2388,15 +2741,15 @@ def upgrade():
 
     # PREVENT SOFT DELETE RESURRECTION
     op.execute("""
-        CREATE OR REPLACE FUNCTION app_private.prevent_soft_delete_resurrection()
-        RETURNS TRIGGER 
-        SECURITY DEFINER 
+        CREATE FUNCTION app_private.prevent_soft_delete_resurrection()
+        RETURNS TRIGGER
+        SECURITY DEFINER
         SET search_path = pg_catalog
         SET row_security = on
         AS $$
         BEGIN
             IF OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL THEN
-                RAISE EXCEPTION 
+                RAISE EXCEPTION
                     'Branch contacts cannot be undeleted (deleted_at is immutable once set). '
                     'The system treats deletions as permanent. '
                     'To reactivate, insert a new contact record with is_primary reassessment.';
@@ -2411,9 +2764,9 @@ def upgrade():
 
     # PREVENT AUDIT MODIFICATION
     op.execute("""
-        CREATE OR REPLACE FUNCTION app_private.prevent_audit_modification()
-        RETURNS TRIGGER 
-        SECURITY DEFINER 
+        CREATE FUNCTION app_private.prevent_audit_modification()
+        RETURNS TRIGGER
+        SECURITY DEFINER
         SET search_path = pg_catalog
         SET row_security = on
         AS $$
@@ -2428,9 +2781,9 @@ def upgrade():
 
     # UPDATE TIMESTAMP TRIGGER (HOT-Optimized)
     op.execute("""
-        CREATE OR REPLACE FUNCTION app_private.update_timestamp()
-        RETURNS TRIGGER 
-        SECURITY DEFINER 
+        CREATE FUNCTION app_private.update_timestamp()
+        RETURNS TRIGGER
+        SECURITY DEFINER
         SET search_path = pg_catalog
         SET row_security = on
         AS $$
@@ -2443,7 +2796,7 @@ def upgrade():
             --   2. Load testing impact
             --   3. Documenting decision in git commit
             -- Contact SRE team before modifying this trigger.
-            
+
             IF (
                 NEW.phone_e164 IS DISTINCT FROM OLD.phone_e164 OR
                 NEW.email_normalized IS DISTINCT FROM OLD.email_normalized OR
@@ -2469,9 +2822,9 @@ def upgrade():
 
     # LOG BRANCH CONTACT CHANGES (WAL-optimized audit)
     op.execute("""
-        CREATE OR REPLACE FUNCTION app_private.log_branch_contact_changes()
-        RETURNS TRIGGER 
-        SECURITY DEFINER 
+        CREATE FUNCTION app_private.log_branch_contact_changes()
+        RETURNS TRIGGER
+        SECURITY DEFINER
         SET search_path = pg_catalog
         SET row_security = on
         AS $$
@@ -2488,60 +2841,60 @@ def upgrade():
             END IF;
 
             IF TG_OP = 'INSERT' THEN
-                INSERT INTO public.branch_contacts_audit 
+                INSERT INTO public.branch_contacts_audit
                     (org_id, branch_contact_id, changed_by, action, changed_fields, request_id, ip_address, user_agent)
-                VALUES (NEW.org_id, NEW.id, changed_by_id, 'INSERT', 
+                VALUES (NEW.org_id, NEW.id, changed_by_id, 'INSERT',
                     jsonb_build_object(
-                        'i', NEW.id, 'k', NEW.contact_kind, 
-                        'p', NEW.phone_e164, 'e', NEW.email_normalized, 
+                        'i', NEW.id, 'k', NEW.contact_kind,
+                        'p', NEW.phone_e164, 'e', NEW.email_normalized,
                         's', NEW.visibility_scope, 'm', NEW.is_primary, 'a', NEW.is_active
                     ), req_id, ip_addr, ua);
             ELSIF TG_OP = 'UPDATE' THEN
-                IF ROW(NEW.phone_e164, NEW.email_normalized, NEW.email_raw, NEW.is_primary, 
-                        NEW.is_active, NEW.deleted_at, NEW.visibility_scope, NEW.channel_capabilities, 
-                        NEW.contact_label, NEW.display_format) 
-                   IS NOT DISTINCT FROM 
-                   ROW(OLD.phone_e164, OLD.email_normalized, OLD.email_raw, OLD.is_primary, 
-                        OLD.is_active, OLD.deleted_at, OLD.visibility_scope, OLD.channel_capabilities, 
+                IF ROW(NEW.phone_e164, NEW.email_normalized, NEW.email_raw, NEW.is_primary,
+                        NEW.is_active, NEW.deleted_at, NEW.visibility_scope, NEW.channel_capabilities,
+                        NEW.contact_label, NEW.display_format)
+                   IS NOT DISTINCT FROM
+                   ROW(OLD.phone_e164, OLD.email_normalized, OLD.email_raw, OLD.is_primary,
+                        OLD.is_active, OLD.deleted_at, OLD.visibility_scope, OLD.channel_capabilities,
                         OLD.contact_label, OLD.display_format) THEN
                     RETURN NEW;
                 END IF;
 
                 diff_json := jsonb_strip_nulls(jsonb_build_object(
-                    'phone_e164', CASE WHEN NEW.phone_e164 IS DISTINCT FROM OLD.phone_e164 
+                    'phone_e164', CASE WHEN NEW.phone_e164 IS DISTINCT FROM OLD.phone_e164
                         THEN jsonb_build_object('o', OLD.phone_e164, 'n', NEW.phone_e164) END,
-                    'email_normalized', CASE WHEN NEW.email_normalized IS DISTINCT FROM OLD.email_normalized 
+                    'email_normalized', CASE WHEN NEW.email_normalized IS DISTINCT FROM OLD.email_normalized
                         THEN jsonb_build_object('o', OLD.email_normalized, 'n', NEW.email_normalized) END,
-                    'email_raw', CASE WHEN NEW.email_raw IS DISTINCT FROM OLD.email_raw 
+                    'email_raw', CASE WHEN NEW.email_raw IS DISTINCT FROM OLD.email_raw
                         THEN jsonb_build_object('o', OLD.email_raw, 'n', NEW.email_raw) END,
-                    'is_primary', CASE WHEN NEW.is_primary IS DISTINCT FROM OLD.is_primary 
+                    'is_primary', CASE WHEN NEW.is_primary IS DISTINCT FROM OLD.is_primary
                         THEN jsonb_build_object('o', OLD.is_primary, 'n', NEW.is_primary) END,
-                    'is_active', CASE WHEN NEW.is_active IS DISTINCT FROM OLD.is_active 
+                    'is_active', CASE WHEN NEW.is_active IS DISTINCT FROM OLD.is_active
                         THEN jsonb_build_object('o', OLD.is_active, 'n', NEW.is_active) END,
-                    'deleted_at', CASE WHEN NEW.deleted_at IS DISTINCT FROM OLD.deleted_at 
+                    'deleted_at', CASE WHEN NEW.deleted_at IS DISTINCT FROM OLD.deleted_at
                         THEN jsonb_build_object('o', OLD.deleted_at, 'n', NEW.deleted_at) END,
-                    'visibility_scope', CASE WHEN NEW.visibility_scope IS DISTINCT FROM OLD.visibility_scope 
+                    'visibility_scope', CASE WHEN NEW.visibility_scope IS DISTINCT FROM OLD.visibility_scope
                         THEN jsonb_build_object('o', OLD.visibility_scope, 'n', NEW.visibility_scope) END,
-                    'channel_capabilities', CASE WHEN NEW.channel_capabilities IS DISTINCT FROM OLD.channel_capabilities 
+                    'channel_capabilities', CASE WHEN NEW.channel_capabilities IS DISTINCT FROM OLD.channel_capabilities
                         THEN jsonb_build_object('o', OLD.channel_capabilities, 'n', NEW.channel_capabilities) END,
-                    'contact_label', CASE WHEN NEW.contact_label IS DISTINCT FROM OLD.contact_label 
+                    'contact_label', CASE WHEN NEW.contact_label IS DISTINCT FROM OLD.contact_label
                         THEN jsonb_build_object('o', OLD.contact_label, 'n', NEW.contact_label) END,
-                    'display_format', CASE WHEN NEW.display_format IS DISTINCT FROM OLD.display_format 
+                    'display_format', CASE WHEN NEW.display_format IS DISTINCT FROM OLD.display_format
                         THEN jsonb_build_object('o', OLD.display_format, 'n', NEW.display_format) END
                 ));
-                
+
                 IF diff_json <> '{}'::jsonb THEN
-                    INSERT INTO public.branch_contacts_audit 
+                    INSERT INTO public.branch_contacts_audit
                         (org_id, branch_contact_id, changed_by, action, changed_fields, request_id, ip_address, user_agent)
                     VALUES (NEW.org_id, NEW.id, changed_by_id, 'UPDATE', diff_json, req_id, ip_addr, ua);
                 END IF;
             ELSIF TG_OP = 'DELETE' THEN
-                INSERT INTO public.branch_contacts_audit 
+                INSERT INTO public.branch_contacts_audit
                     (org_id, branch_contact_id, changed_by, action, changed_fields, request_id, ip_address, user_agent)
-                VALUES (OLD.org_id, OLD.id, changed_by_id, 'DELETE', 
+                VALUES (OLD.org_id, OLD.id, changed_by_id, 'DELETE',
                     jsonb_build_object(
-                        'i', OLD.id, 'k', OLD.contact_kind, 
-                        'p', OLD.phone_e164, 'e', OLD.email_normalized, 
+                        'i', OLD.id, 'k', OLD.contact_kind,
+                        'p', OLD.phone_e164, 'e', OLD.email_normalized,
                         's', OLD.visibility_scope, 'm', OLD.is_primary, 'a', OLD.is_active
                     ), req_id, ip_addr, ua);
             END IF;
@@ -2556,9 +2909,9 @@ def upgrade():
 
     # PRIMARY CONTACT BATCH PROCESSOR (HARDENED with hashtextextended)
     op.execute("""
-        CREATE OR REPLACE FUNCTION app_private.process_primary_contact_batch(branches_to_check UUID[])
-        RETURNS VOID 
-        SECURITY DEFINER 
+        CREATE FUNCTION app_private.process_primary_contact_batch(branches_to_check UUID[])
+        RETURNS VOID
+        SECURITY DEFINER
         SET search_path = pg_catalog
         SET row_security = on
         AS $$
@@ -2575,30 +2928,30 @@ def upgrade():
 
                 FOREACH kind_val IN ARRAY ARRAY['phone'::public.contact_kind_enum, 'email'::public.contact_kind_enum] LOOP
                     IF NOT EXISTS (
-                        SELECT 1 FROM public.branch_contacts 
-                        WHERE branch_id = v_branch 
-                          AND contact_kind = kind_val 
-                          AND is_primary = TRUE 
-                          AND is_active = TRUE 
+                        SELECT 1 FROM public.branch_contacts
+                        WHERE branch_id = v_branch
+                          AND contact_kind = kind_val
+                          AND is_primary = TRUE
+                          AND is_active = TRUE
                           AND deleted_at IS NULL
                     ) THEN
                         -- DETERMINISTIC: Order by created_at ASC, id ASC
-                        SELECT id INTO v_candidate_id FROM public.branch_contacts 
-                        WHERE branch_id = v_branch 
-                          AND contact_kind = kind_val 
-                          AND is_active = TRUE 
+                        SELECT id INTO v_candidate_id FROM public.branch_contacts
+                        WHERE branch_id = v_branch
+                          AND contact_kind = kind_val
+                          AND is_active = TRUE
                           AND deleted_at IS NULL
-                        ORDER BY created_at ASC, id ASC 
+                        ORDER BY created_at ASC, id ASC
                         LIMIT 1;
 
                         IF v_candidate_id IS NOT NULL THEN
                             BEGIN
                                 PERFORM set_config('app.internal_maintenance', 'on', true);
-                                
-                                UPDATE public.branch_contacts 
-                                SET is_primary = TRUE 
+
+                                UPDATE public.branch_contacts
+                                SET is_primary = TRUE
                                 WHERE id = v_candidate_id AND is_primary = FALSE;
-                                
+
                                 PERFORM set_config('app.internal_maintenance', 'off', true);
                             EXCEPTION WHEN OTHERS THEN
                                 -- Connection-pool safe: explicit cleanup
@@ -2619,7 +2972,7 @@ def upgrade():
 
     # INSERT handler for primary contact invariant
     op.execute("""
-        CREATE OR REPLACE FUNCTION app_private.ensure_primary_contact_insert()
+        CREATE FUNCTION app_private.ensure_primary_contact_insert()
         RETURNS TRIGGER SECURITY DEFINER SET search_path = pg_catalog SET row_security = on AS $$
         BEGIN
             IF pg_trigger_depth() > 1 THEN RETURN NULL; END IF;
@@ -2635,14 +2988,14 @@ def upgrade():
 
     # UPDATE handler for primary contact invariant
     op.execute("""
-        CREATE OR REPLACE FUNCTION app_private.ensure_primary_contact_update()
+        CREATE FUNCTION app_private.ensure_primary_contact_update()
         RETURNS TRIGGER SECURITY DEFINER SET search_path = pg_catalog SET row_security = on AS $$
         BEGIN
             IF pg_trigger_depth() > 1 THEN RETURN NULL; END IF;
             PERFORM app_private.process_primary_contact_batch(
                 ARRAY(
-                    SELECT DISTINCT branch_id FROM previously_updated 
-                    UNION 
+                    SELECT DISTINCT branch_id FROM previously_updated
+                    UNION
                     SELECT DISTINCT branch_id FROM newly_updated
                 )
             );
@@ -2655,7 +3008,7 @@ def upgrade():
 
     # DELETE handler for primary contact invariant
     op.execute("""
-        CREATE OR REPLACE FUNCTION app_private.ensure_primary_contact_delete()
+        CREATE FUNCTION app_private.ensure_primary_contact_delete()
         RETURNS TRIGGER SECURITY DEFINER SET search_path = pg_catalog SET row_security = on AS $$
         BEGIN
             IF pg_trigger_depth() > 1 THEN RETURN NULL; END IF;
@@ -2690,8 +3043,8 @@ def upgrade():
     # Update timestamp (optimized: only on relevant column changes)
     op.execute("""
         CREATE TRIGGER trg_branch_contacts_updated_at
-            BEFORE UPDATE OF 
-                phone_e164, email_normalized, email_raw, is_primary, is_active, 
+            BEFORE UPDATE OF
+                phone_e164, email_normalized, email_raw, is_primary, is_active,
                 deleted_at, visibility_scope, channel_capabilities, contact_label, display_format
             ON public.branch_contacts
             FOR EACH ROW EXECUTE FUNCTION app_private.update_timestamp();
@@ -2700,8 +3053,8 @@ def upgrade():
     # Audit trigger (optimized: only on relevant column changes)
     op.execute("""
         CREATE TRIGGER trg_audit_branch_contacts
-            AFTER INSERT OR UPDATE OF 
-                phone_e164, email_normalized, email_raw, is_primary, is_active, 
+            AFTER INSERT OR UPDATE OF
+                phone_e164, email_normalized, email_raw, is_primary, is_active,
                 deleted_at, visibility_scope, channel_capabilities, contact_label, display_format
             OR DELETE ON public.branch_contacts
             FOR EACH ROW EXECUTE FUNCTION app_private.log_branch_contact_changes();
@@ -2738,38 +3091,38 @@ def upgrade():
     # Standard lookup indices
     index_statements = [
         """
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_contacts_org_branch_active 
-        ON public.branch_contacts (org_id, branch_id) 
+        CREATE INDEX CONCURRENTLY ix_contacts_org_branch_active
+        ON public.branch_contacts (org_id, branch_id)
         WHERE (deleted_at IS NULL AND is_active = TRUE);
         """,
         """
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_active_branch_contacts 
-        ON public.branch_contacts (branch_id) 
+        CREATE INDEX CONCURRENTLY ix_active_branch_contacts
+        ON public.branch_contacts (branch_id)
         WHERE (deleted_at IS NULL AND is_active = TRUE);
         """,
         """
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_public_contacts 
-        ON public.branch_contacts (org_id, visibility_scope) 
+        CREATE INDEX CONCURRENTLY ix_public_contacts
+        ON public.branch_contacts (org_id, visibility_scope)
         WHERE (deleted_at IS NULL AND visibility_scope = 'public');
         """,
         """
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_primary_contact_lookup 
-        ON public.branch_contacts(branch_id, contact_kind) 
+        CREATE INDEX CONCURRENTLY ix_primary_contact_lookup
+        ON public.branch_contacts(branch_id, contact_kind)
         WHERE (is_primary = TRUE AND is_active = TRUE AND deleted_at IS NULL);
         """,
         """
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_contacts_search_phone 
-        ON public.branch_contacts (normalized_digits) 
+        CREATE INDEX CONCURRENTLY ix_contacts_search_phone
+        ON public.branch_contacts (normalized_digits)
         WHERE (deleted_at IS NULL AND is_active = TRUE);
         """,
         """
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_contacts_search_email 
-        ON public.branch_contacts (email_normalized) 
+        CREATE INDEX CONCURRENTLY ix_contacts_search_email
+        ON public.branch_contacts (email_normalized)
         WHERE (deleted_at IS NULL AND is_active = TRUE);
         """,
         # IMPROVEMENT #6: Covering indexes for ordered reads
         """
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_branch_contacts_primary_ordered 
+        CREATE INDEX CONCURRENTLY ix_branch_contacts_primary_ordered
         ON public.branch_contacts (
             branch_id,
             contact_kind,
@@ -2781,35 +3134,35 @@ def upgrade():
         """,
         # Unique constraints (split by contact kind to handle NULLs)
         """
-        CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_public_primary_phone 
-        ON public.branch_contacts(org_id, phone_e164) 
-        WHERE (contact_kind = 'phone' AND is_primary = TRUE 
+        CREATE UNIQUE INDEX CONCURRENTLY uq_public_primary_phone
+        ON public.branch_contacts(org_id, phone_e164)
+        WHERE (contact_kind = 'phone' AND is_primary = TRUE
             AND visibility_scope = 'public' AND is_active = TRUE AND deleted_at IS NULL);
         """,
         """
-        CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_public_primary_email 
-        ON public.branch_contacts(org_id, email_normalized) 
-        WHERE (contact_kind = 'email' AND is_primary = TRUE 
+        CREATE UNIQUE INDEX CONCURRENTLY uq_public_primary_email
+        ON public.branch_contacts(org_id, email_normalized)
+        WHERE (contact_kind = 'email' AND is_primary = TRUE
             AND visibility_scope = 'public' AND is_active = TRUE AND deleted_at IS NULL);
         """,
         """
-        CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_primary_contact_guard_idx 
+        CREATE UNIQUE INDEX CONCURRENTLY uq_primary_contact_guard_idx
         ON public.branch_contacts (org_id, primary_guard, contact_kind);
         """,
         # Audit indices
         """
-        CREATE INDEX IF NOT EXISTS ix_audit_contact 
+        CREATE INDEX ix_audit_contact
         ON public.branch_contacts_audit (branch_contact_id);
         """,
         """
-        CREATE INDEX IF NOT EXISTS ix_audit_branch_contacts_ordered 
+        CREATE INDEX ix_audit_branch_contacts_ordered
         ON public.branch_contacts_audit (
             branch_contact_id,
             changed_at DESC
         );
         """,
         """
-        CREATE INDEX IF NOT EXISTS ix_audit_org_changed 
+        CREATE INDEX ix_audit_org_changed
         ON public.branch_contacts_audit (
             org_id,
             changed_at DESC
@@ -2827,7 +3180,7 @@ def upgrade():
 
     # Partition metadata tracking table
     op.execute("""
-        CREATE TABLE IF NOT EXISTS app_private.partition_metadata (
+        CREATE TABLE app_private.partition_metadata (
             table_name VARCHAR(255) NOT NULL,
             partition_name VARCHAR(255) NOT NULL,
             month_start TIMESTAMPTZ NOT NULL,
@@ -2839,11 +3192,11 @@ def upgrade():
 
     # Partition creation function
     op.execute("""
-        CREATE OR REPLACE FUNCTION app_private.create_branch_contacts_audit_partition(
+        CREATE FUNCTION app_private.create_branch_contacts_audit_partition(
             partition_month DATE
         )
-        RETURNS VOID 
-        SECURITY DEFINER 
+        RETURNS VOID
+        SECURITY DEFINER
         SET search_path = pg_catalog
         SET row_security = on
         AS $$
@@ -2894,7 +3247,7 @@ def upgrade():
             EXECUTE format('ALTER TABLE public.%I OWNER TO app_rls_executor', partition_name);
 
             -- Metadata tracking
-            INSERT INTO app_private.partition_metadata 
+            INSERT INTO app_private.partition_metadata
                 (table_name, partition_name, month_start, month_end)
             VALUES ('branch_contacts_audit', partition_name, start_date, end_date)
             ON CONFLICT DO NOTHING;
@@ -2943,51 +3296,50 @@ def upgrade():
 
 
 def downgrade():
-    """
-    Rollback: Drop all branch_contacts infrastructure
-    Reverses all Phase A changes (safe to run anytime)
-    """
-    # Existing infrastructure is owned by app_rls_executor.
-    # SET LOCAL keeps the switch transaction-scoped if the downgrade aborts.
+    """Remove 0020 only when predecessor 00f can be restored losslessly."""
     state = _rb1l7_load_and_validate_0020_state()
+    _0020_preflight_downgrade_domain()
+
+    # Domain infrastructure is owned by app_rls_executor. SET LOCAL keeps the
+    # ownership switch transaction-scoped and is restored before ACL markers.
     op.execute("SET LOCAL ROLE app_rls_executor;")
 
-    # Drop triggers
-    op.execute("DROP TRIGGER IF EXISTS trg_prevent_soft_delete_resurrection ON public.branch_contacts;")
-    op.execute("DROP TRIGGER IF EXISTS trg_prevent_audit_update ON public.branch_contacts_audit;")
-    op.execute("DROP TRIGGER IF EXISTS trg_branch_contacts_updated_at ON public.branch_contacts;")
-    op.execute("DROP TRIGGER IF EXISTS trg_audit_branch_contacts ON public.branch_contacts;")
-    op.execute("DROP TRIGGER IF EXISTS trg_ensure_primary_contact_insert ON public.branch_contacts;")
-    op.execute("DROP TRIGGER IF EXISTS trg_ensure_primary_contact_update ON public.branch_contacts;")
-    op.execute("DROP TRIGGER IF EXISTS trg_ensure_primary_contact_delete ON public.branch_contacts;")
+    # Remove explicit dependents before their functions/tables. Exact names are
+    # intentional: catalog drift must fail rather than be silently accepted.
+    op.execute("DROP TRIGGER trg_prevent_soft_delete_resurrection ON public.branch_contacts;")
+    op.execute("DROP TRIGGER trg_prevent_audit_update ON public.branch_contacts_audit;")
+    op.execute("DROP TRIGGER trg_branch_contacts_updated_at ON public.branch_contacts;")
+    op.execute("DROP TRIGGGER trg_audit_branch_contacts ON public.branch_contacts;")
+    op.execute("DROP TRIGGER trg_ensure_primary_contact_insert ON public.branch_contacts;")
+    op.execute("DROP TRIGGGER trg_ensure_primary_contact_update ON public.branch_contacts;")
+    op.execute("DROP TRIGGGER trg_ensure_primary_contact_delete ON public.branch_contacts;")
 
-    # Drop functions
-    op.execute("DROP FUNCTION IF EXISTS app_private.prevent_soft_delete_resurrection();")
-    op.execute("DROP FUNCTION IF EXISTS app_private.prevent_audit_modification();")
-    op.execute("DROP FUNCTION IF EXISTS app_private.update_timestamp();")
-    op.execute("DROP FUNCTION IF EXISTS app_private.log_branch_contact_changes();")
-    op.execute("DROP FUNCTION IF EXISTS app_private.process_primary_contact_batch(UUID[]);")
-    op.execute("DROP FUNCTION IF EXISTS app_private.ensure_primary_contact_insert();")
-    op.execute("DROP FUNCTION IF EXISTS app_private.ensure_primary_contact_update();")
-    op.execute("DROP FUNCTION IF EXISTS app_private.ensure_primary_contact_delete();")
-    op.execute("DROP FUNCTION IF EXISTS app_private.create_branch_contacts_audit_partition(DATE);")
+    op.execute("DROP POLICY tenant_isolation_contacts_audit ON public.branch_contacts_audit;")
+    op.execute("DROP POLICY tenant_isolation_contacts ON public.branch_contacts;")
 
-    # Drop tables
-    op.execute("DROP TABLE IF EXISTS public.branch_contacts_audit CASCADE;")
-    op.execute("DROP TABLE IF EXISTS public.branch_contacts CASCADE;")
-    op.execute("DROP TABLE IF EXISTS app_private.partition_metadata CASCADE;")
+    op.execute("DROP FUNCTION app_private.ensure_primary_contact_insert() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.ensure_primary_contact_update() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.ensure_primary_contact_delete() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.process_primary_contact_batch(UUID[]) RESTRICT;")
+    op.execute("DROP FUNCTION app_private.log_branch_contact_changes() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.update_timestamp() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.prevent_audit_modification() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.prevent_soft_delete_resurrection() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.create_branch_contacts_audit_partition(DATE) RESTRICT;")
 
-    # Types remain owned by migration_owner.
+    # Partition children and table-owned indexes are internal dependencies of
+    # the parents; RESTRICT still blocks unrelated external dependents.
+    op.execute("DROP TABLE public.branch_contacts_audit RESTRICT;")
+    op.execute("DROP TABLE public.branch_contacts RESTRICT;")
+    op.execute("DROP TABLE app_private.partition_metadata RESTRICT;")
+
     op.execute("RESET ROLE;")
     _rb1l7_restore_0020_acl_state(state)
     _rb1l7_drop_0020_markers_and_maybe_schema(state)
 
-    # Drop types
-    op.execute("DROP TYPE IF EXISTS public.contact_kind_enum CASCADE;")
-    op.execute("DROP TYPE IF EXISTS public.visibility_scope_enum CASCADE;")
-    op.execute("DROP TYPE IF EXISTS public.audit_action_enum CASCADE;")
-    op.execute("DROP TYPE IF EXISTS public.verification_method_enum CASCADE;")
-
-    # Drop role (Safer behavior: do not drop shared roles as they may be used by later migrations)
-    # Externally managed cluster roles and owned objects are preserved by downgrade.
-    # app_user remains managed by security/cluster_role_bootstrap.
+    # Types are revision-owned by migration_owner. RESTRICT proves no external
+    # object still depends on them.
+    op.execute("DROP TYPE public.contact_kind_enum RESTRICT;")
+    op.execute("DROP TYPE public.visibility_scope_enum RESTRICT;")
+    op.execute("DROP TYPE public.audit_action_enum RESTRICT;")
+    op.execute("DROP TYPE public.verification_method_enum RESTRICT;")
