@@ -334,9 +334,12 @@ class BranchGeolocationState(Base):
         "OrganizationAddress", back_populates="geolocation_state"
     )
 
-    coordinates: Mapped[Optional[Any]] = mapped_column(coordinate_type, nullable=True)
-    last_known_good_coordinates: Mapped[Optional[Any]] = mapped_column(
-        coordinate_type, nullable=True
+    # Revision 00f defines branch geolocation state as a WKT projection. Keep
+    # these columns textual so ORM reads/writes match VARCHAR(255) exactly;
+    # PostGIS Geography remains canonical on the legacy/member spatial surfaces.
+    coordinates: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    last_known_good_coordinates: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
     )
     timezone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
