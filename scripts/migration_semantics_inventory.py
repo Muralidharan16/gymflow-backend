@@ -26,7 +26,12 @@ _SQL_RULES: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     (
         "critical",
         "truncate",
-        re.compile(r"\bTRUNCATE\b", re.IGNORECASE),
+        # Match destructive TRUNCATE statements, not the TRUNCATE table
+        # privilege when it appears inside a GRANT privilege list.
+        re.compile(
+            r"\bTRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?[A-Za-z_\"]",
+            re.IGNORECASE,
+        ),
     ),
     (
         "critical",
