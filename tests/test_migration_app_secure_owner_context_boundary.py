@@ -450,9 +450,9 @@ def _assert_effective_view_contract(text: str) -> None:
     assert CANONICAL_EFFECTIVE_VIEW_COMMENT in normalized
 
 
-def test_complete_67_revision_app_secure_file_inventory_is_closed() -> None:
+def test_complete_68_revision_app_secure_file_inventory_is_closed() -> None:
     migrations = sorted(VERSIONS.glob("*.py"))
-    assert len(migrations) == 67
+    assert len(migrations) == 68
     actual = {
         path.name
         for path in migrations
