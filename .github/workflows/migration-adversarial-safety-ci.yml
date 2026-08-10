@@ -46,7 +46,8 @@ jobs:
             scripts/verify_00f_adversarial.py \
             scripts/run_00f_adversarial.py \
             scripts/verify_00f_predecessor_refs.py \
-            scripts/verify_0002_populated_rollback.py
+            scripts/verify_0002_populated_rollback.py \
+            scripts/verify_0003_populated_rollback.py
 
       - name: Install PostgreSQL 16 extension packages
         run: |
@@ -71,6 +72,7 @@ jobs:
           CREATE ROLE branch_viewer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE ops_support NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE DATABASE gymflow_adv_0002 OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_0003 OWNER migration_owner;
           CREATE DATABASE gymflow_adv_multi OWNER migration_owner;
           CREATE DATABASE gymflow_adv_ambiguous OWNER migration_owner;
           CREATE DATABASE gymflow_adv_evolved OWNER migration_owner;
@@ -79,6 +81,7 @@ jobs:
 
           for database in \
             gymflow_adv_0002 \
+            gymflow_adv_0003 \
             gymflow_adv_multi \
             gymflow_adv_ambiguous \
             gymflow_adv_evolved \
@@ -96,6 +99,12 @@ jobs:
           mkdir -p "$EVIDENCE_DIR"
           python -m scripts.verify_0002_populated_rollback \
             --database gymflow_adv_0002 \
+            --evidence-dir "$EVIDENCE_DIR"
+
+      - name: Prove populated 0003 security rollback blocks before mutation
+        run: |
+          python -m scripts.verify_0003_populated_rollback \
+            --database gymflow_adv_0003 \
             --evidence-dir "$EVIDENCE_DIR"
 
       - name: Execute core 0009-00f adversarial migration scenarios
