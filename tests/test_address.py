@@ -454,6 +454,8 @@ async def test_audit_log_captured_on_update(admin_db_session) -> None:
         expected_new_hash = hashlib.sha256(b"enc:New Address Road").hexdigest()
         assert old_snap["address_line1_hash"] == expected_old_hash
         assert new_snap["address_line1_hash"] == expected_new_hash
+        assert str(logs[0].changed_by) == str(owner_id)
+        assert logs[0].changed_by_type == "legacy_gym_owner"
         assert str(logs[0].ip_address) == "192.168.1.50"
 
 
