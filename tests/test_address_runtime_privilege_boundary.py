@@ -92,6 +92,17 @@ def test_internal_side_effects_use_hardened_security_definer_functions() -> None
     assert "app.current_org_id" in create
     assert "organization address tenant context mismatch" in create
 
+    # The typed audit-principal migration precedes 6f. Relocating the trigger
+    # functions into app_secure must preserve both members of the actor pair;
+    # dropping changed_by_type causes valid runtime mutations to violate the
+    # typed provenance constraints even though the caller session is correct.
+    assert create.count("changed_by_type") >= 3
+    assert create.count("app.current_user_id") >= 3
+    assert create.count("app.current_principal_type") >= 3
+    hardened_contract = _function_source("_require_hardened_functions")
+    assert "app.current_principal_type" in hardened_contract
+    assert "changed_by_type" in hardened_contract
+
     assert lock.count("REVOKE ALL ON FUNCTION") == 2
     assert "FROM PUBLIC" in lock
     assert "REVOKE USAGE ON SCHEMA app_secure FROM migration_owner" in lock
