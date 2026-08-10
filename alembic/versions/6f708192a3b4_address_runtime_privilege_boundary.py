@@ -60,6 +60,10 @@ _INTERNAL_PRIVILEGES = {
     _AUDIT: {"INSERT"},
     _OUTBOX: {"INSERT"},
 }
+_INTERNAL_SEQUENCE_BINDINGS = {
+    "branch_address_history_id_seq": ("branch_address_history", "id"),
+    "address_change_outbox_id_seq": ("address_change_outbox", "id"),
+}
 _TENANT_EXPR = "org_id=nullifcurrent_setting'app.current_org_id'::text,true,''::text::uuid"
 
 
@@ -158,6 +162,55 @@ def _direct_privileges(bind, role_name: str, relation_name: str) -> set[str]:
         WHERE ns.nspname = 'public' AND c.relname = :relation_name
           AND grantee.rolname = :role_name
     """), {"relation_name": relation_name, "role_name": role_name}).scalars().all())
+
+
+def _require_internal_sequence_contract(bind) -> None:
+    for sequence_name, (table_name, column_name) in _INTERNAL_SEQUENCE_BINDINGS.items():
+        row = bind.execute(sa.text("""
+            SELECT owner.rolname::text AS owner_name,
+                   pg_catalog.pg_get_serial_sequence(
+                       :qualified_table, :column_name
+                   ) AS bound_sequence
+            FROM pg_catalog.pg_class AS c
+            JOIN pg_catalog.pg_namespace AS ns ON ns.oid = c.relnamespace
+            JOIN pg_catalog.pg_roles AS owner ON owner.oid = c.relowner
+            WHERE ns.nspname = 'public'
+              AND c.relname = :sequence_name
+              AND c.relkind = 'S'
+        """), {
+            "qualified_table": f"public.{table_name}",
+            "column_name": column_name,
+            "sequence_name": sequence_name,
+        }).mappings().one_or_none()
+        if row is None:
+            raise RuntimeError(f"missing internal sequence public.{sequence_name}")
+        if row["owner_name"] != _MIGRATION_OWNER:
+            raise RuntimeError(
+                f"unexpected owner for internal sequence public.{sequence_name}: "
+                f"{row['owner_name']}"
+            )
+        if row["bound_sequence"] != f"public.{sequence_name}":
+            raise RuntimeError(
+                f"internal sequence binding drifted for public.{sequence_name}: "
+                f"{row['bound_sequence']!r}"
+            )
+
+
+def _effective_sequence_privileges(bind, role_name: str, sequence_name: str) -> set[str]:
+    privileges = set()
+    for privilege in ("USAGE", "SELECT", "UPDATE"):
+        allowed = _scalar(
+            bind,
+            "SELECT pg_catalog.has_sequence_privilege(:role_name, :sequence_name, :privilege)",
+            {
+                "role_name": role_name,
+                "sequence_name": f"public.{sequence_name}",
+                "privilege": privilege,
+            },
+        )
+        if allowed:
+            privileges.add(privilege)
+    return privileges
 
 
 def _policies(bind, relation_name: str) -> dict[str, dict[str, object]]:
@@ -317,6 +370,17 @@ def _require_predecessor(bind) -> None:
     for relation_name in _INTERNAL_PRIVILEGES:
         if _direct_privileges(bind, _SECURITY_OWNER, relation_name):
             raise RuntimeError(f"predecessor unexpectedly grants {relation_name} to app_security_owner")
+    for sequence_name in _INTERNAL_SEQUENCE_BINDINGS:
+        if _effective_sequence_privileges(bind, _SECURITY_OWNER, sequence_name):
+            raise RuntimeError(
+                f"predecessor unexpectedly grants sequence privileges on {sequence_name} "
+                "to app_security_owner"
+            )
+        if _effective_sequence_privileges(bind, _RUNTIME_ROLE, sequence_name):
+            raise RuntimeError(
+                f"predecessor unexpectedly grants sequence privileges on {sequence_name} "
+                "to app_runtime"
+            )
     if _function(bind, _INSERT_FN) is not None or _function(bind, _UPDATE_FN) is not None:
         raise RuntimeError("hardened address functions already exist")
     _require_trigger_targets(bind, hardened=False)
@@ -338,6 +402,15 @@ def _require_forward(bind) -> None:
             raise RuntimeError(f"app_security_owner ACL drifted for {relation_name}")
         if _direct_privileges(bind, _RUNTIME_ROLE, relation_name):
             raise RuntimeError(f"app_runtime must not have direct ACL on {relation_name}")
+    for sequence_name in _INTERNAL_SEQUENCE_BINDINGS:
+        if _effective_sequence_privileges(bind, _SECURITY_OWNER, sequence_name) != {"USAGE"}:
+            raise RuntimeError(
+                f"app_security_owner sequence ACL drifted for {sequence_name}"
+            )
+        if _effective_sequence_privileges(bind, _RUNTIME_ROLE, sequence_name):
+            raise RuntimeError(
+                f"app_runtime must not have sequence privileges on {sequence_name}"
+            )
     if _direct_schema_usage(bind, _MIGRATION_OWNER):
         raise RuntimeError("temporary migration_owner app_secure USAGE was not revoked")
     _require_hardened_functions(bind)
@@ -506,12 +579,18 @@ def _require_hardened_functions(bind) -> None:
 def upgrade() -> None:
     bind = op.get_bind()
     _require_identity(bind)
+    _require_internal_sequence_contract(bind)
     _require_predecessor(bind)
 
     op.execute("GRANT SELECT, INSERT, UPDATE ON TABLE public.organization_addresses TO app_runtime")
     op.execute("GRANT SELECT, INSERT, UPDATE ON TABLE public.branch_address_history TO app_security_owner")
     op.execute("GRANT INSERT ON TABLE public.branch_address_audit_log TO app_security_owner")
     op.execute("GRANT INSERT ON TABLE public.address_change_outbox TO app_security_owner")
+    op.execute(
+        "GRANT USAGE ON SEQUENCE "
+        "public.branch_address_history_id_seq, "
+        "public.address_change_outbox_id_seq TO app_security_owner"
+    )
     op.execute(
         "CREATE POLICY tenant_isolation_audit_insert ON public.branch_address_audit_log "
         "FOR INSERT WITH CHECK (org_id = NULLIF(current_setting('app.current_org_id', true), '')::UUID)"
@@ -525,6 +604,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     _require_identity(bind)
+    _require_internal_sequence_contract(bind)
     _require_forward(bind)
 
     _repoint_triggers(bind, hardened=False)
@@ -534,5 +614,10 @@ def downgrade() -> None:
     op.execute("REVOKE SELECT, INSERT, UPDATE ON TABLE public.branch_address_history FROM app_security_owner")
     op.execute("REVOKE INSERT ON TABLE public.branch_address_audit_log FROM app_security_owner")
     op.execute("REVOKE INSERT ON TABLE public.address_change_outbox FROM app_security_owner")
+    op.execute(
+        "REVOKE USAGE ON SEQUENCE "
+        "public.branch_address_history_id_seq, "
+        "public.address_change_outbox_id_seq FROM app_security_owner"
+    )
 
     _require_predecessor(bind)
