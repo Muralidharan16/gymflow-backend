@@ -312,9 +312,9 @@ def _app_private_ddl_categories(path: Path) -> set[str]:
     }
 
 
-def test_complete_67_revision_private_and_executor_inventories_are_closed() -> None:
+def test_complete_68_revision_private_and_executor_inventories_are_closed() -> None:
     migrations = sorted(VERSIONS.glob("*.py"))
-    assert len(migrations) == 67
+    assert len(migrations) == 68
     app_private = {
         path.name
         for path in migrations
