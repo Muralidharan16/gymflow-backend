@@ -843,6 +843,20 @@ def _preflight_downgrade() -> None:
                         org_row.id;
                 END IF;
 
+                IF EXISTS (
+                    SELECT 1
+                    FROM public.branch_audit_log AS audit_data
+                    JOIN public.org_branches AS branch_data
+                      ON branch_data.id = audit_data.branch_id
+                     AND branch_data.org_id = audit_data.org_id
+                    WHERE audit_data.org_id = org_row.id
+                      AND branch_data.branch_metadata->>'migration_00f_legacy_backfill' = 'true'
+                ) THEN
+                    RAISE EXCEPTION
+                        '00f downgrade blocked: predecessor-owned branch_audit_log references synthesized branch for organization %',
+                        org_row.id;
+                END IF;
+
                 FOREACH relation_name IN ARRAY ARRAY[
                     'address_change_outbox',
                     'branch_address_audit_log',
