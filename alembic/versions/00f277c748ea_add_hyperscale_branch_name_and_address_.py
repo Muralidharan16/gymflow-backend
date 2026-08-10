@@ -614,7 +614,9 @@ def _backfill_legacy_addresses() -> None:
                 END AS coordinate_text
             FROM public.organization_addresses AS address_data
         ) AS source_data;
+    """)
 
+    op.execute(r"""
         DO $$
         BEGIN
             IF (
@@ -641,7 +643,6 @@ def upgrade() -> None:
     op.execute("UPDATE organization_addresses SET address_type = 'physical' WHERE address_type = 'operational';")
     op.execute("ALTER TABLE organization_addresses ADD CONSTRAINT chk_address_type CHECK (address_type IN ('physical', 'mailing', 'billing', 'registered'));")
 
-    # Drop view temporarily to allow altering column types.
     op.execute("DROP VIEW IF EXISTS v_active_org_branches;")
 
     op.create_table('address_change_outbox',
@@ -759,8 +760,6 @@ def upgrade() -> None:
     op.create_index('ix_org_branches_normalized', 'org_branches', ['search_normalized_name'], unique=False, postgresql_using='gin', postgresql_ops={'search_normalized_name': 'gin_trgm_ops'})
     op.create_index('ix_org_branches_org_id_v2', 'org_branches', ['org_id'], unique=False)
 
-    # These columns are new in 00f.  Collision means predecessor drift and must
-    # block rather than be erased with DROP COLUMN ... CASCADE.
     op.execute(r"""
         DO $$
         BEGIN
@@ -822,10 +821,6 @@ def upgrade() -> None:
     op.create_foreign_key(None, 'organization_addresses', 'organizations', ['org_id'], ['id'], ondelete='RESTRICT')
     op.create_foreign_key(None, 'organization_addresses', 'org_branches', ['branch_id'], ['id'], ondelete='RESTRICT')
 
-    # Fields represented durably by branch_geolocation_state / branch state can
-    # now be removed.  Legacy fields with no durable replacement (label,
-    # effective window, embed flag, verification error and the raw generic
-    # source fields) are intentionally retained rather than silently discarded.
     op.execute("ALTER TABLE organization_addresses DROP COLUMN verified_at;")
     op.execute("ALTER TABLE organization_addresses DROP COLUMN maps_updated_at;")
     op.execute("ALTER TABLE organization_addresses DROP COLUMN longitude;")
@@ -843,7 +838,6 @@ def upgrade() -> None:
     op.execute("ALTER TABLE organizations DROP CONSTRAINT IF EXISTS organizations_cover_updated_by_fkey;")
     op.execute("ALTER TABLE organizations DROP CONSTRAINT IF EXISTS organizations_logo_updated_by_fkey;")
 
-    # Recreate the view dropped earlier.
     op.execute('''
         CREATE VIEW v_active_org_branches WITH (security_barrier = true) AS
         SELECT
@@ -911,7 +905,6 @@ def upgrade() -> None:
       IF current_setting('app.skip_history_snapshot', true) = 'true' THEN
         RETURN NEW;
       END IF;
-
       INSERT INTO branch_address_history
         (address_id, org_id, dek_version, address_line1, address_line2, city, state_province, country_code, postal_code, formatted_address, valid_from, changed_by)
       VALUES
@@ -935,21 +928,16 @@ def upgrade() -> None:
         END IF;
         RAISE EXCEPTION 'plaintext fields mutated during KMS re-encryption pass: address_id=%', OLD.id;
       END IF;
-
       IF ROW(OLD.address_line1, OLD.address_line2, OLD.city, OLD.state_province, OLD.country_code, OLD.postal_code) IS DISTINCT FROM
          ROW(NEW.address_line1, NEW.address_line2, NEW.city, NEW.state_province, NEW.country_code, NEW.postal_code) THEN
-
         UPDATE branch_address_history SET valid_to = v_now WHERE address_id = OLD.id AND valid_to IS NULL;
-
         INSERT INTO branch_address_history
           (address_id, org_id, dek_version, address_line1, address_line2, city, state_province, country_code, postal_code, formatted_address, valid_from, changed_by)
         VALUES
           (OLD.id, OLD.org_id, OLD.dek_version, OLD.address_line1, OLD.address_line2, OLD.city, OLD.state_province, OLD.country_code, OLD.postal_code, OLD.formatted_address, v_now, NULLIF(current_setting('app.current_user_id', true), '')::UUID);
-
         INSERT INTO branch_address_audit_log(event_id, address_id, org_id, dek_version, old_address, new_address, changed_by, ip_address, user_agent, request_id)
         VALUES (
-          gen_random_uuid(),
-          OLD.id, OLD.org_id, OLD.dek_version,
+          gen_random_uuid(), OLD.id, OLD.org_id, OLD.dek_version,
           jsonb_build_object('city', OLD.city, 'state', OLD.state_province, 'country_code', OLD.country_code, 'postal_code', OLD.postal_code, 'dek_version', OLD.dek_version, 'address_line1_hash', encode(sha256(OLD.address_line1::bytea), 'hex')),
           jsonb_build_object('city', NEW.city, 'state', NEW.state_province, 'country_code', NEW.country_code, 'postal_code', NEW.postal_code, 'dek_version', NEW.dek_version, 'address_line1_hash', encode(sha256(NEW.address_line1::bytea), 'hex')),
           NULLIF(current_setting('app.current_user_id', true), '')::UUID,
@@ -957,7 +945,6 @@ def upgrade() -> None:
           NULLIF(current_setting('app.user_agent', true), ''),
           NULLIF(current_setting('app.request_id', true), '')::UUID
         );
-
         INSERT INTO address_change_outbox (address_id, org_id, event_type, payload)
         VALUES (NEW.id, NEW.org_id, 'address_updated', jsonb_build_object('address_id', NEW.id, 'timestamp', v_now));
       END IF;
@@ -1049,22 +1036,10 @@ def downgrade() -> None:
     op.create_index(op.f('idx_org_addresses_lat_lng'), 'organization_addresses', ['latitude', 'longitude'], unique=False, postgresql_where='((latitude IS NOT NULL) AND (longitude IS NOT NULL) AND (deleted_at IS NULL))')
     op.create_index(op.f('idx_org_addresses_country_state'), 'organization_addresses', ['country_code', 'state_province'], unique=False, postgresql_where='(deleted_at IS NULL)')
     op.create_index(op.f('idx_org_addresses_city'), 'organization_addresses', ['city'], unique=False, postgresql_where='(deleted_at IS NULL)')
-    op.alter_column('organization_addresses', 'google_place_id',
-               existing_type=sa.Text(),
-               type_=sa.VARCHAR(length=300),
-               existing_nullable=True)
-    op.alter_column('organization_addresses', 'postal_code',
-               existing_type=sa.String(length=20),
-               type_=sa.VARCHAR(length=15),
-               existing_nullable=True)
-    op.alter_column('organization_addresses', 'state_province',
-               existing_type=sa.VARCHAR(length=100),
-               nullable=False)
-    op.alter_column('organization_addresses', 'address_type',
-               existing_type=sa.String(length=20),
-               type_=sa.VARCHAR(length=50),
-               existing_nullable=False,
-               existing_server_default=sa.text("'operational'::character varying"))
+    op.alter_column('organization_addresses', 'google_place_id', existing_type=sa.Text(), type_=sa.VARCHAR(length=300), existing_nullable=True)
+    op.alter_column('organization_addresses', 'postal_code', existing_type=sa.String(length=20), type_=sa.VARCHAR(length=15), existing_nullable=True)
+    op.alter_column('organization_addresses', 'state_province', existing_type=sa.VARCHAR(length=100), nullable=False)
+    op.alter_column('organization_addresses', 'address_type', existing_type=sa.String(length=20), type_=sa.VARCHAR(length=50), existing_nullable=False, existing_server_default=sa.text("'operational'::character varying"))
     op.execute("ALTER TABLE organization_addresses DROP COLUMN IF EXISTS deleted_by CASCADE;")
     op.execute("ALTER TABLE organization_addresses DROP COLUMN IF EXISTS _reencryption_in_progress CASCADE;")
     op.execute("ALTER TABLE organization_addresses DROP COLUMN IF EXISTS allow_search_indexing CASCADE;")
@@ -1074,26 +1049,13 @@ def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS ix_org_branches_normalized;")
     op.execute("DROP INDEX IF EXISTS ix_org_branches_name_trgm;")
     op.create_index(op.f('ix_org_branches_org_id'), 'org_branches', ['org_id'], unique=False, postgresql_include=['branch_name', 'branch_code', 'created_at'])
-    op.alter_column('org_branches', 'internal_slug',
-               existing_type=postgresql.CITEXT(),
-               type_=sa.VARCHAR(length=32),
-               existing_nullable=False)
+    op.alter_column('org_branches', 'internal_slug', existing_type=postgresql.CITEXT(), type_=sa.VARCHAR(length=32), existing_nullable=False)
     op.execute("ALTER TABLE org_branches DROP COLUMN IF EXISTS search_normalized_name CASCADE;")
     op.create_index(op.f('uq_member_primary_address'), 'member_addresses', ['member_id'], unique=True, postgresql_where='((is_primary = true) AND (deleted_at IS NULL))')
-    op.alter_column('member_addresses', 'address_type',
-               existing_type=sa.Enum('registered', 'operational', 'billing', name='addresstype', native_enum=False),
-               type_=sa.VARCHAR(length=50),
-               existing_nullable=False,
-               existing_server_default=sa.text("'operational'::character varying"))
+    op.alter_column('member_addresses', 'address_type', existing_type=sa.Enum('registered', 'operational', 'billing', name='addresstype', native_enum=False), type_=sa.VARCHAR(length=50), existing_nullable=False, existing_server_default=sa.text("'operational'::character varying"))
     op.create_index(op.f('idx_places_cache_expires'), 'google_places_cache', ['expires_at'], unique=False)
-    op.alter_column('allowed_branch_transitions', 'to_status',
-               existing_type=sa.String(),
-               type_=sa.TEXT(),
-               existing_nullable=False)
-    op.alter_column('allowed_branch_transitions', 'from_status',
-               existing_type=sa.String(),
-               type_=sa.TEXT(),
-               existing_nullable=False)
+    op.alter_column('allowed_branch_transitions', 'to_status', existing_type=sa.String(), type_=sa.TEXT(), existing_nullable=False)
+    op.alter_column('allowed_branch_transitions', 'from_status', existing_type=sa.String(), type_=sa.TEXT(), existing_nullable=False)
     op.drop_table('branch_geolocation_state')
     op.drop_table('branch_geocode_attempts')
     op.drop_table('branch_address_history')
