@@ -29,7 +29,7 @@ def test_lifecycle_fixture_seeds_tenant_root_only_through_admin_identity() -> No
     source = _source()
     fixture = _function_source("lifecycle_setup")
 
-    assert "from conftest import AdminTestSessionLocal, cleanup_test_database_tables" in source
+    assert "from conftest import AdminTestSessionLocal, assert_test_database" in source
     assert "async with AdminTestSessionLocal() as session:" in fixture
     assert "Organization(id=org_id" in fixture
     assert "await set_db_session_context(session, str(org_id), str(owner_id), \"owner\")" in fixture
@@ -39,9 +39,24 @@ def test_lifecycle_fixture_seeds_tenant_root_only_through_admin_identity() -> No
     assert "async with AsyncSessionLocal() as session:" not in fixture
 
 
-def test_lifecycle_behavior_still_executes_on_reduced_runtime() -> None:
-    source = _source()
+def test_lifecycle_cleanup_is_admin_only_without_cascade_or_runtime_grants() -> None:
+    cleanup = _function_source("cleanup_lifecycle_fixture")
 
+    assert "async with AdminTestSessionLocal() as session:" in cleanup
+    assert "await assert_test_database(session)" in cleanup
+    assert "RESET ROLE" in cleanup
+    assert "TRUNCATE TABLE" in cleanup
+    assert "CASCADE" not in cleanup
+    assert "branch_status_history" in cleanup
+    assert "branch_lifecycle_events" in cleanup
+    assert "branch_outbox_events" in cleanup
+    assert "branch_watchdog_alerts" in cleanup
+    assert "DELETE FROM public.org_branch_state WHERE org_id = :org_id" in cleanup
+    assert "DELETE FROM public.org_branches WHERE org_id = :org_id" in cleanup
+    assert "DELETE FROM public.organizations WHERE id = :org_id" in cleanup
+
+
+def test_lifecycle_behavior_still_executes_on_reduced_runtime() -> None:
     for test_name in (
         "test_initiate_transition_unauthorized_role",
         "test_initiate_transition_missing_reason_on_terminal",
