@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Canonicalize pg_dump text for deterministic lifecycle comparison.
+r"""Canonicalize pg_dump text for deterministic lifecycle comparison.
 
 PostgreSQL emits a random client-side ``\restrict`` token and the matching
 ``\unrestrict`` token in plain-text dumps. The token is deliberately
