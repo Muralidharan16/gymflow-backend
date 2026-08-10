@@ -25,6 +25,20 @@ def _function_source(name: str) -> str:
     return "".join(lines[node.lineno - 1 : node.end_lineno])
 
 
+def test_transition_authorizes_from_plain_read_before_write_locking() -> None:
+    transition = _function_source("initiate_transition")
+
+    visible_read = transition.index("visible_stmt = select(OrgBranchState).where(")
+    authorization = transition.index("if actor_role not in allowed_trans.allowed_roles:")
+    advisory_lock = transition.index("SELECT pg_try_advisory_xact_lock(")
+    write_lock = transition.index(".with_for_update()")
+
+    assert visible_read < authorization < advisory_lock < write_lock
+    assert "status_code=status.HTTP_403_FORBIDDEN" in transition
+    assert "branch_state.status != from_status" in transition
+    assert "Branch status changed while the transition was being authorized" in transition
+
+
 def test_optional_booking_surface_is_checked_before_update_without_swallowing_errors() -> None:
     relation_exists = _function_source("_relation_exists")
     cancel = _function_source("_cancel_future_bookings_if_present")
