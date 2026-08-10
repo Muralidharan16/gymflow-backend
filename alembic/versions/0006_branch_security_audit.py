@@ -22,18 +22,30 @@ def upgrade() -> None:
     # --- Ticket 3: Tenancy Layer (RLS) ---
     op.execute("ALTER TABLE org_branches ENABLE ROW LEVEL SECURITY;")
     op.execute("ALTER TABLE org_branch_state ENABLE ROW LEVEL SECURITY;")
-    
+
+    # Custom PostgreSQL GUC placeholders can become the empty string after a
+    # transaction-local setting is reset (for example across Alembic autocommit
+    # boundaries).  Treat both missing and empty tenant context as NULL so the
+    # policy fails closed instead of raising an invalid UUID cast.
     op.execute("""
-        CREATE POLICY tenant_isolation_metadata ON org_branches 
-        USING (org_id = current_setting('app.current_org_id', true)::UUID);
+        CREATE POLICY tenant_isolation_metadata ON org_branches
+        USING (
+            org_id = NULLIF(
+                current_setting('app.current_org_id', true), ''
+            )::UUID
+        );
     """)
     op.execute("""
-        CREATE POLICY tenant_isolation_state ON org_branch_state 
-        USING (org_id = current_setting('app.current_org_id', true)::UUID);
+        CREATE POLICY tenant_isolation_state ON org_branch_state
+        USING (
+            org_id = NULLIF(
+                current_setting('app.current_org_id', true), ''
+            )::UUID
+        );
     """)
 
     # --- Ticket 4: Audit Log + Partition Automation ---
-    
+
     # 1. Create branch_audit_log partitioned table
     op.execute("""
         CREATE TABLE branch_audit_log (
@@ -41,14 +53,14 @@ def upgrade() -> None:
             branch_id UUID NOT NULL,
             org_id UUID NOT NULL,
             actor_id UUID NOT NULL,
-            action TEXT NOT NULL, 
+            action TEXT NOT NULL,
             reason TEXT NULL,
-            diff JSONB NULL, 
+            diff JSONB NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             PRIMARY KEY (id, created_at),
             CONSTRAINT fk_audit_branch FOREIGN KEY (branch_id, org_id) REFERENCES org_branches(id, org_id),
             CONSTRAINT chk_reason_on_destructive CHECK (
-              action NOT IN ('soft_deleted', 'archived', 'purged') OR 
+              action NOT IN ('soft_deleted', 'archived', 'purged') OR
               (reason IS NOT NULL AND length(trim(reason)) >= 5)
             )
         ) PARTITION BY RANGE (created_at);
@@ -56,7 +68,7 @@ def upgrade() -> None:
 
     # 2. Bootstrap partition y2026_m05
     op.execute("""
-        CREATE TABLE branch_audit_log_y2026_m05 PARTITION OF branch_audit_log 
+        CREATE TABLE branch_audit_log_y2026_m05 PARTITION OF branch_audit_log
         FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
     """)
 
@@ -71,14 +83,18 @@ def upgrade() -> None:
     # 4. Enable RLS on audit log
     op.execute("ALTER TABLE branch_audit_log ENABLE ROW LEVEL SECURITY;")
     op.execute("""
-        CREATE POLICY tenant_isolation_audit ON branch_audit_log 
-        USING (org_id = current_setting('app.current_org_id', true)::UUID);
+        CREATE POLICY tenant_isolation_audit ON branch_audit_log
+        USING (
+            org_id = NULLIF(
+                current_setting('app.current_org_id', true), ''
+            )::UUID
+        );
     """)
 
     # 5. Create dynamic partition automation function
     op.execute("""
         CREATE OR REPLACE FUNCTION create_next_month_partition(
-          table_name TEXT, 
+          table_name TEXT,
           index_ddls TEXT[] DEFAULT ARRAY[]::TEXT[]
         ) RETURNS void AS $$
         DECLARE
@@ -91,12 +107,12 @@ def upgrade() -> None:
           partition_name := table_name || '_y' || to_char(next_month, 'YYYY') || '_m' || to_char(next_month, 'MM');
           start_val := to_char(next_month, 'YYYY-MM-01');
           end_val := to_char(next_month + interval '1 month', 'YYYY-MM-01');
-          
+
           EXECUTE format(
             'CREATE TABLE IF NOT EXISTS %I PARTITION OF %I FOR VALUES FROM (%L) TO (%L)',
             partition_name, table_name, start_val, end_val
           );
-          
+
           FOREACH idx_ddl IN ARRAY index_ddls
           LOOP
             EXECUTE replace(idx_ddl, '__PARTITION_NAME__', partition_name);
@@ -127,7 +143,7 @@ def upgrade() -> None:
 
     # Bootstrap partition for outbox events
     op.execute("""
-        CREATE TABLE outbox_events_y2026_m05 PARTITION OF outbox_events 
+        CREATE TABLE outbox_events_y2026_m05 PARTITION OF outbox_events
         FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
     """)
 
