@@ -798,6 +798,43 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     _rb1m1a_preflight(bind, require_functions=True)
+
+    # organization_members was backfilled from predecessor-owned
+    # organization_users. Crossing back to 0023 is lossless only while every
+    # row is still exactly derivable from that predecessor state. Any extra
+    # membership, status/permission change, region assignment, or independent
+    # lifecycle timestamp would otherwise be silently discarded.
+    op.execute("""
+        DO $rb1m1a_downgrade_data_contract$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM public.organization_users AS ou
+                FULL OUTER JOIN public.organization_members AS om
+                  ON om.org_id = ou.org_id
+                 AND om.user_id = ou.id
+                WHERE ou.id IS NULL
+                   OR om.id IS NULL
+                   OR om.membership_status_id IS DISTINCT FROM
+                      CASE
+                          WHEN ou.deleted_at IS NOT NULL THEN 5
+                          WHEN ou.is_active = TRUE THEN 3
+                          ELSE 4
+                      END
+                   OR om.permission_version IS DISTINCT FROM 1
+                   OR om.region_id IS NOT NULL
+                   OR om.created_at IS DISTINCT FROM ou.created_at
+                   OR om.updated_at IS DISTINCT FROM ou.updated_at
+                   OR om.deleted_at IS DISTINCT FROM ou.deleted_at
+                   OR om.deleted_by IS DISTINCT FROM ou.deleted_by
+            ) THEN
+                RAISE EXCEPTION
+                    '0024 downgrade blocked: organization_members contains state not representable by predecessor organization_users';
+            END IF;
+        END
+        $rb1m1a_downgrade_data_contract$;
+    """)
+
     op.execute("DROP TRIGGER IF EXISTS trg_membership_state_transition ON public.organization_members;")
     op.execute("DROP TRIGGER IF EXISTS trg_touch_organization_members_updated_at ON public.organization_members;")
 
@@ -806,7 +843,8 @@ def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS ix_org_members_status;")
     op.execute("DROP INDEX IF EXISTS ix_org_members_active;")
 
-    op.execute("DROP TABLE IF EXISTS public.organization_members CASCADE;")
+    # RESTRICT makes any unmodelled dependency a hard rollback failure.
+    op.execute("DROP TABLE public.organization_members RESTRICT;")
 
     _rb1m1a_run_as_app_security_owner(
         bind,
