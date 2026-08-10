@@ -144,6 +144,15 @@ jobs:
               branch_row record;
               geo_row record;
           BEGIN
+              -- All target surfaces are FORCE-RLS by the end of 00f. Verify
+              -- the migrated row through the real tenant boundary rather than
+              -- relying on table-owner visibility or weakening row security.
+              PERFORM pg_catalog.set_config(
+                  'app.current_org_id',
+                  '11111111-1111-4111-8111-111111111111',
+                  true
+              );
+
               SELECT * INTO address_row
               FROM public.organization_addresses
               WHERE id = '22222222-2222-4222-8222-222222222222';
