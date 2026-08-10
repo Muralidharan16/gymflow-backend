@@ -53,10 +53,17 @@ def test_0003_downgrade_is_dependency_ordered_and_never_cascades() -> None:
 
     assert "CASCADE" not in downgrade
     assert "IF EXISTS" not in downgrade
-    assert downgrade.count(" RESTRICT") == 4
-    assert downgrade.index("DROP TABLE public.audit_chain_heads RESTRICT") < downgrade.index(
-        "DROP TABLE public.address_audit_ledger RESTRICT"
+
+    expected_drops = (
+        'op.execute("DROP TABLE public.audit_chain_heads RESTRICT")',
+        'op.execute("DROP TABLE public.address_audit_ledger RESTRICT")',
+        'op.execute("DROP TABLE public.organization_address_payloads_secure RESTRICT")',
+        'op.execute("DROP TABLE public.encryption_key_registry RESTRICT")',
     )
-    assert downgrade.index(
-        "DROP TABLE public.organization_address_payloads_secure RESTRICT"
-    ) < downgrade.index("DROP TABLE public.encryption_key_registry RESTRICT")
+    positions = []
+    for statement in expected_drops:
+        assert downgrade.count(statement) == 1
+        positions.append(downgrade.index(statement))
+
+    assert positions == sorted(positions)
+    assert downgrade.count('op.execute("DROP TABLE ') == len(expected_drops)
