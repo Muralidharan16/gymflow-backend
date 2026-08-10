@@ -478,7 +478,7 @@ _RB1L8D1D2_0021 = (
     / "alembic/versions/0021_staff_roles.py"
 )
 _RB1L8D1D2_EXPECTED_0021_SHA = (
-    "c5bc24e259ea9938f680c8f5f41fe74c5a73ed1ffb7f9ab5b1a63946db6a702f"
+    "6078897c7bc82c14952af1c6e00e76d8ffde15ff19e1f0a73090076f3ada7e01"
 )
 
 
@@ -659,7 +659,7 @@ _RB1M1A_ROOT = _RB1M1APath(__file__).resolve().parents[1]
 _RB1M1A_0024 = _RB1M1A_ROOT / "alembic/versions/0024_rbac_p3_org_members.py"
 _RB1M1A_0021 = _RB1M1A_ROOT / "alembic/versions/0021_staff_roles.py"
 _RB1M1A_0022 = _RB1M1A_ROOT / "alembic/versions/0022_rbac_phase1_roles_extensions.py"
-_RB1M1A_EXPECTED_0021_SHA = "c5bc24e259ea9938f680c8f5f41fe74c5a73ed1ffb7f9ab5b1a63946db6a702f"
+_RB1M1A_EXPECTED_0021_SHA = "6078897c7bc82c14952af1c6e00e76d8ffde15ff19e1f0a73090076f3ada7e01"
 _RB1M1A_EXPECTED_0022_SHA = "c87022fe010522cc51b390ca1b9c28be95c3cd1cad99bf5027e7beeb1a7a5870"
 
 

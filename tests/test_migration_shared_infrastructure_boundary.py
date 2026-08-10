@@ -564,7 +564,7 @@ _RB1L8D1F_0022 = (
     _RB1L8D1F_VERSIONS / "0022_rbac_phase1_roles_extensions.py"
 )
 _RB1L8D1F_EXPECTED_0021_SHA = (
-    "c5bc24e259ea9938f680c8f5f41fe74c5a73ed1ffb7f9ab5b1a63946db6a702f"
+    "6078897c7bc82c14952af1c6e00e76d8ffde15ff19e1f0a73090076f3ada7e01"
 )
 
 
@@ -624,7 +624,9 @@ def test_0022_preserves_shared_dependency_owner_context_and_pgcrypto_contracts()
     assert observed_0021 == _RB1L8D1F_EXPECTED_0021_SHA
     assert "exclude_overlapping_staff_assignments" in source_0021
     assert "EXCLUDE USING gist" in source_0021
-    assert "CREATE EXTENSION IF NOT EXISTS btree_gist;" in source_0021
+    assert "CREATE EXTENSION IF NOT EXISTS btree_gist;" not in source_0021
+    assert "requires infrastructure-provisioned btree_gist" in source_0021
+    assert "owner_name IS DISTINCT FROM 'postgres'" in source_0021
 
     assert "RB1L8D1D2_APP_SECURE_OWNER_CONTEXT_HELPERS" in source_0022
     assert "_rb1l8d1d2_preflight_app_secure_owner_context" in source_0022

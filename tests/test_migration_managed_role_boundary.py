@@ -263,7 +263,7 @@ def test_0020_partition_owner_transfer_remains_after_partition_hardening():
     source, _, _ = _rb1k_0020_nodes()
 
     function_start = source.index(
-        "CREATE OR REPLACE FUNCTION "
+        "CREATE FUNCTION "
         "app_private.create_branch_contacts_audit_partition"
     )
     function_end = source.index(
@@ -299,10 +299,7 @@ def test_0020_downgrade_bounds_owner_context_before_type_cleanup():
 
     set_sql = "SET LOCAL ROLE app_rls_executor;"
     reset_sql = "RESET ROLE;"
-    partition_drop = (
-        "DROP TABLE IF EXISTS "
-        "app_private.partition_metadata CASCADE;"
-    )
+    partition_drop = "DROP TABLE app_private.partition_metadata RESTRICT;"
 
     assert sql_statements.count(set_sql) == 1
     assert sql_statements.count(reset_sql) == 1
@@ -325,7 +322,7 @@ def test_0020_downgrade_bounds_owner_context_before_type_cleanup():
     assert owner_cleanup
     assert all(
         sql.startswith(
-            ("DROP TRIGGER", "DROP FUNCTION", "DROP TABLE")
+            ("DROP TRIGGER", "DROP POLICY", "DROP FUNCTION", "DROP TABLE")
         )
         for sql in owner_cleanup
     )

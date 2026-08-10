@@ -9,6 +9,9 @@ columns, constraints and indexes stay present so a rollback can be lossless and
 older application binaries remain representable during the compatibility
 window.  A later, explicitly gated contract migration may remove predecessor
 storage only after dual-write/read compatibility has been proven in production.
+
+Managed cluster roles are provisioned from security/cluster_role_bootstrap;
+this revision validates that posture but never creates or mutates those roles.
 """
 
 from typing import Sequence, Union
