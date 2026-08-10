@@ -125,7 +125,7 @@ def _require_predecessor_set_updated_at(bind) -> None:
                 pg_catalog.btrim(
                     pg_catalog.regexp_replace(
                         routine_data.prosrc,
-                        E'\\s+',
+                        '[[:space:]]+',
                         ' ',
                         'g'
                     )
