@@ -79,11 +79,14 @@ def test_auth_cleanup_identity_set_covers_all_module_test_accounts():
     literal_test_emails = {
         value.lower()
         for value in string_values
-        if value.lower().endswith("@example.com")
+        if value.count("@") == 1
+        and ":" not in value
+        and value.lower().endswith("@example.com")
     }
 
     # Dynamic rate{i}@example.com identities are explicitly represented by the
-    # range expression in the cleanup set; all literal identities must be listed.
+    # range expression in the cleanup set; all literal email identities must be
+    # listed. Redis keys containing an email are deliberately excluded.
     cleanup_assignment = next(
         node
         for node in module.body
