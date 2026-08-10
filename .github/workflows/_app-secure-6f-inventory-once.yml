@@ -87,8 +87,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-test.txt
           python -m pytest --noconftest -q \
-            tests/test_migration_app_secure_owner_context_boundary.py::test_complete_69_revision_app_secure_file_inventory_is_closed \
-            tests/test_migration_app_secure_owner_context_boundary.py::test_complete_app_secure_ddl_category_allowlist_is_exact
+            tests/test_migration_app_secure_owner_context_boundary.py \
+            -k 'complete_app_secure_file_inventory_is_closed or complete_app_secure_ddl_category_allowlist_is_exact'
 
       - name: Publish one-file correction
         if: steps.patch.outputs.changed == 'true'
@@ -102,6 +102,6 @@ jobs:
           git fetch origin hardening/complete-migration-lineage
           git rebase origin/hardening/complete-migration-lineage
           python -m pytest --noconftest -q \
-            tests/test_migration_app_secure_owner_context_boundary.py::test_complete_69_revision_app_secure_file_inventory_is_closed \
-            tests/test_migration_app_secure_owner_context_boundary.py::test_complete_app_secure_ddl_category_allowlist_is_exact
+            tests/test_migration_app_secure_owner_context_boundary.py \
+            -k 'complete_app_secure_file_inventory_is_closed or complete_app_secure_ddl_category_allowlist_is_exact'
           git push origin HEAD:hardening/complete-migration-lineage
