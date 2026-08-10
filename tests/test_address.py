@@ -334,65 +334,60 @@ async def test_audit_log_captured_on_update(admin_db_session) -> None:
     Validates that typed actor provenance and tenant context survive transaction
     boundaries while address triggers record immutable audit snapshots.
 
-    Tenant-root fixture creation is an administrative test setup capability. The
-    branch/address/audit behavior itself remains on the reduced application
+    Organization, branch and actor creation are administrative fixture setup.
+    Address mutation and audit verification remain on the reduced application
     runtime identity so this test cannot hide an RLS or DML privilege defect.
     """
     from app.core.database import AsyncSessionLocal, update_session_context
+    from app.models.organization import Organization
+    from app.models.org_branch import OrgBranch, OrgBranchState
+    from app.models.staff import GymOwner
 
     org_id = uuid.uuid4()
-    from app.models.organization import Organization
+    branch_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+
     admin_db_session.add(Organization(id=org_id, name="Test Gym Org"))
+    branch = OrgBranch(
+        id=branch_id,
+        org_id=org_id,
+        branch_name="Anna Nagar Main",
+        branch_code="AN01",
+        internal_slug="anna-nagar-main",
+        timezone="UTC",
+        currency_code="USD"
+    )
+    admin_db_session.add(branch)
+    branch_state = OrgBranchState(
+        branch_id=branch_id,
+        org_id=org_id,
+        branch_status="active",
+        is_primary=True,
+        is_active=True,
+        is_public=True,
+        version=1,
+        search_epoch_ulid="01AN4V07BY79KA1307SR9XFMAT"
+    )
+    admin_db_session.add(branch_state)
+
+    # Register a legacy staff actor during fixture bootstrap. The source trigger
+    # writes the typed audit-principal registry before reduced-runtime behavior.
+    owner = GymOwner(
+        id=owner_id,
+        org_id=org_id,
+        name="Test Owner",
+        email="owner@test.com",
+        password_hash="hash",
+        role="owner",
+        is_active=True,
+        is_verified=True
+    )
+    admin_db_session.add(owner)
     await admin_db_session.commit()
 
     async with AsyncSessionLocal() as db:
-        # The session owns tenant context. The after_begin hook re-applies it to
-        # every transaction, so a commit cannot silently drop the RLS boundary.
-        await update_session_context(db, org_id=str(org_id))
-
-        from app.models.org_branch import OrgBranch, OrgBranchState
-        branch_id = uuid.uuid4()
-        branch = OrgBranch(
-            id=branch_id,
-            org_id=org_id,
-            branch_name="Anna Nagar Main",
-            branch_code="AN01",
-            internal_slug="anna-nagar-main",
-            timezone="UTC",
-            currency_code="USD"
-        )
-        db.add(branch)
-        branch_state = OrgBranchState(
-            branch_id=branch_id,
-            org_id=org_id,
-            branch_status="active",
-            is_primary=True,
-            is_active=True,
-            is_public=True,
-            version=1,
-            search_epoch_ulid="01AN4V07BY79KA1307SR9XFMAT"
-        )
-        db.add(branch_state)
-
-        # Seed a legacy staff actor. The audit-principal source trigger registers
-        # the identity in the typed registry when this transaction commits.
-        from app.models.staff import GymOwner
-        owner_id = uuid.uuid4()
-        owner = GymOwner(
-            id=owner_id,
-            org_id=org_id,
-            name="Test Owner",
-            email="owner@test.com",
-            password_hash="hash",
-            role="owner",
-            is_active=True,
-            is_verified=True
-        )
-        db.add(owner)
-        await db.commit()
-
-        # Attach complete, typed actor provenance once. This is the same session
-        # contract production requests use; no raw GUC setup is duplicated here.
+        # Attach complete typed actor provenance once. Session.after_begin must
+        # reapply the same context after every commit without raw GUC duplication.
         await update_session_context(
             db,
             principal_id=str(owner_id),
