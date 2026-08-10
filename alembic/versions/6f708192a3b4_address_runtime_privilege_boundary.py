@@ -1,27 +1,30 @@
-"""Enable address RLS and establish least-privilege runtime access.
+"""Establish the least-privilege address runtime boundary on enforced RLS.
 
 Revision ID: 6f708192a3b4
 Revises: 5e6f708192a3
 Create Date: 2026-08-10
 
-The historical address hardening revision created tenant policies and set FORCE
-ROW LEVEL SECURITY, but never ENABLEd RLS on the protected relations. This left
-the policy catalog present while enforcement remained disabled. It also granted
-address writes only to the legacy NOLOGIN ``branch_admin`` role even though the
-production address API uses the ordinary application database pool.
+The repaired 00f expand/compatibility revision owns creation of the address
+security surface and already ENABLEs + FORCEs RLS on its protected relations.
+This revision therefore adopts that enforced predecessor state and owns only the
+runtime execution boundary that follows it. Keeping a single RLS owner prevents
+later migrations from disabling and re-enabling tenant isolation as an incidental
+side effect. The historical surface also granted address writes only to the
+legacy NOLOGIN ``branch_admin`` role even though the production address API uses
+the ordinary application database pool.
 
 Forward contract:
-* ENABLE + FORCE RLS on the five address relations that already have tenant
-  policies;
+* require ENABLE + FORCE RLS on the five protected address relations without
+  toggling those predecessor-owned flags;
 * grant app_runtime only SELECT/INSERT/UPDATE on organization_addresses;
 * keep history/audit/outbox writes internal through SECURITY DEFINER trigger
   functions owned by app_security_owner, with fixed search_path and row_security;
 * add the missing tenant-scoped INSERT policy for the immutable audit ledger;
 * grant no DELETE/TRUNCATE/schema-create/ownership/RLS-bypass capability.
 
-Downgrade restores the exact predecessor flag/ACL/trigger state: FORCE remains
-set, RLS is disabled, hardened functions/policy/ACLs are removed, and predecessor
-triggers are restored.
+Downgrade restores the exact predecessor ACL/trigger state: ENABLE + FORCE RLS
+remain untouched as 00f-owned security state, hardened functions/policy/ACLs are
+removed, and predecessor triggers are restored.
 """
 
 from __future__ import annotations
@@ -305,7 +308,9 @@ def _require_trigger_targets(bind, *, hardened: bool) -> None:
 
 
 def _require_predecessor(bind) -> None:
-    _require_rls_flags(bind, enabled=False)
+    # 00f owns the RLS security surface. A valid predecessor must already be
+    # enforcing it; 6f must never create a temporary non-RLS window.
+    _require_rls_flags(bind, enabled=True)
     _require_policy_contract(bind, forward=False)
     if _direct_privileges(bind, _RUNTIME_ROLE, _ADDRESS):
         raise RuntimeError("predecessor unexpectedly grants organization_addresses to app_runtime")
@@ -503,9 +508,6 @@ def upgrade() -> None:
     _require_identity(bind)
     _require_predecessor(bind)
 
-    for relation_name in _RLS_RELATIONS:
-        op.execute(f"ALTER TABLE public.{relation_name} ENABLE ROW LEVEL SECURITY")
-
     op.execute("GRANT SELECT, INSERT, UPDATE ON TABLE public.organization_addresses TO app_runtime")
     op.execute("GRANT SELECT, INSERT, UPDATE ON TABLE public.branch_address_history TO app_security_owner")
     op.execute("GRANT INSERT ON TABLE public.branch_address_audit_log TO app_security_owner")
@@ -532,8 +534,5 @@ def downgrade() -> None:
     op.execute("REVOKE SELECT, INSERT, UPDATE ON TABLE public.branch_address_history FROM app_security_owner")
     op.execute("REVOKE INSERT ON TABLE public.branch_address_audit_log FROM app_security_owner")
     op.execute("REVOKE INSERT ON TABLE public.address_change_outbox FROM app_security_owner")
-
-    for relation_name in reversed(_RLS_RELATIONS):
-        op.execute(f"ALTER TABLE public.{relation_name} DISABLE ROW LEVEL SECURITY")
 
     _require_predecessor(bind)
