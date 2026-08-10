@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  apply-0020-domain-hardening:
-    name: Publish bounded 0020 candidate
+  repair-0020-trigger-drops:
+    name: Repair generated 0020 trigger drops
     if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'hardening/complete-migration-lineage'
     permissions:
       contents: write
@@ -29,37 +29,56 @@ jobs:
           ref: hardening/complete-migration-lineage
           fetch-depth: 0
 
-      - name: Compile and execute self-validating source patch
-        run: |
-          python -m py_compile scripts/apply_0020_domain_hardening.py
-          python scripts/apply_0020_domain_hardening.py
-          python -m py_compile alembic/versions/0020_contacts_hardened.py
-          git diff --check
-
-      - name: Publish migration-only candidate branch
+      - name: Correct and validate exact trigger-drop contract
+        id: repair
         run: |
           python <<'PY'
-          import subprocess
+          from pathlib import Path
 
-          status = subprocess.check_output(
-              ['git', 'status', '--porcelain'],
-              text=True,
-          ).splitlines()
-          changed = {
-              line[3:]
-              for line in status
-              if len(line) >= 4
-          }
-          expected = {'alembic/versions/0020_contacts_hardened.py'}
-          if changed != expected:
-              raise SystemExit(
-                  f'0020 candidate publication scope drift: observed={sorted(changed)!r}, expected={sorted(expected)!r}'
-              )
+          path = Path('alembic/versions/0020_contacts_hardened.py')
+          source = path.read_text(encoding='utf-8')
+          bad = 'DROP TRIGGGER '
+          count = source.count(bad)
+          if count not in (0, 3):
+              raise SystemExit(f'0020 unexpected TRIGGGER count: {count}')
+          if count == 3:
+              source = source.replace(bad, 'DROP TRIGGER ')
+              path.write_text(source, encoding='utf-8')
+
+          source = path.read_text(encoding='utf-8')
+          downgrade = source[source.index('def downgrade():'):]
+          expected = (
+              'DROP TRIGGER trg_prevent_soft_delete_resurrection ON public.branch_contacts;',
+              'DROP TRIGGER trg_prevent_audit_update ON public.branch_contacts_audit;',
+              'DROP TRIGGER trg_branch_contacts_updated_at ON public.branch_contacts;',
+              'DROP TRIGGER trg_audit_branch_contacts ON public.branch_contacts;',
+              'DROP TRIGGER trg_ensure_primary_contact_insert ON public.branch_contacts;',
+              'DROP TRIGGER trg_ensure_primary_contact_update ON public.branch_contacts;',
+              'DROP TRIGGER trg_ensure_primary_contact_delete ON public.branch_contacts;',
+          )
+          if 'TRIGGGER' in downgrade:
+              raise SystemExit('0020 malformed DROP TRIGGER token remains')
+          for statement in expected:
+              if downgrade.count(statement) != 1:
+                  raise SystemExit(f'0020 trigger-drop contract drift: {statement!r}')
+          if 'CASCADE' in downgrade:
+              raise SystemExit('0020 downgrade unexpectedly contains CASCADE')
           PY
+          python -m py_compile alembic/versions/0020_contacts_hardened.py
+          git diff --check
+          if git diff --quiet -- alembic/versions/0020_contacts_hardened.py; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish exact migration correction
+        if: steps.repair.outputs.changed == 'true'
+        run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add alembic/versions/0020_contacts_hardened.py
+          test "$(git diff --cached --name-only)" = 'alembic/versions/0020_contacts_hardened.py'
           git diff --cached --check
-          git diff --cached --stat
-          git commit -m 'fix: harden contacts migration ownership and rollback candidate'
-          git push origin HEAD:refs/heads/automation/0020-hardened-candidate-20260810
+          git commit -m 'fix migration 0020 trigger drop syntax'
+          git push origin HEAD:hardening/complete-migration-lineage
