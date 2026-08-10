@@ -676,6 +676,24 @@ def upgrade():
 
 
 def downgrade():
+    # Neither organization_users nor branch_staff_roles exists in the 0020
+    # predecessor. Any row therefore represents business/authz state that the
+    # predecessor cannot encode. Refuse to destroy it implicitly.
+    op.execute("""
+        DO $rb1l8d1a_downgrade_data_contract$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM public.branch_staff_roles LIMIT 1) THEN
+                RAISE EXCEPTION
+                    '0021 downgrade blocked: public.branch_staff_roles contains data not representable by predecessor';
+            END IF;
+            IF EXISTS (SELECT 1 FROM public.organization_users LIMIT 1) THEN
+                RAISE EXCEPTION
+                    '0021 downgrade blocked: public.organization_users contains data not representable by predecessor';
+            END IF;
+        END
+        $rb1l8d1a_downgrade_data_contract$;
+    """)
+
     op.execute("DROP TRIGGER IF EXISTS trg_audit_branch_staff_roles ON public.branch_staff_roles;")
     op.execute("DROP TRIGGER IF EXISTS trg_user_deactivation_cascade ON public.organization_users;")
     
@@ -683,8 +701,9 @@ def downgrade():
     
     op.execute("DROP POLICY IF EXISTS tenant_isolation_staff_roles ON public.branch_staff_roles;")
     op.execute("DROP POLICY IF EXISTS tenant_isolation_org_users ON public.organization_users;")
-    
-    op.execute("DROP TABLE IF EXISTS public.branch_staff_roles CASCADE;")
-    op.execute("DROP TABLE IF EXISTS public.organization_users CASCADE;")
-    
-    op.execute("DROP TYPE IF EXISTS public.branch_staff_role_enum CASCADE;")
+
+    # RESTRICT is deliberate: an unknown later/external dependency must stop
+    # rollback instead of being erased implicitly.
+    op.execute("DROP TABLE public.branch_staff_roles RESTRICT;")
+    op.execute("DROP TABLE public.organization_users RESTRICT;")
+    op.execute("DROP TYPE public.branch_staff_role_enum RESTRICT;")
