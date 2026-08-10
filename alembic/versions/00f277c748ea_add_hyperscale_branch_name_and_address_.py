@@ -485,23 +485,53 @@ def _backfill_legacy_addresses() -> None:
                 END IF;
             END LOOP;
 
+            -- org_branches is already FORCE RLS at revision 0009.  Validate
+            -- mapping integrity one tenant at a time while that tenant's GUC is
+            -- active; a global join after clearing the GUC would falsely hide
+            -- every protected branch row.
+            FOR org_row IN
+                SELECT DISTINCT address_data.org_id AS id
+                FROM public.organization_addresses AS address_data
+                ORDER BY address_data.org_id
+            LOOP
+                PERFORM pg_catalog.set_config(
+                    'app.current_org_id', org_row.id::text, true
+                );
+
+                IF EXISTS (
+                    SELECT 1
+                    FROM public.organization_addresses AS address_data
+                    LEFT JOIN public.org_branches AS branch_data
+                      ON branch_data.id = address_data.branch_id
+                    WHERE address_data.org_id = org_row.id
+                      AND (
+                           address_data.branch_id IS NULL
+                        OR branch_data.id IS NULL
+                        OR branch_data.org_id <> address_data.org_id
+                      )
+                ) THEN
+                    RAISE EXCEPTION
+                        '00f branch backfill left a null, missing, or cross-tenant address mapping for organization %',
+                        org_row.id;
+                END IF;
+            END LOOP;
+
             PERFORM pg_catalog.set_config(
                 'app.current_org_id',
                 '00000000-0000-0000-0000-000000000000',
                 true
             );
 
+            -- organization_addresses is not FORCE-RLS until later in this
+            -- revision, so this final check safely proves there are no null
+            -- branch assignments without attempting an RLS-protected join.
             IF EXISTS (
                 SELECT 1
                 FROM public.organization_addresses AS address_data
-                LEFT JOIN public.org_branches AS branch_data
-                  ON branch_data.id = address_data.branch_id
                 WHERE address_data.branch_id IS NULL
-                   OR branch_data.id IS NULL
-                   OR branch_data.org_id <> address_data.org_id
             ) THEN
                 RAISE EXCEPTION
-                    '00f branch backfill left a null, missing, or cross-tenant address mapping';
+                    '00f branch backfill left a null branch assignment';
             END IF;
         END
         $$;
