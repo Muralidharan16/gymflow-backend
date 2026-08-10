@@ -148,3 +148,5 @@ removed, and predecessor triggers are restored.
           git diff --cached --check
           git commit -m 'fix: align address lifecycle security ownership'
           git push origin HEAD:hardening/complete-migration-lineage
+
+# Triggered after creation so GitHub registers this branch-local one-shot workflow.
