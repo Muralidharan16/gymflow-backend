@@ -29,7 +29,7 @@ def _preflight_downgrade() -> None:
         """
         DO $$
         DECLARE
-            column_name text;
+            required_column text;
             constraint_name text;
             index_name text;
         BEGIN
@@ -38,7 +38,7 @@ def _preflight_downgrade() -> None:
                     '0004 downgrade drift: public.google_places_cache is missing';
             END IF;
 
-            FOREACH column_name IN ARRAY ARRAY[
+            FOREACH required_column IN ARRAY ARRAY[
                 'google_place_id',
                 'latitude',
                 'longitude',
@@ -53,14 +53,14 @@ def _preflight_downgrade() -> None:
             ] LOOP
                 IF NOT EXISTS (
                     SELECT 1
-                    FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'organization_addresses'
-                      AND columns.column_name = _preflight_downgrade.column_name
+                    FROM information_schema.columns AS column_data
+                    WHERE column_data.table_schema = 'public'
+                      AND column_data.table_name = 'organization_addresses'
+                      AND column_data.column_name = required_column
                 ) THEN
                     RAISE EXCEPTION
                         '0004 downgrade drift: organization_addresses.% is missing',
-                        column_name;
+                        required_column;
                 END IF;
             END LOOP;
 
