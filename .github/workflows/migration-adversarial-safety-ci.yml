@@ -15,6 +15,57 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  apply-0020-domain-hardening:
+    name: Apply bounded 0020 domain hardening
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'hardening/complete-migration-lineage'
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout hardening head
+        uses: actions/checkout@v4
+        with:
+          ref: hardening/complete-migration-lineage
+          fetch-depth: 0
+
+      - name: Extract and execute self-validating patch
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/_apply-0020-domain-hardening.yml')
+          lines = workflow.read_text(encoding='utf-8').splitlines()
+          start_marker = "          python <<'PY'"
+          end_marker = "          PY"
+          start = lines.index(start_marker) + 1
+          end = lines.index(end_marker, start)
+          code = "\n".join(line[10:] for line in lines[start:end]) + "\n"
+          Path('/tmp/apply_0020_domain_patch.py').write_text(code, encoding='utf-8')
+          PY
+
+          python /tmp/apply_0020_domain_patch.py
+          python -m py_compile \
+            alembic/versions/0020_contacts_hardened.py \
+            tests/test_0020_contacts_migration_lifecycle.py
+          python -m pytest --noconftest -q tests/test_0020_contacts_migration_lifecycle.py
+          git diff --check
+
+      - name: Restore normal CI and publish source fix
+        run: |
+          git checkout HEAD^ -- .github/workflows/migration-adversarial-safety-ci.yml
+          rm -f \
+            .github/workflows/_apply-0020-domain-hardening.yml \
+            .github/_0020_patch_trigger
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git diff --cached --stat
+          git commit -m 'fix: harden contacts migration ownership and rollback'
+          git push origin HEAD:hardening/complete-migration-lineage
+
   adversarial-00f:
     name: Adversarial migration production safety
     runs-on: ubuntu-24.04
