@@ -55,7 +55,7 @@ def _scalar(bind, sql: str, params: dict[str, object] | None = None):
     return bind.execute(sa.text(sql), params or {}).scalar_one()
 
 
-def _require_role_contract(bind) -> None:
+def _require_role_contract(bind, *, require_pristine_acl: bool) -> None:
     identity = bind.execute(
         sa.text(
             """
@@ -140,19 +140,20 @@ def _require_role_contract(bind) -> None:
             f"auth_runtime predecessor relations are missing: {tuple(missing_relations)!r}"
         )
 
-    direct_acl_count = _scalar(
-        bind,
-        """
-        SELECT count(*)::bigint
-        FROM information_schema.table_privileges
-        WHERE grantee = :role
-        """,
-        {"role": _AUTH_ROLE},
-    )
-    if direct_acl_count != 0:
-        raise RuntimeError(
-            "auth_runtime has pre-existing table ACLs; refusing to silently normalize privilege drift"
+    if require_pristine_acl:
+        direct_acl_count = _scalar(
+            bind,
+            """
+            SELECT count(*)::bigint
+            FROM information_schema.table_privileges
+            WHERE grantee = :role
+            """,
+            {"role": _AUTH_ROLE},
         )
+        if direct_acl_count != 0:
+            raise RuntimeError(
+                "auth_runtime has pre-existing table ACLs; refusing to silently normalize privilege drift"
+            )
 
 
 def _relation_owner(bind, relation: str) -> str:
@@ -287,14 +288,15 @@ def _verify_final_contract(bind) -> None:
 
 def upgrade() -> None:
     bind = op.get_bind()
-    _require_role_contract(bind)
+    _require_role_contract(bind, require_pristine_acl=True)
     _grant_contract(bind)
     _verify_final_contract(bind)
 
 
 def downgrade() -> None:
     bind = op.get_bind()
-    _require_role_contract(bind)
+    _require_role_contract(bind, require_pristine_acl=False)
+    _verify_final_contract(bind)
     _revoke_contract(bind)
 
     remaining = _scalar(
