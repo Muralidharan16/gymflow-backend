@@ -581,7 +581,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.platform_billing_touch_updated_at()
+        CREATE FUNCTION public.platform_billing_touch_updated_at()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -611,7 +611,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_product_invalid_mutation()
+        CREATE FUNCTION public.prevent_platform_product_invalid_mutation()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -644,7 +644,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_policy_version_immutable_update()
+        CREATE FUNCTION public.prevent_platform_policy_version_immutable_update()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -675,7 +675,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_plan_version_immutable_update()
+        CREATE FUNCTION public.prevent_platform_plan_version_immutable_update()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -720,7 +720,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_price_immutable_update()
+        CREATE FUNCTION public.prevent_platform_price_immutable_update()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -764,7 +764,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.validate_platform_plan_entitlement()
+        CREATE FUNCTION public.validate_platform_plan_entitlement()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -799,7 +799,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_plan_entitlement_immutable_update()
+        CREATE FUNCTION public.prevent_platform_plan_entitlement_immutable_update()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -833,7 +833,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_append_only_update()
+        CREATE FUNCTION public.prevent_platform_append_only_update()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
