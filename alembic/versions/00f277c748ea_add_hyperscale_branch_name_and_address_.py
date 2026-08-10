@@ -27,6 +27,8 @@ _TARGET_RELATIONS = (
     'branch_geolocation_state',
 )
 
+_BRANCH_ORG_FK = 'fk_org_addresses_branch_org'
+
 
 def _preflight_upgrade() -> None:
     """Fail before mutation when the predecessor cannot be migrated safely."""
@@ -145,10 +147,11 @@ def _preflight_upgrade() -> None:
 def _backfill_legacy_addresses() -> None:
     """Map predecessor org-level addresses into the branch architecture.
 
-    FORCE RLS is already active on the branch tables at revision 0009.  The
-    migration therefore works one organization at a time and sets only the
-    tenant GUC required by the predecessor policies.  It never disables RLS or
-    uses BYPASSRLS.
+    FORCE RLS is already active on the branch tables at revision 0009. The
+    migration works one organization at a time and sets only the tenant GUC
+    required by predecessor policies. The tenant-composite address->branch FK
+    already exists when this backfill runs, so every assignment is checked by
+    PostgreSQL's referential-integrity path while RLS remains enabled.
     """
     op.execute(r"""
         DO $$
@@ -485,10 +488,6 @@ def _backfill_legacy_addresses() -> None:
                 END IF;
             END LOOP;
 
-            -- org_branches is already FORCE RLS at revision 0009.  Validate
-            -- mapping integrity one tenant at a time while that tenant's GUC is
-            -- active; a global join after clearing the GUC would falsely hide
-            -- every protected branch row.
             FOR org_row IN
                 SELECT DISTINCT address_data.org_id AS id
                 FROM public.organization_addresses AS address_data
@@ -503,11 +502,11 @@ def _backfill_legacy_addresses() -> None:
                     FROM public.organization_addresses AS address_data
                     LEFT JOIN public.org_branches AS branch_data
                       ON branch_data.id = address_data.branch_id
+                     AND branch_data.org_id = address_data.org_id
                     WHERE address_data.org_id = org_row.id
                       AND (
                            address_data.branch_id IS NULL
                         OR branch_data.id IS NULL
-                        OR branch_data.org_id <> address_data.org_id
                       )
                 ) THEN
                     RAISE EXCEPTION
@@ -522,9 +521,6 @@ def _backfill_legacy_addresses() -> None:
                 true
             );
 
-            -- organization_addresses is not FORCE-RLS until later in this
-            -- revision, so this final check safely proves there are no null
-            -- branch assignments without attempting an RLS-protected join.
             IF EXISTS (
                 SELECT 1
                 FROM public.organization_addresses AS address_data
@@ -785,6 +781,22 @@ def upgrade() -> None:
     op.add_column('organization_addresses', sa.Column('_reencryption_in_progress', sa.Boolean(), server_default=sa.text('FALSE'), nullable=False))
     op.add_column('organization_addresses', sa.Column('deleted_by', sa.UUID(), nullable=True))
 
+    # Install the tenant-composite FK while branch_id is still NULL for every
+    # predecessor row. This avoids PostgreSQL's FORCE-RLS-sensitive fast initial
+    # validation over populated parent rows; subsequent backfill assignments are
+    # checked by the live RI triggers. The composite key permanently prevents an
+    # address from referencing a branch owned by another organization.
+    op.create_foreign_key(
+        _BRANCH_ORG_FK,
+        'organization_addresses',
+        'org_branches',
+        ['branch_id', 'org_id'],
+        ['id', 'org_id'],
+        source_schema='public',
+        referent_schema='public',
+        ondelete='RESTRICT',
+    )
+
     _backfill_legacy_addresses()
     op.alter_column(
         'organization_addresses',
@@ -792,6 +804,36 @@ def upgrade() -> None:
         existing_type=sa.UUID(),
         nullable=False,
     )
+
+    op.execute(r"""
+        DO $$
+        DECLARE
+            fk_record record;
+        BEGIN
+            SELECT
+                constraint_data.convalidated,
+                pg_catalog.pg_get_constraintdef(constraint_data.oid, true) AS definition
+            INTO fk_record
+            FROM pg_catalog.pg_constraint AS constraint_data
+            JOIN pg_catalog.pg_class AS relation_data
+              ON relation_data.oid = constraint_data.conrelid
+            JOIN pg_catalog.pg_namespace AS namespace_data
+              ON namespace_data.oid = relation_data.relnamespace
+            WHERE namespace_data.nspname = 'public'
+              AND relation_data.relname = 'organization_addresses'
+              AND constraint_data.conname = 'fk_org_addresses_branch_org'
+              AND constraint_data.contype = 'f';
+
+            IF NOT FOUND
+               OR NOT fk_record.convalidated
+               OR fk_record.definition <> 'FOREIGN KEY (branch_id, org_id) REFERENCES org_branches(id, org_id) ON DELETE RESTRICT' THEN
+                RAISE EXCEPTION
+                    '00f tenant-composite address->branch FK contract drift: %',
+                    row_to_json(fk_record);
+            END IF;
+        END
+        $$;
+    """)
 
     op.alter_column('organization_addresses', 'address_type',
                existing_type=sa.VARCHAR(length=50),
@@ -819,7 +861,6 @@ def upgrade() -> None:
     op.execute("ALTER TABLE organization_addresses DROP CONSTRAINT IF EXISTS organization_addresses_org_id_fkey;")
     op.create_foreign_key(None, 'organization_addresses', 'gym_owners', ['deleted_by'], ['id'], ondelete='SET NULL')
     op.create_foreign_key(None, 'organization_addresses', 'organizations', ['org_id'], ['id'], ondelete='RESTRICT')
-    op.create_foreign_key(None, 'organization_addresses', 'org_branches', ['branch_id'], ['id'], ondelete='RESTRICT')
 
     op.execute("ALTER TABLE organization_addresses DROP COLUMN verified_at;")
     op.execute("ALTER TABLE organization_addresses DROP COLUMN maps_updated_at;")
@@ -1027,7 +1068,7 @@ def downgrade() -> None:
     op.add_column('organization_addresses', sa.Column('verified_at', postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=True))
     op.execute("ALTER TABLE organization_addresses DROP CONSTRAINT IF EXISTS organization_addresses_deleted_by_fkey;")
     op.execute("ALTER TABLE organization_addresses DROP CONSTRAINT IF EXISTS organization_addresses_org_id_fkey;")
-    op.execute("ALTER TABLE organization_addresses DROP CONSTRAINT IF EXISTS organization_addresses_branch_id_fkey;")
+    op.drop_constraint(_BRANCH_ORG_FK, 'organization_addresses', type_='foreignkey', schema='public')
     op.create_foreign_key(op.f('organization_addresses_org_id_fkey'), 'organization_addresses', 'organizations', ['org_id'], ['id'], ondelete='CASCADE')
     op.create_index(op.f('uq_org_primary_address'), 'organization_addresses', ['org_id'], unique=True, postgresql_where='((is_primary = true) AND (deleted_at IS NULL))')
     op.create_index(op.f('uq_org_addresses_place_id'), 'organization_addresses', ['org_id', 'google_place_id'], unique=True, postgresql_where='((google_place_id IS NOT NULL) AND (deleted_at IS NULL))')
