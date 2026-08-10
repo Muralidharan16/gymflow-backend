@@ -20,9 +20,21 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # 0. Auth Schema (for RLS)
-    op.execute("CREATE SCHEMA IF NOT EXISTS auth;")
+    # DF590 owns the auth schema at this lineage boundary. Refuse silent
+    # adoption so downgrade may safely restore the DBEB predecessor exactly.
     op.execute("""
-    CREATE OR REPLACE FUNCTION auth.role() RETURNS TEXT LANGUAGE SQL STABLE AS $$
+    DO $df590_auth_schema_preflight$
+    BEGIN
+        IF pg_catalog.to_regnamespace('auth') IS NOT NULL THEN
+            RAISE EXCEPTION
+                'DF590 refuses to adopt pre-existing auth schema';
+        END IF;
+    END
+    $df590_auth_schema_preflight$;
+    """)
+    op.execute("CREATE SCHEMA auth;")
+    op.execute("""
+    CREATE FUNCTION auth.role() RETURNS TEXT LANGUAGE SQL STABLE AS $$
         SELECT NULLIF(current_setting('app.current_role', true), '');
     $$;
     """)
@@ -146,7 +158,7 @@ def upgrade() -> None:
 
     # 3. Triggers: Core State Table
     op.execute("""
-    CREATE OR REPLACE FUNCTION sync_branch_operational_state()
+    CREATE FUNCTION sync_branch_operational_state()
     RETURNS trigger LANGUAGE plpgsql
     SECURITY DEFINER
     SET search_path = public, pg_temp
@@ -165,7 +177,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE OR REPLACE FUNCTION validate_scheduled_transition()
+    CREATE FUNCTION validate_scheduled_transition()
     RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
         IF NEW.scheduled_transition_at IS NOT NULL
@@ -185,7 +197,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE OR REPLACE FUNCTION guard_worm_immutability()
+    CREATE FUNCTION guard_worm_immutability()
     RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
         IF OLD.worm_archive_status = 'verified' AND (
@@ -208,7 +220,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE OR REPLACE FUNCTION enforce_branch_transition_freeze()
+    CREATE FUNCTION enforce_branch_transition_freeze()
     RETURNS trigger LANGUAGE plpgsql
     SECURITY DEFINER
     SET search_path = public, pg_temp
@@ -280,7 +292,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE OR REPLACE FUNCTION prevent_history_mutation()
+    CREATE FUNCTION prevent_history_mutation()
     RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
         RAISE EXCEPTION
@@ -296,7 +308,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE OR REPLACE FUNCTION validate_history_correlation()
+    CREATE FUNCTION validate_history_correlation()
     RETURNS trigger LANGUAGE plpgsql
     SECURITY DEFINER
     SET search_path = public, pg_temp
