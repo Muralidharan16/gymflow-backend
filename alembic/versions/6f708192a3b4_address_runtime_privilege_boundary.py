@@ -444,12 +444,13 @@ def _create_functions(bind) -> None:
                 INSERT INTO public.branch_address_history
                     (address_id, org_id, dek_version, address_line1, address_line2,
                      city, state_province, country_code, postal_code, formatted_address,
-                     valid_from, changed_by)
+                     valid_from, changed_by, changed_by_type)
                 VALUES
                     (NEW.id, NEW.org_id, NEW.dek_version, NEW.address_line1, NEW.address_line2,
                      NEW.city, NEW.state_province, NEW.country_code, NEW.postal_code,
                      NEW.formatted_address, pg_catalog.clock_timestamp(),
-                     NULLIF(pg_catalog.current_setting('app.current_user_id', true), '')::uuid);
+                     NULLIF(pg_catalog.current_setting('app.current_user_id', true), '')::uuid,
+                     NULLIF(pg_catalog.current_setting('app.current_principal_type', true), ''));
                 RETURN NEW;
             END;
             $$
@@ -484,15 +485,16 @@ def _create_functions(bind) -> None:
                     INSERT INTO public.branch_address_history
                         (address_id, org_id, dek_version, address_line1, address_line2,
                          city, state_province, country_code, postal_code, formatted_address,
-                         valid_from, changed_by)
+                         valid_from, changed_by, changed_by_type)
                     VALUES
                         (OLD.id, OLD.org_id, OLD.dek_version, OLD.address_line1, OLD.address_line2,
                          OLD.city, OLD.state_province, OLD.country_code, OLD.postal_code,
                          OLD.formatted_address, v_now,
-                         NULLIF(pg_catalog.current_setting('app.current_user_id', true), '')::uuid);
+                         NULLIF(pg_catalog.current_setting('app.current_user_id', true), '')::uuid,
+                     NULLIF(pg_catalog.current_setting('app.current_principal_type', true), ''));
                     INSERT INTO public.branch_address_audit_log
                         (event_id, address_id, org_id, dek_version, old_address, new_address,
-                         changed_by, ip_address, user_agent, request_id)
+                         changed_by, changed_by_type, ip_address, user_agent, request_id)
                     VALUES
                         (pg_catalog.gen_random_uuid(), OLD.id, OLD.org_id, OLD.dek_version,
                          pg_catalog.jsonb_build_object(
@@ -506,6 +508,7 @@ def _create_functions(bind) -> None:
                              'dek_version', NEW.dek_version,
                              'address_line1_hash', pg_catalog.encode(pg_catalog.sha256(NEW.address_line1::bytea), 'hex')),
                          NULLIF(pg_catalog.current_setting('app.current_user_id', true), '')::uuid,
+                         NULLIF(pg_catalog.current_setting('app.current_principal_type', true), ''),
                          NULLIF(pg_catalog.current_setting('app.ip_address', true), '')::inet,
                          NULLIF(pg_catalog.current_setting('app.user_agent', true), ''),
                          NULLIF(pg_catalog.current_setting('app.request_id', true), '')::uuid);
@@ -558,9 +561,15 @@ def _drop_functions(bind) -> None:
 
 def _require_hardened_functions(bind) -> None:
     required = {
-        _INSERT_FN: ("app.current_org_id", "public.branch_address_history"),
+        _INSERT_FN: (
+            "app.current_org_id", "app.current_user_id",
+            "app.current_principal_type", "changed_by_type",
+            "public.branch_address_history",
+        ),
         _UPDATE_FN: (
-            "app.current_org_id", "public.branch_address_history",
+            "app.current_org_id", "app.current_user_id",
+            "app.current_principal_type", "changed_by_type",
+            "public.branch_address_history",
             "public.branch_address_audit_log", "public.address_change_outbox",
         ),
     }
