@@ -41,7 +41,7 @@ jobs:
           start = lines.index(start_marker) + 1
           end = lines.index(end_marker, start)
           code = "\n".join(line[10:] for line in lines[start:end]) + "\n"
-          test_generation = "\n          test = Path('tests/test_0020_contacts_migration_lifecycle.py')"
+          test_generation = "\ntest = Path('tests/test_0020_contacts_migration_lifecycle.py')"
           if test_generation not in code:
               raise SystemExit('0020 patch test-generation boundary drift')
           code = code[:code.index(test_generation)] + "\n"
