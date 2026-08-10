@@ -91,13 +91,16 @@ def test_333_still_owns_only_its_filtering_indexes() -> None:
     assert downgrade.count("op.drop_index(") == 2
 
 
-def test_00f_downgrade_restores_371b_spatial_predecessor_contract() -> None:
+def test_00f_preserves_371b_spatial_predecessor_contract_in_place() -> None:
+    upgrade = _function_source(M00F, "upgrade")
     downgrade = _function_source(M00F, "downgrade")
 
-    assert "infrastructure-owned PostGIS" in downgrade
-    assert "ADD COLUMN coordinates geography(POINT,4326)" in downgrade
-    assert (
-        "CREATE INDEX idx_organization_addresses_coordinates "
-        "ON public.organization_addresses USING gist (coordinates)"
-    ) in downgrade
-    assert "sa.Column('coordinates', sa.VARCHAR(length=255)" not in downgrade
+    # 00f is now an expand/compatibility migration.  The 371b-owned Geography
+    # column and canonical GiST index must survive both directions in place;
+    # 00f must neither replace them with VARCHAR storage nor recreate/drop them.
+    for function_source in (upgrade, downgrade):
+        assert "DROP COLUMN coordinates" not in function_source
+        assert "ADD COLUMN coordinates" not in function_source
+        assert "idx_organization_addresses_coordinates" not in function_source
+        assert "sa.Column('coordinates', sa.VARCHAR(length=255)" not in function_source
+        assert 'sa.Column("coordinates", sa.String(length=255)' not in function_source
