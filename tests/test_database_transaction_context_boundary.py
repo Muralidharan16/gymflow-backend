@@ -1,9 +1,22 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 
 SOURCE = Path("app/core/database.py")
+
+
+def _class_source(source: str, name: str) -> str:
+    tree = ast.parse(source)
+    node = next(
+        item
+        for item in tree.body
+        if isinstance(item, ast.ClassDef) and item.name == name
+    )
+    assert node.end_lineno is not None
+    lines = source.splitlines(keepends=True)
+    return "".join(lines[node.lineno - 1 : node.end_lineno])
 
 
 def test_request_context_is_session_owned_and_reapplied_on_every_transaction() -> None:
@@ -18,9 +31,7 @@ def test_request_context_is_session_owned_and_reapplied_on_every_transaction() -
 
 def test_initializer_does_not_open_and_close_a_context_only_transaction() -> None:
     source = SOURCE.read_text(encoding="utf-8")
-    start = source.index("class SessionContextInitializer:")
-    end = source.index("# ── Register initial pool", start)
-    initializer = source[start:end]
+    initializer = _class_source(source, "SessionContextInitializer")
 
     assert "async with session.begin()" not in initializer
     assert "session.info[_SESSION_CONTEXT_KEY]" in initializer
