@@ -500,7 +500,36 @@ def upgrade():
     """)
 
     # 4. Enable btree_gist extension and create overlap exclusion constraint
-    op.execute("CREATE EXTENSION IF NOT EXISTS btree_gist;")
+    # btree_gist is infrastructure-owned. Alembic validates the exact
+    # prerequisite instead of creating or adopting an extension.
+    op.execute("""
+        DO $btree_gist_infrastructure$
+        DECLARE
+            owner_name TEXT;
+            schema_name TEXT;
+        BEGIN
+            SELECT
+                pg_catalog.pg_get_userbyid(extension_data.extowner),
+                namespace_data.nspname::text
+            INTO owner_name, schema_name
+            FROM pg_catalog.pg_extension AS extension_data
+            JOIN pg_catalog.pg_namespace AS namespace_data
+              ON namespace_data.oid = extension_data.extnamespace
+            WHERE extension_data.extname = 'btree_gist';
+
+            IF NOT FOUND THEN
+                RAISE EXCEPTION
+                    '0021_staff_roles requires infrastructure-provisioned btree_gist; Alembic must not create extensions';
+            END IF;
+            IF owner_name IS DISTINCT FROM 'postgres'
+               OR schema_name IS DISTINCT FROM 'public' THEN
+                RAISE EXCEPTION
+                    '0021_staff_roles requires btree_gist owned by postgres in public; owner=%, schema=%',
+                    owner_name, schema_name;
+            END IF;
+        END
+        $btree_gist_infrastructure$;
+    """)
     op.execute("""
         ALTER TABLE public.branch_staff_roles
         ADD CONSTRAINT exclude_overlapping_staff_assignments
