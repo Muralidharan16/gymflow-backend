@@ -200,7 +200,7 @@ jobs:
                  OR geo_row.coordinates IS NULL
                  OR geo_row.last_known_good_coordinates IS NULL
                  OR geo_row.validation_status <> 'success'
-                 OR geo_row.geocode_provider <> 'google' THEN
+                 OR geo_row.geocode_provider <> 'google_places_api' THEN
                   RAISE EXCEPTION 'legacy geolocation/verification state was not preserved: %', row_to_json(geo_row);
               END IF;
           END
