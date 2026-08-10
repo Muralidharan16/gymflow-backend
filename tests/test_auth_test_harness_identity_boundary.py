@@ -81,13 +81,14 @@ def test_auth_cleanup_identity_set_covers_all_module_test_accounts():
         value.lower()
         for value in string_values
         if value.count("@") == 1
+        and value.partition("@")[0]
         and ":" not in value
         and value.lower().endswith("@example.com")
     }
 
-    # Dynamic rate{i}@example.com identities are intentionally represented as a
-    # bounded family rather than six duplicate literals. Redis namespace strings
-    # containing an email are not account identities and are excluded above.
+    # Only complete literal account identities belong in the cleanup contract.
+    # A helper/suffix constant such as "@example.com" has no local part and is
+    # deliberately excluded; generated rate identities are modeled separately.
     cleanup_assignment = next(
         node
         for node in module.body
