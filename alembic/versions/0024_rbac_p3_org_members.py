@@ -799,6 +799,72 @@ def downgrade() -> None:
     bind = op.get_bind()
     _rb1m1a_preflight(bind, require_functions=True)
 
+    # Both relations are FORCE-RLS protected at this boundary. The migration
+    # owner must inspect the complete cross-tenant dataset to prove that the
+    # 0024 state is losslessly representable by 0023. Validate the exact owner
+    # and RLS posture before opening a transaction-local owner maintenance
+    # window; RLS remains enabled throughout and FORCE is restored before any
+    # teardown continues.
+    op.execute("""
+        DO $rb1m1a_downgrade_rls_preflight$
+        DECLARE
+            relation_name TEXT;
+            owner_name TEXT;
+            rls_enabled BOOLEAN;
+            force_rls BOOLEAN;
+        BEGIN
+            IF session_user <> 'migration_owner'
+               OR current_user <> 'migration_owner'
+            THEN
+                RAISE EXCEPTION
+                    '0024 downgrade inspection requires session_user=current_user=migration_owner'
+                    USING ERRCODE = '42501';
+            END IF;
+
+            FOREACH relation_name IN ARRAY ARRAY[
+                'organization_users',
+                'organization_members'
+            ]
+            LOOP
+                SELECT
+                    pg_catalog.pg_get_userbyid(c.relowner),
+                    c.relrowsecurity,
+                    c.relforcerowsecurity
+                INTO owner_name, rls_enabled, force_rls
+                FROM pg_catalog.pg_class AS c
+                JOIN pg_catalog.pg_namespace AS n
+                  ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relname = relation_name
+                  AND c.relkind = 'r';
+
+                IF owner_name IS DISTINCT FROM 'migration_owner'
+                   OR rls_enabled IS NOT TRUE
+                   OR force_rls IS NOT TRUE
+                THEN
+                    RAISE EXCEPTION
+                        '0024 downgrade RLS contract drift for public.%: owner=%, rls=%, force=%',
+                        relation_name, owner_name, rls_enabled, force_rls
+                        USING ERRCODE = '42501';
+                END IF;
+            END LOOP;
+        END
+        $rb1m1a_downgrade_rls_preflight$;
+    """)
+
+    op.execute(
+        "LOCK TABLE public.organization_users, public.organization_members "
+        "IN SHARE ROW EXCLUSIVE MODE;"
+    )
+    op.execute(
+        "ALTER TABLE public.organization_users "
+        "NO FORCE ROW LEVEL SECURITY;"
+    )
+    op.execute(
+        "ALTER TABLE public.organization_members "
+        "NO FORCE ROW LEVEL SECURITY;"
+    )
+
     # organization_members was backfilled from predecessor-owned
     # organization_users. Crossing back to 0023 is lossless only while every
     # row is still exactly derivable from that predecessor state. Any extra
@@ -833,6 +899,48 @@ def downgrade() -> None:
             END IF;
         END
         $rb1m1a_downgrade_data_contract$;
+    """)
+
+    op.execute(
+        "ALTER TABLE public.organization_users "
+        "FORCE ROW LEVEL SECURITY;"
+    )
+    op.execute(
+        "ALTER TABLE public.organization_members "
+        "FORCE ROW LEVEL SECURITY;"
+    )
+
+    op.execute("""
+        DO $rb1m1a_downgrade_rls_restore$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_class AS c
+                JOIN pg_catalog.pg_namespace AS n
+                  ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relname IN ('organization_users', 'organization_members')
+                  AND c.relkind = 'r'
+                  AND (
+                      pg_catalog.pg_get_userbyid(c.relowner) <> 'migration_owner'
+                      OR c.relrowsecurity IS NOT TRUE
+                      OR c.relforcerowsecurity IS NOT TRUE
+                  )
+            ) OR (
+                SELECT count(*)
+                FROM pg_catalog.pg_class AS c
+                JOIN pg_catalog.pg_namespace AS n
+                  ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relname IN ('organization_users', 'organization_members')
+                  AND c.relkind = 'r'
+            ) <> 2 THEN
+                RAISE EXCEPTION
+                    '0024 downgrade failed to restore exact FORCE-RLS owner posture'
+                    USING ERRCODE = '42501';
+            END IF;
+        END
+        $rb1m1a_downgrade_rls_restore$;
     """)
 
     op.execute("DROP TRIGGER IF EXISTS trg_membership_state_transition ON public.organization_members;")
