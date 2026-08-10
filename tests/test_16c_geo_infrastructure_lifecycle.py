@@ -12,16 +12,40 @@ def _source() -> str:
     return M16C.read_text(encoding="utf-8")
 
 
-def _function_source(name: str) -> str:
+def _function_node(name: str) -> ast.FunctionDef:
     source = _source()
     tree = ast.parse(source, filename=str(M16C))
-    node = next(
+    return next(
         item
         for item in tree.body
         if isinstance(item, ast.FunctionDef) and item.name == name
     )
+
+
+def _function_source(name: str) -> str:
+    source = _source()
+    node = _function_node(name)
     lines = source.splitlines()
     return "\n".join(lines[node.lineno - 1 : node.end_lineno])
+
+
+def _literal_execute_sql(name: str) -> str:
+    statements: list[str] = []
+    for node in ast.walk(_function_node(name)):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        function = node.func
+        if not (
+            isinstance(function, ast.Attribute)
+            and function.attr == "execute"
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "op"
+        ):
+            continue
+        first_argument = node.args[0]
+        if isinstance(first_argument, ast.Constant) and isinstance(first_argument.value, str):
+            statements.append(first_argument.value)
+    return "\n".join(statements)
 
 
 def test_16c_consumes_infrastructure_and_predecessor_objects_without_owning_them() -> None:
@@ -39,15 +63,13 @@ def test_16c_consumes_infrastructure_and_predecessor_objects_without_owning_them
 
 
 def test_16c_has_fail_closed_full_geo_inverse() -> None:
-    source = _source()
     downgrade = _function_source("downgrade")
+    executable_sql = _literal_execute_sql("downgrade")
 
     assert "_preflight(bind, direction=\"downgrade\")" in downgrade
     assert "_postflight(bind, direction=\"downgrade\")" in downgrade
-    assert "CASCADE" not in downgrade.replace(
-        "No\n    # CASCADE/IF EXISTS is used", ""
-    )
-    assert "IF EXISTS" not in downgrade
+    assert "CASCADE" not in executable_sql.upper()
+    assert "IF EXISTS" not in executable_sql.upper()
 
     expected_drop_order = [
         "geo_quarantined_records",
