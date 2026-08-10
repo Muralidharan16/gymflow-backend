@@ -1,0 +1,51 @@
+name: One-shot 0020 generator repair
+
+on:
+  push:
+    branches: [hardening/complete-migration-lineage]
+    paths:
+      - .github/_fix_0020_generator_once_trigger
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fix-0020-generator-once
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hardening/complete-migration-lineage
+          fetch-depth: 0
+
+      - name: Repair generator deterministically
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/apply_0020_domain_hardening.py')
+          source = path.read_text(encoding='utf-8')
+          old = '''    compile(source, str(PATH), "exec")\n    PATH.write_text(source, encoding="utf-8")\n'''
+          new = '''    # Canonicalize generated Python/SQL source so the generator itself\n    # cannot publish end-of-line whitespace. This is semantics-preserving and\n    # keeps git diff --check as a hard publication gate.\n    source = "\\n".join(line.rstrip() for line in source.splitlines()) + "\\n"\n    compile(source, str(PATH), "exec")\n    PATH.write_text(source, encoding="utf-8")\n'''
+          if source.count(old) != 1:
+              raise SystemExit('0020 generator write anchor drift')
+          if 'Canonicalize generated Python/SQL source' in source:
+              raise SystemExit('0020 generator is already canonicalized')
+          path.write_text(source.replace(old, new), encoding='utf-8')
+          PY
+          python -m py_compile scripts/apply_0020_domain_hardening.py
+          git diff --check
+          git diff -- scripts/apply_0020_domain_hardening.py
+
+      - name: Publish generator repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/apply_0020_domain_hardening.py
+          git diff --cached --quiet && { echo 'Expected generator repair produced no diff' >&2; exit 1; }
+          git commit -m "fix migration 0020 hardening generator whitespace"
+          git push origin HEAD:hardening/complete-migration-lineage
