@@ -17,7 +17,26 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("CREATE SCHEMA IF NOT EXISTS finance;")
+    # This revision owns the finance schema. Refuse silent adoption of a
+    # pre-existing namespace because its objects/ACLs could belong to another
+    # operator or migration lineage.
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_namespace
+                WHERE nspname = 'finance'
+            ) THEN
+                RAISE EXCEPTION
+                    '1a2b3c4d5e7f refuses to adopt pre-existing finance schema';
+            END IF;
+        END
+        $$;
+        """
+    )
+    op.execute("CREATE SCHEMA finance;")
     op.execute(
         """
         COMMENT ON SCHEMA finance IS
@@ -574,4 +593,91 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP SCHEMA IF EXISTS finance CASCADE;")
+    # The predecessor has no Finance Core namespace or data model. Before
+    # crossing that boundary, prove every revision-owned table is empty. This
+    # protects invoices, payments, refunds, ledgers, audit history, outbox
+    # events, and configuration from implicit destruction.
+    op.execute(
+        """
+        DO $finance_5b_downgrade_data_guard$
+        DECLARE
+            table_name TEXT;
+            has_rows BOOLEAN;
+        BEGIN
+            FOREACH table_name IN ARRAY ARRAY[
+                'legal_entities',
+                'gst_registrations',
+                'divisions',
+                'brands',
+                'bank_accounts',
+                'tax_codes',
+                'ledger_accounts',
+                'billing_parties',
+                'invoice_series',
+                'brand_ref_series',
+                'idempotency_keys',
+                'invoices',
+                'invoice_lines',
+                'tax_records',
+                'payments',
+                'payment_allocations',
+                'payment_events',
+                'refunds',
+                'credit_notes',
+                'credit_note_lines',
+                'ledger_entries',
+                'ledger_entry_lines',
+                'audit_events',
+                'outbox_events'
+            ]
+            LOOP
+                EXECUTE format(
+                    'SELECT EXISTS (SELECT 1 FROM finance.%I LIMIT 1)',
+                    table_name
+                ) INTO has_rows;
+                IF has_rows THEN
+                    RAISE EXCEPTION
+                        '1a2b3c4d5e7f downgrade blocked: finance.% contains data not representable by predecessor',
+                        table_name;
+                END IF;
+            END LOOP;
+        END
+        $finance_5b_downgrade_data_guard$;
+        """
+    )
+
+    # Name every revision-owned relation explicitly. RESTRICT ensures an
+    # unexpected dependency introduced outside the known rollback chain blocks
+    # the downgrade instead of being deleted implicitly. Internal constraints
+    # and indexes owned by these tables are removed with their parent tables.
+    op.execute(
+        """
+        DROP TABLE
+            finance.outbox_events,
+            finance.audit_events,
+            finance.ledger_entry_lines,
+            finance.ledger_entries,
+            finance.credit_note_lines,
+            finance.credit_notes,
+            finance.refunds,
+            finance.payment_events,
+            finance.payment_allocations,
+            finance.payments,
+            finance.tax_records,
+            finance.invoice_lines,
+            finance.invoices,
+            finance.idempotency_keys,
+            finance.brand_ref_series,
+            finance.invoice_series,
+            finance.billing_parties,
+            finance.ledger_accounts,
+            finance.tax_codes,
+            finance.bank_accounts,
+            finance.brands,
+            finance.divisions,
+            finance.gst_registrations,
+            finance.legal_entities
+        RESTRICT;
+        """
+    )
+    op.execute("DROP SCHEMA finance RESTRICT;")
