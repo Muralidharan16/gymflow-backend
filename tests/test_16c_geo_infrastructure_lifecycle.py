@@ -62,6 +62,17 @@ def test_16c_consumes_infrastructure_and_predecessor_objects_without_owning_them
     assert "DROP TYPE public.citext" not in downgrade
 
 
+def test_16c_predecessor_function_canonicalization_does_not_mutate_tokens() -> None:
+    helper = _function_source("_require_predecessor_set_updated_at")
+
+    assert "'[[:space:]]+'" in helper
+    assert "E'\\\\s+'" not in helper
+    assert (
+        '"BEGIN NEW.updated_at := clock_timestamp(); RETURN NEW; END;"'
+        in helper
+    )
+
+
 def test_16c_has_fail_closed_full_geo_inverse() -> None:
     downgrade = _function_source("downgrade")
     executable_sql = _literal_execute_sql("downgrade")
