@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 M329 = ROOT / "alembic/versions/371b1a44a329_add_address_type_column.py"
 M333 = ROOT / "alembic/versions/371b1a44a333_add_spatial_and_filtering_indexes.py"
+M00F = ROOT / "alembic/versions/00f277c748ea_add_hyperscale_branch_name_and_address_.py"
 
 
 def _source(path: Path) -> str:
@@ -88,3 +89,15 @@ def test_333_still_owns_only_its_filtering_indexes() -> None:
 
     assert upgrade.count("op.create_index(") == 2
     assert downgrade.count("op.drop_index(") == 2
+
+
+def test_00f_downgrade_restores_371b_spatial_predecessor_contract() -> None:
+    downgrade = _function_source(M00F, "downgrade")
+
+    assert "infrastructure-owned PostGIS" in downgrade
+    assert "ADD COLUMN coordinates geography(POINT,4326)" in downgrade
+    assert (
+        "CREATE INDEX idx_organization_addresses_coordinates "
+        "ON public.organization_addresses USING gist (coordinates)"
+    ) in downgrade
+    assert "sa.Column('coordinates', sa.VARCHAR(length=255)" not in downgrade
