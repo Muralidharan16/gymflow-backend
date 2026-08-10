@@ -42,7 +42,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-test.txt
-          python -m py_compile scripts/verify_00f_adversarial.py
+          python -m py_compile \
+            scripts/verify_00f_adversarial.py \
+            scripts/run_00f_adversarial.py
 
       - name: Install PostgreSQL 16 extension packages
         run: |
@@ -82,7 +84,7 @@ jobs:
 
       - name: Execute adversarial migration scenarios
         run: |
-          python scripts/verify_00f_adversarial.py \
+          python scripts/run_00f_adversarial.py \
             --multi-db gymflow_adv_multi \
             --ambiguous-db gymflow_adv_ambiguous \
             --evolved-db gymflow_adv_evolved \
