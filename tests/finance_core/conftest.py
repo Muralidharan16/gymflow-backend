@@ -5,12 +5,12 @@ import os
 import pytest
 import pytest_asyncio
 
-from app.core.database import AsyncSessionLocal
 from app.domain.synthetic_organizations import (
     SYNTHETIC_ORGANIZATION_TRUSTED_SOURCE,
     SyntheticOrganizationCreationCommand,
 )
 from app.services.synthetic_organizations import SyntheticOrganizationCreationService
+from tests.finance_core.admin_database import finance_admin_session
 
 
 _D11_TEST_MODULE = "test_phase6an_d10_synthetic_organization_service.py"
@@ -49,14 +49,19 @@ async def bootstrap_persistent_d11_replay_evidence(request):
     The original regression surface intentionally treats this identity/evidence
     pair as persistent and append-only. Fresh CI databases therefore need to
     create it explicitly instead of depending on state left by a developer's
-    local database. Seed through the production service contract; never disable
-    the immutability trigger and never delete the evidence afterward.
+    local database.
+
+    Synthetic-organization creation is an approved non-production bootstrap
+    capability, not a Finance Core runtime capability. Seed the evidence through
+    the real service contract using the guarded test-admin identity; Finance
+    business behavior continues to run only through the reduced finance login.
+    Never disable the immutability trigger and never delete the evidence afterward.
     """
     if request.node.path.name != _D11_TEST_MODULE:
         yield
         return
 
-    async with AsyncSessionLocal() as session:
+    async with finance_admin_session() as session:
         result = await SyntheticOrganizationCreationService(
             session,
             environment="development",
