@@ -20,7 +20,7 @@ from app.models.branch_lifecycle import (
 )
 from app.services.branch_lifecycle_service import BranchLifecycleService
 from app.core.database import AsyncSessionLocal
-from conftest import cleanup_test_database_tables
+from conftest import AdminTestSessionLocal, cleanup_test_database_tables
 
 
 async def set_db_session_context(session, org_id: str, user_id: str, role: str):
@@ -32,16 +32,25 @@ async def set_db_session_context(session, org_id: str, user_id: str, role: str):
 
 @pytest_asyncio.fixture
 async def lifecycle_setup():
-    """Setup organizations, staff, and branches for lifecycle tests."""
-    async with AsyncSessionLocal() as session:
-        # Create unique organization
-        org_id = uuid.uuid4()
+    """Seed lifecycle prerequisites administratively; exercise behavior as runtime."""
+    org_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    admin_id = uuid.uuid4()
+    trainer_id = uuid.uuid4()
+    b1_id = uuid.uuid4()
+    b2_id = uuid.uuid4()
+
+    # Tenant-root creation is deliberately outside the ordinary runtime contract.
+    # Use the guarded test-admin identity only for fixture prerequisites. Once the
+    # tenant exists, install the same tenant/user GUCs required by forced-RLS
+    # production writes before seeding tenant-scoped rows.
+    async with AdminTestSessionLocal() as session:
         org = Organization(id=org_id, name="Lifecycle Test Org", max_branches=5)
         session.add(org)
         await session.flush()
 
-        # Create owners, admins, and trainers
-        owner_id = uuid.uuid4()
+        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
+
         owner = GymOwner(
             id=owner_id,
             org_id=org_id,
@@ -52,8 +61,6 @@ async def lifecycle_setup():
             is_active=True,
             is_verified=True
         )
-
-        admin_id = uuid.uuid4()
         admin = GymOwner(
             id=admin_id,
             org_id=org_id,
@@ -64,8 +71,6 @@ async def lifecycle_setup():
             is_active=True,
             is_verified=True
         )
-
-        trainer_id = uuid.uuid4()
         trainer = GymOwner(
             id=trainer_id,
             org_id=org_id,
@@ -76,11 +81,10 @@ async def lifecycle_setup():
             is_active=True,
             is_verified=True
         )
-
         session.add_all([owner, admin, trainer])
         await session.flush()
 
-        # Add corresponding users in organization_users to prevent FK issues
+        # Add corresponding users in organization_users to prevent FK issues.
         from app.models.organization_user import OrganizationUser
         org_owner = OrganizationUser(
             id=owner_id,
@@ -110,11 +114,10 @@ async def lifecycle_setup():
             is_verified=True
         )
         session.add_all([org_owner, org_admin, org_trainer])
-        await session.commit()
+        await session.flush()
 
-    async with AsyncSessionLocal() as session:
-        # Create two branches so we don't violate last active branch guard immediately
-        b1_id = uuid.uuid4()
+        # Create two branches so we don't violate last-active-branch guard
+        # immediately. These are fixture rows, not application-path creation.
         b1 = OrgBranch(
             id=b1_id,
             org_id=org_id,
@@ -134,7 +137,6 @@ async def lifecycle_setup():
         )
         b1.state = s1
 
-        b2_id = uuid.uuid4()
         b2 = OrgBranch(
             id=b2_id,
             org_id=org_id,
@@ -157,17 +159,17 @@ async def lifecycle_setup():
         session.add_all([b1, b2])
         await session.commit()
 
+    yield {
+        "org_id": org_id,
+        "owner_id": owner_id,
+        "admin_id": admin_id,
+        "trainer_id": trainer_id,
+        "branch1_id": b1_id,
+        "branch2_id": b2_id
+    }
 
-        yield {
-            "org_id": org_id,
-            "owner_id": owner_id,
-            "admin_id": admin_id,
-            "trainer_id": trainer_id,
-            "branch1_id": b1_id,
-            "branch2_id": b2_id
-        }
-
-    # Teardown
+    # Teardown remains guarded and administrative; application-facing sessions
+    # never receive destructive cleanup capability.
     await cleanup_test_database_tables([
         "branch_watchdog_alerts",
         "branch_lifecycle_events",
