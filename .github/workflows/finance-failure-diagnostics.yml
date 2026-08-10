@@ -1,0 +1,133 @@
+name: Finance Failure Diagnostics
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: finance-diagnostics-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compact-finance-failure-report:
+    name: Compact Finance Core failure report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Wait for Finance Core Hardening CI
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          run_id=""
+          for attempt in $(seq 1 180); do
+            run_id="$({
+              gh api \
+                -H 'Accept: application/vnd.github+json' \
+                "/repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&head_sha=${TARGET_SHA}&per_page=100" \
+                --jq '.workflow_runs[] | select(.name == "Finance Core Hardening CI") | .id' \
+                | head -n 1
+            } || true)"
+
+            if [[ -n "$run_id" ]]; then
+              status="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.status')"
+              if [[ "$status" == "completed" ]]; then
+                break
+              fi
+            fi
+            sleep 10
+          done
+
+          if [[ -z "$run_id" ]]; then
+            echo 'Finance Core Hardening CI run was not found for this head.' >&2
+            exit 1
+          fi
+
+          status="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.status')"
+          conclusion="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.conclusion')"
+          if [[ "$status" != "completed" ]]; then
+            echo "Finance Core Hardening CI did not complete before diagnostic timeout: run=${run_id} status=${status}" >&2
+            exit 1
+          fi
+
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          echo "conclusion=${conclusion}" >> "$GITHUB_OUTPUT"
+          echo "Finance Core Hardening CI run=${run_id} conclusion=${conclusion}"
+
+      - name: Emit compact Finance failed-job tails
+        if: steps.locate.outputs.conclusion != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          run_id='${{ steps.locate.outputs.run_id }}'
+          mapfile -t failed_jobs < <(
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" \
+              --jq '.jobs[] | select(.conclusion == "failure") | [.id, .name] | @tsv'
+          )
+
+          if [[ ${#failed_jobs[@]} -eq 0 ]]; then
+            echo 'Finance Core run failed but no failed job was returned.' >&2
+            exit 1
+          fi
+
+          for entry in "${failed_jobs[@]}"; do
+            job_id="${entry%%$'\t'*}"
+            job_name="${entry#*$'\t'}"
+            log_file="${RUNNER_TEMP}/finance-${job_id}.log"
+
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" \
+              > "$log_file"
+
+            echo
+            echo '============================================================'
+            echo "FAILED FINANCE JOB: ${job_name} (${job_id})"
+            echo '============================================================'
+
+            python - "$log_file" <<'PY'
+          from pathlib import Path
+          import sys
+
+          lines = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").splitlines()
+          markers = (
+              "=================================== FAILURES ===================================",
+              "FAILED tests/",
+              "ERROR tests/",
+              "short test summary info",
+              "stopping after 1 failures",
+              "Process completed with exit code",
+          )
+          interesting = [
+              index for index, line in enumerate(lines)
+              if any(marker in line for marker in markers)
+          ]
+          if interesting:
+              start = max(0, min(interesting) - 35)
+              end = min(len(lines), max(interesting) + 80)
+          else:
+              start = max(0, len(lines) - 180)
+              end = len(lines)
+          for line in lines[start:end]:
+              print(line)
+          PY
+          done
+
+          exit 1
+
+      - name: Confirm Finance Core run green
+        if: steps.locate.outputs.conclusion == 'success'
+        run: echo 'Finance Core Hardening CI completed successfully.'
