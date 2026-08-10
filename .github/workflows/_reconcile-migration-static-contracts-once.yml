@@ -52,9 +52,6 @@ jobs:
                   )
               path.write_text(source.replace(old, new), encoding='utf-8')
 
-          # A new, legitimate Alembic revision (6f708192a3b4) closes the
-          # address runtime privilege boundary. Keep the inventory closure
-          # assertion, but advance its cardinality from 68 to 69.
           replace_exact(
               'tests/test_dafd_app_private_owner_context_boundary.py',
               'def test_complete_68_revision_private_and_executor_inventories_are_closed() -> None:\n    migrations = sorted(VERSIONS.glob("*.py"))\n    assert len(migrations) == 68',
@@ -66,10 +63,6 @@ jobs:
               'def test_complete_69_revision_app_secure_file_inventory_is_closed() -> None:\n    migrations = sorted(VERSIONS.glob("*.py"))\n    assert len(migrations) == 69',
           )
 
-          # 0021 changed intentionally: owner-context hardening, external
-          # btree_gist validation, transactional index creation, and
-          # lossless-or-fail-closed rollback. Refresh only frozen integrity
-          # snapshots that explicitly protect that revision.
           replace_exact(
               'tests/test_migration_app_private_owner_context_boundary.py',
               old_sha,
@@ -89,9 +82,6 @@ jobs:
               '    assert "owner_name IS DISTINCT FROM \'postgres\'" in source_0021\n',
           )
 
-          # 00f already validates the full reduced managed-role posture. Add
-          # the explicit infrastructure source-of-truth pointer required by
-          # the contract so operators know where those roles are provisioned.
           replace_exact(
               'alembic/versions/00f277c748ea_add_hyperscale_branch_name_and_address_.py',
               'window.  A later, explicitly gated contract migration may remove predecessor\n'
@@ -102,9 +92,6 @@ jobs:
               'this revision validates that posture but never creates or mutates those roles.\n',
           )
 
-          # 0020 now creates the partition helper strictly (no silent adoption)
-          # and tears down with RESTRICT. Keep the owner-boundary ordering test,
-          # but assert the hardened SQL rather than the historical CASCADE path.
           replace_exact(
               'tests/test_migration_managed_role_boundary.py',
               '        "CREATE OR REPLACE FUNCTION "\n        "app_private.create_branch_contacts_audit_partition"',
@@ -126,6 +113,7 @@ jobs:
             alembic/versions/00f277c748ea_add_hyperscale_branch_name_and_address_.py \
             alembic/versions/0020_contacts_hardened.py \
             alembic/versions/0021_staff_roles.py \
+            tests/test_0003_security_schema_lifecycle.py \
             tests/test_dafd_app_private_owner_context_boundary.py \
             tests/test_migration_app_private_owner_context_boundary.py \
             tests/test_migration_app_secure_owner_context_boundary.py \
@@ -136,8 +124,9 @@ jobs:
       - name: Run exact static hardening suite
         env:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-        run: |
+        run: &static_suite |
           python -m pytest --noconftest -q \
+            tests/test_0003_security_schema_lifecycle.py \
             tests/test_0027_complete_owner_context_boundary.py \
             tests/test_66a_pg_partman_boundary.py \
             tests/test_371b333_spatial_index_lineage.py \
@@ -156,7 +145,7 @@ jobs:
             tests/test_rbac_expand_contract_root_cause.py \
             tests/test_0020_contacts_downgrade_contract.py
 
-      - name: Publish bounded reconciliation
+      - name: Commit bounded reconciliation
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -178,4 +167,41 @@ jobs:
             tests/test_migration_shared_infrastructure_boundary.py | sort)"
           test "$observed" = "$expected"
           git commit -m "test: reconcile hardened migration static contracts"
+
+      - name: Rebase onto latest hardening head and revalidate
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          git fetch origin hardening/complete-migration-lineage
+          git rebase origin/hardening/complete-migration-lineage
+          python -m py_compile \
+            alembic/versions/00f277c748ea_add_hyperscale_branch_name_and_address_.py \
+            alembic/versions/0020_contacts_hardened.py \
+            alembic/versions/0021_staff_roles.py \
+            tests/test_0003_security_schema_lifecycle.py \
+            tests/test_dafd_app_private_owner_context_boundary.py \
+            tests/test_migration_app_private_owner_context_boundary.py \
+            tests/test_migration_app_secure_owner_context_boundary.py \
+            tests/test_migration_managed_role_boundary.py \
+            tests/test_migration_shared_infrastructure_boundary.py
+          git diff --check HEAD~1 HEAD
+          python -m pytest --noconftest -q \
+            tests/test_0003_security_schema_lifecycle.py \
+            tests/test_0027_complete_owner_context_boundary.py \
+            tests/test_66a_pg_partman_boundary.py \
+            tests/test_371b333_spatial_index_lineage.py \
+            tests/test_database_sync_driver_boundary.py \
+            tests/test_database_session_guc_boundary.py \
+            tests/test_alembic_env_config_boundary.py \
+            tests/test_alembic_model_import_boundary.py \
+            tests/test_dafd_app_private_owner_context_boundary.py \
+            tests/test_migration_app_private_owner_context_boundary.py \
+            tests/test_migration_app_secure_owner_context_boundary.py \
+            tests/test_migration_managed_role_boundary.py \
+            tests/test_migration_shared_infrastructure_boundary.py \
+            tests/test_platform_billing_cleanup_boundary.py \
+            tests/test_address_audit_rls_context_boundary.py \
+            tests/test_cluster_role_contract_manifests.py \
+            tests/test_rbac_expand_contract_root_cause.py \
+            tests/test_0020_contacts_downgrade_contract.py
           git push origin HEAD:hardening/complete-migration-lineage
