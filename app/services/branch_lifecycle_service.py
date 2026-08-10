@@ -34,11 +34,14 @@ class BranchLifecycleService:
         actor_role: str,
         reason: Optional[str] = None,
     ) -> uuid.UUID:
+        """Execute Transaction A with authorization before write locking.
+
+        A caller must first be able to read the tenant branch and must be
+        authorized for the current-state transition. Only then may it acquire
+        the organization advisory lock and the row UPDATE lock. After locking,
+        the status is revalidated so a concurrent transition cannot invalidate
+        the authorization decision made from the initial read.
         """
-        Transaction A: Atomic Status Flip with Advisory Locking, Last-Active Branch Guard,
-        and Step-1 Lifecycle/Outbox emission.
-        """
-        # 1. Fetch status definitions
         stmt_def = select(BranchStatusDefinition).where(
             BranchStatusDefinition.code == to_status
         )
@@ -50,12 +53,63 @@ class BranchLifecycleService:
                 detail=f"Target status '{to_status}' is not defined.",
             )
 
-        # 2. Acquire org-level 64-bit advisory lock to prevent concurrent transitions within same org
-        # abs(hashtext(left(org_id, 18)))
-        org_str = str(org_id)
-        left_part = org_str[:18]
-        right_part = org_str[18:]
+        # Read under SELECT RLS first. SELECT ... FOR UPDATE would also apply
+        # UPDATE privilege/RLS and can hide a readable branch from an actor who
+        # is correctly forbidden to mutate it, turning a 403 into a false 404.
+        visible_stmt = select(OrgBranchState).where(
+            OrgBranchState.branch_id == branch_id,
+            OrgBranchState.org_id == org_id,
+            OrgBranchState.deleted_at.is_(None),
+        )
+        visible_res = await self.db.execute(visible_stmt)
+        visible_state = visible_res.scalar_one_or_none()
+        if not visible_state:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Branch not found or belongs to another organization.",
+            )
 
+        from_status = visible_state.status
+        if from_status == to_status:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Branch is already in status '{to_status}'.",
+            )
+
+        stmt_trans = select(BranchStatusTransition).where(
+            BranchStatusTransition.from_status == from_status,
+            BranchStatusTransition.to_status == to_status,
+        )
+        res_trans = await self.db.execute(stmt_trans)
+        allowed_trans = res_trans.scalar_one_or_none()
+        if not allowed_trans:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Transition from '{from_status}' to '{to_status}' is illegal.",
+            )
+        if actor_role not in allowed_trans.allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Role '{actor_role}' is not authorized to execute transition "
+                    f"from '{from_status}' to '{to_status}'."
+                ),
+            )
+        if allowed_trans.requires_reason and (not reason or not reason.strip()):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A valid, non-empty status reason is required for this transition.",
+            )
+        if to_status in ("permanently_closed", "compliance_suspended") and (
+            not reason or not reason.strip()
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Terminal transitions must explicitly state a valid reason for legal auditing.",
+            )
+
+        # Only authorized callers may serialize lifecycle mutation for the org.
+        org_str = str(org_id)
         lock_res = await self.db.execute(
             text(
                 """
@@ -65,7 +119,7 @@ class BranchLifecycleService:
                 );
                 """
             ),
-            {"left_part": left_part, "right_part": right_part},
+            {"left_part": org_str[:18], "right_part": org_str[18:]},
         )
         if not lock_res.scalar():
             raise HTTPException(
@@ -73,8 +127,7 @@ class BranchLifecycleService:
                 detail="Another lifecycle transition is currently in progress for this organization.",
             )
 
-        # 3. SELECT FOR UPDATE on target branch row
-        stmt_branch = (
+        locked_stmt = (
             select(OrgBranchState)
             .where(
                 OrgBranchState.branch_id == branch_id,
@@ -83,61 +136,20 @@ class BranchLifecycleService:
             )
             .with_for_update()
         )
-        res_branch = await self.db.execute(stmt_branch)
-        branch_state = res_branch.scalar_one_or_none()
-
+        locked_res = await self.db.execute(locked_stmt)
+        branch_state = locked_res.scalar_one_or_none()
         if not branch_state:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Branch not found or belongs to another organization.",
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch is no longer writable for this lifecycle transition. Retry with fresh state.",
             )
-
-        from_status = branch_state.status
-        if from_status == to_status:
+        if branch_state.status != from_status:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Branch is already in status '{to_status}'.",
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Branch status changed while the transition was being authorized. Retry with fresh state.",
             )
 
-        # 4. Check if the transition is defined and allowed for user role
-        stmt_trans = select(BranchStatusTransition).where(
-            BranchStatusTransition.from_status == from_status,
-            BranchStatusTransition.to_status == to_status,
-        )
-        res_trans = await self.db.execute(stmt_trans)
-        allowed_trans = res_trans.scalar_one_or_none()
-
-        if not allowed_trans:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Transition from '{from_status}' to '{to_status}' is illegal.",
-            )
-
-        if actor_role not in allowed_trans.allowed_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"Role '{actor_role}' is not authorized to execute transition "
-                    f"from '{from_status}' to '{to_status}'."
-                ),
-            )
-
-        if allowed_trans.requires_reason and (not reason or not reason.strip()):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="A valid, non-empty status reason is required for this transition.",
-            )
-
-        # Terminal transition reason validation
-        if to_status in ("permanently_closed", "compliance_suspended") and (
-            not reason or not reason.strip()
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Terminal transitions must explicitly state a valid reason for legal auditing.",
-            )
-
-        # 5. Last-Active Branch Guard
+        # Last-active branch guard is evaluated under the serialization lock.
         if not target_def.is_operational and branch_state.is_operational:
             count_stmt = (
                 select(func.count(1))
@@ -148,17 +160,14 @@ class BranchLifecycleService:
                     OrgBranchState.deleted_at.is_(None),
                 )
             )
-
             op_count_res = await self.db.execute(count_stmt)
             operational_count = op_count_res.scalar() or 0
-
             if operational_count <= 1:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Cannot deactivate the last operational branch for this organization.",
                 )
 
-        # 6. Capture snapshot before updates
         snapshot = {
             "status": branch_state.status,
             "is_operational": branch_state.is_operational,
@@ -185,10 +194,8 @@ class BranchLifecycleService:
             ),
         }
 
-        # 7. Update branch state (Transaction A)
         correlation_id = uuid.uuid4()
         now = datetime.now(timezone.utc)
-
         branch_state.status = to_status
         branch_state.is_operational = target_def.is_operational
         branch_state.lifecycle_transition_in_progress = True
@@ -199,7 +206,6 @@ class BranchLifecycleService:
         branch_state.status_reason = reason
         branch_state.transition_source = "api"
 
-        # 8. Insert branch lifecycle event (Contract 2: must precede history update)
         event = BranchLifecycleEvent(
             event_id=uuid.uuid4(),
             branch_id=branch_id,
@@ -213,7 +219,6 @@ class BranchLifecycleService:
         self.db.add(event)
         await self.db.flush()
 
-        # 9. Insert branch status history (Contract 2)
         history = BranchStatusHistory(
             history_id=uuid.uuid4(),
             branch_id=branch_id,
@@ -229,7 +234,6 @@ class BranchLifecycleService:
         )
         self.db.add(history)
 
-        # 10. Write de-index event to transactional outbox synchronously
         outbox_event = BranchOutboxEvent(
             outbox_id=uuid.uuid4(),
             branch_id=branch_id,
@@ -363,7 +367,7 @@ class BranchLifecycleService:
 
             await self._complete_saga(branch_id, was_watchdog_recovery=False)
 
-        except Exception as err:
+        except Exception:
             logger.exception("Saga execution failed for branch %s", branch_id)
             await self.db.rollback()
             await self._compensate_saga(
