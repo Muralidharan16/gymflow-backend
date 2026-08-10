@@ -1,0 +1,121 @@
+name: One-shot address internal sequence boundary
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: address-internal-sequence-boundary-once
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.event.pull_request.head.ref == 'hardening/complete-migration-lineage'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hardening/complete-migration-lineage
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+
+      - name: Patch protected sequence capability exactly
+        id: patch
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('alembic/versions/6f708192a3b4_address_runtime_privilege_boundary.py')
+          source = path.read_text(encoding='utf-8')
+
+          def reconcile(old: str, new: str) -> None:
+              global source
+              old_count = source.count(old)
+              new_count = source.count(new)
+              if old_count == 1 and new_count == 0:
+                  source = source.replace(old, new)
+                  return
+              if old_count == 0 and new_count == 1:
+                  return
+              raise SystemExit(
+                  f'6f sequence-boundary anchor drift: old={old_count}, new={new_count}, anchor={old!r}'
+              )
+
+          reconcile(
+              '''_INTERNAL_PRIVILEGES = {\n    _HISTORY: {"SELECT", "INSERT", "UPDATE"},\n    _AUDIT: {"INSERT"},\n    _OUTBOX: {"INSERT"},\n}\n_TENANT_EXPR =''',
+              '''_INTERNAL_PRIVILEGES = {\n    _HISTORY: {"SELECT", "INSERT", "UPDATE"},\n    _AUDIT: {"INSERT"},\n    _OUTBOX: {"INSERT"},\n}\n_INTERNAL_SEQUENCE_BINDINGS = {\n    "branch_address_history_id_seq": ("branch_address_history", "id"),\n    "address_change_outbox_id_seq": ("address_change_outbox", "id"),\n}\n_TENANT_EXPR =''',
+          )
+
+          reconcile(
+              '''    return set(bind.execute(sa.text("""\n        SELECT DISTINCT acl.privilege_type::text\n        FROM pg_catalog.pg_class AS c\n        JOIN pg_catalog.pg_namespace AS ns ON ns.oid = c.relnamespace\n        CROSS JOIN LATERAL pg_catalog.aclexplode(\n            COALESCE(c.relacl, pg_catalog.acldefault('r', c.relowner))\n        ) AS acl\n        JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = acl.grantee\n        WHERE ns.nspname = 'public' AND c.relname = :relation_name\n          AND grantee.rolname = :role_name\n    """), {"relation_name": relation_name, "role_name": role_name}).scalars().all())\n\n\ndef _policies''',
+              '''    return set(bind.execute(sa.text("""\n        SELECT DISTINCT acl.privilege_type::text\n        FROM pg_catalog.pg_class AS c\n        JOIN pg_catalog.pg_namespace AS ns ON ns.oid = c.relnamespace\n        CROSS JOIN LATERAL pg_catalog.aclexplode(\n            COALESCE(c.relacl, pg_catalog.acldefault('r', c.relowner))\n        ) AS acl\n        JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = acl.grantee\n        WHERE ns.nspname = 'public' AND c.relname = :relation_name\n          AND grantee.rolname = :role_name\n    """), {"relation_name": relation_name, "role_name": role_name}).scalars().all())\n\n\ndef _require_internal_sequence_contract(bind) -> None:\n    for sequence_name, (table_name, column_name) in _INTERNAL_SEQUENCE_BINDINGS.items():\n        row = bind.execute(sa.text("""\n            SELECT owner.rolname::text AS owner_name,\n                   pg_catalog.pg_get_serial_sequence(\n                       :qualified_table, :column_name\n                   ) AS bound_sequence\n            FROM pg_catalog.pg_class AS c\n            JOIN pg_catalog.pg_namespace AS ns ON ns.oid = c.relnamespace\n            JOIN pg_catalog.pg_roles AS owner ON owner.oid = c.relowner\n            WHERE ns.nspname = 'public'\n              AND c.relname = :sequence_name\n              AND c.relkind = 'S'\n        """), {\n            "qualified_table": f"public.{table_name}",\n            "column_name": column_name,\n            "sequence_name": sequence_name,\n        }).mappings().one_or_none()\n        if row is None:\n            raise RuntimeError(f"missing internal sequence public.{sequence_name}")\n        if row["owner_name"] != _MIGRATION_OWNER:\n            raise RuntimeError(\n                f"unexpected owner for internal sequence public.{sequence_name}: "\n                f"{row['owner_name']}"\n            )\n        if row["bound_sequence"] != f"public.{sequence_name}":\n            raise RuntimeError(\n                f"internal sequence binding drifted for public.{sequence_name}: "\n                f"{row['bound_sequence']!r}"\n            )\n\n\ndef _effective_sequence_privileges(bind, role_name: str, sequence_name: str) -> set[str]:\n    privileges = set()\n    for privilege in ("USAGE", "SELECT", "UPDATE"):\n        allowed = _scalar(\n            bind,\n            "SELECT pg_catalog.has_sequence_privilege(:role_name, :sequence_name, :privilege)",\n            {\n                "role_name": role_name,\n                "sequence_name": f"public.{sequence_name}",\n                "privilege": privilege,\n            },\n        )\n        if allowed:\n            privileges.add(privilege)\n    return privileges\n\n\ndef _policies''',
+          )
+
+          reconcile(
+              '''    for relation_name in _INTERNAL_PRIVILEGES:\n        if _direct_privileges(bind, _SECURITY_OWNER, relation_name):\n            raise RuntimeError(f"predecessor unexpectedly grants {relation_name} to app_security_owner")\n    if _function(bind, _INSERT_FN) is not None''',
+              '''    for relation_name in _INTERNAL_PRIVILEGES:\n        if _direct_privileges(bind, _SECURITY_OWNER, relation_name):\n            raise RuntimeError(f"predecessor unexpectedly grants {relation_name} to app_security_owner")\n    for sequence_name in _INTERNAL_SEQUENCE_BINDINGS:\n        if _effective_sequence_privileges(bind, _SECURITY_OWNER, sequence_name):\n            raise RuntimeError(\n                f"predecessor unexpectedly grants sequence privileges on {sequence_name} "\n                "to app_security_owner"\n            )\n        if _effective_sequence_privileges(bind, _RUNTIME_ROLE, sequence_name):\n            raise RuntimeError(\n                f"predecessor unexpectedly grants sequence privileges on {sequence_name} "\n                "to app_runtime"\n            )\n    if _function(bind, _INSERT_FN) is not None''',
+          )
+
+          reconcile(
+              '''    for relation_name, expected in _INTERNAL_PRIVILEGES.items():\n        if _direct_privileges(bind, _SECURITY_OWNER, relation_name) != expected:\n            raise RuntimeError(f"app_security_owner ACL drifted for {relation_name}")\n        if _direct_privileges(bind, _RUNTIME_ROLE, relation_name):\n            raise RuntimeError(f"app_runtime must not have direct ACL on {relation_name}")\n    if _direct_schema_usage(bind, _MIGRATION_OWNER):''',
+              '''    for relation_name, expected in _INTERNAL_PRIVILEGES.items():\n        if _direct_privileges(bind, _SECURITY_OWNER, relation_name) != expected:\n            raise RuntimeError(f"app_security_owner ACL drifted for {relation_name}")\n        if _direct_privileges(bind, _RUNTIME_ROLE, relation_name):\n            raise RuntimeError(f"app_runtime must not have direct ACL on {relation_name}")\n    for sequence_name in _INTERNAL_SEQUENCE_BINDINGS:\n        if _effective_sequence_privileges(bind, _SECURITY_OWNER, sequence_name) != {"USAGE"}:\n            raise RuntimeError(\n                f"app_security_owner sequence ACL drifted for {sequence_name}"\n            )\n        if _effective_sequence_privileges(bind, _RUNTIME_ROLE, sequence_name):\n            raise RuntimeError(\n                f"app_runtime must not have sequence privileges on {sequence_name}"\n            )\n    if _direct_schema_usage(bind, _MIGRATION_OWNER):''',
+          )
+
+          reconcile(
+              '''def upgrade() -> None:\n    bind = op.get_bind()\n    _require_identity(bind)\n    _require_predecessor(bind)\n\n    op.execute("GRANT SELECT, INSERT, UPDATE ON TABLE public.organization_addresses TO app_runtime")\n    op.execute("GRANT SELECT, INSERT, UPDATE ON TABLE public.branch_address_history TO app_security_owner")\n    op.execute("GRANT INSERT ON TABLE public.branch_address_audit_log TO app_security_owner")\n    op.execute("GRANT INSERT ON TABLE public.address_change_outbox TO app_security_owner")''',
+              '''def upgrade() -> None:\n    bind = op.get_bind()\n    _require_identity(bind)\n    _require_internal_sequence_contract(bind)\n    _require_predecessor(bind)\n\n    op.execute("GRANT SELECT, INSERT, UPDATE ON TABLE public.organization_addresses TO app_runtime")\n    op.execute("GRANT SELECT, INSERT, UPDATE ON TABLE public.branch_address_history TO app_security_owner")\n    op.execute("GRANT INSERT ON TABLE public.branch_address_audit_log TO app_security_owner")\n    op.execute("GRANT INSERT ON TABLE public.address_change_outbox TO app_security_owner")\n    op.execute(\n        "GRANT USAGE ON SEQUENCE "\n        "public.branch_address_history_id_seq, "\n        "public.address_change_outbox_id_seq TO app_security_owner"\n    )''',
+          )
+
+          reconcile(
+              '''def downgrade() -> None:\n    bind = op.get_bind()\n    _require_identity(bind)\n    _require_forward(bind)''',
+              '''def downgrade() -> None:\n    bind = op.get_bind()\n    _require_identity(bind)\n    _require_internal_sequence_contract(bind)\n    _require_forward(bind)''',
+          )
+
+          reconcile(
+              '''    op.execute("REVOKE SELECT, INSERT, UPDATE ON TABLE public.organization_addresses FROM app_runtime")\n    op.execute("REVOKE SELECT, INSERT, UPDATE ON TABLE public.branch_address_history FROM app_security_owner")\n    op.execute("REVOKE INSERT ON TABLE public.branch_address_audit_log FROM app_security_owner")\n    op.execute("REVOKE INSERT ON TABLE public.address_change_outbox FROM app_security_owner")\n\n    _require_predecessor(bind)''',
+              '''    op.execute("REVOKE SELECT, INSERT, UPDATE ON TABLE public.organization_addresses FROM app_runtime")\n    op.execute("REVOKE SELECT, INSERT, UPDATE ON TABLE public.branch_address_history FROM app_security_owner")\n    op.execute("REVOKE INSERT ON TABLE public.branch_address_audit_log FROM app_security_owner")\n    op.execute("REVOKE INSERT ON TABLE public.address_change_outbox FROM app_security_owner")\n    op.execute(\n        "REVOKE USAGE ON SEQUENCE "\n        "public.branch_address_history_id_seq, "\n        "public.address_change_outbox_id_seq FROM app_security_owner"\n    )\n\n    _require_predecessor(bind)''',
+          )
+
+          path.write_text(source, encoding='utf-8')
+          PY
+          python -m py_compile alembic/versions/6f708192a3b4_address_runtime_privilege_boundary.py
+          git diff --check
+          if git diff --quiet -- alembic/versions/6f708192a3b4_address_runtime_privilege_boundary.py; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run protected sequence static contract
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          python -m pytest --noconftest -q tests/test_6f_address_internal_sequence_boundary.py
+
+      - name: Publish migration-only correction
+        if: steps.patch.outputs.changed == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add alembic/versions/6f708192a3b4_address_runtime_privilege_boundary.py
+          test "$(git diff --cached --name-only)" = 'alembic/versions/6f708192a3b4_address_runtime_privilege_boundary.py'
+          git diff --cached --check
+          git commit -m 'fix address audit internal sequence boundary'
+          git fetch origin hardening/complete-migration-lineage
+          git rebase origin/hardening/complete-migration-lineage
+          python -m pytest --noconftest -q tests/test_6f_address_internal_sequence_boundary.py
+          git push origin HEAD:hardening/complete-migration-lineage
