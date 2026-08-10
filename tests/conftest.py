@@ -117,6 +117,41 @@ def validate_test_admin_database_url(
     return admin_database_url
 
 
+def validate_test_auth_database_url(
+    auth_database_url: str | None,
+    runtime_database_url: str,
+) -> str | None:
+    """Validate the dedicated auth login when it is configured for pytest.
+
+    Auth/bootstrap requests may use a stronger *bounded* database identity than
+    ordinary application traffic, but both identities must target the same
+    disposable test database and must remain distinct PostgreSQL logins.
+    """
+    if not auth_database_url:
+        return None
+
+    runtime_url = make_url(runtime_database_url)
+    auth_url = make_url(auth_database_url)
+    runtime_db = runtime_url.database or ""
+    auth_db = auth_url.database or ""
+
+    if "test" not in auth_db.lower():
+        raise RuntimeError(
+            f"AUTH_DATABASE_URL database name must contain 'test' under pytest: {auth_db}"
+        )
+    if auth_db != runtime_db:
+        raise RuntimeError(
+            "AUTH_DATABASE_URL must target the same disposable database as "
+            f"TEST_DATABASE_URL under pytest: runtime={runtime_db!r}, auth={auth_db!r}"
+        )
+    if auth_database_url == runtime_database_url or auth_url.username == runtime_url.username:
+        raise RuntimeError(
+            "AUTH_DATABASE_URL must use a distinct bounded auth identity under pytest"
+        )
+
+    return auth_database_url
+
+
 APP_DATABASE_URL = os.environ.get("DATABASE_URL") or _read_dotenv_value("DATABASE_URL")
 PLATFORM_BILLING_TEST_DATABASE_URL = os.environ.get("PLATFORM_BILLING_TEST_DATABASE_URL")
 FINANCE_CORE_TEST_DATABASE_URL = os.environ.get("FINANCE_CORE_TEST_DATABASE_URL")
@@ -149,12 +184,18 @@ else:
         TEST_DATABASE_URL,
     )
 
+AUTH_TEST_DATABASE_URL = validate_test_auth_database_url(
+    os.environ.get("AUTH_DATABASE_URL") or _read_dotenv_value("AUTH_DATABASE_URL"),
+    TEST_DATABASE_URL,
+)
+
 # Force this pytest process, including app.core.database import-time engine creation,
 # onto the guarded *runtime* test identity. Administrative fixture cleanup uses a
 # separate engine below and is never exposed to application dependencies.
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
 from app.core import database as app_database  # noqa: E402
+from app.core import auth_database as app_auth_database  # noqa: E402
 from app.core.pool_manager import pool_manager  # noqa: E402
 
 
@@ -184,12 +225,42 @@ AdminTestSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
+# pytest-asyncio may execute function-scoped async tests on different event loops.
+# asyncpg connections are loop-bound, so the test harness must never carry a
+# pooled auth connection from one test loop into another. Production keeps the
+# normal bounded QueuePool in app.core.auth_database; only pytest rebinds that
+# module to a dedicated auth-login NullPool.
+auth_test_async_engine = (
+    create_async_engine(
+        AUTH_TEST_DATABASE_URL,
+        poolclass=NullPool,
+        pool_pre_ping=True,
+        echo=False,
+    )
+    if AUTH_TEST_DATABASE_URL
+    else None
+)
+
+AuthTestSessionLocal = (
+    async_sessionmaker(
+        auth_test_async_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    if auth_test_async_engine is not None
+    else None
+)
+
 # Keep direct legacy application-session imports from tests safe while they are
 # migrated. These aliases intentionally point only at the reduced runtime pool.
 app_database.async_engine = test_async_engine
 app_database.AsyncSessionLocal = TestSessionLocal
 app_database.async_session_maker = TestSessionLocal
 pool_manager.set_initial_pool(test_async_engine, TestSessionLocal)
+
+if AuthTestSessionLocal is not None:
+    app_auth_database.auth_async_engine = auth_test_async_engine
+    app_auth_database.AuthSessionLocal = AuthTestSessionLocal
 
 from app.main import app  # noqa: E402
 
