@@ -4,6 +4,9 @@ from pathlib import Path
 
 
 SOURCE = Path("app/models/address.py")
+M00F = Path(
+    "alembic/versions/00f277c748ea_add_hyperscale_branch_name_and_address_.py"
+)
 
 
 def _source() -> str:
@@ -24,15 +27,41 @@ def test_address_models_never_probe_database_during_import() -> None:
         assert forbidden not in source
 
 
-def test_spatial_metadata_is_deterministic_postgis_geography() -> None:
+def test_spatial_metadata_is_deterministic_and_schema_aligned() -> None:
     source = _source()
+    migration = M00F.read_text(encoding="utf-8")
 
+    # Canonical member-address spatial data is deterministic PostGIS Geography.
     assert (
         'coordinate_type = geoalchemy2.Geography(geometry_type="POINT", srid=4326)'
         in source
     )
     assert "coordinate_type = sa.String" not in source
-    assert source.count("mapped_column(coordinate_type") >= 2
+
+    member_start = source.index("class MemberAddress(Base, TimestampMixin):")
+    member_end = source.index("class GooglePlacesCache", member_start)
+    member_model = source[member_start:member_end]
+    assert "mapped_column(coordinate_type, nullable=True)" in member_model
+
+    # branch_geolocation_state is the WKT compatibility projection owned by 00f.
+    # Its ORM mapping must remain VARCHAR(255); mapping it as Geography causes
+    # GeoAlchemy2 to emit ST_AsBinary() against a character-varying column.
+    geo_start = source.index("class BranchGeolocationState(Base):")
+    geo_end = source.index("class BranchGeocodeAttempt", geo_start)
+    geo_model = source[geo_start:geo_end]
+    assert "mapped_column(coordinate_type" not in geo_model
+    assert geo_model.count("mapped_column(String(255), nullable=True)") == 2
+    assert "coordinates: Mapped[Optional[str]]" in geo_model
+    assert "last_known_good_coordinates: Mapped[Optional[str]]" in geo_model
+
+    assert (
+        'sa.Column("coordinates", sa.String(length=255), nullable=True)'
+        in migration
+    )
+    assert (
+        'sa.Column("last_known_good_coordinates", sa.String(length=255), nullable=True)'
+        in migration
+    )
 
 
 def test_typed_audit_principal_registry_is_mapped_without_pii() -> None:
