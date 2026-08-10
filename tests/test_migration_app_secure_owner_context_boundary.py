@@ -50,7 +50,7 @@ GEO_FOREIGN_KEYS = (
         "org_branches_geo_subdivision_id_fkey",
         ("geo_subdivision_id",),
         "subdivisions",
-        ("id", "country_id"),
+        ("id",),
     ),
     (
         "fk_org_branch_subdivision_country",
