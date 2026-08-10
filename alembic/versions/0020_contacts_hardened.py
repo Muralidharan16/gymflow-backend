@@ -3309,10 +3309,10 @@ def downgrade():
     op.execute("DROP TRIGGER trg_prevent_soft_delete_resurrection ON public.branch_contacts;")
     op.execute("DROP TRIGGER trg_prevent_audit_update ON public.branch_contacts_audit;")
     op.execute("DROP TRIGGER trg_branch_contacts_updated_at ON public.branch_contacts;")
-    op.execute("DROP TRIGGGER trg_audit_branch_contacts ON public.branch_contacts;")
+    op.execute("DROP TRIGGER trg_audit_branch_contacts ON public.branch_contacts;")
     op.execute("DROP TRIGGER trg_ensure_primary_contact_insert ON public.branch_contacts;")
-    op.execute("DROP TRIGGGER trg_ensure_primary_contact_update ON public.branch_contacts;")
-    op.execute("DROP TRIGGGER trg_ensure_primary_contact_delete ON public.branch_contacts;")
+    op.execute("DROP TRIGGER trg_ensure_primary_contact_update ON public.branch_contacts;")
+    op.execute("DROP TRIGGER trg_ensure_primary_contact_delete ON public.branch_contacts;")
 
     op.execute("DROP POLICY tenant_isolation_contacts_audit ON public.branch_contacts_audit;")
     op.execute("DROP POLICY tenant_isolation_contacts ON public.branch_contacts;")
