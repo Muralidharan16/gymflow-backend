@@ -41,6 +41,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-test.txt
 
+      - name: Validate deterministic pg_dump canonicalizer
+        run: python -m pytest -q tests/test_pg_dump_normalizer.py
+
       - name: Install PostgreSQL 16 extension packages
         run: |
           sudo apt-get update
@@ -136,6 +139,9 @@ jobs:
           sudo -u postgres pg_dump --schema-only --no-comments \
             --dbname=gymflow_data_migration_test \
             > "$EVIDENCE_DIR/schema-0009-before.sql"
+          python scripts/normalize_pg_dump.py \
+            "$EVIDENCE_DIR/schema-0009-before.sql" \
+            "$EVIDENCE_DIR/schema-0009-before.canonical.sql"
 
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -qAt -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_data_migration_test \
@@ -280,10 +286,17 @@ jobs:
           sudo -u postgres pg_dump --schema-only --no-comments \
             --dbname=gymflow_data_migration_test \
             > "$EVIDENCE_DIR/schema-0009-after.sql"
+          python scripts/normalize_pg_dump.py \
+            "$EVIDENCE_DIR/schema-0009-after.sql" \
+            "$EVIDENCE_DIR/schema-0009-after.canonical.sql"
 
-          cmp "$EVIDENCE_DIR/schema-0009-before.sql" "$EVIDENCE_DIR/schema-0009-after.sql" || {
+          cmp \
+            "$EVIDENCE_DIR/schema-0009-before.canonical.sql" \
+            "$EVIDENCE_DIR/schema-0009-after.canonical.sql" || {
             echo '00f downgrade did not restore the exact 0009 schema/security/ACL contract.' >&2
-            diff -u "$EVIDENCE_DIR/schema-0009-before.sql" "$EVIDENCE_DIR/schema-0009-after.sql" | head -n 600 || true
+            diff -u \
+              "$EVIDENCE_DIR/schema-0009-before.canonical.sql" \
+              "$EVIDENCE_DIR/schema-0009-after.canonical.sql" | head -n 600 || true
             exit 1
           }
 
