@@ -338,8 +338,10 @@ async def test_audit_log_captured_on_update(admin_db_session) -> None:
     branch/state rows are also fixture administration, but FORCE RLS still
     applies: the admin fixture must attach the same explicit tenant/principal
     context that production sessions use before inserting tenant-scoped rows.
-    Address mutation and audit verification remain on the reduced application
-    runtime identity.
+    Address mutation remains on the reduced application runtime identity. Direct
+    audit-table reads remain forbidden to app_runtime; immutable audit evidence is
+    verified through the reduced migration/admin session under the same tenant RLS
+    context.
     """
     from app.core.database import AsyncSessionLocal, update_session_context
     from app.models.organization import Organization
@@ -435,28 +437,51 @@ async def test_audit_log_captured_on_update(admin_db_session) -> None:
         addr.address_line1 = "enc:New Address Road"
         await db.commit()
 
-        stmt = select(AddressAuditLog).where(AddressAuditLog.org_id == org_id)
-        res = await db.execute(stmt)
-        logs = res.scalars().all()
+        runtime_can_read_audit = (
+            await db.execute(
+                text(
+                    "SELECT pg_catalog.has_table_privilege("
+                    "current_user, 'public.branch_address_audit_log', 'SELECT')"
+                )
+            )
+        ).scalar_one()
+        assert runtime_can_read_audit is False
 
-        assert len(logs) > 0
+    # Audit persistence is an administrative/evidence concern. Reattach the same
+    # tenant/principal context so FORCE RLS remains effective while the owner-level
+    # fixture session verifies what the reduced runtime caused indirectly.
+    await update_session_context(
+        admin_db_session,
+        principal_id=str(owner_id),
+        principal_type="legacy_gym_owner",
+        org_id=str(org_id),
+        role="owner",
+        ip_address="127.0.0.1",
+        user_agent="pytest-admin-audit-verifier",
+        request_id=str(uuid.uuid4()),
+    )
+    stmt = select(AddressAuditLog).where(AddressAuditLog.org_id == org_id)
+    res = await admin_db_session.execute(stmt)
+    logs = res.scalars().all()
 
-        import json
-        old_snap = logs[0].old_address
-        if isinstance(old_snap, str):
-            old_snap = json.loads(old_snap)
-        new_snap = logs[0].new_address
-        if isinstance(new_snap, str):
-            new_snap = json.loads(new_snap)
+    assert len(logs) > 0
 
-        import hashlib
-        expected_old_hash = hashlib.sha256(b"enc:12 Anna Salai").hexdigest()
-        expected_new_hash = hashlib.sha256(b"enc:New Address Road").hexdigest()
-        assert old_snap["address_line1_hash"] == expected_old_hash
-        assert new_snap["address_line1_hash"] == expected_new_hash
-        assert str(logs[0].changed_by) == str(owner_id)
-        assert logs[0].changed_by_type == "legacy_gym_owner"
-        assert str(logs[0].ip_address) == "192.168.1.50"
+    import json
+    old_snap = logs[0].old_address
+    if isinstance(old_snap, str):
+        old_snap = json.loads(old_snap)
+    new_snap = logs[0].new_address
+    if isinstance(new_snap, str):
+        new_snap = json.loads(new_snap)
+
+    import hashlib
+    expected_old_hash = hashlib.sha256(b"enc:12 Anna Salai").hexdigest()
+    expected_new_hash = hashlib.sha256(b"enc:New Address Road").hexdigest()
+    assert old_snap["address_line1_hash"] == expected_old_hash
+    assert new_snap["address_line1_hash"] == expected_new_hash
+    assert str(logs[0].changed_by) == str(owner_id)
+    assert logs[0].changed_by_type == "legacy_gym_owner"
+    assert str(logs[0].ip_address) == "192.168.1.50"
 
 
 # =====================================================================
