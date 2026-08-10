@@ -38,6 +38,7 @@ jobs:
       - name: Compile lifecycle-owned migrations
         run: |
           python -m py_compile \
+            alembic/versions/aa9303384b66_initial_schema.py \
             alembic/versions/16c65fdfd9a8_init_geo_infrastructure.py \
             alembic/versions/00f277c748ea_add_hyperscale_branch_name_and_address_.py \
             alembic/versions/f6b19eae1a7c_add_logo_upload_and_audit.py \
@@ -49,6 +50,7 @@ jobs:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
         run: |
           python -m pytest --noconftest -q \
+            tests/test_initial_schema_enum_lifecycle.py \
             tests/test_16c_geo_infrastructure_lifecycle.py \
             tests/test_asset_migration_fk_lifecycle.py \
             tests/test_371b333_spatial_index_lineage.py
