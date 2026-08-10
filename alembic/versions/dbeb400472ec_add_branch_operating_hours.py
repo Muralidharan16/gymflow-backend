@@ -8,7 +8,6 @@ Create Date: 2026-05-23 18:11:25.014739
 from typing import Sequence, Union
 
 from alembic import op
-import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
@@ -20,9 +19,25 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.execute("""ALTER TABLE public.org_branches ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'UTC';""")
+    # Alembic owns this column. A pre-existing column is drift and must fail
+    # instead of being silently adopted and later removed by downgrade.
+    op.execute("""ALTER TABLE public.org_branches ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC';""")
     op.execute("""COMMENT ON COLUMN public.org_branches.timezone IS 'Strict IANA timezone string defining local wall-clock rules.';""")
-    op.execute("""CREATE EXTENSION IF NOT EXISTS btree_gist;""")
+
+    # btree_gist is infrastructure-provisioned. This migration consumes it but
+    # must never install or take ownership of it.
+    op.execute("""
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_extension WHERE extname = 'btree_gist'
+      ) THEN
+        RAISE EXCEPTION 'Required infrastructure extension btree_gist is absent';
+      END IF;
+    END
+    $$;
+    """)
+
     op.execute("""CREATE TABLE public.organization_operating_hours (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         org_id UUID NOT NULL REFERENCES public.organizations(id),
@@ -58,11 +73,11 @@ def upgrade() -> None:
     op.execute("""CREATE TABLE public.branch_operating_hours (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         branch_id UUID NOT NULL REFERENCES public.org_branches(id),
-        day_of_week SMALLINT NOT NULL, 
-        slot_index SMALLINT NOT NULL DEFAULT 1, 
+        day_of_week SMALLINT NOT NULL,
+        slot_index SMALLINT NOT NULL DEFAULT 1,
         valid_from DATE NOT NULL DEFAULT CURRENT_DATE,
         valid_until DATE,
-        open_time TIME, close_time TIME, 
+        open_time TIME, close_time TIME,
         is_closed BOOLEAN NOT NULL DEFAULT FALSE,
         is_24_hours BOOLEAN NOT NULL DEFAULT FALSE,
         is_overnight BOOLEAN GENERATED ALWAYS AS (
@@ -72,7 +87,7 @@ def upgrade() -> None:
         created_by UUID,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
         updated_by UUID,
-        deleted_at TIMESTAMPTZ, 
+        deleted_at TIMESTAMPTZ,
         CONSTRAINT chk_day_of_week CHECK (day_of_week BETWEEN 0 AND 6),
         CONSTRAINT chk_times_logic CHECK (
             (is_closed = TRUE AND is_24_hours = FALSE AND open_time IS NULL AND close_time IS NULL) OR
@@ -111,7 +126,10 @@ def upgrade() -> None:
     );""")
     op.execute("""CREATE UNIQUE INDEX uq_branch_special_date_active ON public.branch_special_hours (branch_id, special_date) WHERE deleted_at IS NULL;""")
     op.execute("""CREATE INDEX ix_special_hours_active ON public.branch_special_hours (branch_id, special_date) WHERE deleted_at IS NULL;""")
-    op.execute("""CREATE OR REPLACE FUNCTION app_private.role_id(p_system_name TEXT)
+
+    # These helpers are revision-owned. A collision must fail rather than let a
+    # CREATE OR REPLACE silently overwrite a predecessor-owned function.
+    op.execute("""CREATE FUNCTION app_private.role_id(p_system_name TEXT)
     RETURNS INT LANGUAGE SQL STABLE AS $$
       SELECT CASE p_system_name
         WHEN 'manager' THEN 3
@@ -121,7 +139,7 @@ def upgrade() -> None:
         ELSE NULL
       END;
     $$;""")
-    op.execute("""CREATE OR REPLACE FUNCTION app_private.membership_status_id(p_name TEXT)
+    op.execute("""CREATE FUNCTION app_private.membership_status_id(p_name TEXT)
     RETURNS INT LANGUAGE SQL STABLE AS $$
       SELECT CASE p_name
         WHEN 'org_admin' THEN 1
@@ -135,9 +153,9 @@ def upgrade() -> None:
         branch_id UUID PRIMARY KEY REFERENCES public.org_branches(id),
         projection_version BIGINT NOT NULL DEFAULT 1,
         last_rebuilt_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-        source_hash TEXT NOT NULL, 
+        source_hash TEXT NOT NULL,
         timezone TEXT NOT NULL,
-        current_status VARCHAR(20) NOT NULL CHECK (current_status IN ('OPEN', 'CLOSED', 'HOLIDAY', 'NOT_CONFIGURED')), 
+        current_status VARCHAR(20) NOT NULL CHECK (current_status IN ('OPEN', 'CLOSED', 'HOLIDAY', 'NOT_CONFIGURED')),
         next_open_at TIMESTAMPTZ,
         next_close_at TIMESTAMPTZ,
         weekly_schedule JSONB NOT NULL,
@@ -210,10 +228,10 @@ def upgrade() -> None:
         JOIN public.org_branch_state obs ON b.id = obs.branch_id
         WHERE b.id = branch_hours_audit_log.branch_id
           AND b.org_id = NULLIF(current_setting('app.current_org_id', true), '')::UUID
-          AND om.user_id = NULLIF(current_setting('app.current_user_id', true), '')::UUID 
+          AND om.user_id = NULLIF(current_setting('app.current_user_id', true), '')::UUID
           AND om.deleted_at IS NULL AND obs.deleted_at IS NULL
     ));""")
-    op.execute("""CREATE OR REPLACE FUNCTION app_private.audit_branch_hours() RETURNS TRIGGER AS $$
+    op.execute("""CREATE FUNCTION app_private.audit_branch_hours() RETURNS TRIGGER AS $$
     BEGIN
       INSERT INTO public.branch_hours_audit_log (table_name, record_id, branch_id, operation, changed_by, old_data, new_data)
       VALUES (
@@ -226,7 +244,7 @@ def upgrade() -> None:
     $$ LANGUAGE plpgsql;""")
     op.execute("""CREATE TRIGGER trg_audit_branch_operating_hours AFTER INSERT OR UPDATE OR DELETE ON public.branch_operating_hours FOR EACH ROW EXECUTE FUNCTION app_private.audit_branch_hours();""")
     op.execute("""CREATE TRIGGER trg_audit_branch_special_hours AFTER INSERT OR UPDATE OR DELETE ON public.branch_special_hours FOR EACH ROW EXECUTE FUNCTION app_private.audit_branch_hours();""")
-    op.execute("""CREATE OR REPLACE FUNCTION app_private.cascade_branch_soft_delete() RETURNS TRIGGER AS $$
+    op.execute("""CREATE FUNCTION app_private.cascade_branch_soft_delete() RETURNS TRIGGER AS $$
     BEGIN
       IF NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL THEN
         UPDATE public.branch_operating_hours SET deleted_at = NEW.deleted_at WHERE branch_id = NEW.branch_id AND deleted_at IS NULL;
@@ -237,7 +255,7 @@ def upgrade() -> None:
     END;
     $$ LANGUAGE plpgsql;""")
     op.execute("""CREATE TRIGGER trg_cascade_branch_soft_delete AFTER UPDATE OF deleted_at ON public.org_branch_state FOR EACH ROW EXECUTE FUNCTION app_private.cascade_branch_soft_delete();""")
-    op.execute("""CREATE OR REPLACE FUNCTION app_private.cascade_org_soft_delete() RETURNS TRIGGER AS $$
+    op.execute("""CREATE FUNCTION app_private.cascade_org_soft_delete() RETURNS TRIGGER AS $$
     BEGIN
       IF NEW.is_active = FALSE AND OLD.is_active = TRUE THEN
         UPDATE public.organization_operating_hours SET deleted_at = clock_timestamp() WHERE org_id = NEW.id AND deleted_at IS NULL;
@@ -250,19 +268,33 @@ def upgrade() -> None:
     op.execute("""ALTER TABLE public.branch_hours_audit_log_y2026m05 ENABLE ROW LEVEL SECURITY;""")
     op.execute("""ALTER TABLE public.branch_hours_audit_log_y2026m05 FORCE ROW LEVEL SECURITY;""")
 
+
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Downgrade schema without cascading through unexpected dependencies."""
+    # Triggers on predecessor-owned relations must be detached before their
+    # revision-owned functions are removed.
     op.execute("""DROP TRIGGER IF EXISTS trg_cascade_org_soft_delete ON public.organizations;""")
     op.execute("""DROP TRIGGER IF EXISTS trg_cascade_branch_soft_delete ON public.org_branch_state;""")
     op.execute("""DROP TRIGGER IF EXISTS trg_audit_branch_special_hours ON public.branch_special_hours;""")
     op.execute("""DROP TRIGGER IF EXISTS trg_audit_branch_operating_hours ON public.branch_operating_hours;""")
+
+    # Drop revision-owned relations before helper functions because the RLS
+    # policies on these relations depend on role_id()/membership_status_id().
+    # RESTRICT is intentional: an unknown external dependency is migration drift
+    # and must block rollback rather than be silently deleted with CASCADE.
+    op.execute("""DROP TABLE IF EXISTS public.branch_hours_audit_log_y2026m05;""")
+    op.execute("""DROP TABLE IF EXISTS public.branch_hours_audit_log;""")
+    op.execute("""DROP TABLE IF EXISTS public.branch_hours_projection;""")
+    op.execute("""DROP TABLE IF EXISTS public.branch_special_hours;""")
+    op.execute("""DROP TABLE IF EXISTS public.branch_operating_hours;""")
+    op.execute("""DROP TABLE IF EXISTS public.organization_operating_hours;""")
+
     op.execute("""DROP FUNCTION IF EXISTS app_private.cascade_org_soft_delete();""")
     op.execute("""DROP FUNCTION IF EXISTS app_private.cascade_branch_soft_delete();""")
     op.execute("""DROP FUNCTION IF EXISTS app_private.audit_branch_hours();""")
     op.execute("""DROP FUNCTION IF EXISTS app_private.membership_status_id(TEXT);""")
     op.execute("""DROP FUNCTION IF EXISTS app_private.role_id(TEXT);""")
-    op.execute("""DROP TABLE IF EXISTS public.branch_hours_audit_log CASCADE;""")
-    op.execute("""DROP TABLE IF EXISTS public.branch_hours_projection CASCADE;""")
-    op.execute("""DROP TABLE IF EXISTS public.branch_special_hours CASCADE;""")
-    op.execute("""DROP TABLE IF EXISTS public.branch_operating_hours CASCADE;""")
-    op.execute("""DROP TABLE IF EXISTS public.organization_operating_hours CASCADE;""")
+
+    # The upgrade now owns this column exclusively, so downgrade must restore
+    # the predecessor schema exactly rather than leaving a hidden residue.
+    op.execute("""ALTER TABLE public.org_branches DROP COLUMN timezone;""")
