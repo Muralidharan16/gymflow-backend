@@ -11,7 +11,6 @@ from app.domain.synthetic_organizations import (
 )
 from app.services.synthetic_organizations import SyntheticOrganizationCreationService
 from tests.finance_core.admin_database import finance_admin_session
-from tests.finance_core.synthetic_database import SyntheticOrgSessionLocal
 
 
 _D11_TEST_MODULE = "test_phase6an_d10_synthetic_organization_service.py"
@@ -56,6 +55,10 @@ async def bootstrap_persistent_d11_replay_evidence(request):
     if request.node.path.name != _D11_TEST_MODULE:
         yield
         return
+
+    # Lazy import is intentional: the General lane collects Finance tests only to
+    # skip them and therefore must not require Finance-only database credentials.
+    from tests.finance_core.synthetic_database import SyntheticOrgSessionLocal
 
     module = request.module
     original_session_factory = getattr(module, "AsyncSessionLocal", None)
