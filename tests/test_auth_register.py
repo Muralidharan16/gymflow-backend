@@ -14,26 +14,72 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.main import app
-from app.models.auth import Owner
+from app.models.auth import Owner, RefreshToken
 from app.models.auth_session import AuthSession, AuthSessionFamily
 from app.models.gym import Gym
 from app.models.organization import Organization
-from conftest import AdminTestSessionLocal, cleanup_test_database_tables
+from conftest import AdminTestSessionLocal
 from app.core.redis import init_redis, get_redis_utils
 
-_AUTH_TEST_TABLES = [
-    "auth_sessions",
-    "auth_session_families",
-    "gyms",
-    "owners",
-    "organizations",
-]
+_AUTH_TEST_EMAILS = {
+    "arjun@example.com",
+    "arjun2@example.com",
+    "duplicate@example.com",
+    "fail@example.com",
+    *(f"rate{i}@example.com" for i in range(6)),
+}
+_AUTH_TEST_ORG_NAMES = {
+    "Fit Core",
+    "Fail Gym",
+    "Gym A",
+    "Gym B",
+    *(f"Gym Rate Limit {i}" for i in range(6)),
+}
 
 
 async def _clear_auth_test_data() -> None:
-    # Destructive fixture administration belongs only to the guarded test-admin
-    # identity. Never widen app_runtime/auth_runtime to make cleanup convenient.
-    await cleanup_test_database_tables(_AUTH_TEST_TABLES)
+    """Delete only rows owned by this auth-test module, in explicit FK order."""
+    async with AdminTestSessionLocal() as session:
+        owner_rows = (
+            await session.execute(
+                select(Owner.id, Owner.org_id).where(Owner.email.in_(_AUTH_TEST_EMAILS))
+            )
+        ).all()
+        owner_ids = {row[0] for row in owner_rows}
+        org_ids = {row[1] for row in owner_rows}
+
+        # Also capture a transactionally orphaned tenant root if a failure occurred
+        # after organization creation but before owner creation. Normal auth failures
+        # roll back atomically; this is a defensive cleanup boundary for tests only.
+        org_ids.update(
+            (
+                await session.execute(
+                    select(Organization.id).where(
+                        Organization.name.in_(_AUTH_TEST_ORG_NAMES)
+                    )
+                )
+            ).scalars().all()
+        )
+
+        if owner_ids:
+            await session.execute(
+                delete(AuthSession).where(AuthSession.user_id.in_(owner_ids))
+            )
+            await session.execute(
+                delete(AuthSessionFamily).where(AuthSessionFamily.user_id.in_(owner_ids))
+            )
+            await session.execute(
+                delete(RefreshToken).where(RefreshToken.owner_id.in_(owner_ids))
+            )
+
+        if org_ids:
+            await session.execute(delete(Gym).where(Gym.org_id.in_(org_ids)))
+        if owner_ids:
+            await session.execute(delete(Owner).where(Owner.id.in_(owner_ids)))
+        if org_ids:
+            await session.execute(delete(Organization).where(Organization.id.in_(org_ids)))
+
+        await session.commit()
 
 
 @pytest_asyncio.fixture(autouse=True)
