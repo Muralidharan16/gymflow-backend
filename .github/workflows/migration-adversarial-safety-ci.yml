@@ -29,35 +29,21 @@ jobs:
           ref: hardening/complete-migration-lineage
           fetch-depth: 0
 
-      - name: Extract and execute self-validating source patch
+      - name: Compile and execute self-validating source patch
         run: |
-          python <<'PY'
-          from pathlib import Path
-
-          workflow = Path('.github/workflows/_apply-0020-domain-hardening.yml')
-          lines = workflow.read_text(encoding='utf-8').splitlines()
-          start_marker = "          python <<'PY'"
-          end_marker = "          PY"
-          start = lines.index(start_marker) + 1
-          end = lines.index(end_marker, start)
-          code = "\n".join(line[10:] for line in lines[start:end]) + "\n"
-          test_generation = "\ntest = Path('tests/test_0020_contacts_migration_lifecycle.py')"
-          if test_generation not in code:
-              raise SystemExit('0020 patch test-generation boundary drift')
-          code = code[:code.index(test_generation)] + "\n"
-          Path('/tmp/apply_0020_domain_patch.py').write_text(code, encoding='utf-8')
-          PY
-
-          python /tmp/apply_0020_domain_patch.py
+          python -m py_compile scripts/apply_0020_domain_hardening.py
+          python scripts/apply_0020_domain_hardening.py
           python -m py_compile alembic/versions/0020_contacts_hardened.py
           git diff --check
 
       - name: Restore normal CI and publish source fix
         run: |
-          git checkout HEAD^ -- .github/workflows/migration-adversarial-safety-ci.yml
+          git show f9bc29d1e3acfe1cf4177486eb704266fb2176b9:.github/workflows/migration-adversarial-safety-ci.yml \
+            > .github/workflows/migration-adversarial-safety-ci.yml
           rm -f \
             .github/workflows/_apply-0020-domain-hardening.yml \
-            .github/_0020_patch_trigger
+            .github/_0020_patch_trigger \
+            scripts/apply_0020_domain_hardening.py
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
