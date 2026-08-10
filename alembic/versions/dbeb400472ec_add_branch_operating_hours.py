@@ -19,9 +19,52 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    # Alembic owns this column. A pre-existing column is drift and must fail
-    # instead of being silently adopted and later removed by downgrade.
-    op.execute("""ALTER TABLE public.org_branches ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC';""")
+    # org_branches.timezone is predecessor-owned (0005_enterprise_branches).
+    # DBEB consumes it and adds documentation, but must neither silently adopt
+    # incompatible drift nor claim ownership of the column itself.
+    op.execute("""
+    DO $$
+    DECLARE
+      timezone_column record;
+    BEGIN
+      SELECT
+        pg_catalog.format_type(attribute.atttypid, attribute.atttypmod) AS data_type,
+        attribute.attnotnull AS not_null,
+        pg_catalog.pg_get_expr(default_data.adbin, default_data.adrelid, true) AS default_expression,
+        pg_catalog.col_description(relation.oid, attribute.attnum) AS comment_text
+      INTO timezone_column
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace_data
+        ON namespace_data.oid = relation.relnamespace
+      JOIN pg_catalog.pg_attribute AS attribute
+        ON attribute.attrelid = relation.oid
+       AND attribute.attname = 'timezone'
+       AND attribute.attnum > 0
+       AND NOT attribute.attisdropped
+      LEFT JOIN pg_catalog.pg_attrdef AS default_data
+        ON default_data.adrelid = attribute.attrelid
+       AND default_data.adnum = attribute.attnum
+      WHERE namespace_data.nspname = 'public'
+        AND relation.relname = 'org_branches'
+        AND relation.relkind IN ('r', 'p');
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'Required predecessor column public.org_branches.timezone is absent';
+      END IF;
+      IF timezone_column.data_type <> 'character varying(64)'
+         OR NOT timezone_column.not_null
+         OR timezone_column.default_expression <> '''UTC''::character varying'
+         OR timezone_column.comment_text IS NOT NULL THEN
+        RAISE EXCEPTION
+          'Predecessor public.org_branches.timezone contract drifted: type=%, not_null=%, default=%, comment=%',
+          timezone_column.data_type,
+          timezone_column.not_null,
+          timezone_column.default_expression,
+          timezone_column.comment_text;
+      END IF;
+    END
+    $$;
+    """)
     op.execute("""COMMENT ON COLUMN public.org_branches.timezone IS 'Strict IANA timezone string defining local wall-clock rules.';""")
 
     # btree_gist is infrastructure-provisioned. This migration consumes it but
@@ -30,9 +73,14 @@ def upgrade() -> None:
     DO $$
     BEGIN
       IF NOT EXISTS (
-        SELECT 1 FROM pg_catalog.pg_extension WHERE extname = 'btree_gist'
+        SELECT 1
+        FROM pg_catalog.pg_extension AS extension_data
+        JOIN pg_catalog.pg_roles AS owner_role
+          ON owner_role.oid = extension_data.extowner
+        WHERE extension_data.extname = 'btree_gist'
+          AND owner_role.rolname = 'postgres'
       ) THEN
-        RAISE EXCEPTION 'Required infrastructure extension btree_gist is absent';
+        RAISE EXCEPTION 'Required infrastructure-owned extension btree_gist is absent or ownership drifted';
       END IF;
     END
     $$;
@@ -295,6 +343,6 @@ def downgrade() -> None:
     op.execute("""DROP FUNCTION IF EXISTS app_private.membership_status_id(TEXT);""")
     op.execute("""DROP FUNCTION IF EXISTS app_private.role_id(TEXT);""")
 
-    # The upgrade now owns this column exclusively, so downgrade must restore
-    # the predecessor schema exactly rather than leaving a hidden residue.
-    op.execute("""ALTER TABLE public.org_branches DROP COLUMN timezone;""")
+    # Restore the predecessor-owned column's documentation state. The column,
+    # type, nullability and default belong to 0005 and must survive DBEB rollback.
+    op.execute("""COMMENT ON COLUMN public.org_branches.timezone IS NULL;""")
