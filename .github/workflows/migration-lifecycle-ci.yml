@@ -1,0 +1,348 @@
+name: Migration Lifecycle Acceptance
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-lifecycle-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-lifecycle:
+    name: Fresh PG16 base-head-base-head equivalence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_lifecycle_test
+      PYTHONDONTWRITEBYTECODE: '1'
+      EVIDENCE_DIR: .lifecycle-evidence
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+          python -m py_compile scripts/migration_lifecycle_snapshot.py alembic/env.py
+
+      - name: Install PostgreSQL 16 extension packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+          test -f /usr/share/postgresql/16/extension/pg_partman.control
+
+      - name: Bootstrap reduced migration and managed roles
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          CREATE ROLE migration_owner
+            LOGIN PASSWORD 'ci-migration-owner'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          CREATE ROLE app_rls_executor NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_security_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_user NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE audit_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_viewer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE internal_billing_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE ops_support NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE readonly_analytics NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_runtime SET statement_timeout = '5s';
+          ALTER ROLE app_runtime SET lock_timeout = '2s';
+          ALTER ROLE app_runtime SET row_security = 'on';
+
+          GRANT app_rls_executor TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+          GRANT app_security_owner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+          GRANT test_runner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+
+          CREATE DATABASE gymflow_lifecycle_test OWNER migration_owner;
+          SQL
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_lifecycle_test <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Prove pre-migration production posture
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_lifecycle_test <<'SQL'
+          DO $$
+          DECLARE migration_record record;
+          BEGIN
+            SELECT * INTO migration_record
+            FROM pg_catalog.pg_roles
+            WHERE rolname = current_user;
+
+            IF current_user <> 'migration_owner'
+               OR migration_record.rolsuper
+               OR migration_record.rolcreatedb
+               OR migration_record.rolcreaterole
+               OR migration_record.rolinherit
+               OR migration_record.rolreplication
+               OR migration_record.rolbypassrls THEN
+              RAISE EXCEPTION 'migration_owner posture is unsafe';
+            END IF;
+
+            IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'internal_billing_worker', 'MEMBER') THEN
+              RAISE EXCEPTION 'migration_owner leaked into a runtime capability';
+            END IF;
+
+            IF NOT pg_catalog.pg_has_role(current_user, 'app_security_owner', 'SET')
+               OR NOT pg_catalog.pg_has_role(current_user, 'app_rls_executor', 'SET')
+               OR NOT pg_catalog.pg_has_role(current_user, 'test_runner', 'SET') THEN
+              RAISE EXCEPTION 'required bounded SET-only migration edges are missing';
+            END IF;
+          END
+          $$;
+          SQL
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_lifecycle_test <<'SQL'
+          DO $$
+          DECLARE expected text;
+          BEGIN
+            FOREACH expected IN ARRAY ARRAY['pg_partman','btree_gist','citext','pg_trgm','postgis']
+            LOOP
+              IF NOT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_extension AS e
+                JOIN pg_catalog.pg_roles AS r ON r.oid = e.extowner
+                WHERE e.extname = expected
+                  AND r.rolname = 'postgres'
+              ) THEN
+                RAISE EXCEPTION 'extension % is absent or not infrastructure-owned', expected;
+              END IF;
+            END LOOP;
+
+            IF (SELECT pg_catalog.pg_get_userbyid(nspowner)
+                FROM pg_catalog.pg_namespace WHERE nspname = 'partman') <> 'postgres' THEN
+              RAISE EXCEPTION 'partman schema is not infrastructure-owned';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Capture governed baseline before Alembic
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          python scripts/migration_lifecycle_snapshot.py \
+            --mode database --output "$EVIDENCE_DIR/database-baseline.json"
+          python scripts/migration_lifecycle_snapshot.py \
+            --mode cluster --output "$EVIDENCE_DIR/cluster-baseline.json"
+
+      - name: Upgrade base to HEAD first pass
+        run: |
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Prove HEAD security and infrastructure invariants
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_lifecycle_test <<'SQL'
+          DO $$
+          DECLARE schema_name text;
+          BEGIN
+            FOREACH schema_name IN ARRAY ARRAY['app_private','app_secure']
+            LOOP
+              IF to_regnamespace(schema_name) IS NULL THEN
+                RAISE EXCEPTION 'required protected schema % is absent at HEAD', schema_name;
+              END IF;
+
+              IF EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_namespace AS n
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                  COALESCE(n.nspacl, pg_catalog.acldefault('n', n.nspowner))
+                ) AS acl
+                WHERE n.nspname = schema_name
+                  AND acl.grantee = 0
+                  AND acl.privilege_type IN ('USAGE','CREATE')
+              ) THEN
+                RAISE EXCEPTION 'PUBLIC has protected-schema access on %', schema_name;
+              END IF;
+            END LOOP;
+          END
+          $$;
+          SQL
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_lifecycle_test <<'SQL'
+          DO $$
+          DECLARE expected text;
+          BEGIN
+            FOREACH expected IN ARRAY ARRAY['pg_partman','btree_gist','citext','pg_trgm','postgis']
+            LOOP
+              IF NOT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_extension AS e
+                JOIN pg_catalog.pg_roles AS r ON r.oid = e.extowner
+                WHERE e.extname = expected
+                  AND r.rolname = 'postgres'
+              ) THEN
+                RAISE EXCEPTION 'HEAD changed infrastructure ownership for extension %', expected;
+              END IF;
+            END LOOP;
+          END
+          $$;
+          SQL
+
+      - name: Capture HEAD first-pass state
+        run: |
+          python scripts/migration_lifecycle_snapshot.py \
+            --mode database --output "$EVIDENCE_DIR/database-head-1.json"
+          python scripts/migration_lifecycle_snapshot.py \
+            --mode cluster --output "$EVIDENCE_DIR/cluster-head-1.json"
+          sudo -u postgres pg_dump --schema-only --no-comments \
+            --dbname=gymflow_lifecycle_test \
+            > "$EVIDENCE_DIR/schema-head-1.sql"
+
+          cmp "$EVIDENCE_DIR/cluster-baseline.json" "$EVIDENCE_DIR/cluster-head-1.json" || {
+            echo 'Alembic mutated cluster role/membership/settings state during upgrade.' >&2
+            diff -u "$EVIDENCE_DIR/cluster-baseline.json" "$EVIDENCE_DIR/cluster-head-1.json" | head -n 400 || true
+            exit 1
+          }
+
+      - name: Downgrade HEAD to base
+        run: |
+          python -s -m alembic -c alembic.ini downgrade base
+
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_lifecycle_test <<'SQL'
+          DO $$
+          BEGIN
+            IF to_regclass('public.alembic_version') IS NOT NULL
+               AND EXISTS (SELECT 1 FROM public.alembic_version) THEN
+              RAISE EXCEPTION 'alembic_version is not empty at base';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Prove downgrade restored governed base
+        run: |
+          python scripts/migration_lifecycle_snapshot.py \
+            --mode database --output "$EVIDENCE_DIR/database-base-restored.json"
+          python scripts/migration_lifecycle_snapshot.py \
+            --mode cluster --output "$EVIDENCE_DIR/cluster-base-restored.json"
+
+          cmp "$EVIDENCE_DIR/database-baseline.json" "$EVIDENCE_DIR/database-base-restored.json" || {
+            echo 'Downgrade reached Alembic base but did not restore the governed pre-migration database state.' >&2
+            diff -u "$EVIDENCE_DIR/database-baseline.json" "$EVIDENCE_DIR/database-base-restored.json" | head -n 600 || true
+            exit 1
+          }
+
+          cmp "$EVIDENCE_DIR/cluster-baseline.json" "$EVIDENCE_DIR/cluster-base-restored.json" || {
+            echo 'Downgrade changed cluster role/membership/settings state.' >&2
+            diff -u "$EVIDENCE_DIR/cluster-baseline.json" "$EVIDENCE_DIR/cluster-base-restored.json" | head -n 400 || true
+            exit 1
+          }
+
+      - name: Re-upgrade base to HEAD second pass
+        run: |
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Capture and compare second HEAD
+        run: |
+          python scripts/migration_lifecycle_snapshot.py \
+            --mode database --output "$EVIDENCE_DIR/database-head-2.json"
+          python scripts/migration_lifecycle_snapshot.py \
+            --mode cluster --output "$EVIDENCE_DIR/cluster-head-2.json"
+          sudo -u postgres pg_dump --schema-only --no-comments \
+            --dbname=gymflow_lifecycle_test \
+            > "$EVIDENCE_DIR/schema-head-2.sql"
+
+          cmp "$EVIDENCE_DIR/database-head-1.json" "$EVIDENCE_DIR/database-head-2.json" || {
+            echo 'HEAD database catalog/security state is not deterministic across downgrade/re-upgrade.' >&2
+            diff -u "$EVIDENCE_DIR/database-head-1.json" "$EVIDENCE_DIR/database-head-2.json" | head -n 600 || true
+            exit 1
+          }
+
+          cmp "$EVIDENCE_DIR/schema-head-1.sql" "$EVIDENCE_DIR/schema-head-2.sql" || {
+            echo 'Independent pg_dump schema/owner/ACL evidence differs between HEAD passes.' >&2
+            diff -u "$EVIDENCE_DIR/schema-head-1.sql" "$EVIDENCE_DIR/schema-head-2.sql" | head -n 600 || true
+            exit 1
+          }
+
+          cmp "$EVIDENCE_DIR/cluster-baseline.json" "$EVIDENCE_DIR/cluster-head-2.json" || {
+            echo 'Re-upgrade changed cluster role/membership/settings state.' >&2
+            diff -u "$EVIDENCE_DIR/cluster-baseline.json" "$EVIDENCE_DIR/cluster-head-2.json" | head -n 400 || true
+            exit 1
+          }
+
+      - name: Re-prove final HEAD invariants
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_lifecycle_test <<'SQL'
+          DO $$
+          DECLARE migration_record record;
+          BEGIN
+            SELECT * INTO migration_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
+            IF migration_record.rolsuper OR migration_record.rolcreatedb
+               OR migration_record.rolcreaterole OR migration_record.rolinherit
+               OR migration_record.rolreplication OR migration_record.rolbypassrls THEN
+              RAISE EXCEPTION 'final migration_owner posture is unsafe';
+            END IF;
+
+            IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'internal_billing_worker', 'MEMBER') THEN
+              RAISE EXCEPTION 'final migration_owner leaked into a runtime capability';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Upload lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-lifecycle-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .lifecycle-evidence/
+          if-no-files-found: warn
+          retention-days: 14
