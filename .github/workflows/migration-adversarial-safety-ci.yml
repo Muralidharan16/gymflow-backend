@@ -44,7 +44,8 @@ jobs:
           python -m pip install -r requirements-test.txt
           python -m py_compile \
             scripts/verify_00f_adversarial.py \
-            scripts/run_00f_adversarial.py
+            scripts/run_00f_adversarial.py \
+            scripts/verify_00f_predecessor_refs.py
 
       - name: Install PostgreSQL 16 extension packages
         run: |
@@ -71,9 +72,14 @@ jobs:
           CREATE DATABASE gymflow_adv_multi OWNER migration_owner;
           CREATE DATABASE gymflow_adv_ambiguous OWNER migration_owner;
           CREATE DATABASE gymflow_adv_evolved OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_reference OWNER migration_owner;
           SQL
 
-          for database in gymflow_adv_multi gymflow_adv_ambiguous gymflow_adv_evolved; do
+          for database in \
+            gymflow_adv_multi \
+            gymflow_adv_ambiguous \
+            gymflow_adv_evolved \
+            gymflow_adv_reference; do
             sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$database" <<'SQL'
           CREATE EXTENSION btree_gist;
           CREATE EXTENSION citext;
@@ -82,13 +88,19 @@ jobs:
           SQL
           done
 
-      - name: Execute adversarial migration scenarios
+      - name: Execute core adversarial migration scenarios
         run: |
           mkdir -p "$EVIDENCE_DIR"
           python -m scripts.run_00f_adversarial \
             --multi-db gymflow_adv_multi \
             --ambiguous-db gymflow_adv_ambiguous \
             --evolved-db gymflow_adv_evolved \
+            --evidence-dir "$EVIDENCE_DIR"
+
+      - name: Prove predecessor-owned branch references block rollback preflight
+        run: |
+          python -m scripts.verify_00f_predecessor_refs \
+            --database gymflow_adv_reference \
             --evidence-dir "$EVIDENCE_DIR"
 
       - name: Upload adversarial migration evidence
