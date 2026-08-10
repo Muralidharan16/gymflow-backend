@@ -4,22 +4,26 @@ Revision ID: 708192a3b4c5
 Revises: 6f708192a3b4
 Create Date: 2026-08-10
 
-The branch tables predate the reduced PostgreSQL runtime identities.  Once the
-application stopped connecting as an owner-equivalent login, two legitimate
-production paths were exposed as missing object capabilities:
+The branch tables predate the reduced PostgreSQL runtime identities. Once the
+application stopped connecting as an owner-equivalent login, legitimate
+production paths exposed missing object capabilities:
 
-* steady-state branch APIs read branch metadata and read/update branch state via
-  the ordinary application pool; and
+* steady-state branch APIs read branch metadata/state and the tenant-scoped WKT
+  geolocation projection backing ordinary address latitude/longitude reads;
+* branch lifecycle operations update branch state via the ordinary application
+  pool; and
 * verified onboarding creates the first principal branch, links its address,
   and inserts the initial branch state via the dedicated auth/bootstrap pool.
 
-This revision grants only those operations.  It does not grant DELETE,
-TRUNCATE, REFERENCES, TRIGGER, schema CREATE, ownership, or RLS bypass.  Both
+This revision grants only those operations. It does not grant DELETE, TRUNCATE,
+REFERENCES, TRIGGER, schema CREATE, ownership, or RLS bypass. The protected
 relations must already have ENABLE + FORCE RLS so object ACLs never replace the
-tenant policy boundary.
+tenant policy boundary. Geolocation remains read-only to ordinary runtime.
 """
 
 from __future__ import annotations
+
+import re
 
 from alembic import op
 import sqlalchemy as sa
@@ -37,16 +41,22 @@ _AUTH_ROLE = "auth_runtime"
 
 _BRANCHES = "public.org_branches"
 _BRANCH_STATE = "public.org_branch_state"
+_GEOLOCATION_STATE = "public.branch_geolocation_state"
+_RELATIONS = (_BRANCHES, _BRANCH_STATE, _GEOLOCATION_STATE)
+_GEOLOCATION_POLICY = "geolocation_state_tenant_isolation"
+_TENANT_EXPR = "org_id=nullifcurrent_setting'app.current_org_id'::text,true,''::text::uuid"
 
 _RUNTIME_PRIVILEGES = {
     _BRANCHES: {"SELECT"},
     _BRANCH_STATE: {"SELECT", "UPDATE"},
+    _GEOLOCATION_STATE: {"SELECT"},
 }
 _AUTH_BOOTSTRAP_PRIVILEGES = {
     _BRANCHES: {"INSERT", "UPDATE"},
     _BRANCH_STATE: {"INSERT"},
 }
 _FORBIDDEN_PRIVILEGES = {"DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
+_GEOLOCATION_FORBIDDEN = _FORBIDDEN_PRIVILEGES | {"INSERT", "UPDATE"}
 
 
 def _scalar(bind, sql: str, params: dict[str, object] | None = None):
@@ -163,7 +173,7 @@ def _require_identity_and_roles(bind) -> None:
 
 
 def _require_relation_security(bind) -> None:
-    for relation in (_BRANCHES, _BRANCH_STATE):
+    for relation in _RELATIONS:
         row = bind.execute(
             sa.text(
                 """
@@ -190,8 +200,47 @@ def _require_relation_security(bind) -> None:
             )
 
 
+def _normalized_tenant_expr(value: object) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"[\s()]", "", str(value).lower())
+
+
+def _require_geolocation_policy(bind) -> None:
+    rows = bind.execute(
+        sa.text(
+            """
+            SELECT
+                policy_data.polname::text AS policy_name,
+                policy_data.polcmd::text AS command,
+                pg_catalog.pg_get_expr(
+                    policy_data.polqual, policy_data.polrelid, true
+                )::text AS using_expr,
+                pg_catalog.pg_get_expr(
+                    policy_data.polwithcheck, policy_data.polrelid, true
+                )::text AS check_expr
+            FROM pg_catalog.pg_policy AS policy_data
+            WHERE policy_data.polrelid = CAST(:relation AS regclass)
+            """
+        ),
+        {"relation": _GEOLOCATION_STATE},
+    ).mappings().all()
+    if len(rows) != 1 or rows[0]["policy_name"] != _GEOLOCATION_POLICY:
+        raise RuntimeError(
+            "branch geolocation policy inventory drifted: "
+            f"{[row['policy_name'] for row in rows]!r}"
+        )
+    row = rows[0]
+    if (
+        row["command"] != "*"
+        or _normalized_tenant_expr(row["using_expr"]) != _TENANT_EXPR
+        or _normalized_tenant_expr(row["check_expr"]) != _TENANT_EXPR
+    ):
+        raise RuntimeError("branch geolocation tenant policy drifted")
+
+
 def _require_no_public_dml(bind) -> None:
-    for relation in (_BRANCHES, _BRANCH_STATE):
+    for relation in _RELATIONS:
         schema_name, relation_name = relation.split(".", 1)
         rows = bind.execute(
             sa.text(
@@ -231,9 +280,9 @@ def _require_no_public_dml(bind) -> None:
 
 
 def _require_predecessor_acl(bind) -> None:
-    # These direct branch-table ACLs are introduced for the first time here.
+    # These direct runtime/bootstrap ACLs are introduced for the first time here.
     for role_name in (_RUNTIME_ROLE, _AUTH_ROLE):
-        for relation in (_BRANCHES, _BRANCH_STATE):
+        for relation in _RELATIONS:
             observed = _direct_privileges(bind, role_name, relation)
             if observed:
                 raise RuntimeError(
@@ -247,7 +296,7 @@ def _verify_final_acl(bind) -> None:
         (_RUNTIME_ROLE, _RUNTIME_PRIVILEGES),
         (_AUTH_ROLE, _AUTH_BOOTSTRAP_PRIVILEGES),
     ):
-        for relation in (_BRANCHES, _BRANCH_STATE):
+        for relation in _RELATIONS:
             expected = set(contract.get(relation, set()))
             observed = _direct_privileges(bind, role_name, relation)
             if observed != expected:
@@ -275,7 +324,12 @@ def _verify_final_acl(bind) -> None:
                         f"{role_name} lacks required {privilege} on {relation}"
                     )
 
-            for privilege in _FORBIDDEN_PRIVILEGES:
+            forbidden = (
+                _GEOLOCATION_FORBIDDEN
+                if relation == _GEOLOCATION_STATE
+                else _FORBIDDEN_PRIVILEGES
+            )
+            for privilege in forbidden:
                 if _scalar(
                     bind,
                     """
@@ -316,6 +370,9 @@ def _grant_contract() -> None:
         "GRANT SELECT, UPDATE ON TABLE public.org_branch_state TO app_runtime"
     )
     op.execute(
+        "GRANT SELECT ON TABLE public.branch_geolocation_state TO app_runtime"
+    )
+    op.execute(
         "GRANT INSERT, UPDATE ON TABLE public.org_branches TO auth_runtime"
     )
     op.execute(
@@ -331,6 +388,9 @@ def _revoke_contract() -> None:
         "REVOKE SELECT, UPDATE ON TABLE public.org_branch_state FROM app_runtime"
     )
     op.execute(
+        "REVOKE SELECT ON TABLE public.branch_geolocation_state FROM app_runtime"
+    )
+    op.execute(
         "REVOKE INSERT, UPDATE ON TABLE public.org_branches FROM auth_runtime"
     )
     op.execute(
@@ -342,6 +402,7 @@ def upgrade() -> None:
     bind = op.get_bind()
     _require_identity_and_roles(bind)
     _require_relation_security(bind)
+    _require_geolocation_policy(bind)
     _require_no_public_dml(bind)
     _require_predecessor_acl(bind)
     _grant_contract()
@@ -352,6 +413,7 @@ def downgrade() -> None:
     bind = op.get_bind()
     _require_identity_and_roles(bind)
     _require_relation_security(bind)
+    _require_geolocation_policy(bind)
     _require_no_public_dml(bind)
     _verify_final_acl(bind)
     _revoke_contract()
