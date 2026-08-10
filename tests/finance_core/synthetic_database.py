@@ -4,6 +4,7 @@ import os
 
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 
 _ENV = "SYNTHETIC_ORG_TEST_DATABASE_URL"
@@ -51,11 +52,17 @@ def _required_url():
 
 
 _synthetic_url = _required_url()
+# Pytest-asyncio may execute independent tests on distinct event loops. asyncpg
+# connections are loop-affine, so a module-level QueuePool can illegally hand a
+# connection created on a closed/foreign loop to the next test. This dedicated
+# non-production bootstrap lane is intentionally low-volume: NullPool gives each
+# session a fresh connection bound to the currently running loop and preserves
+# the separate synthetic_test_runtime database identity without altering Finance
+# Core production/runtime pooling behavior.
 synthetic_engine = create_async_engine(
     _synthetic_url,
     pool_pre_ping=True,
-    pool_size=2,
-    max_overflow=2,
+    poolclass=NullPool,
 )
 SyntheticOrgSessionLocal = async_sessionmaker(
     bind=synthetic_engine,
