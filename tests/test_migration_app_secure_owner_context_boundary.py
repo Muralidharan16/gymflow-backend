@@ -50,7 +50,7 @@ GEO_FOREIGN_KEYS = (
         "org_branches_geo_subdivision_id_fkey",
         ("geo_subdivision_id",),
         "subdivisions",
-        ("id",),
+        ("id", "country_id"),
     ),
     (
         "fk_org_branch_subdivision_country",
@@ -451,9 +451,9 @@ def _assert_effective_view_contract(text: str) -> None:
     assert CANONICAL_EFFECTIVE_VIEW_COMMENT in normalized
 
 
-def test_complete_69_revision_app_secure_file_inventory_is_closed() -> None:
+def test_complete_70_revision_app_secure_file_inventory_is_closed() -> None:
     migrations = sorted(VERSIONS.glob("*.py"))
-    assert len(migrations) == 69
+    assert len(migrations) == 70
     actual = {
         path.name
         for path in migrations
