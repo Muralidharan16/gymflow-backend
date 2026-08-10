@@ -1,0 +1,646 @@
+name: Apply bounded 0020 migration hardening
+
+on:
+  pull_request:
+    branches: [main]
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-0020-domain-hardening
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    if: github.event.pull_request.head.ref == 'hardening/complete-migration-lineage'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hardening/complete-migration-lineage
+          fetch-depth: 0
+
+      - name: Apply self-validating 0020 patch
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('alembic/versions/0020_contacts_hardened.py')
+          source = path.read_text(encoding='utf-8')
+          original = source
+
+          helper_anchor = "# RB1L7_SHARED_INFRASTRUCTURE_HELPERS_END\n\n\n\ndef upgrade():"
+          if source.count(helper_anchor) != 1:
+              raise SystemExit('0020 helper anchor count drift')
+
+          helper = r'''# RB1L7_SHARED_INFRASTRUCTURE_HELPERS_END
+
+
+_0020_DOMAIN_TYPES = (
+    "public.contact_kind_enum",
+    "public.visibility_scope_enum",
+    "public.audit_action_enum",
+    "public.verification_method_enum",
+)
+_0020_PUBLIC_RELATIONS = (
+    "branch_contacts",
+    "branch_contacts_audit",
+    "branch_contacts_audit_default",
+    "ix_contacts_org_branch_active",
+    "ix_active_branch_contacts",
+    "ix_public_contacts",
+    "ix_primary_contact_lookup",
+    "ix_contacts_search_phone",
+    "ix_contacts_search_email",
+    "ix_branch_contacts_primary_ordered",
+    "uq_public_primary_phone",
+    "uq_public_primary_email",
+    "uq_primary_contact_guard_idx",
+    "ix_audit_contact",
+    "ix_audit_branch_contacts_ordered",
+    "ix_audit_org_changed",
+)
+_0020_PRIVATE_RELATIONS = ("partition_metadata",)
+_0020_PRIVATE_FUNCTIONS = (
+    "app_private.prevent_soft_delete_resurrection()",
+    "app_private.prevent_audit_modification()",
+    "app_private.update_timestamp()",
+    "app_private.log_branch_contact_changes()",
+    "app_private.process_primary_contact_batch(uuid[])",
+    "app_private.ensure_primary_contact_insert()",
+    "app_private.ensure_primary_contact_update()",
+    "app_private.ensure_primary_contact_delete()",
+    "app_private.create_branch_contacts_audit_partition(date)",
+)
+_0020_TRIGGERS = (
+    ("branch_contacts", "trg_prevent_soft_delete_resurrection"),
+    ("branch_contacts_audit", "trg_prevent_audit_update"),
+    ("branch_contacts", "trg_branch_contacts_updated_at"),
+    ("branch_contacts", "trg_audit_branch_contacts"),
+    ("branch_contacts", "trg_ensure_primary_contact_insert"),
+    ("branch_contacts", "trg_ensure_primary_contact_update"),
+    ("branch_contacts", "trg_ensure_primary_contact_delete"),
+)
+_0020_POLICIES = (
+    ("branch_contacts", "tenant_isolation_contacts"),
+    ("branch_contacts_audit", "tenant_isolation_contacts_audit"),
+)
+
+
+def _0020_require_citext_infrastructure(bind):
+    row = _rb1l7_fetch_one(
+        bind,
+        """
+        SELECT
+            owner_role.rolname::text AS owner_name,
+            namespace_data.nspname::text AS schema_name,
+            extension_data.extversion::text AS extension_version
+        FROM pg_catalog.pg_extension AS extension_data
+        JOIN pg_catalog.pg_roles AS owner_role
+          ON owner_role.oid = extension_data.extowner
+        JOIN pg_catalog.pg_namespace AS namespace_data
+          ON namespace_data.oid = extension_data.extnamespace
+        WHERE extension_data.extname = 'citext'
+        """,
+    )
+    if (
+        row is None
+        or row["owner_name"] != "postgres"
+        or row["schema_name"] != "public"
+    ):
+        raise RuntimeError(
+            "0020 requires infrastructure-owned citext in public "
+            "with owner postgres; Alembic must not create/adopt it."
+        )
+
+
+def _0020_preflight_upgrade_domain():
+    bind = _rb1l7_bind()
+    _rb1l7_require_migration_owner(bind)
+    _0020_require_citext_infrastructure(bind)
+
+    collisions = []
+    for qualified_name in _0020_DOMAIN_TYPES:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regtype(:name) IS NOT NULL AS present",
+            {"name": qualified_name},
+        )
+        if row and row["present"]:
+            collisions.append(qualified_name)
+
+    for relation_name in _0020_PUBLIC_RELATIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regclass(:name) IS NOT NULL AS present",
+            {"name": "public." + relation_name},
+        )
+        if row and row["present"]:
+            collisions.append("public." + relation_name)
+
+    for relation_name in _0020_PRIVATE_RELATIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regclass(:name) IS NOT NULL AS present",
+            {"name": "app_private." + relation_name},
+        )
+        if row and row["present"]:
+            collisions.append("app_private." + relation_name)
+
+    for function_name in _0020_PRIVATE_FUNCTIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regprocedure(:name) IS NOT NULL AS present",
+            {"name": function_name},
+        )
+        if row and row["present"]:
+            collisions.append(function_name)
+
+    if collisions:
+        raise RuntimeError(
+            "0020 target-object collision; refusing silent adoption: "
+            + ", ".join(sorted(collisions))
+        )
+
+
+def _0020_assert_downgrade_domain_shape(bind):
+    _rb1l7_require_migration_owner(bind)
+    _0020_require_citext_infrastructure(bind)
+
+    missing = []
+    for qualified_name in _0020_DOMAIN_TYPES:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regtype(:name) IS NOT NULL AS present",
+            {"name": qualified_name},
+        )
+        if not row or not row["present"]:
+            missing.append(qualified_name)
+
+    for relation_name in _0020_PUBLIC_RELATIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regclass(:name) IS NOT NULL AS present",
+            {"name": "public." + relation_name},
+        )
+        if not row or not row["present"]:
+            missing.append("public." + relation_name)
+
+    for relation_name in _0020_PRIVATE_RELATIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regclass(:name) IS NOT NULL AS present",
+            {"name": "app_private." + relation_name},
+        )
+        if not row or not row["present"]:
+            missing.append("app_private." + relation_name)
+
+    for function_name in _0020_PRIVATE_FUNCTIONS:
+        row = _rb1l7_fetch_one(
+            bind,
+            "SELECT pg_catalog.to_regprocedure(:name) IS NOT NULL AS present",
+            {"name": function_name},
+        )
+        if not row or not row["present"]:
+            missing.append(function_name)
+
+    for relation_name, trigger_name in _0020_TRIGGERS:
+        row = _rb1l7_fetch_one(
+            bind,
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_trigger AS trigger_data
+                JOIN pg_catalog.pg_class AS relation_data
+                  ON relation_data.oid = trigger_data.tgrelid
+                JOIN pg_catalog.pg_namespace AS namespace_data
+                  ON namespace_data.oid = relation_data.relnamespace
+                WHERE namespace_data.nspname = 'public'
+                  AND relation_data.relname = :relation_name
+                  AND trigger_data.tgname = :trigger_name
+                  AND NOT trigger_data.tgisinternal
+            ) AS present
+            """,
+            {"relation_name": relation_name, "trigger_name": trigger_name},
+        )
+        if not row or not row["present"]:
+            missing.append("trigger:" + trigger_name)
+
+    for relation_name, policy_name in _0020_POLICIES:
+        row = _rb1l7_fetch_one(
+            bind,
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_policy AS policy_data
+                JOIN pg_catalog.pg_class AS relation_data
+                  ON relation_data.oid = policy_data.polrelid
+                JOIN pg_catalog.pg_namespace AS namespace_data
+                  ON namespace_data.oid = relation_data.relnamespace
+                WHERE namespace_data.nspname = 'public'
+                  AND relation_data.relname = :relation_name
+                  AND policy_data.polname = :policy_name
+            ) AS present
+            """,
+            {"relation_name": relation_name, "policy_name": policy_name},
+        )
+        if not row or not row["present"]:
+            missing.append("policy:" + policy_name)
+
+    fk = _rb1l7_fetch_one(
+        bind,
+        """
+        SELECT constraint_data.convalidated AS validated
+        FROM pg_catalog.pg_constraint AS constraint_data
+        JOIN pg_catalog.pg_class AS relation_data
+          ON relation_data.oid = constraint_data.conrelid
+        JOIN pg_catalog.pg_namespace AS namespace_data
+          ON namespace_data.oid = relation_data.relnamespace
+        WHERE namespace_data.nspname = 'public'
+          AND relation_data.relname = 'branch_contacts_audit'
+          AND constraint_data.conname = 'fk_branch_contacts_audit_org'
+          AND constraint_data.contype = 'f'
+        """,
+    )
+    if fk is None or not fk["validated"]:
+        missing.append("constraint:fk_branch_contacts_audit_org(validated)")
+
+    if missing:
+        raise RuntimeError(
+            "0020 downgrade domain-shape drift before mutation: "
+            + ", ".join(sorted(missing))
+        )
+
+
+def _0020_preflight_downgrade_domain():
+    bind = _rb1l7_bind()
+    _rb1l7_require_migration_owner(bind)
+    _0020_assert_downgrade_domain_shape(bind)
+
+    org_rows = _rb1l7_fetch_all(
+        bind,
+        "SELECT id::text AS org_id FROM public.organizations ORDER BY id",
+    )
+
+    bind.execute(sa.text("SET LOCAL ROLE app_rls_executor"))
+    try:
+        for org_row in org_rows:
+            org_id = str(org_row["org_id"])
+            bind.execute(
+                sa.text(
+                    "SELECT pg_catalog.set_config("
+                    "'app.current_org_id', :org_id, true)"
+                ),
+                {"org_id": org_id},
+            )
+            for relation_name in ("branch_contacts", "branch_contacts_audit"):
+                row = _rb1l7_fetch_one(
+                    bind,
+                    "SELECT EXISTS (SELECT 1 FROM public."
+                    + relation_name
+                    + " WHERE org_id = :org_id LIMIT 1) AS present",
+                    {"org_id": org_id},
+                )
+                if row and row["present"]:
+                    raise RuntimeError(
+                        "0020 downgrade would discard populated business/audit "
+                        f"relation public.{relation_name} for organization {org_id}"
+                    )
+
+        unexpected_metadata = _rb1l7_fetch_one(
+            bind,
+            """
+            SELECT table_name, partition_name
+            FROM app_private.partition_metadata
+            WHERE table_name <> 'branch_contacts_audit'
+            ORDER BY table_name, partition_name
+            LIMIT 1
+            """,
+        )
+        if unexpected_metadata is not None:
+            raise RuntimeError(
+                "0020 downgrade refuses partition_metadata owned by another "
+                "table: " + str(unexpected_metadata)
+            )
+
+        orphan_metadata = _rb1l7_fetch_one(
+            bind,
+            """
+            SELECT metadata.partition_name
+            FROM app_private.partition_metadata AS metadata
+            WHERE metadata.table_name = 'branch_contacts_audit'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM pg_catalog.pg_inherits AS inheritance_data
+                  JOIN pg_catalog.pg_class AS child_data
+                    ON child_data.oid = inheritance_data.inhrelid
+                  JOIN pg_catalog.pg_class AS parent_data
+                    ON parent_data.oid = inheritance_data.inhparent
+                  JOIN pg_catalog.pg_namespace AS child_namespace
+                    ON child_namespace.oid = child_data.relnamespace
+                  JOIN pg_catalog.pg_namespace AS parent_namespace
+                    ON parent_namespace.oid = parent_data.relnamespace
+                  WHERE child_namespace.nspname = 'public'
+                    AND parent_namespace.nspname = 'public'
+                    AND parent_data.relname = 'branch_contacts_audit'
+                    AND child_data.relname = metadata.partition_name
+              )
+            ORDER BY metadata.partition_name
+            LIMIT 1
+            """,
+        )
+        if orphan_metadata is not None:
+            raise RuntimeError(
+                "0020 downgrade found partition metadata without attached "
+                "partition: " + str(orphan_metadata["partition_name"])
+            )
+
+        untracked_partition = _rb1l7_fetch_one(
+            bind,
+            """
+            SELECT child_data.relname::text AS partition_name
+            FROM pg_catalog.pg_inherits AS inheritance_data
+            JOIN pg_catalog.pg_class AS child_data
+              ON child_data.oid = inheritance_data.inhrelid
+            JOIN pg_catalog.pg_class AS parent_data
+              ON parent_data.oid = inheritance_data.inhparent
+            JOIN pg_catalog.pg_namespace AS child_namespace
+              ON child_namespace.oid = child_data.relnamespace
+            JOIN pg_catalog.pg_namespace AS parent_namespace
+              ON parent_namespace.oid = parent_data.relnamespace
+            WHERE child_namespace.nspname = 'public'
+              AND parent_namespace.nspname = 'public'
+              AND parent_data.relname = 'branch_contacts_audit'
+              AND child_data.relname <> 'branch_contacts_audit_default'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM app_private.partition_metadata AS metadata
+                  WHERE metadata.table_name = 'branch_contacts_audit'
+                    AND metadata.partition_name = child_data.relname
+              )
+            ORDER BY child_data.relname
+            LIMIT 1
+            """,
+        )
+        if untracked_partition is not None:
+            raise RuntimeError(
+                "0020 downgrade found untracked audit partition: "
+                + str(untracked_partition["partition_name"])
+            )
+
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.set_config("
+                "'app.current_org_id', "
+                "'00000000-0000-0000-0000-000000000000', true)"
+            )
+        )
+    finally:
+        bind.execute(sa.text("RESET ROLE"))
+        _rb1l7_require_migration_owner(bind)
+
+
+def upgrade():'''
+          source = source.replace(helper_anchor, helper)
+
+          old_upgrade_start = '''    op = _rb1l7_upgrade_operations(globals()["op"])
+    _rb1l7_prepare_0020_shared_infrastructure()
+    op.execute("CREATE EXTENSION IF NOT EXISTS citext;")
+
+    # Create custom types (IDEMPOTENT: DO $$ BEGIN ... EXCEPTION ...)
+'''
+          new_upgrade_start = '''    op = _rb1l7_upgrade_operations(globals()["op"])
+    _0020_preflight_upgrade_domain()
+    _rb1l7_prepare_0020_shared_infrastructure()
+
+    # Custom types are revision-owned; collisions are rejected by preflight.
+'''
+          if source.count(old_upgrade_start) != 1:
+              raise SystemExit('0020 upgrade start drift')
+          source = source.replace(old_upgrade_start, new_upgrade_start)
+
+          type_start = source.index('    op.execute("""\n        DO $$ BEGIN\n            CREATE TYPE public.contact_kind_enum')
+          type_end_marker = '    # ===========================================================================\n    # SECTION 2: Externally managed cluster-role validation'
+          type_end = source.index(type_end_marker, type_start)
+          strict_types = '''    op.execute("CREATE TYPE public.contact_kind_enum AS ENUM ('phone', 'email');")
+    op.execute(
+        "CREATE TYPE public.visibility_scope_enum AS ENUM "
+        "('public', 'internal', 'management', 'emergency', 'billing');"
+    )
+    op.execute(
+        "CREATE TYPE public.audit_action_enum AS ENUM ('INSERT', 'UPDATE', 'DELETE');"
+    )
+    op.execute(
+        "CREATE TYPE public.verification_method_enum AS ENUM "
+        "('dns_mx', 'manual', 'smtp_probe', 'twilio_verify');"
+    )
+
+'''
+          source = source[:type_start] + strict_types + source[type_end:]
+
+          replacements = {
+              'CREATE TABLE IF NOT EXISTS public.branch_contacts (': 'CREATE TABLE public.branch_contacts (',
+              'CREATE TABLE IF NOT EXISTS public.branch_contacts_audit (': 'CREATE TABLE public.branch_contacts_audit (',
+              'CREATE TABLE IF NOT EXISTS public.branch_contacts_audit_default ': 'CREATE TABLE public.branch_contacts_audit_default ',
+              'CREATE TABLE IF NOT EXISTS app_private.partition_metadata (': 'CREATE TABLE app_private.partition_metadata (',
+          }
+          for old, new in replacements.items():
+              if source.count(old) != 1:
+                  raise SystemExit(f'0020 expected one occurrence: {old!r}')
+              source = source.replace(old, new)
+
+          if source.count('CREATE OR REPLACE FUNCTION app_private.') != 9:
+              raise SystemExit('0020 SECURITY DEFINER function count drift')
+          source = source.replace(
+              'CREATE OR REPLACE FUNCTION app_private.',
+              'CREATE FUNCTION app_private.',
+          )
+
+          if source.count('CONCURRENTLY IF NOT EXISTS') != 10:
+              raise SystemExit('0020 concurrent index count drift')
+          source = source.replace('CONCURRENTLY IF NOT EXISTS', 'CONCURRENTLY')
+          for index_name in (
+              'ix_audit_contact',
+              'ix_audit_branch_contacts_ordered',
+              'ix_audit_org_changed',
+          ):
+              old = f'CREATE INDEX IF NOT EXISTS {index_name}'
+              new = f'CREATE INDEX {index_name}'
+              if source.count(old) != 1:
+                  raise SystemExit(f'0020 audit index drift: {index_name}')
+              source = source.replace(old, new)
+
+          audit_fk_anchor = '    # Default partition for seamless insertions\n'
+          if source.count(audit_fk_anchor) != 1:
+              raise SystemExit('0020 audit FK anchor drift')
+          audit_fk = '''    # The tenant registry must be authoritative for rollback preflight.
+    # This validated FK prevents orphan audit tenant IDs from becoming invisible
+    # to the tenant-by-tenant FORCE-RLS scan used by downgrade.
+    op.execute("""
+        ALTER TABLE public.branch_contacts_audit
+        ADD CONSTRAINT fk_branch_contacts_audit_org
+        FOREIGN KEY (org_id)
+        REFERENCES public.organizations(id)
+        ON DELETE RESTRICT;
+    """)
+
+'''
+          source = source.replace(audit_fk_anchor, audit_fk + audit_fk_anchor)
+
+          downgrade_start = source.index('def downgrade():')
+          new_downgrade = r'''def downgrade():
+    """Remove 0020 only when predecessor 00f can be restored losslessly."""
+    state = _rb1l7_load_and_validate_0020_state()
+    _0020_preflight_downgrade_domain()
+
+    # Domain infrastructure is owned by app_rls_executor. SET LOCAL keeps the
+    # ownership switch transaction-scoped and is restored before ACL markers.
+    op.execute("SET LOCAL ROLE app_rls_executor;")
+
+    # Remove explicit dependents before their functions/tables. No IF EXISTS:
+    # catalog drift must fail rather than be silently accepted.
+    op.execute("DROP TRIGGER trg_prevent_soft_delete_resurrection ON public.branch_contacts;")
+    op.execute("DROP TRIGGER trg_prevent_audit_update ON public.branch_contacts_audit;")
+    op.execute("DROP TRIGGER trg_branch_contacts_updated_at ON public.branch_contacts;")
+    op.execute("DROP TRIGGER trg_audit_branch_contacts ON public.branch_contacts;")
+    op.execute("DROP TRIGGER trg_ensure_primary_contact_insert ON public.branch_contacts;")
+    op.execute("DROP TRIGGER trg_ensure_primary_contact_update ON public.branch_contacts;")
+    op.execute("DROP TRIGGER trg_ensure_primary_contact_delete ON public.branch_contacts;")
+
+    op.execute("DROP POLICY tenant_isolation_contacts_audit ON public.branch_contacts_audit;")
+    op.execute("DROP POLICY tenant_isolation_contacts ON public.branch_contacts;")
+
+    op.execute("DROP FUNCTION app_private.ensure_primary_contact_insert() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.ensure_primary_contact_update() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.ensure_primary_contact_delete() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.process_primary_contact_batch(UUID[]) RESTRICT;")
+    op.execute("DROP FUNCTION app_private.log_branch_contact_changes() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.update_timestamp() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.prevent_audit_modification() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.prevent_soft_delete_resurrection() RESTRICT;")
+    op.execute("DROP FUNCTION app_private.create_branch_contacts_audit_partition(DATE) RESTRICT;")
+
+    # Partition children and table-owned indexes are internal dependencies of
+    # the parents; RESTRICT still blocks unrelated external dependents.
+    op.execute("DROP TABLE public.branch_contacts_audit RESTRICT;")
+    op.execute("DROP TABLE public.branch_contacts RESTRICT;")
+    op.execute("DROP TABLE app_private.partition_metadata RESTRICT;")
+
+    op.execute("RESET ROLE;")
+    _rb1l7_restore_0020_acl_state(state)
+    _rb1l7_drop_0020_markers_and_maybe_schema(state)
+
+    # Types are revision-owned by migration_owner. RESTRICT proves no external
+    # object still depends on them; CASCADE is forbidden here.
+    op.execute("DROP TYPE public.contact_kind_enum RESTRICT;")
+    op.execute("DROP TYPE public.visibility_scope_enum RESTRICT;")
+    op.execute("DROP TYPE public.audit_action_enum RESTRICT;")
+    op.execute("DROP TYPE public.verification_method_enum RESTRICT;")
+'''
+          source = source[:downgrade_start] + new_downgrade
+
+          if source == original:
+              raise SystemExit('0020 patch made no changes')
+          if 'CREATE EXTENSION IF NOT EXISTS citext' in source:
+              raise SystemExit('0020 still creates citext')
+          if 'CREATE OR REPLACE FUNCTION app_private.' in source:
+              raise SystemExit('0020 still overwrites private functions')
+          downgrade = source[source.index('def downgrade():'):]
+          if 'CASCADE' in downgrade or 'IF EXISTS' in downgrade:
+              raise SystemExit('0020 downgrade still masks or cascades')
+          if downgrade.count(' RESTRICT') != 16:
+              raise SystemExit(f'0020 strict-drop count drift: {downgrade.count(" RESTRICT")}')
+
+          path.write_text(source, encoding='utf-8')
+
+          test = Path('tests/test_0020_contacts_migration_lifecycle.py')
+          if test.exists():
+              raise SystemExit('0020 lifecycle test collision')
+          test.write_text(r'''from pathlib import Path
+
+
+MIGRATION = (
+    Path(__file__).resolve().parents[1]
+    / "alembic"
+    / "versions"
+    / "0020_contacts_hardened.py"
+)
+
+
+def _source() -> str:
+    return MIGRATION.read_text(encoding="utf-8")
+
+
+def _upgrade(source: str) -> str:
+    return source[source.index("def upgrade():") : source.index("def downgrade():")]
+
+
+def _downgrade(source: str) -> str:
+    return source[source.index("def downgrade():") :]
+
+
+def test_0020_requires_infrastructure_owned_citext_and_never_creates_it() -> None:
+    source = _source()
+    upgrade = _upgrade(source)
+    assert "0020 requires infrastructure-owned citext" in source
+    assert "owner postgres" in source
+    assert "CREATE EXTENSION" not in upgrade
+
+
+def test_0020_revision_owned_private_functions_are_not_silently_replaced() -> None:
+    source = _source()
+    upgrade = _upgrade(source)
+    assert "target-object collision; refusing silent adoption" in source
+    assert "CREATE OR REPLACE FUNCTION app_private." not in upgrade
+    assert upgrade.count("CREATE FUNCTION app_private.") == 9
+
+
+def test_0020_audit_tenant_registry_is_validated_for_exhaustive_rls_preflight() -> None:
+    source = _source()
+    assert "fk_branch_contacts_audit_org" in source
+    assert "constraint_data.convalidated" in source
+    assert "SELECT id::text AS org_id FROM public.organizations" in source
+    assert "SET LOCAL ROLE app_rls_executor" in source
+    assert "downgrade would discard populated business/audit relation" in source
+
+
+def test_0020_downgrade_is_strict_and_non_cascading() -> None:
+    downgrade = _downgrade(_source())
+    assert "CASCADE" not in downgrade
+    assert "IF EXISTS" not in downgrade
+    assert "DROP POLICY tenant_isolation_contacts_audit" in downgrade
+    assert "DROP POLICY tenant_isolation_contacts" in downgrade
+    assert "DROP TABLE public.branch_contacts_audit RESTRICT" in downgrade
+    assert "DROP TABLE public.branch_contacts RESTRICT" in downgrade
+    assert "DROP TABLE app_private.partition_metadata RESTRICT" in downgrade
+    assert downgrade.count("DROP FUNCTION ") == 9
+    assert downgrade.count("DROP TYPE ") == 4
+
+
+def test_0020_partition_metadata_cannot_hide_foreign_or_untracked_state() -> None:
+    source = _source()
+    assert "partition_metadata owned by another table" in source
+    assert "partition metadata without attached partition" in source
+    assert "untracked audit partition" in source
+''', encoding='utf-8')
+          PY
+
+          python -m py_compile \
+            alembic/versions/0020_contacts_hardened.py \
+            tests/test_0020_contacts_migration_lifecycle.py
+          python -m pytest --noconftest -q tests/test_0020_contacts_migration_lifecycle.py
+
+          git diff --check
+          git diff -- alembic/versions/0020_contacts_hardened.py tests/test_0020_contacts_migration_lifecycle.py
+
+      - name: Commit bounded patch and remove one-shot workflow
+        run: |
+          rm .github/workflows/_apply-0020-domain-hardening.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix: harden contacts migration ownership and rollback'
+          git push origin HEAD:hardening/complete-migration-lineage
