@@ -24,6 +24,7 @@ from app.finance_core.domain.invoice_engine import (
 )
 from app.finance_core.services.billing_parties import FinanceBillingPartyCreationService
 from app.finance_core.services.invoice_engine import FinanceInvoiceEngine
+from tests.finance_core.admin_database import finance_admin_session
 from tests.finance_core.test_phase5c_invoice_engine import (
     BILLING_PARTY_ID,
     BRAND_ID,
@@ -72,7 +73,8 @@ def command(**overrides) -> BillingPartyCreationCommand:
 
 
 async def reset_finance_and_orgs() -> None:
-    async with AsyncSessionLocal() as session:
+    """Reset fixture state only through the guarded Finance admin identity."""
+    async with finance_admin_session() as session:
         await session.execute(
             text(
                 """
@@ -114,7 +116,7 @@ async def reset_finance_and_orgs() -> None:
 
 async def seed_test_organizations(*, inactive: bool = False) -> None:
     await reset_finance_and_orgs()
-    async with AsyncSessionLocal() as session:
+    async with finance_admin_session() as session:
         await session.execute(
             text(
                 """
@@ -125,13 +127,18 @@ async def seed_test_organizations(*, inactive: bool = False) -> None:
                     (:prod_org, 'Vitara Operations', 'vitara-operations', 'basic', true, 10, 'INR');
                 """
             ),
-            {"org_a": ORG_ID, "org_b": ORG_B_ID, "prod_org": PROD_ORG_ID, "active_a": not inactive},
+            {
+                "org_a": ORG_ID,
+                "org_b": ORG_B_ID,
+                "prod_org": PROD_ORG_ID,
+                "active_a": not inactive,
+            },
         )
         await session.commit()
 
 
 async def ensure_secondary_test_organization() -> None:
-    async with AsyncSessionLocal() as session:
+    async with finance_admin_session() as session:
         await session.execute(
             text(
                 """
@@ -146,6 +153,7 @@ async def ensure_secondary_test_organization() -> None:
 
 
 async def create_party(command_: BillingPartyCreationCommand):
+    # The behavior under test stays on the reduced Finance runtime.
     async with AsyncSessionLocal() as session:
         service = FinanceBillingPartyCreationService(session)
         result = await service.create_billing_party(command_)
@@ -225,11 +233,18 @@ async def test_unknown_inactive_and_production_organizations_are_rejected():
 
     await seed_test_organizations()
     with pytest.raises(FinanceBillingPartyError) as exc:
-        await create_party(command(organization_id=uuid.UUID("92000000-0000-0000-0000-000000000999"), actor_organization_id=uuid.UUID("92000000-0000-0000-0000-000000000999")))
+        await create_party(
+            command(
+                organization_id=uuid.UUID("92000000-0000-0000-0000-000000000999"),
+                actor_organization_id=uuid.UUID("92000000-0000-0000-0000-000000000999"),
+            )
+        )
     assert exc.value.code == "BILLING_PARTY_ORGANIZATION_NOT_FOUND"
 
     with pytest.raises(FinanceBillingPartyError) as exc:
-        await create_party(command(organization_id=PROD_ORG_ID, actor_organization_id=PROD_ORG_ID))
+        await create_party(
+            command(organization_id=PROD_ORG_ID, actor_organization_id=PROD_ORG_ID)
+        )
     assert exc.value.code == "BILLING_PARTY_SYNTHETIC_ORGANIZATION_REJECTED"
     assert await fetch_scalar("SELECT count(*) FROM finance.billing_parties") == 0
 
@@ -244,7 +259,9 @@ async def test_idempotency_and_duplicate_contracts_are_deterministic():
     assert replay.billing_party_id == first.billing_party_id
 
     with pytest.raises(FinanceBillingPartyError) as exc:
-        await create_party(command(idempotency_key="same-key", billing_name="TEST Changed Buyer"))
+        await create_party(
+            command(idempotency_key="same-key", billing_name="TEST Changed Buyer")
+        )
     assert exc.value.code == "BILLING_PARTY_IDEMPOTENCY_CONFLICT"
 
     other_key_replay = await create_party(command(idempotency_key="other-key"))
@@ -252,9 +269,17 @@ async def test_idempotency_and_duplicate_contracts_are_deterministic():
     assert other_key_replay.billing_party_id == first.billing_party_id
 
     with pytest.raises(FinanceBillingPartyError) as exc:
-        await create_party(command(idempotency_key="changed-key", billing_address="TEST changed synthetic address"))
+        await create_party(
+            command(
+                idempotency_key="changed-key",
+                billing_address="TEST changed synthetic address",
+            )
+        )
     assert exc.value.code == "BILLING_PARTY_DUPLICATE_CONFLICT"
-    assert await fetch_scalar("SELECT count(*) FROM finance.billing_parties WHERE organization_id = :org", {"org": ORG_ID}) == 1
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.billing_parties WHERE organization_id = :org",
+        {"org": ORG_ID},
+    ) == 1
 
 
 @pytest.mark.asyncio
@@ -266,7 +291,10 @@ async def test_concurrent_identical_and_conflicting_creation_respect_organizatio
         create_party(command(idempotency_key="concurrent-b")),
     )
     assert {first.billing_party_id, second.billing_party_id} == {first.billing_party_id}
-    assert await fetch_scalar("SELECT count(*) FROM finance.billing_parties WHERE organization_id = :org", {"org": ORG_ID}) == 1
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.billing_parties WHERE organization_id = :org",
+        {"org": ORG_ID},
+    ) == 1
 
     await reset_finance_and_orgs()
     await seed_test_organizations()
@@ -279,11 +307,23 @@ async def test_concurrent_identical_and_conflicting_creation_respect_organizatio
 
     results = await asyncio.gather(
         attempt(command(idempotency_key="conflict-a")),
-        attempt(command(idempotency_key="conflict-b", billing_address="TEST changed synthetic address")),
+        attempt(
+            command(
+                idempotency_key="conflict-b",
+                billing_address="TEST changed synthetic address",
+            )
+        ),
     )
     assert sum(not isinstance(result, FinanceBillingPartyError) for result in results) == 1
-    assert sum(isinstance(result, FinanceBillingPartyError) and result.code == "BILLING_PARTY_DUPLICATE_CONFLICT" for result in results) == 1
-    assert await fetch_scalar("SELECT count(*) FROM finance.billing_parties WHERE organization_id = :org", {"org": ORG_ID}) == 1
+    assert sum(
+        isinstance(result, FinanceBillingPartyError)
+        and result.code == "BILLING_PARTY_DUPLICATE_CONFLICT"
+        for result in results
+    ) == 1
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.billing_parties WHERE organization_id = :org",
+        {"org": ORG_ID},
+    ) == 1
 
 
 @pytest.mark.asyncio
@@ -303,11 +343,18 @@ async def test_late_failure_rolls_back_billing_party_and_idempotency():
         await session.rollback()
 
     assert await fetch_scalar("SELECT count(*) FROM finance.billing_parties") == 0
-    assert await fetch_scalar("SELECT count(*) FROM finance.idempotency_keys WHERE scope = 'finance.billing_party.create'") == 0
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.idempotency_keys WHERE scope = 'finance.billing_party.create'"
+    ) == 0
     assert await fetch_scalar("SELECT count(*) FROM finance.outbox_events") == 0
 
 
-def invoice_command(*, organization_id=ORG_ID, billing_party_id=BILLING_PARTY_ID, idempotency_key="phase6an-p2b-invoice"):
+def invoice_command(
+    *,
+    organization_id=ORG_ID,
+    billing_party_id=BILLING_PARTY_ID,
+    idempotency_key="phase6an-p2b-invoice",
+):
     return CreateDraftInvoiceCommand(
         organization_id=organization_id,
         legal_entity_id=LEGAL_ENTITY_ID,
@@ -338,10 +385,16 @@ async def invoice_rejection_counts() -> dict[str, int]:
         taxes=await fetch_scalar("SELECT count(*) FROM finance.tax_records"),
         outbox=await fetch_scalar("SELECT count(*) FROM finance.outbox_events"),
         payments=await fetch_scalar("SELECT count(*) FROM finance.payments"),
-        allocations=await fetch_scalar("SELECT count(*) FROM finance.payment_allocations"),
+        allocations=await fetch_scalar(
+            "SELECT count(*) FROM finance.payment_allocations"
+        ),
         ledger=await fetch_scalar("SELECT count(*) FROM finance.ledger_entries"),
-        invoice_series=await fetch_scalar("SELECT COALESCE(max(last_number), 0) FROM finance.invoice_series"),
-        brand_series=await fetch_scalar("SELECT COALESCE(max(last_number), 0) FROM finance.brand_ref_series"),
+        invoice_series=await fetch_scalar(
+            "SELECT COALESCE(max(last_number), 0) FROM finance.invoice_series"
+        ),
+        brand_series=await fetch_scalar(
+            "SELECT COALESCE(max(last_number), 0) FROM finance.brand_ref_series"
+        ),
     )
 
 
@@ -350,9 +403,14 @@ async def test_invoice_same_organization_billing_party_succeeds():
     await seed_master_data()
     await ensure_secondary_test_organization()
     async with AsyncSessionLocal() as session:
-        result = await FinanceInvoiceEngine(session).create_draft_invoice(invoice_command())
+        result = await FinanceInvoiceEngine(session).create_draft_invoice(
+            invoice_command()
+        )
         await session.commit()
-    row = await fetch_one("SELECT organization_id, billing_party_id, status FROM finance.invoices WHERE id = :id", {"id": result.invoice_id})
+    row = await fetch_one(
+        "SELECT organization_id, billing_party_id, status FROM finance.invoices WHERE id = :id",
+        {"id": result.invoice_id},
+    )
     assert row["organization_id"] == ORG_ID
     assert row["billing_party_id"] == BILLING_PARTY_ID
     assert row["status"] == "draft"
@@ -362,28 +420,66 @@ async def test_invoice_same_organization_billing_party_succeeds():
 @pytest.mark.parametrize(
     ("setup_sql", "command_overrides", "message"),
     [
-        ("UPDATE finance.billing_parties SET organization_id = :org_b WHERE id = :billing_party_id", {}, "does not belong"),
-        ("UPDATE finance.billing_parties SET organization_id = NULL WHERE id = :billing_party_id", {}, "ownership is required"),
-        ("UPDATE finance.billing_parties SET status = 'inactive' WHERE id = :billing_party_id", {}, "not active"),
+        (
+            "UPDATE finance.billing_parties SET organization_id = :org_b WHERE id = :billing_party_id",
+            {},
+            "does not belong",
+        ),
+        (
+            "UPDATE finance.billing_parties SET organization_id = NULL WHERE id = :billing_party_id",
+            {},
+            "ownership is required",
+        ),
+        (
+            "UPDATE finance.billing_parties SET status = 'inactive' WHERE id = :billing_party_id",
+            {},
+            "not active",
+        ),
         ("", {"organization_id": None}, "organization is required"),
-        ("", {"organization_id": uuid.UUID("92000000-0000-0000-0000-000000000999")}, "organization was not found"),
-        ("UPDATE organizations SET is_active = false WHERE id = :org_a", {}, "organization is not active"),
-        ("", {"billing_party_id": uuid.UUID("92000000-0000-0000-0000-000000000999")}, "master data is incomplete"),
+        (
+            "",
+            {"organization_id": uuid.UUID("92000000-0000-0000-0000-000000000999")},
+            "organization was not found",
+        ),
+        (
+            "UPDATE organizations SET is_active = false WHERE id = :org_a",
+            {},
+            "organization is not active",
+        ),
+        (
+            "",
+            {"billing_party_id": uuid.UUID("92000000-0000-0000-0000-000000000999")},
+            "master data is incomplete",
+        ),
     ],
 )
-async def test_invoice_ownership_rejections_are_zero_mutation(setup_sql, command_overrides, message):
+async def test_invoice_ownership_rejections_are_zero_mutation(
+    setup_sql, command_overrides, message
+):
     await seed_master_data()
     if setup_sql and ":org_b" in setup_sql:
         await ensure_secondary_test_organization()
     if setup_sql:
-        async with AsyncSessionLocal() as session:
-            await session.execute(text(setup_sql), {"org_a": ORG_ID, "org_b": ORG_B_ID, "billing_party_id": BILLING_PARTY_ID})
-            await session.commit()
+        params = {
+            "org_a": ORG_ID,
+            "org_b": ORG_B_ID,
+            "billing_party_id": BILLING_PARTY_ID,
+        }
+        if setup_sql.startswith("UPDATE organizations"):
+            async with finance_admin_session() as session:
+                await session.execute(text(setup_sql), params)
+                await session.commit()
+        else:
+            async with AsyncSessionLocal() as session:
+                await session.execute(text(setup_sql), params)
+                await session.commit()
     before = await invoice_rejection_counts()
 
     async with AsyncSessionLocal() as session:
         with pytest.raises(FinanceInvoiceValidationError, match=message):
-            await FinanceInvoiceEngine(session).create_draft_invoice(invoice_command(**command_overrides))
+            await FinanceInvoiceEngine(session).create_draft_invoice(
+                invoice_command(**command_overrides)
+            )
         await session.rollback()
 
     assert await invoice_rejection_counts() == before
@@ -393,11 +489,18 @@ async def test_invoice_ownership_rejections_are_zero_mutation(setup_sql, command
 async def test_issue_invoice_revalidates_billing_party_before_number_consumption():
     await seed_master_data()
     async with AsyncSessionLocal() as session:
-        draft = await FinanceInvoiceEngine(session).create_draft_invoice(invoice_command(idempotency_key="issue-guard-draft"))
+        draft = await FinanceInvoiceEngine(session).create_draft_invoice(
+            invoice_command(idempotency_key="issue-guard-draft")
+        )
         await session.commit()
     await ensure_secondary_test_organization()
     async with AsyncSessionLocal() as session:
-        await session.execute(text("UPDATE finance.billing_parties SET organization_id = :org_b WHERE id = :billing_party_id"), {"org_b": ORG_B_ID, "billing_party_id": BILLING_PARTY_ID})
+        await session.execute(
+            text(
+                "UPDATE finance.billing_parties SET organization_id = :org_b WHERE id = :billing_party_id"
+            ),
+            {"org_b": ORG_B_ID, "billing_party_id": BILLING_PARTY_ID},
+        )
         await session.commit()
     before = await invoice_rejection_counts()
     before["invoices"] = 1
@@ -405,14 +508,20 @@ async def test_issue_invoice_revalidates_billing_party_before_number_consumption
 
     async with AsyncSessionLocal() as session:
         with pytest.raises(FinanceInvoiceValidationError, match="does not belong"):
-            await FinanceInvoiceEngine(session).issue_invoice(IssueInvoiceCommand(invoice_id=draft.invoice_id, idempotency_key="issue-guard"))
+            await FinanceInvoiceEngine(session).issue_invoice(
+                IssueInvoiceCommand(
+                    invoice_id=draft.invoice_id, idempotency_key="issue-guard"
+                )
+            )
         await session.rollback()
 
     after = await invoice_rejection_counts()
     assert after["invoice_series"] == 0
     assert after["brand_series"] == 0
     assert after["outbox"] == 0
-    assert await fetch_scalar("SELECT status FROM finance.invoices WHERE id = :id", {"id": draft.invoice_id}) == "draft"
+    assert await fetch_scalar(
+        "SELECT status FROM finance.invoices WHERE id = :id", {"id": draft.invoice_id}
+    ) == "draft"
     assert after == before
 
 
@@ -420,25 +529,38 @@ async def test_issue_invoice_revalidates_billing_party_before_number_consumption
 async def test_issue_invoice_revalidates_active_organization_before_number_consumption():
     await seed_master_data()
     async with AsyncSessionLocal() as session:
-        draft = await FinanceInvoiceEngine(session).create_draft_invoice(invoice_command(idempotency_key="issue-org-guard-draft"))
+        draft = await FinanceInvoiceEngine(session).create_draft_invoice(
+            invoice_command(idempotency_key="issue-org-guard-draft")
+        )
         await session.commit()
-    async with AsyncSessionLocal() as session:
-        await session.execute(text("UPDATE organizations SET is_active = false WHERE id = :org_id"), {"org_id": ORG_ID})
+    async with finance_admin_session() as session:
+        await session.execute(
+            text("UPDATE organizations SET is_active = false WHERE id = :org_id"),
+            {"org_id": ORG_ID},
+        )
         await session.commit()
     before = await invoice_rejection_counts()
     before["invoices"] = 1
     before["lines"] = 1
 
     async with AsyncSessionLocal() as session:
-        with pytest.raises(FinanceInvoiceValidationError, match="organization is not active"):
-            await FinanceInvoiceEngine(session).issue_invoice(IssueInvoiceCommand(invoice_id=draft.invoice_id, idempotency_key="issue-org-guard"))
+        with pytest.raises(
+            FinanceInvoiceValidationError, match="organization is not active"
+        ):
+            await FinanceInvoiceEngine(session).issue_invoice(
+                IssueInvoiceCommand(
+                    invoice_id=draft.invoice_id, idempotency_key="issue-org-guard"
+                )
+            )
         await session.rollback()
 
     after = await invoice_rejection_counts()
     assert after["invoice_series"] == 0
     assert after["brand_series"] == 0
     assert after["outbox"] == 0
-    assert await fetch_scalar("SELECT status FROM finance.invoices WHERE id = :id", {"id": draft.invoice_id}) == "draft"
+    assert await fetch_scalar(
+        "SELECT status FROM finance.invoices WHERE id = :id", {"id": draft.invoice_id}
+    ) == "draft"
     assert after == before
 
 
@@ -456,12 +578,18 @@ async def test_billing_party_metadata_cannot_override_invoice_ownership():
                 WHERE id = :billing_party_id
                 """
             ),
-            {"org_a": str(ORG_ID), "org_b": ORG_B_ID, "billing_party_id": BILLING_PARTY_ID},
+            {
+                "org_a": str(ORG_ID),
+                "org_b": ORG_B_ID,
+                "billing_party_id": BILLING_PARTY_ID,
+            },
         )
         await session.commit()
 
     with pytest.raises(FinanceInvoiceValidationError, match="does not belong"):
         async with AsyncSessionLocal() as session:
-            await FinanceInvoiceEngine(session).create_draft_invoice(invoice_command(idempotency_key="metadata-no-auth"))
+            await FinanceInvoiceEngine(session).create_draft_invoice(
+                invoice_command(idempotency_key="metadata-no-auth")
+            )
             await session.commit()
     assert await fetch_scalar("SELECT count(*) FROM finance.invoices") == 0
