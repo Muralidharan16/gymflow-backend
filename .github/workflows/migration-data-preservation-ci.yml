@@ -111,7 +111,7 @@ jobs:
               ST_SetSRID(ST_MakePoint(79.8083, 11.9416), 4326)::geography,
               'google',
               11.9416, 79.8083,
-              'verified', 'google', clock_timestamp(), TRUE,
+              'verified', 'google_places_api', clock_timestamp(), TRUE,
               '123 Heritage Road, Puducherry 605001'
           );
 
