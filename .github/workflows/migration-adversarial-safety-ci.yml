@@ -15,70 +15,135 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  repair-0020-trigger-drops:
-    name: Repair generated 0020 trigger drops
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'hardening/complete-migration-lineage'
-    permissions:
-      contents: write
+  adversarial-00f:
+    name: Adversarial migration production safety
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
+
+    env:
+      MIGRATION_USER: migration_owner
+      MIGRATION_PASSWORD: ci-migration-owner
+      PGHOST: 127.0.0.1
+      PGPORT: '5432'
+      EVIDENCE_DIR: migration-adversarial-evidence
+      PYTHONDONTWRITEBYTECODE: '1'
+
     steps:
-      - name: Checkout hardening head
+      - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
-          ref: hardening/complete-migration-lineage
-          fetch-depth: 0
+          python-version: '3.12'
+          cache: pip
 
-      - name: Correct and validate exact trigger-drop contract
-        id: repair
+      - name: Install project dependencies
         run: |
-          python <<'PY'
-          from pathlib import Path
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+          python -m py_compile \
+            scripts/verify_00f_adversarial.py \
+            scripts/run_00f_adversarial.py \
+            scripts/verify_00f_predecessor_refs.py \
+            scripts/verify_0002_populated_rollback.py \
+            scripts/verify_0003_populated_rollback.py \
+            scripts/verify_0004_maps_rollback.py \
+            scripts/verify_0006_audit_outbox_rollback.py
 
-          path = Path('alembic/versions/0020_contacts_hardened.py')
-          source = path.read_text(encoding='utf-8')
-          bad = 'DROP TRIGGGER '
-          count = source.count(bad)
-          if count not in (0, 3):
-              raise SystemExit(f'0020 unexpected TRIGGGER count: {count}')
-          if count == 3:
-              source = source.replace(bad, 'DROP TRIGGER ')
-              path.write_text(source, encoding='utf-8')
-
-          source = path.read_text(encoding='utf-8')
-          downgrade = source[source.index('def downgrade():'):]
-          expected = (
-              'DROP TRIGGER trg_prevent_soft_delete_resurrection ON public.branch_contacts;',
-              'DROP TRIGGER trg_prevent_audit_update ON public.branch_contacts_audit;',
-              'DROP TRIGGER trg_branch_contacts_updated_at ON public.branch_contacts;',
-              'DROP TRIGGER trg_audit_branch_contacts ON public.branch_contacts;',
-              'DROP TRIGGER trg_ensure_primary_contact_insert ON public.branch_contacts;',
-              'DROP TRIGGER trg_ensure_primary_contact_update ON public.branch_contacts;',
-              'DROP TRIGGER trg_ensure_primary_contact_delete ON public.branch_contacts;',
-          )
-          if 'TRIGGGER' in downgrade:
-              raise SystemExit('0020 malformed DROP TRIGGER token remains')
-          for statement in expected:
-              if downgrade.count(statement) != 1:
-                  raise SystemExit(f'0020 trigger-drop contract drift: {statement!r}')
-          if 'CASCADE' in downgrade:
-              raise SystemExit('0020 downgrade unexpectedly contains CASCADE')
-          PY
-          python -m py_compile alembic/versions/0020_contacts_hardened.py
-          git diff --check
-          if git diff --quiet -- alembic/versions/0020_contacts_hardened.py; then
-            echo 'changed=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'changed=true' >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish exact migration correction
-        if: steps.repair.outputs.changed == 'true'
+      - name: Install PostgreSQL 16 extension packages
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add alembic/versions/0020_contacts_hardened.py
-          test "$(git diff --cached --name-only)" = 'alembic/versions/0020_contacts_hardened.py'
-          git diff --cached --check
-          git commit -m 'fix migration 0020 trigger drop syntax'
-          git push origin HEAD:hardening/complete-migration-lineage
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+
+      - name: Bootstrap isolated reduced-role databases
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          CREATE ROLE migration_owner
+            LOGIN PASSWORD 'ci-migration-owner'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_viewer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE ops_support NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE DATABASE gymflow_adv_0002 OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_0003 OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_0004 OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_0006 OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_multi OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_ambiguous OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_evolved OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_reference OWNER migration_owner;
+          SQL
+
+          for database in \
+            gymflow_adv_0002 \
+            gymflow_adv_0003 \
+            gymflow_adv_0004 \
+            gymflow_adv_0006 \
+            gymflow_adv_multi \
+            gymflow_adv_ambiguous \
+            gymflow_adv_evolved \
+            gymflow_adv_reference; do
+            sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$database" <<'SQL'
+          CREATE EXTENSION btree_gist;
+          CREATE EXTENSION citext;
+          CREATE EXTENSION pg_trgm;
+          CREATE EXTENSION postgis;
+          SQL
+          done
+
+      - name: Prove populated 0002 rollback blocks before mutation
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          python -m scripts.verify_0002_populated_rollback \
+            --database gymflow_adv_0002 \
+            --evidence-dir "$EVIDENCE_DIR"
+
+      - name: Prove populated 0003 security rollback blocks before mutation
+        run: |
+          python -m scripts.verify_0003_populated_rollback \
+            --database gymflow_adv_0003 \
+            --evidence-dir "$EVIDENCE_DIR"
+
+      - name: Prove 0004 durable Maps and rebuildable-cache rollback policy
+        run: |
+          python -m scripts.verify_0004_maps_rollback \
+            --database gymflow_adv_0004 \
+            --evidence-dir "$EVIDENCE_DIR"
+
+      - name: Prove 0006 audit and outbox rollback policy
+        run: |
+          python -m scripts.verify_0006_audit_outbox_rollback \
+            --database gymflow_adv_0006 \
+            --evidence-dir "$EVIDENCE_DIR"
+
+      - name: Execute core 0009-00f adversarial migration scenarios
+        run: |
+          python -m scripts.run_00f_adversarial \
+            --multi-db gymflow_adv_multi \
+            --ambiguous-db gymflow_adv_ambiguous \
+            --evolved-db gymflow_adv_evolved \
+            --evidence-dir "$EVIDENCE_DIR"
+
+      - name: Prove predecessor-owned branch references block rollback preflight
+        run: |
+          python -m scripts.verify_00f_predecessor_refs \
+            --database gymflow_adv_reference \
+            --evidence-dir "$EVIDENCE_DIR"
+
+      - name: Upload adversarial migration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-adversarial-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: migration-adversarial-evidence/
+          if-no-files-found: error
+          retention-days: 14
