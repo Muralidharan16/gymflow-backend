@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
   legacy-address-to-branch:
-    name: Preserve populated org address through 0005 to 00f
+    name: Preserve populated org address through 0009-00f roundtrip
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     env:
       MIGRATION_PASSWORD: ci-migration-owner
@@ -79,7 +79,7 @@ jobs:
           python -s -m alembic -c alembic.ini upgrade 0004_google_maps_integration 2>&1 \
             | tee "$EVIDENCE_DIR/upgrade-0004.log"
 
-      - name: Seed realistic legacy organization and verified address
+      - name: Seed realistic non-default legacy organization and address
         run: |
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_data_migration_test <<'SQL'
@@ -96,43 +96,76 @@ jobs:
               id, org_id, address_type,
               address_line1, address_line2, city, state_province,
               postal_code, country_code, label,
+              effective_from, effective_until,
               is_verified, verified_at, verification_source,
               coordinates, coordinates_source,
               latitude, longitude,
+              maps_embed_allowed,
               maps_verification_status, maps_verification_source,
-              maps_last_verified_at, is_primary, formatted_address
+              maps_last_verified_at, maps_updated_at,
+              maps_next_retry_at, maps_retry_count,
+              is_primary, formatted_address
           ) VALUES (
               '22222222-2222-4222-8222-222222222222',
               '11111111-1111-4111-8111-111111111111',
               'operational',
               'enc:123 Heritage Road', 'Suite 4', 'Puducherry', 'Puducherry',
               '605001', 'IN', 'Legacy Main',
-              TRUE, clock_timestamp(), 'google',
+              '2026-05-01 00:00:00+00', '2027-05-01 00:00:00+00',
+              TRUE, '2026-05-18 08:00:00+00', 'google',
               ST_SetSRID(ST_MakePoint(79.8083, 11.9416), 4326)::geography,
               'google',
               11.9416, 79.8083,
-              'verified', 'google_places_api', clock_timestamp(), TRUE,
-              '123 Heritage Road, Puducherry 605001'
+              FALSE,
+              'verified', 'google_places_api',
+              '2026-05-18 10:00:00+00', '2026-05-18 09:00:00+00',
+              '2026-05-19 09:00:00+00', 3,
+              TRUE, '123 Heritage Road, Puducherry 605001'
           );
-
-          SELECT row_to_json(address_row)
-          FROM (
-              SELECT id, org_id, address_type, address_line1, address_line2,
-                     city, state_province, postal_code, country_code,
-                     is_verified, verification_source,
-                     ST_AsText(coordinates::geometry) AS coordinates_wkt,
-                     latitude, longitude, maps_verification_status,
-                     maps_verification_source, is_primary, formatted_address
-              FROM public.organization_addresses
-              WHERE id = '22222222-2222-4222-8222-222222222222'
-          ) AS address_row;
           SQL
 
-      - name: Upgrade populated database through 00f
+      - name: Upgrade populated database to exact 0009 predecessor
+        run: |
+          set -o pipefail
+          python -s -m alembic -c alembic.ini upgrade 0009_view_security_invoker 2>&1 \
+            | tee "$EVIDENCE_DIR/upgrade-0009.log"
+          python -s -m alembic -c alembic.ini current
+
+      - name: Capture populated 0009 predecessor contract
+        run: |
+          sudo -u postgres pg_dump --schema-only --no-comments \
+            --dbname=gymflow_data_migration_test \
+            > "$EVIDENCE_DIR/schema-0009-before.sql"
+
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -qAt -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_data_migration_test \
+            -c "SELECT row_to_json(s)::text FROM (SELECT id, org_id, address_type, address_line1, address_line2, city, state_province, postal_code, country_code, label, effective_from, effective_until, is_verified, verified_at, verification_source, ST_AsEWKT(coordinates::geometry) AS coordinates_ewkt, coordinates_source, latitude, longitude, maps_embed_allowed, maps_verification_status, maps_verification_error, maps_verification_source, maps_last_verified_at, maps_updated_at, maps_next_retry_at, maps_retry_count, is_primary, formatted_address, geocoding_failed FROM public.organization_addresses WHERE id = '22222222-2222-4222-8222-222222222222') AS s;" \
+            > "$EVIDENCE_DIR/address-0009-before.json"
+
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -qAt -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_data_migration_test <<'SQL'
+          SELECT pg_catalog.set_config(
+              'app.current_org_id',
+              '11111111-1111-4111-8111-111111111111',
+              false
+          );
+          DO $$
+          BEGIN
+              IF EXISTS (
+                  SELECT 1 FROM public.org_branches
+                  WHERE org_id = '11111111-1111-4111-8111-111111111111'::uuid
+              ) THEN
+                  RAISE EXCEPTION '0009 predecessor unexpectedly contains a branch for the seeded organization';
+              END IF;
+          END
+          $$;
+          SQL
+
+      - name: Upgrade populated database from 0009 through 00f
         run: |
           set -o pipefail
           python -s -m alembic -c alembic.ini upgrade 00f277c748ea 2>&1 \
-            | tee "$EVIDENCE_DIR/upgrade-00f.log"
+            | tee "$EVIDENCE_DIR/upgrade-00f-first.log"
 
       - name: Prove legacy data survived branch-address conversion
         run: |
@@ -143,10 +176,8 @@ jobs:
               address_row record;
               branch_row record;
               geo_row record;
+              expected_branch_id uuid;
           BEGIN
-              -- All target surfaces are FORCE-RLS by the end of 00f. Verify
-              -- the migrated row through the real tenant boundary rather than
-              -- relying on table-owner visibility or weakening row security.
               PERFORM pg_catalog.set_config(
                   'app.current_org_id',
                   '11111111-1111-4111-8111-111111111111',
@@ -158,7 +189,7 @@ jobs:
               WHERE id = '22222222-2222-4222-8222-222222222222';
 
               IF NOT FOUND THEN
-                  RAISE EXCEPTION 'legacy organization address was deleted during 0005->00f upgrade';
+                  RAISE EXCEPTION 'legacy organization address was deleted during 0009->00f upgrade';
               END IF;
 
               IF address_row.org_id <> '11111111-1111-4111-8111-111111111111'::uuid
@@ -169,23 +200,38 @@ jobs:
                  OR address_row.state_province <> 'Puducherry'
                  OR address_row.postal_code <> '605001'
                  OR address_row.country_code <> 'IN'
+                 OR address_row.label <> 'Legacy Main'
+                 OR address_row.effective_from <> '2026-05-01 00:00:00+00'::timestamptz
+                 OR address_row.effective_until <> '2027-05-01 00:00:00+00'::timestamptz
+                 OR address_row.maps_embed_allowed IS DISTINCT FROM FALSE
                  OR address_row.formatted_address <> '123 Heritage Road, Puducherry 605001'
                  OR address_row.branch_id IS NULL THEN
-                  RAISE EXCEPTION 'legacy address identity/core data was not preserved: %', row_to_json(address_row);
+                  RAISE EXCEPTION 'legacy address identity/core/compatibility data was not preserved: %', row_to_json(address_row);
               END IF;
 
+              expected_branch_id := (
+                  md5(
+                      '11111111-1111-4111-8111-111111111111:' ||
+                      '22222222-2222-4222-8222-222222222222-00f-legacy-branch'
+                  )
+              )::uuid;
+
               SELECT b.id, b.org_id, b.branch_code, b.internal_slug,
-                     b.address_id, s.is_primary, s.is_active, s.branch_status
+                     b.address_id, b.branch_metadata,
+                     s.is_primary, s.is_active, s.branch_status
               INTO branch_row
               FROM public.org_branches AS b
               JOIN public.org_branch_state AS s ON s.branch_id = b.id
               WHERE b.id = address_row.branch_id;
 
               IF NOT FOUND
+                 OR branch_row.id <> expected_branch_id
                  OR branch_row.org_id <> address_row.org_id
                  OR branch_row.branch_code <> 'MAIN'
                  OR branch_row.internal_slug::text <> 'main'
                  OR branch_row.address_id <> address_row.id
+                 OR branch_row.branch_metadata->>'migration_00f_legacy_backfill' <> 'true'
+                 OR branch_row.branch_metadata->>'legacy_address_id' <> address_row.id::text
                  OR NOT branch_row.is_primary
                  OR NOT branch_row.is_active
                  OR branch_row.branch_status <> 'active' THEN
@@ -198,6 +244,8 @@ jobs:
                   last_known_good_coordinates,
                   validation_status,
                   geocode_attempts,
+                  last_geocode_attempt_at,
+                  next_retry_at,
                   geocoded_at,
                   geocode_provider
               INTO geo_row
@@ -209,8 +257,140 @@ jobs:
                  OR geo_row.coordinates IS NULL
                  OR geo_row.last_known_good_coordinates IS NULL
                  OR geo_row.validation_status <> 'success'
+                 OR geo_row.geocode_attempts <> 3
+                 OR geo_row.last_geocode_attempt_at <> '2026-05-18 09:00:00+00'::timestamptz
+                 OR geo_row.next_retry_at <> '2026-05-19 09:00:00+00'::timestamptz
+                 OR geo_row.geocoded_at <> '2026-05-18 10:00:00+00'::timestamptz
                  OR geo_row.geocode_provider <> 'google_places_api' THEN
                   RAISE EXCEPTION 'legacy geolocation/verification state was not preserved: %', row_to_json(geo_row);
+              END IF;
+          END
+          $$;
+          SQL
+
+      - name: Downgrade populated 00f database to 0009
+        run: |
+          set -o pipefail
+          python -s -m alembic -c alembic.ini downgrade 0009_view_security_invoker 2>&1 \
+            | tee "$EVIDENCE_DIR/downgrade-00f-to-0009.log"
+          python -s -m alembic -c alembic.ini current
+
+      - name: Prove exact populated 0009 restoration
+        run: |
+          sudo -u postgres pg_dump --schema-only --no-comments \
+            --dbname=gymflow_data_migration_test \
+            > "$EVIDENCE_DIR/schema-0009-after.sql"
+
+          cmp "$EVIDENCE_DIR/schema-0009-before.sql" "$EVIDENCE_DIR/schema-0009-after.sql" || {
+            echo '00f downgrade did not restore the exact 0009 schema/security/ACL contract.' >&2
+            diff -u "$EVIDENCE_DIR/schema-0009-before.sql" "$EVIDENCE_DIR/schema-0009-after.sql" | head -n 600 || true
+            exit 1
+          }
+
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -qAt -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_data_migration_test \
+            -c "SELECT row_to_json(s)::text FROM (SELECT id, org_id, address_type, address_line1, address_line2, city, state_province, postal_code, country_code, label, effective_from, effective_until, is_verified, verified_at, verification_source, ST_AsEWKT(coordinates::geometry) AS coordinates_ewkt, coordinates_source, latitude, longitude, maps_embed_allowed, maps_verification_status, maps_verification_error, maps_verification_source, maps_last_verified_at, maps_updated_at, maps_next_retry_at, maps_retry_count, is_primary, formatted_address, geocoding_failed FROM public.organization_addresses WHERE id = '22222222-2222-4222-8222-222222222222') AS s;" \
+            > "$EVIDENCE_DIR/address-0009-after.json"
+
+          cmp "$EVIDENCE_DIR/address-0009-before.json" "$EVIDENCE_DIR/address-0009-after.json" || {
+            echo '00f downgrade reached 0009 but did not restore the populated predecessor row exactly.' >&2
+            diff -u "$EVIDENCE_DIR/address-0009-before.json" "$EVIDENCE_DIR/address-0009-after.json" || true
+            exit 1
+          }
+
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_data_migration_test <<'SQL'
+          SELECT pg_catalog.set_config(
+              'app.current_org_id',
+              '11111111-1111-4111-8111-111111111111',
+              false
+          );
+          DO $$
+          BEGIN
+              IF EXISTS (
+                  SELECT 1
+                  FROM information_schema.columns
+                  WHERE table_schema = 'public'
+                    AND table_name = 'organization_addresses'
+                    AND column_name = 'branch_id'
+              ) THEN
+                  RAISE EXCEPTION '00f-owned branch_id column survived downgrade to 0009';
+              END IF;
+
+              IF to_regclass('public.branch_geolocation_state') IS NOT NULL THEN
+                  RAISE EXCEPTION '00f-owned branch_geolocation_state survived downgrade to 0009';
+              END IF;
+
+              IF EXISTS (
+                  SELECT 1
+                  FROM public.org_branches
+                  WHERE org_id = '11111111-1111-4111-8111-111111111111'::uuid
+                    AND branch_metadata->>'migration_00f_legacy_backfill' = 'true'
+              ) THEN
+                  RAISE EXCEPTION '00f-synthesized branch survived downgrade to 0009';
+              END IF;
+          END
+          $$;
+          SQL
+
+      - name: Re-upgrade populated 0009 database through 00f
+        run: |
+          set -o pipefail
+          python -s -m alembic -c alembic.ini upgrade 00f277c748ea 2>&1 \
+            | tee "$EVIDENCE_DIR/reupgrade-0009-to-00f.log"
+
+      - name: Prove deterministic populated re-upgrade
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_data_migration_test <<'SQL'
+          DO $$
+          DECLARE
+              address_row record;
+              branch_row record;
+              geo_row record;
+              expected_branch_id uuid;
+          BEGIN
+              PERFORM pg_catalog.set_config(
+                  'app.current_org_id',
+                  '11111111-1111-4111-8111-111111111111',
+                  true
+              );
+
+              SELECT * INTO address_row
+              FROM public.organization_addresses
+              WHERE id = '22222222-2222-4222-8222-222222222222';
+
+              expected_branch_id := (
+                  md5(
+                      '11111111-1111-4111-8111-111111111111:' ||
+                      '22222222-2222-4222-8222-222222222222-00f-legacy-branch'
+                  )
+              )::uuid;
+
+              SELECT b.id, b.org_id, b.address_id,
+                     s.is_primary, s.is_active, s.branch_status
+              INTO branch_row
+              FROM public.org_branches AS b
+              JOIN public.org_branch_state AS s ON s.branch_id = b.id
+              WHERE b.id = address_row.branch_id;
+
+              SELECT * INTO geo_row
+              FROM public.branch_geolocation_state
+              WHERE address_id = address_row.id;
+
+              IF NOT FOUND
+                 OR address_row.branch_id <> expected_branch_id
+                 OR branch_row.id <> expected_branch_id
+                 OR branch_row.org_id <> address_row.org_id
+                 OR branch_row.address_id <> address_row.id
+                 OR NOT branch_row.is_primary
+                 OR NOT branch_row.is_active
+                 OR branch_row.branch_status <> 'active'
+                 OR geo_row.org_id <> address_row.org_id
+                 OR geo_row.validation_status <> 'success'
+                 OR geo_row.geocode_attempts <> 3
+                 OR geo_row.geocode_provider <> 'google_places_api' THEN
+                  RAISE EXCEPTION 'populated 0009->00f re-upgrade is not deterministic';
               END IF;
           END
           $$;
