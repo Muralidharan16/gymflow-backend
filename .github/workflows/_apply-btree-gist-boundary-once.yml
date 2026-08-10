@@ -1,0 +1,73 @@
+name: One-shot btree_gist infrastructure boundary
+
+on:
+  push:
+    branches: [hardening/complete-migration-lineage]
+    paths:
+      - .github/_apply_btree_gist_boundary_once_trigger
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-btree-gist-boundary-once
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hardening/complete-migration-lineage
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply exact extension-boundary replacements
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          targets = {
+              Path('alembic/versions/0021_staff_roles.py'): '0021_staff_roles',
+              Path('alembic/versions/c3a4b5c6d7e8_create_subscription_lifecycle_foundation.py'): 'c3a4b5c6d7e8',
+              Path('alembic/versions/f1a2b3c4d5e6_platform_billing_phase_1_foundation.py'): 'f1a2b3c4d5e6',
+          }
+          needle = '    op.execute("CREATE EXTENSION IF NOT EXISTS btree_gist;")\n'
+
+          for path, revision in targets.items():
+              source = path.read_text(encoding='utf-8')
+              if source.count(needle) != 1:
+                  raise SystemExit(f'{path}: expected exactly one btree_gist creation call')
+              replacement = f'''    # btree_gist is infrastructure-owned. Alembic validates the exact\n    # prerequisite instead of creating or adopting an extension.\n    op.execute("""\n        DO $btree_gist_infrastructure$\n        DECLARE\n            owner_name TEXT;\n            schema_name TEXT;\n        BEGIN\n            SELECT\n                pg_catalog.pg_get_userbyid(extension_data.extowner),\n                namespace_data.nspname::text\n            INTO owner_name, schema_name\n            FROM pg_catalog.pg_extension AS extension_data\n            JOIN pg_catalog.pg_namespace AS namespace_data\n              ON namespace_data.oid = extension_data.extnamespace\n            WHERE extension_data.extname = 'btree_gist';\n\n            IF NOT FOUND THEN\n                RAISE EXCEPTION\n                    '{revision} requires infrastructure-provisioned btree_gist; Alembic must not create extensions';\n            END IF;\n            IF owner_name IS DISTINCT FROM 'postgres'\n               OR schema_name IS DISTINCT FROM 'public' THEN\n                RAISE EXCEPTION\n                    '{revision} requires btree_gist owned by postgres in public; owner=%, schema=%',\n                    owner_name, schema_name;\n            END IF;\n        END\n        $btree_gist_infrastructure$;\n    """)\n'''
+              updated = source.replace(needle, replacement, 1)
+              if 'CREATE EXTENSION IF NOT EXISTS btree_gist' in updated:
+                  raise SystemExit(f'{path}: extension creation remains')
+              path.write_text(updated, encoding='utf-8')
+          PY
+
+          python -m py_compile \
+            alembic/versions/0021_staff_roles.py \
+            alembic/versions/c3a4b5c6d7e8_create_subscription_lifecycle_foundation.py \
+            alembic/versions/f1a2b3c4d5e6_platform_billing_phase_1_foundation.py
+          git diff --check
+
+      - name: Publish and remove one-shot controls
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/_apply-btree-gist-boundary-once.yml
+          git rm .github/_apply_btree_gist_boundary_once_trigger
+          git add \
+            alembic/versions/0021_staff_roles.py \
+            alembic/versions/c3a4b5c6d7e8_create_subscription_lifecycle_foundation.py \
+            alembic/versions/f1a2b3c4d5e6_platform_billing_phase_1_foundation.py
+          git diff --cached --check
+          git diff --cached --quiet && { echo 'Expected btree_gist hardening diff is empty' >&2; exit 1; }
+          git commit -m "require infrastructure-owned btree_gist in migrations"
+          git push origin HEAD:hardening/complete-migration-lineage
