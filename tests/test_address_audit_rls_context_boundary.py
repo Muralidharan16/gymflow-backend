@@ -30,8 +30,8 @@ def test_address_audit_integration_uses_session_owned_typed_context():
     test = _test_function()
     source = ast.unparse(test)
 
-    # The integration path must use the same centralized context API as runtime
-    # requests, not define a test-only helper that duplicates raw PostgreSQL GUCs.
+    # Both fixture administration and runtime behavior must use the same
+    # centralized typed context API; neither may duplicate raw PostgreSQL GUCs.
     assert "update_session_context" in source
     assert "set_tenant_context" not in source
     assert "pg_catalog.set_config" not in source
@@ -41,7 +41,7 @@ def test_address_audit_integration_uses_session_owned_typed_context():
     assert "org_id=str(org_id)" in source
 
 
-def test_address_audit_fixture_seed_is_admin_only_but_behavior_is_reduced_runtime():
+def test_address_audit_fixture_seed_respects_forced_rls_and_runtime_is_reduced():
     test = _test_function()
     source = ast.unparse(test)
 
@@ -53,12 +53,18 @@ def test_address_audit_fixture_seed_is_admin_only_but_behavior_is_reduced_runtim
         "admin_db_session.add(owner)",
     ):
         assert required_seed in source
-    assert "await admin_db_session.commit()" in source
+
+    first_admin_commit = source.index("await admin_db_session.commit()")
+    admin_context = source.index("await update_session_context(admin_db_session")
+    branch_seed = source.index("admin_db_session.add(branch)")
+    state_seed = source.index("admin_db_session.add(branch_state)")
+    assert first_admin_commit < admin_context < branch_seed < state_seed
+    assert source.count("await admin_db_session.commit()") == 2
     assert "async with AsyncSessionLocal() as db" in source
 
-    # Organization/branch/staff creation is fixture administration. The behavior
-    # under test—address writes plus trigger/audit reads—must remain on the
-    # reduced application runtime identity.
+    # Tenant-scoped branch rows are seeded by the administrative identity only
+    # after typed tenant context is attached, so FORCE RLS remains authoritative.
+    # Address writes and audit reads then execute under reduced runtime.
     runtime_source = source[source.index("async with AsyncSessionLocal() as db") :]
     assert "admin_db_session" not in runtime_source
     assert "db.add(branch)" not in runtime_source
@@ -80,10 +86,16 @@ def test_address_audit_context_survives_commit_without_manual_reapplication():
         and node.value.func.id == "update_session_context"
     ]
 
-    # Fixture setup is complete before the reduced runtime session begins. One
-    # typed context attachment is sufficient; subsequent address INSERT, UPDATE
-    # and audit SELECT transactions rely on Session.after_begin reapplication.
-    assert len(context_calls) == 1
+    # One explicit context belongs to the FORCE-RLS fixture seed and one belongs
+    # to reduced runtime behavior. Each session must then rely on after_begin to
+    # reapply transaction-local context after commits.
+    assert len(context_calls) == 2
+    call_sessions = {
+        ast.unparse(node.value.args[0])
+        for node in context_calls
+        if node.value.args
+    }
+    assert call_sessions == {"admin_db_session", "db"}
     assert source.count("await db.commit()") >= 2
 
     database_source = DATABASE.read_text(encoding="utf-8")
