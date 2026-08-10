@@ -7,6 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 AUTH_TEST = ROOT / "tests/test_auth_register.py"
 AUTH_ROUTER = ROOT / "app/routers/auth.py"
+AUTH_DATABASE = ROOT / "app/core/auth_database.py"
+TEST_HARNESS = ROOT / "tests/conftest.py"
 
 
 def _source(path: Path) -> str:
@@ -95,6 +97,29 @@ def test_auth_cleanup_identity_set_covers_all_module_test_accounts():
     for email in literal_test_emails:
         assert repr(email) in cleanup_source
     assert "rate" in cleanup_source and "range(6)" in cleanup_source
+
+
+def test_pytest_auth_pool_is_dedicated_nullpool_without_changing_production_pooling():
+    harness = _source(TEST_HARNESS)
+    production = _source(AUTH_DATABASE)
+
+    # The pytest harness mirrors its existing runtime/admin loop-isolation rule
+    # for the dedicated auth login. It must not collapse auth onto TEST_DATABASE_URL.
+    assert "AUTH_TEST_DATABASE_URL = validate_test_auth_database_url" in harness
+    assert "auth_test_async_engine = (" in harness
+    assert "AUTH_TEST_DATABASE_URL," in harness
+    assert "poolclass=NullPool" in harness
+    assert "app_auth_database.auth_async_engine = auth_test_async_engine" in harness
+    assert "app_auth_database.AuthSessionLocal = AuthTestSessionLocal" in harness
+    assert "AUTH_DATABASE_URL must use a distinct bounded auth identity under pytest" in harness
+
+    # Production keeps the bounded long-lived queue pool; NullPool is a pytest
+    # event-loop isolation concern, not an application architecture change.
+    assert "pool_size=5" in production
+    assert "max_overflow=10" in production
+    assert "pool_pre_ping=True" in production
+    assert "NullPool" not in production
+    assert "poolclass=NullPool" not in production
 
 
 def test_auth_routes_keep_dedicated_auth_database_dependency():
