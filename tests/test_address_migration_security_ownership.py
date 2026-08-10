@@ -28,14 +28,10 @@ def test_00f_revokes_public_view_acl_before_dropping_view() -> None:
 
     assert downgrade.count(revoke) == 1
     assert downgrade.count(drop) == 1
-    assert downgrade.index(revoke) < downgrade.index(drop)
-    assert "IF EXISTS" not in downgrade[downngrade_index(downgrade, revoke):downngrade_index(downgrade, drop) + len(drop)]
-
-
-def downngrade_index(source: str, token: str) -> int:
-    # Small helper keeps the ordering assertion readable while preserving exact
-    # source matching; the misspelling is local and has no production surface.
-    return source.index(token)
+    revoke_index = downgrade.index(revoke)
+    drop_index = downgrade.index(drop)
+    assert revoke_index < drop_index
+    assert "IF EXISTS" not in downgrade[revoke_index : drop_index + len(drop)]
 
 
 def test_6f_requires_but_never_toggles_00f_owned_rls() -> None:
