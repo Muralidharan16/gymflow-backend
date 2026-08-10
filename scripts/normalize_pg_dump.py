@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Canonicalize pg_dump text for deterministic lifecycle comparison.
 
-PostgreSQL emits a random client-side ``\\restrict`` token and the matching
-``\\unrestrict`` token in plain-text dumps.  The token is deliberately
+PostgreSQL emits a random client-side ``\restrict`` token and the matching
+``\unrestrict`` token in plain-text dumps. The token is deliberately
 nondeterministic and is not part of the database catalog, ACL, RLS, ownership,
 or schema contract we are trying to compare.
 
-This helper removes only that validated wrapper pair.  Every other byte is
-preserved.  A malformed, duplicated, or mismatched wrapper fails closed rather
+This helper removes only that validated wrapper pair. Every other byte is
+preserved. A malformed, duplicated, or mismatched wrapper fails closed rather
 than broadening normalization and potentially hiding real schema drift.
 """
 
@@ -18,8 +18,8 @@ from pathlib import Path
 import re
 
 
-_RESTRICT = re.compile(r"^\\\\restrict ([^\r\n]+)(\r?\n)?$")
-_UNRESTRICT = re.compile(r"^\\\\unrestrict ([^\r\n]+)(\r?\n)?$")
+_RESTRICT = re.compile(r"^\\restrict ([^\r\n]+)(\r?\n)?$")
+_UNRESTRICT = re.compile(r"^\\unrestrict ([^\r\n]+)(\r?\n)?$")
 
 
 def canonicalize_pg_dump(raw: str) -> str:
@@ -43,7 +43,7 @@ def canonicalize_pg_dump(raw: str) -> str:
 
     counts = (len(restrict_tokens), len(unrestrict_tokens))
     if counts == (0, 0):
-        # Older pg_dump versions may not emit the wrapper.  No normalization is
+        # Older pg_dump versions may not emit the wrapper. No normalization is
         # needed and the dump remains byte-for-byte unchanged.
         return raw
 
