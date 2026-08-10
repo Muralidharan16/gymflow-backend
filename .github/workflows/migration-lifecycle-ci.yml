@@ -177,8 +177,11 @@ jobs:
 
       - name: Upgrade base to HEAD first pass
         run: |
-          python -s -m alembic -c alembic.ini upgrade head
-          python -s -m alembic -c alembic.ini current --check-heads
+          set -o pipefail
+          python -s -m alembic -c alembic.ini upgrade head 2>&1 \
+            | tee "$EVIDENCE_DIR/upgrade-head-1.log"
+          python -s -m alembic -c alembic.ini current --check-heads 2>&1 \
+            | tee "$EVIDENCE_DIR/current-head-1.log"
 
       - name: Prove HEAD security and infrastructure invariants
         run: |
@@ -248,7 +251,9 @@ jobs:
 
       - name: Downgrade HEAD to base
         run: |
-          python -s -m alembic -c alembic.ini downgrade base
+          set -o pipefail
+          python -s -m alembic -c alembic.ini downgrade base 2>&1 \
+            | tee "$EVIDENCE_DIR/downgrade-base.log"
 
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_lifecycle_test <<'SQL'
@@ -283,8 +288,11 @@ jobs:
 
       - name: Re-upgrade base to HEAD second pass
         run: |
-          python -s -m alembic -c alembic.ini upgrade head
-          python -s -m alembic -c alembic.ini current --check-heads
+          set -o pipefail
+          python -s -m alembic -c alembic.ini upgrade head 2>&1 \
+            | tee "$EVIDENCE_DIR/upgrade-head-2.log"
+          python -s -m alembic -c alembic.ini current --check-heads 2>&1 \
+            | tee "$EVIDENCE_DIR/current-head-2.log"
 
       - name: Capture and compare second HEAD
         run: |
