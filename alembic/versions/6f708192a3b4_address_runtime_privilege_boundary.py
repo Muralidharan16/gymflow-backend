@@ -233,6 +233,14 @@ def _require_rls_flags(bind, *, enabled: bool) -> None:
 
 
 def _function(bind, signature: str) -> dict[str, object] | None:
+    prefix = "app_secure."
+    suffix = "()"
+    if not signature.startswith(prefix) or not signature.endswith(suffix):
+        raise RuntimeError(f"unsupported protected function identity: {signature}")
+    function_name = signature[len(prefix):-len(suffix)]
+    if not function_name or not function_name.replace("_", "").isalnum():
+        raise RuntimeError(f"invalid protected function identity: {signature}")
+
     rows = bind.execute(sa.text("""
         SELECT owner.rolname::text AS owner_name, p.prosecdef, p.proconfig, p.prosrc,
                EXISTS (
@@ -249,9 +257,18 @@ def _function(bind, signature: str) -> dict[str, object] | None:
                      AND acl.privilege_type = 'EXECUTE'
                ) AS migration_direct_execute
         FROM pg_catalog.pg_proc AS p
+        JOIN pg_catalog.pg_namespace AS ns ON ns.oid = p.pronamespace
         JOIN pg_catalog.pg_roles AS owner ON owner.oid = p.proowner
-        WHERE p.oid = pg_catalog.to_regprocedure(:signature)
-    """), {"signature": signature, "migration_owner": _MIGRATION_OWNER}).mappings().all()
+        WHERE ns.nspname = 'app_secure'
+          AND p.proname = :function_name
+          AND p.prokind = 'f'
+          AND p.pronargs = 0
+    """), {
+        "function_name": function_name,
+        "migration_owner": _MIGRATION_OWNER,
+    }).mappings().all()
+    if len(rows) > 1:
+        raise RuntimeError(f"ambiguous protected function identity: {signature}")
     return None if not rows else dict(rows[0])
 
 
