@@ -6,6 +6,11 @@ on:
       - hardening/complete-migration-lineage
     paths:
       - .github/workflows/one-shot-address-lifecycle-ownership.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-shot-address-lifecycle-ownership.yml
 
 permissions:
   contents: write
@@ -148,5 +153,3 @@ removed, and predecessor triggers are restored.
           git diff --cached --check
           git commit -m 'fix: align address lifecycle security ownership'
           git push origin HEAD:hardening/complete-migration-lineage
-
-# Triggered after creation so GitHub registers this branch-local one-shot workflow.
