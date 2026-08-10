@@ -985,7 +985,7 @@ def upgrade() -> None:
     """Expand 0009 in place while preserving all predecessor address state."""
     _preflight_upgrade()
 
-    # The business semantic rename is data-reversible.  Storage stays VARCHAR(50)
+    # The business semantic rename is data-reversible. Storage stays VARCHAR(50)
     # during this expand phase so the predecessor can be restored exactly.
     op.execute("ALTER TABLE organization_addresses DROP CONSTRAINT ck_org_address_type;")
     op.execute("UPDATE organization_addresses SET address_type = 'physical' WHERE address_type = 'operational';")
@@ -1179,7 +1179,7 @@ def upgrade() -> None:
     )
     op.add_column("organization_addresses", sa.Column("deleted_by", sa.UUID(), nullable=True))
 
-    # Install tenant integrity while branch_id is still NULL.  Backfill writes
+    # Install tenant integrity while branch_id is still NULL. Backfill writes
     # are then checked by PostgreSQL RI triggers without disabling FORCE RLS.
     op.create_foreign_key(
         _BRANCH_ORG_FK,
@@ -1523,10 +1523,11 @@ def downgrade() -> None:
     """Remove only 00f-owned capability after proving rollback is lossless."""
     _preflight_downgrade()
 
-    op.execute("DROP VIEW v_public_branch_addresses;")
+    # Revoke the explicit reader ACL while its relation still exists. A
+    # revoke-after-drop is not a valid inverse and must not be hidden behind
+    # IF EXISTS.
     op.execute("REVOKE SELECT ON v_public_branch_addresses FROM branch_viewer;")
-    # The REVOKE above is intentionally harmless if ownership already dropped
-    # with the view; privileges on a dropped view cannot survive.
+    op.execute("DROP VIEW v_public_branch_addresses;")
 
     op.execute("DROP VIEW v_active_org_branches;")
 
