@@ -1,4 +1,4 @@
-name: One-shot address protected trigger boundary
+name: One-shot address provenance test finalizer
 
 on:
   pull_request:
@@ -9,14 +9,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: address-protected-trigger-boundary-once
+  group: address-provenance-test-finalizer
   cancel-in-progress: false
 
 jobs:
-  repair:
+  finalize:
     if: github.event.pull_request.head.ref == 'hardening/complete-migration-lineage'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,67 +33,36 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-test.txt
 
-      - name: Preserve typed actor provenance in protected triggers
+      - name: Require persisted typed actor provenance
         id: patch
         run: |
           python <<'PY'
           from pathlib import Path
 
-          path = Path('alembic/versions/6f708192a3b4_address_runtime_privilege_boundary.py')
+          path = Path('tests/test_address.py')
           source = path.read_text(encoding='utf-8')
-
-          def reconcile(old: str, new: str, count: int = 1) -> None:
-              global source
-              old_count = source.count(old)
-              new_count = source.count(new)
-              if old_count == count and new_count == 0:
-                  source = source.replace(old, new)
-                  return
-              if old_count == 0 and new_count == count:
-                  return
+          old = '''        assert old_snap["address_line1_hash"] == expected_old_hash\n        assert new_snap["address_line1_hash"] == expected_new_hash\n        assert str(logs[0].ip_address) == "192.168.1.50"\n'''
+          new = '''        assert old_snap["address_line1_hash"] == expected_old_hash\n        assert new_snap["address_line1_hash"] == expected_new_hash\n        assert str(logs[0].changed_by) == str(owner_id)\n        assert logs[0].changed_by_type == "legacy_gym_owner"\n        assert str(logs[0].ip_address) == "192.168.1.50"\n'''
+          old_count = source.count(old)
+          new_count = source.count(new)
+          if old_count == 1 and new_count == 0:
+              path.write_text(source.replace(old, new), encoding='utf-8')
+          elif old_count == 0 and new_count == 1:
+              pass
+          else:
               raise SystemExit(
-                  f'6f typed-provenance anchor drift: old={old_count}, '
-                  f'new={new_count}, expected={count}, anchor={old!r}'
+                  f'address provenance test anchor drift: old={old_count}, new={new_count}'
               )
-
-          reconcile(
-              '                     valid_from, changed_by)\n',
-              '                     valid_from, changed_by, changed_by_type)\n',
-              count=2,
-          )
-          reconcile(
-              "                     NULLIF(pg_catalog.current_setting('app.current_user_id', true), '')::uuid);\n",
-              "                     NULLIF(pg_catalog.current_setting('app.current_user_id', true), '')::uuid,\n"
-              "                     NULLIF(pg_catalog.current_setting('app.current_principal_type', true), ''));\n",
-              count=2,
-          )
-          reconcile(
-              '                         changed_by, ip_address, user_agent, request_id)\n',
-              '                         changed_by, changed_by_type, ip_address, user_agent, request_id)\n',
-          )
-          reconcile(
-              "                         NULLIF(pg_catalog.current_setting('app.current_user_id', true), '')::uuid,\n"
-              "                         NULLIF(pg_catalog.current_setting('app.ip_address', true), '')::inet,\n",
-              "                         NULLIF(pg_catalog.current_setting('app.current_user_id', true), '')::uuid,\n"
-              "                         NULLIF(pg_catalog.current_setting('app.current_principal_type', true), ''),\n"
-              "                         NULLIF(pg_catalog.current_setting('app.ip_address', true), '')::inet,\n",
-          )
-          reconcile(
-              '''    required = {\n        _INSERT_FN: ("app.current_org_id", "public.branch_address_history"),\n        _UPDATE_FN: (\n            "app.current_org_id", "public.branch_address_history",\n            "public.branch_address_audit_log", "public.address_change_outbox",\n        ),\n    }\n''',
-              '''    required = {\n        _INSERT_FN: (\n            "app.current_org_id", "app.current_user_id",\n            "app.current_principal_type", "changed_by_type",\n            "public.branch_address_history",\n        ),\n        _UPDATE_FN: (\n            "app.current_org_id", "app.current_user_id",\n            "app.current_principal_type", "changed_by_type",\n            "public.branch_address_history",\n            "public.branch_address_audit_log", "public.address_change_outbox",\n        ),\n    }\n''',
-          )
-
-          path.write_text(source, encoding='utf-8')
           PY
-          python -m py_compile alembic/versions/6f708192a3b4_address_runtime_privilege_boundary.py
+          python -m py_compile tests/test_address.py
           git diff --check
-          if git diff --quiet -- alembic/versions/6f708192a3b4_address_runtime_privilege_boundary.py; then
+          if git diff --quiet -- tests/test_address.py; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
           else
             echo 'changed=true' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Run protected trigger boundary contracts
+      - name: Run source-level protected trigger contracts
         env:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
         run: |
@@ -101,18 +70,15 @@ jobs:
             tests/test_6f_address_internal_sequence_boundary.py \
             tests/test_address_runtime_privilege_boundary.py
 
-      - name: Publish migration-only correction
+      - name: Publish behavioral assertion only
         if: steps.patch.outputs.changed == 'true'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add alembic/versions/6f708192a3b4_address_runtime_privilege_boundary.py
-          test "$(git diff --cached --name-only)" = 'alembic/versions/6f708192a3b4_address_runtime_privilege_boundary.py'
+          git add tests/test_address.py
+          test "$(git diff --cached --name-only)" = 'tests/test_address.py'
           git diff --cached --check
-          git commit -m 'fix address audit typed provenance boundary'
+          git commit -m 'test address audit typed actor provenance'
           git fetch origin hardening/complete-migration-lineage
           git rebase origin/hardening/complete-migration-lineage
-          python -m pytest --noconftest -q \
-            tests/test_6f_address_internal_sequence_boundary.py \
-            tests/test_address_runtime_privilege_boundary.py
           git push origin HEAD:hardening/complete-migration-lineage
