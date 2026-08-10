@@ -132,10 +132,10 @@ def main() -> int:
         raise SystemExit("0020 downgrade still contains CASCADE")
     if "IF EXISTS" in downgrade:
         raise SystemExit("0020 downgrade still masks missing objects")
-    if downgrade.count(" RESTRICT") != 16:
+    if downgrade.count(" RESTRICT;") != 16:
         raise SystemExit(
             "0020 strict-drop count drift: "
-            f"{downgrade.count(' RESTRICT')}"
+            f"{downgrade.count(' RESTRICT;')}"
         )
 
     required = (
