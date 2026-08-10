@@ -26,6 +26,23 @@ def _function_source(path: Path, name: str) -> str:
     return "\n".join(lines[node.lineno - 1 : node.end_lineno])
 
 
+def _call_targets_organization_address_coordinates(call: ast.Call) -> bool:
+    if not isinstance(call.func, ast.Attribute):
+        return False
+    if call.func.attr not in {"add_column", "alter_column", "drop_column"}:
+        return False
+
+    string_args = [
+        arg.value
+        for arg in call.args
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+    ]
+    return (
+        "organization_addresses" in string_args
+        and "coordinates" in string_args
+    )
+
+
 def test_329_geography_columns_are_the_authoritative_spatial_index_creator() -> None:
     source = _source(M329)
     assert "geoalchemy2.types.Geography" in source
@@ -92,15 +109,21 @@ def test_333_still_owns_only_its_filtering_indexes() -> None:
 
 
 def test_00f_preserves_371b_spatial_predecessor_contract_in_place() -> None:
+    source = _source(M00F)
+    tree = ast.parse(source, filename=str(M00F))
     upgrade = _function_source(M00F, "upgrade")
     downgrade = _function_source(M00F, "downgrade")
 
-    # 00f is now an expand/compatibility migration.  The 371b-owned Geography
-    # column and canonical GiST index must survive both directions in place;
-    # 00f must neither replace them with VARCHAR storage nor recreate/drop them.
+    # 00f may legitimately introduce a same-named coordinates column on its
+    # new branch_geolocation_state table.  What it must never do is mutate the
+    # 371b-owned organization_addresses.coordinates Geography column or its
+    # canonical GiST index.  Scope this contract to that predecessor relation
+    # rather than banning unrelated columns by name.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            assert not _call_targets_organization_address_coordinates(node)
+
     for function_source in (upgrade, downgrade):
+        assert "idx_organization_addresses_coordinates" not in function_source
         assert "DROP COLUMN coordinates" not in function_source
         assert "ADD COLUMN coordinates" not in function_source
-        assert "idx_organization_addresses_coordinates" not in function_source
-        assert "sa.Column('coordinates', sa.VARCHAR(length=255)" not in function_source
-        assert 'sa.Column("coordinates", sa.String(length=255)' not in function_source
