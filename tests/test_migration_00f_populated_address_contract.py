@@ -17,6 +17,13 @@ def _upgrade_source(source: str) -> str:
     return source[source.index("def upgrade() -> None:") : source.index("def downgrade() -> None:")]
 
 
+def _preflight_downgrade_source(source: str) -> str:
+    return source[
+        source.index("def _preflight_downgrade() -> None:") :
+        source.index("def _restore_address_predecessor_security() -> None:")
+    ]
+
+
 def _downgrade_source(source: str) -> str:
     return source[source.index("def downgrade() -> None:") :]
 
@@ -127,3 +134,19 @@ def test_00f_downgrade_fails_closed_on_unrepresentable_new_state() -> None:
     assert "would lose address state that 0009 cannot represent" in source
     assert "would discard populated 00f-only relation" in source
     assert "would lose diverged geolocation state" in source
+
+
+def test_00f_downgrade_preflights_predecessor_owned_branch_references() -> None:
+    source = _source()
+    preflight = _preflight_downgrade_source(source)
+
+    assert "FROM public.branch_audit_log AS audit_data" in preflight
+    assert "JOIN public.org_branches AS branch_data" in preflight
+    assert "migration_00f_legacy_backfill" in preflight
+    assert "predecessor-owned branch_audit_log references synthesized branch" in preflight
+
+    # 0006 owns this audit history. 00f may refuse rollback when it references
+    # a migration-owned synthetic branch, but it must never erase predecessor
+    # evidence just to make its own downgrade succeed.
+    assert "DELETE FROM public.branch_audit_log" not in source
+    assert "TRUNCATE TABLE branch_audit_log" not in source
