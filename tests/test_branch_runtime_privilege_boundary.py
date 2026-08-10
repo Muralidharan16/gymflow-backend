@@ -36,6 +36,10 @@ def test_branch_runtime_acl_is_operation_scoped() -> None:
         in upgrade
     )
     assert (
+        "GRANT SELECT ON TABLE public.branch_geolocation_state TO app_runtime"
+        in upgrade
+    )
+    assert (
         "GRANT INSERT, UPDATE ON TABLE public.org_branches TO auth_runtime"
         in upgrade
     )
@@ -43,6 +47,12 @@ def test_branch_runtime_acl_is_operation_scoped() -> None:
         "GRANT INSERT ON TABLE public.org_branch_state TO auth_runtime"
         in upgrade
     )
+
+    # Geolocation is an ordinary tenant-scoped read dependency only. The auth
+    # bootstrap role receives no direct capability on the projection.
+    auth_contract = source[source.index("_AUTH_BOOTSTRAP_PRIVILEGES"):source.index("_FORBIDDEN_PRIVILEGES")]
+    assert "_GEOLOCATION_STATE" not in auth_contract
+    assert '_GEOLOCATION_FORBIDDEN = _FORBIDDEN_PRIVILEGES | {"INSERT", "UPDATE"}' in source
 
     assert "GRANT ALL" not in source.upper()
     assert "BYPASSRLS" not in upgrade.upper()
@@ -69,6 +79,18 @@ def test_branch_runtime_requires_forced_rls_and_reduced_roles() -> None:
     assert "branch runtime migration requires migration_owner" in source
 
 
+def test_branch_geolocation_read_requires_existing_tenant_policy() -> None:
+    source = _source()
+    policy = _function_source("_require_geolocation_policy")
+
+    assert '"geolocation_state_tenant_isolation"' in source
+    assert "policy_data.polqual" in policy
+    assert "policy_data.polwithcheck" in policy
+    assert 'row["command"] != "*"' in policy
+    assert "_TENANT_EXPR" in source
+    assert "branch geolocation tenant policy drifted" in policy
+
+
 def test_branch_runtime_downgrade_restores_predecessor_acl() -> None:
     downgrade = _function_source("downgrade")
     revoke = _function_source("_revoke_contract")
@@ -83,6 +105,10 @@ def test_branch_runtime_downgrade_restores_predecessor_acl() -> None:
     )
     assert (
         "REVOKE SELECT, UPDATE ON TABLE public.org_branch_state FROM app_runtime"
+        in revoke
+    )
+    assert (
+        "REVOKE SELECT ON TABLE public.branch_geolocation_state FROM app_runtime"
         in revoke
     )
     assert (
