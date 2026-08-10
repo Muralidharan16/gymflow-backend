@@ -150,6 +150,10 @@ def main() -> int:
         if item not in source:
             raise SystemExit(f"0020 patch required contract missing: {item}")
 
+    # Canonicalize generated Python/SQL source so the generator itself
+    # cannot publish end-of-line whitespace. This is semantics-preserving and
+    # keeps git diff --check as a hard publication gate.
+    source = "\n".join(line.rstrip() for line in source.splitlines()) + "\n"
     compile(source, str(PATH), "exec")
     PATH.write_text(source, encoding="utf-8")
     return 0
