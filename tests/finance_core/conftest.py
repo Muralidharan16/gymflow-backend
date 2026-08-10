@@ -11,6 +11,7 @@ from app.domain.synthetic_organizations import (
 )
 from app.services.synthetic_organizations import SyntheticOrganizationCreationService
 from tests.finance_core.admin_database import finance_admin_session
+from tests.finance_core.synthetic_database import SyntheticOrgSessionLocal
 
 
 _D11_TEST_MODULE = "test_phase6an_d10_synthetic_organization_service.py"
@@ -44,38 +45,44 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest_asyncio.fixture(autouse=True)
 async def bootstrap_persistent_d11_replay_evidence(request):
-    """Provide the immutable D11 identity that the historical replay tests require.
+    """Isolate synthetic-organization evidence from Finance Core runtime.
 
-    The original regression surface intentionally treats this identity/evidence
-    pair as persistent and append-only. Fresh CI databases therefore need to
-    create it explicitly instead of depending on state left by a developer's
-    local database.
-
-    Synthetic-organization creation is an approved non-production bootstrap
-    capability, not a Finance Core runtime capability. Seed the evidence through
-    the real service contract using the guarded test-admin identity; Finance
-    business behavior continues to run only through the reduced finance login.
-    Never disable the immutability trigger and never delete the evidence afterward.
+    Synthetic organization creation exists only as an approved non-production
+    bootstrap facility. The historical D10/D11 module therefore executes through
+    a dedicated synthetic test login rather than the Finance Core runtime login.
+    The immutable D11 baseline itself is seeded by the guarded admin identity via
+    the real service contract; no trigger or RLS protection is disabled.
     """
     if request.node.path.name != _D11_TEST_MODULE:
         yield
         return
 
-    async with finance_admin_session() as session:
-        result = await SyntheticOrganizationCreationService(
-            session,
-            environment="development",
-        ).create_synthetic_organization(
-            SyntheticOrganizationCreationCommand(
-                name=_D11_NAME,
-                slug=_D11_SLUG,
-                idempotency_key=_D11_KEY,
-                synthetic_mode=True,
-                trusted_source=SYNTHETIC_ORGANIZATION_TRUSTED_SOURCE,
-            )
+    module = request.module
+    original_session_factory = getattr(module, "AsyncSessionLocal", None)
+    if original_session_factory is None:
+        raise AssertionError(
+            f"{_D11_TEST_MODULE} must expose its AsyncSessionLocal integration boundary"
         )
-        await session.commit()
+    module.AsyncSessionLocal = SyntheticOrgSessionLocal
 
-    assert result.slug == _D11_SLUG
-    assert result.is_active is True
-    yield
+    try:
+        async with finance_admin_session() as session:
+            result = await SyntheticOrganizationCreationService(
+                session,
+                environment="development",
+            ).create_synthetic_organization(
+                SyntheticOrganizationCreationCommand(
+                    name=_D11_NAME,
+                    slug=_D11_SLUG,
+                    idempotency_key=_D11_KEY,
+                    synthetic_mode=True,
+                    trusted_source=SYNTHETIC_ORGANIZATION_TRUSTED_SOURCE,
+                )
+            )
+            await session.commit()
+
+        assert result.slug == _D11_SLUG
+        assert result.is_active is True
+        yield
+    finally:
+        module.AsyncSessionLocal = original_session_factory
