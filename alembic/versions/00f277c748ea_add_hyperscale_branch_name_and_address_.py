@@ -437,7 +437,25 @@ def downgrade() -> None:
     op.add_column('organization_addresses', sa.Column('maps_verification_source', sa.VARCHAR(length=50), autoincrement=False, nullable=True))
     op.add_column('organization_addresses', sa.Column('is_primary', sa.BOOLEAN(), server_default=sa.text('false'), autoincrement=False, nullable=False))
     op.add_column('organization_addresses', sa.Column('maps_embed_allowed', sa.BOOLEAN(), server_default=sa.text('true'), autoincrement=False, nullable=False))
-    op.add_column('organization_addresses', sa.Column('coordinates', sa.VARCHAR(length=255), autoincrement=False, nullable=True))
+    op.execute("""
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_extension AS extension_data
+        JOIN pg_catalog.pg_roles AS owner_role
+          ON owner_role.oid = extension_data.extowner
+        WHERE extension_data.extname = 'postgis'
+          AND owner_role.rolname = 'postgres'
+      ) THEN
+        RAISE EXCEPTION
+          '00f downgrade requires infrastructure-owned PostGIS before restoring the 371b predecessor spatial contract';
+      END IF;
+    END
+    $$;
+    """)
+    op.execute("ALTER TABLE public.organization_addresses ADD COLUMN coordinates geography(POINT,4326);")
+    op.execute("CREATE INDEX idx_organization_addresses_coordinates ON public.organization_addresses USING gist (coordinates);")
     op.add_column('organization_addresses', sa.Column('effective_until', postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=True))
     op.add_column('organization_addresses', sa.Column('effective_from', postgresql.TIMESTAMP(timezone=True), server_default=sa.text('now()'), autoincrement=False, nullable=False))
     op.add_column('organization_addresses', sa.Column('maps_next_retry_at', postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=True))
