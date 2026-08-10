@@ -240,6 +240,7 @@ jobs:
           python scripts/migration_lifecycle_snapshot.py \
             --mode cluster --output "$EVIDENCE_DIR/cluster-head-1.json"
           sudo -u postgres pg_dump --schema-only --no-comments \
+            --restrict-key=LifecycleSnapshot \
             --dbname=gymflow_lifecycle_test \
             > "$EVIDENCE_DIR/schema-head-1.sql"
 
@@ -301,6 +302,7 @@ jobs:
           python scripts/migration_lifecycle_snapshot.py \
             --mode cluster --output "$EVIDENCE_DIR/cluster-head-2.json"
           sudo -u postgres pg_dump --schema-only --no-comments \
+            --restrict-key=LifecycleSnapshot \
             --dbname=gymflow_lifecycle_test \
             > "$EVIDENCE_DIR/schema-head-2.sql"
 
