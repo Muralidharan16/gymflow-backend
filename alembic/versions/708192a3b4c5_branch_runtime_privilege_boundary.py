@@ -16,7 +16,10 @@ legitimate production paths exposed missing or incomplete object/RLS contracts:
   tenant branch state, and append tenant history/events/outbox/watchdog rows;
 * legacy lifecycle child policies were role-only rather than tenant-scoped,
   three child relations were not FORCE RLS, and the branch-state UPDATE policy
-  contained a cross-tenant system-role escape; and
+  contained a cross-tenant system-role escape;
+* the original permissive ``tenant_isolation_state`` ALL policy was tenant-only
+  and therefore OR-combined with later permissive role policies, silently
+  bypassing their role restrictions for callers that had table ACLs; and
 * lifecycle seed data used legacy ``org_admin`` while the application canonical
   staff role is ``admin``.
 
@@ -25,9 +28,11 @@ only the operations exercised by branch/lifecycle application code. Lifecycle
 append surfaces are SELECT+INSERT only; reference catalogs and geolocation are
 read-only. Auth bootstrap receives only first-branch creation/linking rights.
 Every tenant lifecycle relation is ENABLE + FORCE RLS and child rows prove
-current-tenant ownership through ``org_branches``. The compatibility value
-``org_admin`` is preserved while canonical ``admin`` is added to the same seed
-transitions.
+current-tenant ownership through ``org_branches``. The broad predecessor
+``tenant_isolation_state`` policy is replaced by operation-specific tenant+role
+policies, while downgrade recreates that predecessor policy exactly. The
+compatibility value ``org_admin`` is preserved while canonical ``admin`` is
+added to the same seed transitions.
 
 No runtime role receives DELETE, TRUNCATE, REFERENCES, TRIGGER, schema CREATE,
 ownership, SUPERUSER, INHERIT, or BYPASSRLS. Downgrade restores the exact ACL,
@@ -71,6 +76,7 @@ _LIFECYCLE_APPEND_TABLES = (
 _BASE_RELATIONS = (_BRANCHES, _BRANCH_STATE, _GEOLOCATION_STATE)
 _ALL_RELATIONS = _BASE_RELATIONS + _LIFECYCLE_REFERENCE_TABLES + _LIFECYCLE_APPEND_TABLES
 _GEOLOCATION_POLICY = "geolocation_state_tenant_isolation"
+_STATE_TENANT_POLICY = "tenant_isolation_state"
 _TENANT_EXPR = "org_id=nullifcurrent_setting'app.current_org_id'::text,true,''::text::uuid"
 
 _RUNTIME_PRIVILEGES = {
@@ -91,6 +97,7 @@ _APPEND_FORBIDDEN = _FORBIDDEN_PRIVILEGES | {"UPDATE"}
 
 _PREDECESSOR_POLICY_NAMES = {
     _BRANCH_STATE: {
+        "tenant_isolation_state",
         "p_branch_select",
         "p_branch_update",
         "p_branch_insert",
@@ -110,7 +117,12 @@ _PREDECESSOR_POLICY_NAMES = {
     },
 }
 _FORWARD_POLICY_NAMES = {
-    _BRANCH_STATE: _PREDECESSOR_POLICY_NAMES[_BRANCH_STATE],
+    _BRANCH_STATE: {
+        "p_branch_select",
+        "p_branch_update",
+        "p_branch_insert",
+        "p_branch_delete",
+    },
     "public.branch_status_history": {"p_history_select", "p_history_insert"},
     "public.branch_lifecycle_events": {"p_events_insert", "p_events_select"},
     "public.branch_outbox_events": {"p_outbox_insert", "p_outbox_select"},
@@ -323,6 +335,39 @@ def _require_geolocation_policy(bind) -> None:
         raise RuntimeError("branch geolocation tenant policy drifted")
 
 
+def _require_predecessor_state_tenant_policy(bind) -> None:
+    row = bind.execute(
+        sa.text(
+            """
+            SELECT
+                policy_data.polcmd::text AS command,
+                policy_data.polpermissive AS permissive,
+                policy_data.polroles = ARRAY[0::oid] AS public_only,
+                pg_catalog.pg_get_expr(
+                    policy_data.polqual, policy_data.polrelid, true
+                )::text AS using_expr,
+                pg_catalog.pg_get_expr(
+                    policy_data.polwithcheck, policy_data.polrelid, true
+                )::text AS check_expr
+            FROM pg_catalog.pg_policy AS policy_data
+            WHERE policy_data.polrelid = CAST(:relation AS regclass)
+              AND policy_data.polname = :policy_name
+            """
+        ),
+        {"relation": _BRANCH_STATE, "policy_name": _STATE_TENANT_POLICY},
+    ).mappings().one_or_none()
+    if row is None:
+        raise RuntimeError("predecessor tenant_isolation_state policy is missing")
+    if (
+        row["command"] != "*"
+        or not bool(row["permissive"])
+        or not bool(row["public_only"])
+        or _normalized_tenant_expr(row["using_expr"]) != _TENANT_EXPR
+        or row["check_expr"] is not None
+    ):
+        raise RuntimeError("predecessor tenant_isolation_state policy drifted")
+
+
 def _require_no_public_dml(bind) -> None:
     forbidden = {
         "SELECT",
@@ -398,6 +443,8 @@ def _require_predecessor_lifecycle_security(bind) -> None:
                 f"expected={sorted(expected_names)!r}, observed={sorted(observed)!r}"
             )
 
+    _require_predecessor_state_tenant_policy(bind)
+
     mixed_admin_rows = int(
         _scalar(
             bind,
@@ -428,6 +475,7 @@ def _require_predecessor_acl(bind) -> None:
 
 def _drop_predecessor_lifecycle_policies() -> None:
     for statement in (
+        "DROP POLICY tenant_isolation_state ON public.org_branch_state",
         "DROP POLICY p_branch_select ON public.org_branch_state",
         "DROP POLICY p_branch_update ON public.org_branch_state",
         "DROP POLICY p_branch_insert ON public.org_branch_state",
@@ -552,6 +600,16 @@ def _drop_forward_lifecycle_policies() -> None:
 
 
 def _create_predecessor_lifecycle_policies() -> None:
+    op.execute(
+        """
+        CREATE POLICY tenant_isolation_state ON public.org_branch_state
+        USING (
+            org_id = NULLIF(
+                current_setting('app.current_org_id', true), ''
+            )::UUID
+        )
+        """
+    )
     op.execute(
         """
         CREATE POLICY p_branch_select ON public.org_branch_state FOR SELECT USING (
