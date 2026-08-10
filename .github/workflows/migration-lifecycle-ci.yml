@@ -24,7 +24,7 @@ jobs:
       MIGRATION_PASSWORD: ci-migration-owner
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_lifecycle_test
       PYTHONDONTWRITEBYTECODE: '1'
-      EVIDENCE_DIR: .lifecycle-evidence
+      EVIDENCE_DIR: lifecycle-evidence
 
     steps:
       - name: Checkout
@@ -343,6 +343,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: migration-lifecycle-evidence-${{ github.event.pull_request.head.sha || github.sha }}
-          path: .lifecycle-evidence/
-          if-no-files-found: warn
+          path: lifecycle-evidence/
+          if-no-files-found: error
           retention-days: 14
