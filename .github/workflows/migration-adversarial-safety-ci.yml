@@ -48,7 +48,8 @@ jobs:
             scripts/verify_00f_predecessor_refs.py \
             scripts/verify_0002_populated_rollback.py \
             scripts/verify_0003_populated_rollback.py \
-            scripts/verify_0004_maps_rollback.py
+            scripts/verify_0004_maps_rollback.py \
+            scripts/verify_0006_audit_outbox_rollback.py
 
       - name: Install PostgreSQL 16 extension packages
         run: |
@@ -75,6 +76,7 @@ jobs:
           CREATE DATABASE gymflow_adv_0002 OWNER migration_owner;
           CREATE DATABASE gymflow_adv_0003 OWNER migration_owner;
           CREATE DATABASE gymflow_adv_0004 OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_0006 OWNER migration_owner;
           CREATE DATABASE gymflow_adv_multi OWNER migration_owner;
           CREATE DATABASE gymflow_adv_ambiguous OWNER migration_owner;
           CREATE DATABASE gymflow_adv_evolved OWNER migration_owner;
@@ -85,6 +87,7 @@ jobs:
             gymflow_adv_0002 \
             gymflow_adv_0003 \
             gymflow_adv_0004 \
+            gymflow_adv_0006 \
             gymflow_adv_multi \
             gymflow_adv_ambiguous \
             gymflow_adv_evolved \
@@ -114,6 +117,12 @@ jobs:
         run: |
           python -m scripts.verify_0004_maps_rollback \
             --database gymflow_adv_0004 \
+            --evidence-dir "$EVIDENCE_DIR"
+
+      - name: Prove 0006 audit and outbox rollback policy
+        run: |
+          python -m scripts.verify_0006_audit_outbox_rollback \
+            --database gymflow_adv_0006 \
             --evidence-dir "$EVIDENCE_DIR"
 
       - name: Execute core 0009-00f adversarial migration scenarios
