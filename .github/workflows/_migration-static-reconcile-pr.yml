@@ -41,7 +41,7 @@ jobs:
 
           root = Path('.')
           old_sha = 'c5bc24e259ea9938f680c8f5f41fe74c5a73ed1ffb7f9ab5b1a63946db6a702f'
-          new_sha = 'fc37f303ca42975c67d52c0921b7a9215038e235bfbbaa1743aa14cf6deb5716'
+          new_sha = '6078897c7bc82c14952af1c6e00e76d8ffde15ff19e1f0a73090076f3ada7e01'
 
           def reconcile(path_str: str, old: str, new: str, expected_count: int = 1) -> None:
               path = root / path_str
@@ -67,6 +67,11 @@ jobs:
               'tests/test_migration_app_secure_owner_context_boundary.py',
               'def test_complete_68_revision_app_secure_file_inventory_is_closed() -> None:\n    migrations = sorted(VERSIONS.glob("*.py"))\n    assert len(migrations) == 68',
               'def test_complete_69_revision_app_secure_file_inventory_is_closed() -> None:\n    migrations = sorted(VERSIONS.glob("*.py"))\n    assert len(migrations) == 69',
+          )
+          reconcile(
+              'tests/test_migration_app_secure_owner_context_boundary.py',
+              '    "0029_rbac_p8_contract.py",\n    A1.name,\n',
+              '    "0029_rbac_p8_contract.py",\n    "6f708192a3b4_address_runtime_privilege_boundary.py",\n    A1.name,\n',
           )
           reconcile(
               'tests/test_migration_app_private_owner_context_boundary.py',
