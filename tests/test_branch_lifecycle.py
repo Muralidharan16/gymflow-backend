@@ -34,18 +34,24 @@ async def set_db_session_context(session, org_id: str, user_id: str, role: str):
     )
 
 
-async def cleanup_lifecycle_fixture(org_id: uuid.UUID) -> None:
+async def cleanup_lifecycle_fixture(
+    org_id: uuid.UUID, actor_id: uuid.UUID
+) -> None:
     """Remove only lifecycle-fixture state through the guarded admin identity.
 
     branch_status_history is intentionally append-only for DELETE/UPDATE, so the
     test harness truncates only the four lifecycle-owned child surfaces and does
     so without CASCADE. Tenant/root rows are then deleted explicitly in FK order.
-    This avoids granting TRUNCATE on unrelated tables such as branch_contacts and
-    keeps destructive capability outside the production-equivalent runtime.
+    FORCE-RLS tables are cleaned with explicit tenant context instead of relying
+    on owner identity as an implicit RLS bypass. This avoids granting TRUNCATE on
+    unrelated tables and keeps destructive capability outside runtime.
     """
     async with AdminTestSessionLocal() as session:
         await session.execute(text("RESET ROLE"))
         await assert_test_database(session)
+        await set_db_session_context(
+            session, str(org_id), str(actor_id), "superadmin"
+        )
 
         await session.execute(
             text(
@@ -217,7 +223,7 @@ async def lifecycle_setup():
         "branch2_id": b2_id,
     }
 
-    await cleanup_lifecycle_fixture(org_id)
+    await cleanup_lifecycle_fixture(org_id, owner_id)
 
 
 @pytest.mark.asyncio
