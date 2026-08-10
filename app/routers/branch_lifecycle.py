@@ -38,8 +38,12 @@ async def list_branches(
     )
     res = await db.execute(stmt)
     rows = res.all()
-    
-    # Fetch primary contacts for these branches
+
+    # Branch contacts are the canonical branch-level contact source. Onboarding
+    # creates primary phone/email rows here, and subsequent branch-contact APIs
+    # maintain them. Do not fall back to tenant-root Organization data or to the
+    # requesting staff member's identity: either would couple a branch read to
+    # unrelated privileges and could publish the wrong person's contact data.
     from app.schemas.branch_contacts import BranchContactORM, ContactKind
     contact_stmt = select(BranchContactORM).where(
         BranchContactORM.org_id == current_staff.org_id,
@@ -48,7 +52,7 @@ async def list_branches(
     )
     contact_res = await db.execute(contact_stmt)
     contacts = contact_res.scalars().all()
-    
+
     # Map branch_id -> contact details
     branch_contacts = {}
     for c in contacts:
@@ -58,13 +62,6 @@ async def list_branches(
             branch_contacts[c.branch_id]["phone"] = c.display_format or c.phone_e164
         elif c.contact_kind == ContactKind.EMAIL:
             branch_contacts[c.branch_id]["email"] = c.email_raw
-
-    # Cache org phone lookup to avoid querying in the loop for multiple branches
-    from app.models.organization import Organization
-    org_q = select(Organization).where(Organization.id == current_staff.org_id)
-    org_res = await db.execute(org_q)
-    org_obj = org_res.scalar_one_or_none()
-    fallback_phone = org_obj.phone if (org_obj and org_obj.phone) else "Pending Setup"
 
     result = []
     for branch, state, address in rows:
@@ -76,11 +73,11 @@ async def list_branches(
                     addr1 = decrypt_data(addr1[4:])
                 except Exception:
                     addr1 = addr1[4:]
-        
+
         contacts_dict = branch_contacts.get(branch.id, {})
-        contact_email = contacts_dict.get("email") or current_staff.email or f"hello@{branch.internal_slug}.com"
-        contact_phone = contacts_dict.get("phone") or fallback_phone
-        
+        contact_email = contacts_dict.get("email") or f"hello@{branch.internal_slug}.com"
+        contact_phone = contacts_dict.get("phone") or "Pending Setup"
+
         result.append({
             "id": str(branch.id),
             "name": branch.branch_name,
@@ -115,7 +112,7 @@ async def transition_branch(
     Then queues Transaction B (Saga Cascade) as a background task.
     """
     service = BranchLifecycleService(db)
-    
+
     # 1. Execute Transaction A (Atomic Status Flip & Init)
     correlation_id = await service.initiate_transition(
         branch_id=branch_id,
@@ -219,7 +216,7 @@ async def trigger_watchdog_sweep(
     """
     if current_staff.role not in ("owner", "admin", "superadmin", "compliance"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
-    
+
     service = BranchLifecycleService(db)
     await service.run_watchdog_sweep()
     return {"message": "Watchdog sweep completed successfully."}
@@ -239,7 +236,7 @@ async def trigger_reconciliation_sweep(
     """
     if current_staff.role not in ("owner", "admin", "superadmin", "compliance"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
-    
+
     service = BranchLifecycleService(db)
     synced_count = await service.run_reconciliation_sweep()
     return {"message": f"Reconciliation sweep completed. Synced {synced_count} branches."}
