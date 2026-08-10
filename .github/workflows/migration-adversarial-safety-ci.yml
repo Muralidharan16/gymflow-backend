@@ -84,7 +84,8 @@ jobs:
 
       - name: Execute adversarial migration scenarios
         run: |
-          python scripts/run_00f_adversarial.py \
+          mkdir -p "$EVIDENCE_DIR"
+          python -m scripts.run_00f_adversarial \
             --multi-db gymflow_adv_multi \
             --ambiguous-db gymflow_adv_ambiguous \
             --evolved-db gymflow_adv_evolved \
