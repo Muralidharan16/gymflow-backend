@@ -31,11 +31,24 @@ def test_address_revision_is_single_head_delta_and_restores_predecessor() -> Non
     source = _source(MIGRATION)
     assert 'revision = "6f708192a3b4"' in source
     assert 'down_revision = "5e6f708192a3"' in source
-    assert "FORCE remains" in source
-    assert "RLS is disabled" in source
 
+    # 00f owns ENABLE/FORCE RLS. 6f validates that predecessor state but must
+    # never toggle it as a side effect of changing the runtime privilege model.
+    predecessor = _function_source("_require_predecessor")
+    forward = _function_source("_require_forward")
     upgrade = _function_source("upgrade")
     downgrade = _function_source("downgrade")
+    assert "_require_rls_flags(bind, enabled=True)" in predecessor
+    assert "_require_rls_flags(bind, enabled=True)" in forward
+    for mutation in (
+        "ENABLE ROW LEVEL SECURITY",
+        "DISABLE ROW LEVEL SECURITY",
+        "FORCE ROW LEVEL SECURITY",
+        "NO FORCE ROW LEVEL SECURITY",
+    ):
+        assert mutation not in upgrade
+        assert mutation not in downgrade
+
     for relation in (
         "organization_addresses",
         "branch_geocode_attempts",
@@ -44,9 +57,6 @@ def test_address_revision_is_single_head_delta_and_restores_predecessor() -> Non
         "branch_address_audit_log",
     ):
         assert relation in source
-    assert "ENABLE ROW LEVEL SECURITY" in upgrade
-    assert "DISABLE ROW LEVEL SECURITY" in downgrade
-    assert "NO FORCE ROW LEVEL SECURITY" not in source
 
 
 def test_application_runtime_gets_only_user_facing_address_dml() -> None:
@@ -92,10 +102,8 @@ def test_internal_side_effects_use_hardened_security_definer_functions() -> None
     assert "app.current_org_id" in create
     assert "organization address tenant context mismatch" in create
 
-    # The typed audit-principal migration precedes 6f. Relocating the trigger
-    # functions into app_secure must preserve both members of the actor pair;
-    # dropping changed_by_type causes valid runtime mutations to violate the
-    # typed provenance constraints even though the caller session is correct.
+    # 4d5e establishes typed actor provenance before 6f. Moving the address
+    # trigger functions into app_secure must preserve both members of that pair.
     assert create.count("changed_by_type") >= 3
     assert create.count("app.current_user_id") >= 3
     assert create.count("app.current_principal_type") >= 3
@@ -121,12 +129,13 @@ def test_missing_audit_insert_policy_is_tenant_scoped_not_bypass() -> None:
 def test_address_router_keeps_api_rbac_and_ordinary_runtime_pool() -> None:
     source = _source(ROUTER)
 
-    create = source[source.index('@router.post("/addresses"') :]
-    create = create[: create.index('@router.put("/addresses/{address_id}"')]
-    assert "Depends(get_db)" in create
-    assert "Depends(require_org_admin)" in create
+    maps = source[source.index('@router.patch("/{address_id}/maps"') :]
+    maps = maps[: maps.index('@router.patch("/{address_id}"')]
+    assert "Depends(get_db)" in maps
+    assert "Depends(require_org_admin)" in maps
 
-    update = source[source.index('@router.put("/addresses/{address_id}"') :]
+    update = source[source.index('@router.patch("/{address_id}"') :]
+    update = update[: update.index("# =====================================================================\n# PRIMARY ROUTE SETTER")]
     assert "Depends(get_db)" in update
     assert "Depends(require_org_admin)" in update
 
