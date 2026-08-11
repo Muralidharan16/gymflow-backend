@@ -14,7 +14,6 @@ from conftest import (
     AdminTestSessionLocal,
     AuthTestSessionLocal,
     assert_test_database,
-    cleanup_test_database_tables,
 )
 
 
@@ -56,6 +55,38 @@ async def create_branch_via_bounded_bootstrap(
         await set_tenant_context(session, str(org_id), str(owner_id), "owner")
         repo = BranchRepository(session)
         await repo.create(branch)
+        await session.commit()
+
+
+async def cleanup_branch_management_fixture(
+    org_id: uuid.UUID,
+    actor_id: uuid.UUID,
+) -> None:
+    """Remove only this fixture's rows without CASCADE or runtime privilege drift."""
+    async with AdminTestSessionLocal() as session:
+        await session.execute(text("RESET ROLE"))
+        await assert_test_database(session)
+        await set_tenant_context(session, str(org_id), str(actor_id), "superadmin")
+
+        # Delete in explicit FK order. Do not use the shared TRUNCATE ... CASCADE
+        # helper: branch_contacts and other protected relations intentionally do
+        # not grant broad destructive privileges to the migration/test identity.
+        await session.execute(
+            text("DELETE FROM public.org_branch_state WHERE org_id = :org_id"),
+            {"org_id": org_id},
+        )
+        await session.execute(
+            text("DELETE FROM public.org_branches WHERE org_id = :org_id"),
+            {"org_id": org_id},
+        )
+        await session.execute(
+            text("DELETE FROM public.gym_owners WHERE org_id = :org_id"),
+            {"org_id": org_id},
+        )
+        await session.execute(
+            text("DELETE FROM public.organizations WHERE id = :org_id"),
+            {"org_id": org_id},
+        )
         await session.commit()
 
 
@@ -120,15 +151,7 @@ async def test_setup():
         "trainer_id": trainer_id,
     }
 
-    await cleanup_test_database_tables(
-        [
-            "branch_audit_log",
-            "org_branch_state",
-            "org_branches",
-            "gym_owners",
-            "organizations",
-        ]
-    )
+    await cleanup_branch_management_fixture(org_id, owner_id)
 
 
 @pytest.mark.asyncio
