@@ -5,6 +5,7 @@ import os
 import sys
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -203,7 +204,7 @@ async def _assert_frozen_transaction_a(
     *,
     parent_id: uuid.UUID,
     expected_lease: uuid.UUID,
-) -> None:
+) -> datetime:
     async with AsyncSessionLocal() as session:
         await _set_owner_context(session, scenario, "retry-exhaustion-frozen-proof")
         state = (
@@ -216,6 +217,12 @@ async def _assert_frozen_transaction_a(
         assert state.lifecycle_transition_in_progress is True
         assert state.saga_last_checkpoint is None
         assert state.saga_compensation_strategy == "rollback_to_origin"
+        assert state.status_changed_by == scenario.owner_id
+        assert state.status_reason == "Runtime retry exhaustion verification"
+        assert state.transition_source == "api"
+        assert state.status_changed_at is not None
+        transition_changed_at = state.status_changed_at
+
         parent = (
             await session.execute(
                 select(BranchOutboxEvent).where(BranchOutboxEvent.outbox_id == parent_id)
@@ -224,6 +231,7 @@ async def _assert_frozen_transaction_a(
         assert parent.status == "processing"
         assert parent.leased_by == expected_lease
         assert parent.leased_until is not None
+        return transition_changed_at
 
 
 async def _assert_compensated_once(
@@ -231,6 +239,7 @@ async def _assert_compensated_once(
     *,
     correlation_id: uuid.UUID,
     parent_id: uuid.UUID,
+    transition_changed_at: datetime,
 ) -> tuple[int, int, int]:
     async with AsyncSessionLocal() as session:
         await _set_owner_context(session, scenario, "retry-exhaustion-final-proof")
@@ -244,6 +253,11 @@ async def _assert_compensated_once(
         assert state.lifecycle_transition_in_progress is False
         assert state.saga_last_checkpoint is None
         assert state.saga_compensation_strategy is None
+        assert state.status_changed_by == scenario.owner_id
+        assert state.status_changed_at is not None
+        assert state.status_changed_at > transition_changed_at
+        assert state.status_reason == "Saga dead-letter compensation rollback"
+        assert state.transition_source == "saga_compensation"
 
         parent = (
             await session.execute(
@@ -353,7 +367,7 @@ async def main() -> None:
             permanent=False,
         )
         assert wrong_outcome == "lease_lost"
-        await _assert_frozen_transaction_a(
+        transition_changed_at = await _assert_frozen_transaction_a(
             scenario,
             parent_id=parent_id,
             expected_lease=worker_id,
@@ -370,6 +384,7 @@ async def main() -> None:
             scenario,
             correlation_id=correlation_id,
             parent_id=parent_id,
+            transition_changed_at=transition_changed_at,
         )
 
         replay_outcome = await _fail_event(
@@ -383,10 +398,11 @@ async def main() -> None:
             scenario,
             correlation_id=correlation_id,
             parent_id=parent_id,
+            transition_changed_at=transition_changed_at,
         )
         assert after_replay == before_replay == (1, 1, 1)
 
-        print("PASS: lifecycle retry exhaustion compensation is lease-bound, atomic, and replay-safe")
+        print("PASS: lifecycle retry exhaustion compensation is lease-bound, atomic, metadata-consistent, and replay-safe")
     finally:
         await admin_engine.dispose()
         await auth_engine.dispose()
