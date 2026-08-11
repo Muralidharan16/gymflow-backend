@@ -1,11 +1,13 @@
-import uuid
+from __future__ import annotations
+
 import logging
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from sqlalchemy import select, update, text, func
-from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException, status
+from sqlalchemy import select, text, func
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.org_branch import OrgBranchState
 from app.models.branch_lifecycle import (
@@ -18,10 +20,21 @@ from app.models.branch_lifecycle import (
     BranchWatchdogAlert,
 )
 
+
 logger = logging.getLogger(__name__)
 
 
 class BranchLifecycleService:
+    """Branch lifecycle state machine with durable Transaction-A intent.
+
+    Transaction A runs in the request transaction and persists the state flip,
+    immutable history/event records, and a ``branch.lifecycle_saga`` outbox row.
+    Transaction B is database-only: booking mutation plus durable external
+    commands are committed atomically by the leased worker. No request-scoped
+    session may cross into deferred execution and no external command is marked
+    delivered by this service.
+    """
+
     def __init__(self, db: AsyncSession):
         self.db = db
 
@@ -33,185 +46,135 @@ class BranchLifecycleService:
         actor_id: uuid.UUID,
         actor_role: str,
         reason: Optional[str] = None,
+        transition_source: str = "api",
     ) -> uuid.UUID:
-        """Execute Transaction A with authorization before write locking.
+        """Execute durable Transaction A and return its correlation id."""
 
-        A caller must first be able to read the tenant branch and must be
-        authorized for the current-state transition. Only then may it acquire
-        the organization advisory lock and the row UPDATE lock. After locking,
-        the status is revalidated so a concurrent transition cannot invalidate
-        the authorization decision made from the initial read.
-        """
-        stmt_def = select(BranchStatusDefinition).where(
-            BranchStatusDefinition.code == to_status
-        )
-        res_def = await self.db.execute(stmt_def)
-        target_def = res_def.scalar_one_or_none()
-        if not target_def:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Target status '{to_status}' is not defined.",
-            )
-
-        # Read under SELECT RLS first. SELECT ... FOR UPDATE would also apply
-        # UPDATE privilege/RLS and can hide a readable branch from an actor who
-        # is correctly forbidden to mutate it, turning a 403 into a false 404.
-        visible_stmt = select(OrgBranchState).where(
+        # Authorization must happen before any write-intent lock. A caller who
+        # may read a branch but cannot transition it receives 403 rather than a
+        # row-lock/RLS-induced false 404.
+        read_stmt = select(OrgBranchState).where(
             OrgBranchState.branch_id == branch_id,
             OrgBranchState.org_id == org_id,
-            OrgBranchState.deleted_at.is_(None),
         )
-        visible_res = await self.db.execute(visible_stmt)
-        visible_state = visible_res.scalar_one_or_none()
-        if not visible_state:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Branch not found or belongs to another organization.",
-            )
+        read_res = await self.db.execute(read_stmt)
+        visible_state = read_res.scalar_one_or_none()
+        if visible_state is None:
+            raise HTTPException(status_code=404, detail="Branch not found")
 
         from_status = visible_state.status
-        if from_status == to_status:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Branch is already in status '{to_status}'.",
-            )
-
-        stmt_trans = select(BranchStatusTransition).where(
+        transition_stmt = select(BranchStatusTransition).where(
             BranchStatusTransition.from_status == from_status,
             BranchStatusTransition.to_status == to_status,
         )
-        res_trans = await self.db.execute(stmt_trans)
-        allowed_trans = res_trans.scalar_one_or_none()
-        if not allowed_trans:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Transition from '{from_status}' to '{to_status}' is illegal.",
-            )
-        if actor_role not in allowed_trans.allowed_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"Role '{actor_role}' is not authorized to execute transition "
-                    f"from '{from_status}' to '{to_status}'."
-                ),
-            )
-        if allowed_trans.requires_reason and (not reason or not reason.strip()):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="A valid, non-empty status reason is required for this transition.",
-            )
-        if to_status in ("permanently_closed", "compliance_suspended") and (
-            not reason or not reason.strip()
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Terminal transitions must explicitly state a valid reason for legal auditing.",
-            )
-
-        # Only authorized callers may serialize lifecycle mutation for the org.
-        org_str = str(org_id)
-        lock_res = await self.db.execute(
-            text(
-                """
-                SELECT pg_try_advisory_xact_lock(
-                    abs(hashtext(:left_part)),
-                    abs(hashtext(:right_part))
-                );
-                """
-            ),
-            {"left_part": org_str[:18], "right_part": org_str[18:]},
-        )
-        if not lock_res.scalar():
+        transition = (await self.db.execute(transition_stmt)).scalar_one_or_none()
+        if transition is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Another lifecycle transition is currently in progress for this organization.",
+                detail=f"Transition {from_status} -> {to_status} is not allowed",
             )
+        if actor_role not in transition.allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Role '{actor_role}' is not authorized for this transition",
+            )
+        if transition.requires_reason and not (reason and reason.strip()):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A status reason is required for this transition",
+            )
+
+        target_def = (
+            await self.db.execute(
+                select(BranchStatusDefinition).where(
+                    BranchStatusDefinition.code == to_status
+                )
+            )
+        ).scalar_one_or_none()
+        if target_def is None:
+            raise HTTPException(status_code=400, detail="Unknown target status")
+
+        # Serialize branch transitions and the org-wide last-operational-branch
+        # invariant in a stable lock order: organization advisory lock first,
+        # then branch advisory lock, then the row lock.
+        await self.db.execute(
+            text(
+                "SELECT pg_catalog.pg_advisory_xact_lock(" 
+                "pg_catalog.hashtextextended(:scope, 0))"
+            ),
+            {"scope": f"branch-lifecycle:org:{org_id}"},
+        )
+        await self.db.execute(
+            text(
+                "SELECT pg_catalog.pg_advisory_xact_lock(" 
+                "pg_catalog.hashtextextended(:scope, 0))"
+            ),
+            {"scope": f"branch-lifecycle:branch:{branch_id}"},
+        )
 
         locked_stmt = (
             select(OrgBranchState)
             .where(
                 OrgBranchState.branch_id == branch_id,
                 OrgBranchState.org_id == org_id,
-                OrgBranchState.deleted_at.is_(None),
             )
             .with_for_update()
         )
-        locked_res = await self.db.execute(locked_stmt)
-        branch_state = locked_res.scalar_one_or_none()
-        if not branch_state:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Branch is no longer writable for this lifecycle transition. Retry with fresh state.",
-            )
+        branch_state = (await self.db.execute(locked_stmt)).scalar_one_or_none()
+        if branch_state is None:
+            raise HTTPException(status_code=404, detail="Branch not found")
         if branch_state.status != from_status:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Branch status changed while the transition was being authorized. Retry with fresh state.",
+                detail="Branch status changed concurrently; retry the transition",
+            )
+        if branch_state.lifecycle_transition_in_progress:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A lifecycle transition is already in progress for this branch",
             )
 
-        # Last-active branch guard is evaluated under the serialization lock.
-        if not target_def.is_operational and branch_state.is_operational:
-            count_stmt = (
-                select(func.count(1))
+        if branch_state.is_operational and not target_def.is_operational:
+            operational_count = await self.db.scalar(
+                select(func.count())
                 .select_from(OrgBranchState)
                 .where(
                     OrgBranchState.org_id == org_id,
-                    OrgBranchState.is_operational == True,
+                    OrgBranchState.is_operational.is_(True),
                     OrgBranchState.deleted_at.is_(None),
                 )
             )
-            op_count_res = await self.db.execute(count_stmt)
-            operational_count = op_count_res.scalar() or 0
-            if operational_count <= 1:
+            if int(operational_count or 0) <= 1:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail="Cannot deactivate the last operational branch for this organization.",
+                    detail="Cannot deactivate the last operational branch",
                 )
 
-        snapshot = {
-            "status": branch_state.status,
-            "is_operational": branch_state.is_operational,
-            "lifecycle_transition_in_progress": branch_state.lifecycle_transition_in_progress,
-            "saga_last_checkpoint": branch_state.saga_last_checkpoint,
-            "saga_compensation_strategy": branch_state.saga_compensation_strategy,
-            "status_changed_at": (
-                branch_state.status_changed_at.isoformat()
-                if branch_state.status_changed_at
-                else None
-            ),
-            "status_changed_by": (
-                str(branch_state.status_changed_by)
-                if branch_state.status_changed_by
-                else None
-            ),
-            "status_reason": branch_state.status_reason,
-            "transition_source": branch_state.transition_source,
-            "search_visibility_version": branch_state.search_visibility_version,
-            "search_last_synced_at": (
-                branch_state.search_last_synced_at.isoformat()
-                if branch_state.search_last_synced_at
-                else None
-            ),
-        }
-
-        correlation_id = uuid.uuid4()
         now = datetime.now(timezone.utc)
+        correlation_id = uuid.uuid4()
+
         branch_state.status = to_status
         branch_state.is_operational = target_def.is_operational
-        branch_state.lifecycle_transition_in_progress = True
-        branch_state.saga_last_checkpoint = None
-        branch_state.saga_compensation_strategy = "rollback_to_origin"
         branch_state.status_changed_at = now
         branch_state.status_changed_by = actor_id
-        branch_state.status_reason = reason
-        branch_state.transition_source = "api"
+        branch_state.lifecycle_transition_in_progress = True
+        branch_state.saga_last_checkpoint = None
+        # Transaction B is atomic. If it repeatedly fails, compensation may
+        # safely roll Transaction A back because no partial B commit exists.
+        branch_state.saga_compensation_strategy = "rollback_to_origin"
 
         event = BranchLifecycleEvent(
             event_id=uuid.uuid4(),
             branch_id=branch_id,
-            event_type="transition_initiated",
-            event_version=1,
-            payload={"from_status": from_status, "to_status": to_status},
+            event_type="status_change_initiated",
+            payload={
+                "org_id": str(org_id),
+                "from_status": from_status,
+                "to_status": to_status,
+                "reason": reason,
+                "actor_id": str(actor_id),
+                "actor_role": actor_role,
+            },
             emitted_at=now,
             correlation_id=correlation_id,
             step_sequence=1,
@@ -227,78 +190,181 @@ class BranchLifecycleService:
             changed_by=actor_id,
             changed_at=now,
             reason=reason,
-            transition_source="api",
-            snapshot=snapshot,
+            transition_source=transition_source,
+            snapshot={
+                "is_operational": target_def.is_operational,
+                "actor_role": actor_role,
+            },
             correlation_id=correlation_id,
             correlation_emitted_at=now,
         )
         self.db.add(history)
 
-        outbox_event = BranchOutboxEvent(
-            outbox_id=uuid.uuid4(),
-            branch_id=branch_id,
-            event_type="branch.search_deindex",
-            payload={
-                "branch_id": str(branch_id),
-                "org_id": str(org_id),
-                "status": to_status,
-            },
-            created_at=now,
-            process_after=now,
-            status="pending",
-            correlation_id=correlation_id,
+        # Search visibility is an external command and must never be presented
+        # as delivered merely because the state row changed.
+        self.db.add(
+            BranchOutboxEvent(
+                outbox_id=uuid.uuid4(),
+                tenant_id=org_id,
+                branch_id=branch_id,
+                event_type="branch.search_deindex"
+                if not target_def.is_operational
+                else "branch.search_index",
+                payload={
+                    "branch_id": str(branch_id),
+                    "org_id": str(org_id),
+                    "status": to_status,
+                },
+                created_at=now,
+                process_after=now,
+                status="pending",
+                attempt_count=0,
+                max_attempts=5,
+                correlation_id=correlation_id,
+            )
         )
-        self.db.add(outbox_event)
+
+        # This row is the durable replacement for FastAPI BackgroundTasks.
+        self.db.add(
+            BranchOutboxEvent(
+                outbox_id=uuid.uuid4(),
+                tenant_id=org_id,
+                branch_id=branch_id,
+                event_type="branch.lifecycle_saga",
+                payload={
+                    "branch_id": str(branch_id),
+                    "org_id": str(org_id),
+                    "from_status": from_status,
+                    "to_status": to_status,
+                    "actor_id": str(actor_id),
+                    "actor_role": actor_role,
+                },
+                created_at=now,
+                process_after=now,
+                status="pending",
+                attempt_count=0,
+                max_attempts=15,
+                correlation_id=correlation_id,
+            )
+        )
 
         await self.db.commit()
         return correlation_id
 
-    async def _relation_exists(self, qualified_name: str) -> bool:
-        """Return whether an optional relation exists without risking tx abort."""
-        result = await self.db.execute(
-            text("SELECT pg_catalog.to_regclass(:qualified_name) IS NOT NULL"),
-            {"qualified_name": qualified_name},
-        )
-        return bool(result.scalar_one())
+    async def _record_checkpoint(
+        self,
+        branch_state: OrgBranchState,
+        checkpoint: str,
+        correlation_id: uuid.UUID,
+        step_sequence: int,
+        *,
+        compensation_strategy: str = "rollback_to_origin",
+    ) -> None:
+        """Record a checkpoint without committing the worker transaction."""
 
-    async def _cancel_future_bookings_if_present(
+        branch_state.saga_last_checkpoint = checkpoint
+        branch_state.saga_compensation_strategy = compensation_strategy
+        self.db.add(
+            BranchLifecycleEvent(
+                event_id=uuid.uuid4(),
+                branch_id=branch_state.branch_id,
+                event_type=checkpoint,
+                payload={"checkpoint": checkpoint},
+                emitted_at=datetime.now(timezone.utc),
+                correlation_id=correlation_id,
+                step_sequence=step_sequence,
+            )
+        )
+        await self.db.flush()
+
+    # Preserve the old method name for focused tests and callers while changing
+    # its transaction semantics from "commit before effect" to "flush only".
+    async def _update_checkpoint(
+        self,
+        branch_id: uuid.UUID,
+        checkpoint: str,
+        compensation_strategy: str,
+        correlation_id: uuid.UUID,
+        step_sequence: int,
+    ) -> None:
+        state = (
+            await self.db.execute(
+                select(OrgBranchState)
+                .where(OrgBranchState.branch_id == branch_id)
+                .with_for_update()
+            )
+        ).scalar_one()
+        await self._record_checkpoint(
+            state,
+            checkpoint,
+            correlation_id,
+            step_sequence,
+            compensation_strategy=compensation_strategy,
+        )
+
+    async def _enqueue_child_command(
         self,
         *,
-        branch_id: uuid.UUID,
-        to_status: str,
-        grace_limit: datetime,
+        branch_state: OrgBranchState,
+        event_type: str,
+        payload: dict,
+        correlation_id: uuid.UUID,
+        parent_outbox_id: Optional[uuid.UUID],
+        worker_id: Optional[uuid.UUID],
     ) -> None:
-        """Cancel future bookings only when the optional booking surface exists.
+        child_id = uuid.uuid5(
+            correlation_id,
+            f"{event_type}:{branch_state.branch_id}",
+        )
+        full_payload = {
+            **payload,
+            "branch_id": str(branch_state.branch_id),
+            "org_id": str(branch_state.org_id),
+        }
 
-        Absence is an explicitly supported deployment state. Any failure after
-        existence is established is a real schema/ACL/data failure and must flow
-        to the saga compensation path; swallowing it would leave PostgreSQL's
-        transaction aborted and mask an operational defect.
-        """
-        if not await self._relation_exists("public.bookings"):
-            logger.info(
-                "Skipping booking cancellation for branch %s: public.bookings is absent",
-                branch_id,
+        if parent_outbox_id is not None and worker_id is not None:
+            await self.db.execute(
+                text(
+                    """
+                    SELECT public.enqueue_branch_lifecycle_child(
+                        :parent_outbox_id,
+                        :worker_id,
+                        :event_type,
+                        CAST(:payload AS jsonb),
+                        :child_id
+                    )
+                    """
+                ),
+                {
+                    "parent_outbox_id": parent_outbox_id,
+                    "worker_id": worker_id,
+                    "event_type": event_type,
+                    "payload": __import__("json").dumps(full_payload),
+                    "child_id": child_id,
+                },
             )
             return
 
-        await self.db.execute(
-            text(
-                """
-                UPDATE public.bookings
-                SET status = 'cancelled',
-                    cancellation_reason = 'Branch status transition to ' || :to_status
-                WHERE branch_id = :branch_id
-                  AND start_time >= :grace_limit
-                  AND status != 'cancelled'
-                """
-            ),
-            {
-                "branch_id": branch_id,
-                "grace_limit": grace_limit,
-                "to_status": to_status,
-            },
+        # Direct invocation remains useful to deterministic service tests and
+        # explicit foreground/admin repair. Production HTTP routing never calls
+        # Transaction B directly; worker processing always supplies a live
+        # parent_outbox_id + worker_id and therefore uses the bounded function.
+        self.db.add(
+            BranchOutboxEvent(
+                outbox_id=child_id,
+                tenant_id=branch_state.org_id,
+                branch_id=branch_state.branch_id,
+                event_type=event_type,
+                payload=full_payload,
+                created_at=datetime.now(timezone.utc),
+                process_after=datetime.now(timezone.utc),
+                status="pending",
+                attempt_count=0,
+                max_attempts=5,
+                correlation_id=correlation_id,
+            )
         )
+        await self.db.flush()
 
     async def execute_saga_cascade(
         self,
@@ -308,182 +374,206 @@ class BranchLifecycleService:
         to_status: str,
         correlation_id: uuid.UUID,
         actor_id: uuid.UUID,
+        *,
+        parent_outbox_id: Optional[uuid.UUID] = None,
+        worker_id: Optional[uuid.UUID] = None,
     ) -> None:
-        """Transaction B: execute cascade work and compensate real failures."""
-        stmt_policy = select(BranchDeactivationPolicy).where(
-            BranchDeactivationPolicy.from_status == from_status,
-            BranchDeactivationPolicy.to_status == to_status,
-        )
-        res_policy = await self.db.execute(stmt_policy)
-        policy = res_policy.scalar_one_or_none()
+        """Execute Transaction B atomically.
 
-        if not policy:
-            await self._complete_saga(branch_id, was_watchdog_recovery=False)
-            return
+        No external API is called here. Refund/search/notification work becomes
+        durable child commands. The leased poller commits this method's database
+        effects and the parent delivered marker together.
+        """
 
-        try:
-            if policy.auto_cancel_bookings:
-                await self._update_checkpoint(
-                    branch_id, "bookings_cancelled", correlation_id, 2
+        state = (
+            await self.db.execute(
+                select(OrgBranchState)
+                .where(
+                    OrgBranchState.branch_id == branch_id,
+                    OrgBranchState.org_id == org_id,
                 )
-                grace_limit = datetime.now(timezone.utc) + timedelta(
-                    hours=policy.booking_grace_hours
-                )
-                await self._cancel_future_bookings_if_present(
-                    branch_id=branch_id,
-                    to_status=to_status,
-                    grace_limit=grace_limit,
-                )
-
-            if policy.refund_policy != "none":
-                await self._update_checkpoint(
-                    branch_id, "refunds_initiated", correlation_id, 3
-                )
-                await self._update_checkpoint(
-                    branch_id, "refunds_completed", correlation_id, 4
-                )
-
-            if policy.notify_members:
-                await self._update_checkpoint(
-                    branch_id, "notifications_sent", correlation_id, 5
-                )
-                notification_event = BranchOutboxEvent(
-                    outbox_id=uuid.uuid4(),
-                    branch_id=branch_id,
-                    event_type="branch.member_notification",
-                    payload={
-                        "branch_id": str(branch_id),
-                        "org_id": str(org_id),
-                        "from_status": from_status,
-                        "to_status": to_status,
-                        "grace_hours": policy.booking_grace_hours,
-                    },
-                    created_at=datetime.now(timezone.utc),
-                    process_after=datetime.now(timezone.utc),
-                    status="pending",
-                    correlation_id=correlation_id,
-                )
-                self.db.add(notification_event)
-
-            await self._complete_saga(branch_id, was_watchdog_recovery=False)
-
-        except Exception:
-            logger.exception("Saga execution failed for branch %s", branch_id)
-            await self.db.rollback()
-            await self._compensate_saga(
-                branch_id, from_status, to_status, correlation_id, actor_id
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if state is None:
+            raise RuntimeError("Lifecycle saga branch is no longer visible")
+        if not state.lifecycle_transition_in_progress:
+            # Idempotent retry after the successful transaction committed but an
+            # outer caller retried its own request: state already proves done.
+            if state.status == to_status:
+                return
+            raise RuntimeError("Lifecycle saga state is not in progress")
+        if state.status != to_status:
+            raise RuntimeError(
+                f"Lifecycle saga target drift: expected={to_status}, observed={state.status}"
             )
 
-    async def _update_checkpoint(
-        self,
-        branch_id: uuid.UUID,
-        checkpoint: str,
-        correlation_id: uuid.UUID,
-        step_seq: int,
-    ) -> None:
-        """Advance the saga checkpoint and record the matching lifecycle event."""
-        stmt = (
-            update(OrgBranchState)
-            .where(OrgBranchState.branch_id == branch_id)
-            .values(
-                saga_last_checkpoint=checkpoint,
-                saga_compensation_strategy=(
-                    "advance_to_target" if step_seq >= 4 else "rollback_to_origin"
-                ),
+        policy = (
+            await self.db.execute(
+                select(BranchDeactivationPolicy).where(
+                    BranchDeactivationPolicy.from_status == from_status,
+                    BranchDeactivationPolicy.to_status == to_status,
+                )
+            )
+        ).scalar_one_or_none()
+
+        await self._record_checkpoint(
+            state,
+            "transaction_b_started",
+            correlation_id,
+            2,
+        )
+
+        if policy and policy.auto_cancel_bookings:
+            # The booking relation is optional in the current product lineage.
+            # If it exists, failure (including missing worker privilege) aborts
+            # Transaction B and is retried; never catch permission/schema errors
+            # and continue from an aborted PostgreSQL transaction.
+            relation_exists = await self.db.scalar(
+                text("SELECT pg_catalog.to_regclass('public.bookings') IS NOT NULL")
+            )
+            if relation_exists:
+                await self.db.execute(
+                    text(
+                        """
+                        UPDATE public.bookings
+                        SET status = 'cancelled',
+                            updated_at = pg_catalog.clock_timestamp()
+                        WHERE branch_id = :branch_id
+                          AND status IN ('confirmed', 'pending')
+                        """
+                    ),
+                    {"branch_id": branch_id},
+                )
+
+        await self._record_checkpoint(
+            state,
+            "bookings_processed",
+            correlation_id,
+            3,
+        )
+
+        if policy and policy.refund_policy != "none":
+            await self._enqueue_child_command(
+                branch_state=state,
+                event_type="branch.refund_required",
+                payload={
+                    "refund_policy": policy.refund_policy,
+                    "from_status": from_status,
+                    "to_status": to_status,
+                },
+                correlation_id=correlation_id,
+                parent_outbox_id=parent_outbox_id,
+                worker_id=worker_id,
+            )
+            await self._record_checkpoint(
+                state,
+                "refunds_queued",
+                correlation_id,
+                4,
+            )
+
+        if policy and policy.notify_members:
+            await self._enqueue_child_command(
+                branch_state=state,
+                event_type="branch.member_notification",
+                payload={
+                    "from_status": from_status,
+                    "to_status": to_status,
+                },
+                correlation_id=correlation_id,
+                parent_outbox_id=parent_outbox_id,
+                worker_id=worker_id,
+            )
+            await self._record_checkpoint(
+                state,
+                "notifications_queued",
+                correlation_id,
+                5,
+            )
+
+        state.lifecycle_transition_in_progress = False
+        state.saga_last_checkpoint = None
+        state.saga_compensation_strategy = None
+        self.db.add(
+            BranchLifecycleEvent(
+                event_id=uuid.uuid4(),
+                branch_id=branch_id,
+                event_type="saga_database_completed",
+                payload={
+                    "from_status": from_status,
+                    "to_status": to_status,
+                    "external_commands_are_async": True,
+                },
+                emitted_at=datetime.now(timezone.utc),
+                correlation_id=correlation_id,
+                step_sequence=6,
             )
         )
-        await self.db.execute(stmt)
+        await self.db.flush()
 
-        event = BranchLifecycleEvent(
-            event_id=uuid.uuid4(),
-            branch_id=branch_id,
-            event_type=checkpoint,
-            payload={"correlation_id": str(correlation_id)},
-            emitted_at=datetime.now(timezone.utc),
-            correlation_id=correlation_id,
-            step_sequence=step_seq,
-        )
-        self.db.add(event)
-        await self.db.commit()
+        # Foreground direct service tests/admin repair own their transaction.
+        # Production worker callers pass a parent lease and perform the one
+        # commit only after marking that parent delivered in the same session.
+        if parent_outbox_id is None:
+            await self.db.commit()
 
-    async def _complete_saga(
-        self, branch_id: uuid.UUID, was_watchdog_recovery: bool
-    ) -> None:
-        """Transaction B completion cleanup."""
-        now = datetime.now(timezone.utc)
-        stmt = (
-            select(OrgBranchState)
-            .where(OrgBranchState.branch_id == branch_id)
-            .with_for_update()
-        )
-        res = await self.db.execute(stmt)
-        branch_state = res.scalar_one()
-
-        branch_state.lifecycle_transition_in_progress = False
-        branch_state.saga_last_checkpoint = None
-        branch_state.saga_compensation_strategy = None
-        if was_watchdog_recovery:
-            branch_state.watchdog_recovered_at = now
-            branch_state.watchdog_recovery_count += 1
-
-        await self.db.commit()
-        logger.info("Saga successfully finalized for branch %s.", branch_id)
-
-    async def _compensate_saga(
+    async def compensate_saga_from_dead_letter(
         self,
+        *,
         branch_id: uuid.UUID,
+        org_id: uuid.UUID,
         from_status: str,
         to_status: str,
         correlation_id: uuid.UUID,
         actor_id: uuid.UUID,
+        parent_outbox_id: uuid.UUID,
+        worker_id: uuid.UUID,
     ) -> None:
-        """Rollback or advance based on decision matrix strategy."""
-        stmt = (
-            select(OrgBranchState)
-            .where(OrgBranchState.branch_id == branch_id)
-            .with_for_update()
+        """Rollback Transaction A after Transaction B exhausts retries.
+
+        This compensation is safe because Transaction B commits atomically; a
+        dead-lettered parent proves no B transaction reached its commit point.
+        Search restoration is itself a durable child command.
+        """
+
+        state = (
+            await self.db.execute(
+                select(OrgBranchState)
+                .where(
+                    OrgBranchState.branch_id == branch_id,
+                    OrgBranchState.org_id == org_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one()
+        if not state.lifecycle_transition_in_progress:
+            return
+
+        origin_def = (
+            await self.db.execute(
+                select(BranchStatusDefinition).where(
+                    BranchStatusDefinition.code == from_status
+                )
+            )
+        ).scalar_one()
+        state.status = from_status
+        state.is_operational = origin_def.is_operational
+        state.lifecycle_transition_in_progress = False
+        state.saga_last_checkpoint = None
+        state.saga_compensation_strategy = None
+
+        await self._enqueue_child_command(
+            branch_state=state,
+            event_type="branch.search_index",
+            payload={"status": from_status, "reason": "saga_dead_letter_compensation"},
+            correlation_id=correlation_id,
+            parent_outbox_id=parent_outbox_id,
+            worker_id=worker_id,
         )
-        res = await self.db.execute(stmt)
-        branch_state = res.scalar_one()
-
-        strategy = branch_state.saga_compensation_strategy or "rollback_to_origin"
-
-        if strategy == "rollback_to_origin":
-            logger.warning(
-                "Saga failed. Triggering ROLLBACK compensation strategy for branch %s.",
-                branch_id,
-            )
-            branch_state.status = from_status
-
-            stmt_def = select(BranchStatusDefinition).where(
-                BranchStatusDefinition.code == from_status
-            )
-            res_def = await self.db.execute(stmt_def)
-            origin_def = res_def.scalar_one()
-            branch_state.is_operational = origin_def.is_operational
-
-            branch_state.lifecycle_transition_in_progress = False
-            branch_state.saga_last_checkpoint = None
-            branch_state.saga_compensation_strategy = None
-
-            now = datetime.now(timezone.utc)
-            outbox_reindex = BranchOutboxEvent(
-                outbox_id=uuid.uuid4(),
-                branch_id=branch_id,
-                event_type="branch.search_index",
-                payload={
-                    "branch_id": str(branch_id),
-                    "org_id": str(branch_state.org_id),
-                    "status": from_status,
-                },
-                created_at=now,
-                process_after=now,
-                status="pending",
-                correlation_id=correlation_id,
-            )
-            self.db.add(outbox_reindex)
-
-            event = BranchLifecycleEvent(
+        now = datetime.now(timezone.utc)
+        self.db.add(
+            BranchLifecycleEvent(
                 event_id=uuid.uuid4(),
                 branch_id=branch_id,
                 event_type="compensation_completed",
@@ -492,173 +582,113 @@ class BranchLifecycleService:
                 correlation_id=correlation_id,
                 step_sequence=99,
             )
-            self.db.add(event)
-
-            history = BranchStatusHistory(
+        )
+        self.db.add(
+            BranchStatusHistory(
                 history_id=uuid.uuid4(),
                 branch_id=branch_id,
                 from_status=to_status,
                 to_status=from_status,
                 changed_by=actor_id,
                 changed_at=now,
-                reason="Saga compensation rollback",
+                reason="Saga dead-letter compensation rollback",
                 transition_source="saga_compensation",
-                snapshot={},
+                snapshot={"reason": "transaction_b_retry_exhausted"},
                 correlation_id=correlation_id,
                 correlation_emitted_at=now,
             )
-            self.db.add(history)
-
-            await self.db.commit()
-
-        elif strategy == "advance_to_target":
-            logger.warning(
-                "Saga failed. Triggering ADVANCE_TO_TARGET compensation strategy for branch %s.",
-                branch_id,
-            )
-            await self._complete_saga(branch_id, was_watchdog_recovery=False)
-
-        else:
-            logger.error(
-                "Saga failed. Manual review required for branch %s. Unlocking status flip but setting flags.",
-                branch_id,
-            )
-            branch_state.lifecycle_transition_in_progress = False
-            branch_state.saga_compensation_strategy = "manual_review"
-            await self.db.commit()
-
-            alert = BranchWatchdogAlert(
-                alert_id=uuid.uuid4(),
-                branch_id=branch_id,
-                alert_type="force_recovery_45m",
-                triggered_at=datetime.now(timezone.utc),
-                resolution_notes="Saga failed with manual_review strategy.",
-            )
-            self.db.add(alert)
-            await self.db.commit()
+        )
+        await self.db.flush()
 
     async def run_watchdog_sweep(self) -> None:
-        """Recover lifecycle transitions that exceed the configured SLA windows."""
-        now = datetime.now(timezone.utc)
-        stmt = select(OrgBranchState).where(
-            OrgBranchState.lifecycle_transition_in_progress == True,
-            OrgBranchState.deleted_at.is_(None),
-        )
-        res = await self.db.execute(stmt)
-        branches = res.scalars().all()
+        """Alert on frozen transitions; do not race a live durable saga worker."""
 
-        for state in branches:
+        now = datetime.now(timezone.utc)
+        states = (
+            await self.db.execute(
+                select(OrgBranchState).where(
+                    OrgBranchState.lifecycle_transition_in_progress.is_(True),
+                    OrgBranchState.deleted_at.is_(None),
+                )
+            )
+        ).scalars().all()
+
+        for state in states:
             changed_at = state.status_changed_at
             if changed_at is None:
                 logger.error(
-                    "Lifecycle transition for branch %s has no status_changed_at; manual review required",
+                    "Lifecycle transition for branch %s has no status_changed_at",
                     state.branch_id,
                 )
                 continue
-
             duration = now - changed_at
+            if duration < timedelta(minutes=15):
+                continue
 
-            if duration >= timedelta(minutes=45):
-                logger.error(
-                    "Watchdog trigger: branch %s transition frozen for %s; force-recovering",
-                    state.branch_id,
-                    duration,
-                )
-                strategy = state.saga_compensation_strategy or "rollback_to_origin"
-
-                alert = BranchWatchdogAlert(
-                    alert_id=uuid.uuid4(),
-                    branch_id=state.branch_id,
-                    alert_type="force_recovery_45m",
-                    triggered_at=now,
-                    resolution_notes=(
-                        "Auto-recovery executed after "
-                        f"{duration.total_seconds() / 60:.1f} minutes of freeze."
-                    ),
-                )
-                self.db.add(alert)
-                await self.db.flush()
-
-                if strategy == "rollback_to_origin":
-                    stmt_hist = (
-                        select(BranchStatusHistory)
-                        .where(BranchStatusHistory.branch_id == state.branch_id)
-                        .order_by(BranchStatusHistory.changed_at.desc())
+            open_alert = (
+                await self.db.execute(
+                    select(BranchWatchdogAlert).where(
+                        BranchWatchdogAlert.branch_id == state.branch_id,
+                        BranchWatchdogAlert.alert_type == "freeze_threshold_15m",
+                        BranchWatchdogAlert.resolved_at.is_(None),
                     )
-                    res_hist = await self.db.execute(stmt_hist)
-                    hist = res_hist.scalars().first()
-                    origin_status = hist.from_status if hist else "active"
-
-                    state.status = origin_status
-                    stmt_def = select(BranchStatusDefinition).where(
-                        BranchStatusDefinition.code == origin_status
-                    )
-                    res_def = await self.db.execute(stmt_def)
-                    origin_def = res_def.scalar_one()
-                    state.is_operational = origin_def.is_operational
-
-                state.lifecycle_transition_in_progress = False
-                state.saga_last_checkpoint = None
-                state.saga_compensation_strategy = None
-                state.watchdog_recovered_at = now
-                state.watchdog_recovery_count += 1
-
-                await self.db.commit()
-
-            elif duration >= timedelta(minutes=15):
-                stmt_alert = select(BranchWatchdogAlert).where(
-                    BranchWatchdogAlert.branch_id == state.branch_id,
-                    BranchWatchdogAlert.alert_type == "freeze_threshold_15m",
-                    BranchWatchdogAlert.resolved_at.is_(None),
                 )
-                res_alert = await self.db.execute(stmt_alert)
-                open_alert = res_alert.scalar_one_or_none()
-
-                if not open_alert:
-                    logger.warning(
-                        "Watchdog trigger: branch %s transition frozen for %s; raising SLA alert",
-                        state.branch_id,
-                        duration,
-                    )
-                    alert = BranchWatchdogAlert(
+            ).scalar_one_or_none()
+            if open_alert is None:
+                self.db.add(
+                    BranchWatchdogAlert(
                         alert_id=uuid.uuid4(),
                         branch_id=state.branch_id,
                         alert_type="freeze_threshold_15m",
                         triggered_at=now,
+                        resolution_notes=(
+                            "Durable lifecycle saga has exceeded 15 minutes; "
+                            "worker/outbox state must be inspected."
+                        ),
                     )
-                    self.db.add(alert)
-                    await self.db.commit()
+                )
+                await self.db.commit()
+
+            # Do not auto-roll back at 45 minutes while durable work may still
+            # be pending/leased. Retry exhaustion is handled explicitly by the
+            # outbox worker, which has the parent lease required for safe
+            # compensation and child search restoration.
+            if duration >= timedelta(minutes=45):
+                logger.error(
+                    "Lifecycle saga for branch %s has exceeded 45 minutes; "
+                    "awaiting explicit outbox retry/dead-letter resolution",
+                    state.branch_id,
+                )
 
     async def run_reconciliation_sweep(self) -> int:
-        """Reconcile stale search projections and return successful sync count."""
+        """Reconcile stale search projection markers with safe per-row savepoints."""
+
         worker_id = uuid.uuid4()
         now = datetime.now(timezone.utc)
-
-        claim_query = text(
-            """
-            UPDATE public.org_branch_state
-            SET reconciliation_claimed_by = :worker_id,
-                reconciliation_claimed_at = :now
-            WHERE branch_id IN (
-                SELECT branch_id FROM public.org_branch_state
-                WHERE search_last_synced_at < :stale_limit
-                  AND deleted_at IS NULL
-                  AND (
-                      reconciliation_claimed_at IS NULL
-                      OR reconciliation_claimed_at < :ttl_limit
-                  )
-                LIMIT 100
-                FOR UPDATE SKIP LOCKED
-            )
-            RETURNING branch_id
-            """
-        )
-
         stale_limit = now - timedelta(hours=24)
         ttl_limit = now - timedelta(minutes=30)
 
-        res = await self.db.execute(
-            claim_query,
+        result = await self.db.execute(
+            text(
+                """
+                UPDATE public.org_branch_state
+                SET reconciliation_claimed_by = :worker_id,
+                    reconciliation_claimed_at = :now
+                WHERE branch_id IN (
+                    SELECT branch_id
+                    FROM public.org_branch_state
+                    WHERE search_last_synced_at < :stale_limit
+                      AND deleted_at IS NULL
+                      AND (
+                            reconciliation_claimed_at IS NULL
+                            OR reconciliation_claimed_at < :ttl_limit
+                      )
+                    LIMIT 100
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING branch_id
+                """
+            ),
             {
                 "worker_id": worker_id,
                 "now": now,
@@ -666,17 +696,13 @@ class BranchLifecycleService:
                 "ttl_limit": ttl_limit,
             },
         )
-        claimed_ids = [row[0] for row in res.fetchall()]
-
+        claimed_ids = [row[0] for row in result.fetchall()]
         if not claimed_ids:
             return 0
 
         synced_count = 0
         for branch_id in claimed_ids:
             try:
-                # A savepoint keeps one branch's SQL/data failure from poisoning
-                # the outer claim transaction. Do not continue from PostgreSQL's
-                # failed-transaction state.
                 async with self.db.begin_nested():
                     update_result = await self.db.execute(
                         text(
