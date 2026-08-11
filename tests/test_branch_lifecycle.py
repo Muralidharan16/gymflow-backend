@@ -2,14 +2,13 @@ import pytest
 import uuid
 import pytest_asyncio
 from datetime import datetime, timezone, timedelta
-from unittest.mock import AsyncMock
 from sqlalchemy import select, text
 
 from app.models.organization import Organization
 from app.models.staff import GymOwner
 from app.models.enums import StaffRole
 from app.models.org_branch import OrgBranch, OrgBranchState
-from app.models.branch_lifecycle import BranchLifecycleEvent
+from app.models.branch_lifecycle import BranchLifecycleEvent, BranchOutboxEvent
 from app.services.branch_lifecycle_service import BranchLifecycleService
 from app.core.database import AsyncSessionLocal, update_session_context
 from conftest import AdminTestSessionLocal, assert_test_database
@@ -299,7 +298,9 @@ async def test_initiate_transition_last_active_branch_guard(lifecycle_setup):
 
 
 @pytest.mark.asyncio
-async def test_saga_happy_path_and_failure(lifecycle_setup, monkeypatch):
+async def test_saga_happy_path_and_transaction_b_failure_is_retry_safe(
+    lifecycle_setup, monkeypatch
+):
     org_id = lifecycle_setup["org_id"]
     owner_id = lifecycle_setup["owner_id"]
     branch1_id = lifecycle_setup["branch1_id"]
@@ -336,9 +337,10 @@ async def test_saga_happy_path_and_failure(lifecycle_setup, monkeypatch):
         assert state.saga_last_checkpoint is None
         assert state.saga_compensation_strategy is None
 
-        # Reactivate the fixture, then inject a real Transaction-B dependency
-        # failure. Production has no simulate_failure hook: the normal exception
-        # path must roll back the failed transaction and execute compensation.
+        # Return the fixture to its origin, then create a new Transaction A.
+        # Transaction A is independently committed by initiate_transition and
+        # must survive any later Transaction-B rollback so the durable parent can
+        # retry safely.
         state.status = "active"
         state.is_operational = True
         state.lifecycle_transition_in_progress = False
@@ -355,39 +357,75 @@ async def test_saga_happy_path_and_failure(lifecycle_setup, monkeypatch):
             reason="Fail Path",
         )
 
-        monkeypatch.setattr(
-            service,
-            "_update_checkpoint",
-            AsyncMock(side_effect=RuntimeError("forced refund checkpoint failure")),
-        )
+        original_record_checkpoint = service._record_checkpoint
+        injected = False
 
-        await service.execute_saga_cascade(
-            branch_id=branch1_id,
-            org_id=org_id,
-            from_status="active",
-            to_status="temporarily_closed",
-            correlation_id=failed_correlation_id,
-            actor_id=owner_id,
-        )
+        async def fail_after_checkpoint_flush(*args, **kwargs):
+            nonlocal injected
+            await original_record_checkpoint(*args, **kwargs)
+            if not injected:
+                injected = True
+                raise RuntimeError("forced transaction-b failure after checkpoint flush")
 
-        res2 = await session.execute(
-            select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-        )
-        compensated = res2.scalar_one()
-        assert compensated.status == "active"
-        assert compensated.is_operational is True
-        assert compensated.lifecycle_transition_in_progress is False
-        assert compensated.saga_last_checkpoint is None
-        assert compensated.saga_compensation_strategy is None
+        monkeypatch.setattr(service, "_record_checkpoint", fail_after_checkpoint_flush)
 
-        event_res = await session.execute(
-            select(BranchLifecycleEvent).where(
-                BranchLifecycleEvent.branch_id == branch1_id,
-                BranchLifecycleEvent.correlation_id == failed_correlation_id,
-                BranchLifecycleEvent.event_type == "compensation_completed",
+        with pytest.raises(
+            RuntimeError,
+            match="forced transaction-b failure after checkpoint flush",
+        ):
+            await service.execute_saga_cascade(
+                branch_id=branch1_id,
+                org_id=org_id,
+                from_status="active",
+                to_status="temporarily_closed",
+                correlation_id=failed_correlation_id,
+                actor_id=owner_id,
             )
+
+        # The production worker closes/rolls back this failed session before it
+        # releases the durable parent for retry. Model that transaction boundary
+        # explicitly here; no in-method synchronous compensation is expected.
+        await session.rollback()
+
+        retry_state = (
+            await session.execute(
+                select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
+            )
+        ).scalar_one()
+        assert retry_state.status == "temporarily_closed"
+        assert retry_state.is_operational is False
+        assert retry_state.lifecycle_transition_in_progress is True
+        assert retry_state.saga_last_checkpoint is None
+        assert retry_state.saga_compensation_strategy == "rollback_to_origin"
+
+        event_types = set(
+            (
+                await session.execute(
+                    select(BranchLifecycleEvent.event_type).where(
+                        BranchLifecycleEvent.branch_id == branch1_id,
+                        BranchLifecycleEvent.correlation_id == failed_correlation_id,
+                    )
+                )
+            ).scalars().all()
         )
-        assert event_res.scalar_one_or_none() is not None
+        assert "status_change_initiated" in event_types
+        assert "transaction_b_started" not in event_types
+        assert "saga_database_completed" not in event_types
+        assert "compensation_completed" not in event_types
+
+        outbox_types = set(
+            (
+                await session.execute(
+                    select(BranchOutboxEvent.event_type).where(
+                        BranchOutboxEvent.branch_id == branch1_id,
+                        BranchOutboxEvent.correlation_id == failed_correlation_id,
+                    )
+                )
+            ).scalars().all()
+        )
+        assert outbox_types == {"branch.search_deindex", "branch.lifecycle_saga"}
+        assert "branch.refund_required" not in outbox_types
+        assert "branch.member_notification" not in outbox_types
 
 
 @pytest.mark.asyncio
