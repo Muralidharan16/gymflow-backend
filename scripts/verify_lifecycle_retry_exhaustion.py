@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import make_url
@@ -315,9 +322,6 @@ async def main() -> None:
             and event["event_type"] == "branch.lifecycle_saga"
         )
 
-        # Accelerate only the counter to the real final-attempt value while the
-        # production worker owns the live lease. The row's immutable max_attempts,
-        # tenant/branch/payload/correlation identity are not changed.
         async with worker_async_session_maker() as session:
             await _assert_login(session, "worker_test_runtime")
             await _install_saga_context(session, event=saga, worker_id=worker_id)
@@ -341,7 +345,6 @@ async def main() -> None:
         saga["max_attempts"] = int(row.max_attempts)
         assert saga["attempt_count"] == saga["max_attempts"]
 
-        # A different worker must not be able to compensate or steal the parent.
         wrong_worker = uuid.uuid4()
         wrong_outcome = await _fail_event(
             dict(saga),
@@ -356,8 +359,6 @@ async def main() -> None:
             expected_lease=worker_id,
         )
 
-        # The actual lease owner performs the retry-exhaustion compensation and
-        # dead-letters the parent in one committed transaction.
         outcome = await _fail_event(
             dict(saga),
             worker_id,
@@ -371,7 +372,6 @@ async def main() -> None:
             parent_id=parent_id,
         )
 
-        # Replaying stale worker memory after commit cannot compensate twice.
         replay_outcome = await _fail_event(
             dict(saga),
             worker_id,
