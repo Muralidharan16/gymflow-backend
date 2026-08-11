@@ -119,6 +119,7 @@ def test_exact_managed_role_contract() -> None:
         "branch_admin",
         "branch_viewer",
         "ops_support",
+        "worker_runtime",
     }
 
     migration_attributes = roles["migration_owner"]["attributes"]
@@ -147,6 +148,7 @@ def test_exact_managed_role_contract() -> None:
         "branch_admin",
         "branch_viewer",
         "ops_support",
+        "worker_runtime",
     ):
         attributes = roles[role]["attributes"]
         assert attributes == {
@@ -162,6 +164,8 @@ def test_exact_managed_role_contract() -> None:
     assert "pre-tenant" in roles["auth_runtime"]["purpose"]
     assert "must never own schema objects" in roles["auth_runtime"]["decision"]
     assert "must never" in roles["auth_runtime"]["decision"]
+    assert "asynchronous-worker" in roles["worker_runtime"]["decision"]
+    assert "must never be granted to migration_owner" in roles["worker_runtime"]["decision"]
 
 
 def test_role_settings_are_exact() -> None:
@@ -173,10 +177,16 @@ def test_role_settings_are_exact() -> None:
         "lock_timeout": "2s",
         "row_security": "on",
     }
+    assert settings["worker_runtime"] == {
+        "statement_timeout": "15s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "30s",
+        "row_security": "on",
+    }
     assert "auth_runtime" in settings
 
     for role, values in settings.items():
-        if role != "app_runtime":
+        if role not in {"app_runtime", "worker_runtime"}:
             assert values == {}
 
 
@@ -220,14 +230,19 @@ def test_exact_membership_and_grantor_contract() -> None:
     assert bundle.grantors["approved_membership_grantor"] == "postgres"
 
 
-def test_auth_runtime_is_not_a_migration_owner_membership() -> None:
+def test_auth_and_worker_runtime_are_not_migration_owner_memberships() -> None:
     bundle = load_contract_bundle()
     rows = bundle.memberships["exact_rows"]
     assert not any(
-        row["granted_role"] == "auth_runtime"
-        or row["member_role"] == "auth_runtime"
+        row["granted_role"] in {"auth_runtime", "worker_runtime"}
+        or row["member_role"] in {"auth_runtime", "worker_runtime"}
         for row in rows
     )
+    forbidden = set(bundle.memberships["forbidden_migration_owner_memberships"])
+    assert {"auth_runtime", "worker_runtime"}.isdisjoint(
+        {row["granted_role"] for row in rows}
+    )
+    assert "worker_runtime" in forbidden
 
 
 def test_ownership_manifest_uses_only_allowed_owners() -> None:
@@ -240,6 +255,7 @@ def test_ownership_manifest_uses_only_allowed_owners() -> None:
         "app_rls_executor",
     }
     assert "auth_runtime" not in ownership["allowed_target_owners"]
+    assert "worker_runtime" not in ownership["allowed_target_owners"]
     assert ownership["objects"]
 
     for record in ownership["objects"]:
