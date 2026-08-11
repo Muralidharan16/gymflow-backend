@@ -733,7 +733,8 @@ def _verify_forward(bind) -> None:
         raise RuntimeError("8192 forward branch cascade owner/security contract failed.")
     for token in (
         "SET row_security TO 'on'",
-        "current_setting('app.current_org_id'::text, true)",
+        "current_setting",
+        "app.current_org_id",
         "UPDATE public.branch_operating_hours",
         "UPDATE public.branch_special_hours",
         "DELETE FROM public.branch_hours_projection",
