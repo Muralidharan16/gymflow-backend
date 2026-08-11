@@ -57,6 +57,17 @@ _OUTBOX_UPDATE_COLUMNS = (
     "leased_until",
     "process_after",
 )
+_LIFECYCLE_STATE_UPDATE_COLUMNS = {
+    "status",
+    "is_operational",
+    "lifecycle_transition_in_progress",
+    "saga_last_checkpoint",
+    "saga_compensation_strategy",
+}
+_SHARED_PREDECESSOR_READS = (
+    "public.org_branches",
+    "public.org_branch_state",
+)
 
 
 def _require_migration_owner(bind) -> None:
@@ -119,6 +130,67 @@ def _policy_names(bind, relation: str) -> set[str]:
             {"relation": relation},
         ).scalars().all()
     )
+
+
+def _direct_table_privileges(bind, relation: str) -> set[str]:
+    schema_name, relation_name = relation.split(".", 1)
+    return set(
+        bind.execute(
+            sa.text(
+                """
+                SELECT DISTINCT acl_data.privilege_type::text
+                FROM pg_catalog.pg_class AS relation_data
+                JOIN pg_catalog.pg_namespace AS namespace_data
+                  ON namespace_data.oid = relation_data.relnamespace
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                    COALESCE(
+                        relation_data.relacl,
+                        pg_catalog.acldefault('r', relation_data.relowner)
+                    )
+                ) AS acl_data
+                JOIN pg_catalog.pg_roles AS grantee
+                  ON grantee.oid = acl_data.grantee
+                WHERE namespace_data.nspname = :schema_name
+                  AND relation_data.relname = :relation_name
+                  AND grantee.rolname = :role_name
+                """
+            ),
+            {
+                "schema_name": schema_name,
+                "relation_name": relation_name,
+                "role_name": _WORKER,
+            },
+        ).scalars().all()
+    )
+
+
+def _worker_state_update_columns(bind) -> set[str]:
+    return set(
+        bind.execute(
+            sa.text(
+                """
+                SELECT column_name::text
+                FROM information_schema.column_privileges
+                WHERE table_schema = 'public'
+                  AND table_name = 'org_branch_state'
+                  AND grantee = :role_name
+                  AND privilege_type = 'UPDATE'
+                ORDER BY column_name
+                """
+            ),
+            {"role_name": _WORKER},
+        ).scalars().all()
+    )
+
+
+def _require_shared_predecessor_acl(bind) -> None:
+    for relation in _SHARED_PREDECESSOR_READS:
+        observed = _direct_table_privileges(bind, relation)
+        if observed != {"SELECT"}:
+            raise RuntimeError(
+                "2c3d requires exact predecessor branch-hours worker SELECT ACL on "
+                f"{relation}: observed={sorted(observed)!r}"
+            )
 
 
 def _uuid_guc(name: str) -> str:
@@ -193,6 +265,17 @@ def upgrade() -> None:
     ).scalars().all()
     if missing:
         raise RuntimeError(f"2c3d required relations missing: {tuple(missing)!r}")
+
+    # e7f809 owns these shared branch-hours source reads. Lifecycle processing
+    # relies on that established contract but must never revoke or re-own it.
+    _require_shared_predecessor_acl(bind)
+    predecessor_updates = _worker_state_update_columns(bind)
+    if predecessor_updates:
+        raise RuntimeError(
+            "2c3d refuses ambiguous predecessor worker UPDATE capability on "
+            "org_branch_state: "
+            f"{sorted(predecessor_updates)!r}"
+        )
 
     existing_columns = set(
         bind.execute(
@@ -295,8 +378,11 @@ def upgrade() -> None:
 
     for relation in _CATALOGS:
         op.execute(f"GRANT SELECT ON TABLE {relation} TO worker_runtime")
-    op.execute("GRANT SELECT, UPDATE ON TABLE public.org_branch_state TO worker_runtime")
-    op.execute("GRANT SELECT ON TABLE public.org_branches TO worker_runtime")
+    op.execute(
+        "GRANT UPDATE (status, is_operational, lifecycle_transition_in_progress, "
+        "saga_last_checkpoint, saga_compensation_strategy) "
+        "ON TABLE public.org_branch_state TO worker_runtime"
+    )
     op.execute("GRANT INSERT ON TABLE public.branch_status_history TO worker_runtime")
     op.execute("GRANT INSERT ON TABLE public.branch_lifecycle_events TO worker_runtime")
     op.execute("GRANT INSERT ON TABLE public.branch_watchdog_alerts TO worker_runtime")
@@ -306,6 +392,15 @@ def upgrade() -> None:
         "leased_by, leased_until, process_after) "
         "ON TABLE public.branch_outbox_events TO worker_runtime"
     )
+
+    observed_state_updates = _worker_state_update_columns(bind)
+    if observed_state_updates != _LIFECYCLE_STATE_UPDATE_COLUMNS:
+        raise RuntimeError(
+            "2c3d worker state UPDATE postcondition drift: "
+            f"observed={sorted(observed_state_updates)!r}, "
+            f"expected={sorted(_LIFECYCLE_STATE_UPDATE_COLUMNS)!r}"
+        )
+    _require_shared_predecessor_acl(bind)
 
     # Queue claim/update is cross-tenant by design for the dedicated internal
     # worker. Source/state access below becomes branch/tenant/lease bound.
@@ -431,6 +526,14 @@ def downgrade() -> None:
             f"BackgroundTasks semantics cannot represent: count={pending_saga}"
         )
 
+    _require_shared_predecessor_acl(bind)
+    observed_state_updates = _worker_state_update_columns(bind)
+    if observed_state_updates != _LIFECYCLE_STATE_UPDATE_COLUMNS:
+        raise RuntimeError(
+            "2c3d downgrade worker state UPDATE contract drift: "
+            f"observed={sorted(observed_state_updates)!r}"
+        )
+
     for relation, policy_name in (
         ("public.org_branches", "lifecycle_worker_branch_read"),
         ("public.org_branch_state", "lifecycle_worker_state_read"),
@@ -446,8 +549,11 @@ def downgrade() -> None:
 
     for relation in _CATALOGS:
         op.execute(f"REVOKE SELECT ON TABLE {relation} FROM worker_runtime")
-    op.execute("REVOKE SELECT, UPDATE ON TABLE public.org_branch_state FROM worker_runtime")
-    op.execute("REVOKE SELECT ON TABLE public.org_branches FROM worker_runtime")
+    op.execute(
+        "REVOKE UPDATE (status, is_operational, lifecycle_transition_in_progress, "
+        "saga_last_checkpoint, saga_compensation_strategy) "
+        "ON TABLE public.org_branch_state FROM worker_runtime"
+    )
     op.execute("REVOKE INSERT ON TABLE public.branch_status_history FROM worker_runtime")
     op.execute("REVOKE INSERT ON TABLE public.branch_lifecycle_events FROM worker_runtime")
     op.execute("REVOKE INSERT ON TABLE public.branch_watchdog_alerts FROM worker_runtime")
@@ -457,6 +563,14 @@ def downgrade() -> None:
         "leased_by, leased_until, process_after) "
         "ON TABLE public.branch_outbox_events FROM worker_runtime"
     )
+
+    remaining_state_updates = _worker_state_update_columns(bind)
+    if remaining_state_updates:
+        raise RuntimeError(
+            "2c3d downgrade failed to remove lifecycle state UPDATE delta: "
+            f"{sorted(remaining_state_updates)!r}"
+        )
+    _require_shared_predecessor_acl(bind)
 
     op.execute("DROP INDEX public.ix_branch_outbox_ready_claim")
     op.execute(
