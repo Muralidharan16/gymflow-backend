@@ -15,24 +15,24 @@ from app.models.branch_lifecycle import (
     BranchWatchdogAlert,
 )
 from app.services.branch_lifecycle_service import BranchLifecycleService
-from app.core.database import AsyncSessionLocal, SessionContextInitializer
+from app.core.database import AsyncSessionLocal, update_session_context
 from conftest import AdminTestSessionLocal, assert_test_database
 
 
 async def set_db_session_context(session, org_id: str, user_id: str, role: str):
-    """Install the same transaction-persistent session context used in production.
+    """Install production-equivalent context now and across later transactions.
 
-    Lifecycle services legitimately commit within a request/session. Raw
-    ``set_config(..., true)`` calls are transaction-local and disappear at that
-    boundary, which made this test helper stop modelling production after the
-    first commit. SessionContextInitializer stores verified context on
-    ``Session.info``; the database ``after_begin`` hook re-applies the tenant,
-    actor and role GUCs to every subsequent transaction.
+    Lifecycle services legitimately commit within a request/session. The test
+    fixture can also begin a transaction before switching into a tenant actor
+    context. ``update_session_context`` covers both cases: it stores verified
+    context on ``Session.info`` so the ``after_begin`` hook re-applies it after
+    commits, and it immediately applies the same transaction-local GUCs when a
+    transaction is already active. No test-only RLS bypass is involved.
     """
 
-    await SessionContextInitializer.initialize(
+    await update_session_context(
         session,
-        user_id=user_id,
+        principal_id=user_id,
         principal_type="legacy_gym_owner",
         org_id=org_id,
         trace_id="branch-lifecycle-test",
