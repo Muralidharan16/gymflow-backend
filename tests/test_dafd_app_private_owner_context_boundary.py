@@ -31,6 +31,7 @@ APP_PRIVATE_FILES = {
     "45df3b75ed74_rbac_hardening_phase_10_audit_functions.py",
     "4d5e6f708192_establish_audit_principal_registry.py",
     "a1b2c3d4e5f6_rbac_hardening_phase_15_to_18.py",
+    "b4c5d6e7f809_harden_branch_hours_runtime_boundary.py",
     DAFD.name,
     "dbeb400472ec_add_branch_operating_hours.py",
     "f71f231fb001_rbac_hardening_phase_10_partitioned_.py",
@@ -316,9 +317,9 @@ def _app_private_ddl_categories(path: Path) -> set[str]:
     }
 
 
-def test_complete_73_revision_private_and_executor_inventories_are_closed() -> None:
+def test_complete_75_revision_private_and_executor_inventories_are_closed() -> None:
     migrations = sorted(VERSIONS.glob("*.py"))
-    assert len(migrations) == 73
+    assert len(migrations) == 75
     app_private = {
         path.name
         for path in migrations
@@ -462,6 +463,9 @@ def test_complete_app_private_ddl_category_allowlist_is_exact() -> None:
             "grant_schema",
             "revoke_function",
             "revoke_schema",
+        },
+        "b4c5d6e7f809_harden_branch_hours_runtime_boundary.py": {
+            "create_trigger",
         },
         DAFD.name: set(),
         "dbeb400472ec_add_branch_operating_hours.py": {
