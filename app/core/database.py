@@ -14,17 +14,19 @@ Key design decisions:
   • Asynchronous workers use a separate database credential boundary and
     explicitly install tenant/internal-maintenance plus lease-owner context per
     unit of work.
-  • Celery's synchronous task wrappers create short-lived asyncio loops, so the
-    worker async engine uses NullPool: asyncpg connections are never reused by a
-    later task running on a different event loop.
-  • API and worker transactions have separate bounded timeout budgets; installing
-    tenant context must never silently replace the worker role's operational
-    budget with the shorter request budget.
+  • Lifecycle watchdog/reconciliation maintenance uses a fourth, dedicated
+    database credential and must not execute through API, auth, or queue-worker
+    identities.
+  • Celery's synchronous task wrappers create short-lived asyncio loops, so worker
+    and maintenance async engines use NullPool: asyncpg connections are never
+    reused by a later task running on a different event loop.
+  • API and background transactions have separate bounded timeout budgets;
+    installing internal-maintenance context must never silently replace the
+    background role's operational budget with the shorter request budget.
   • Cluster-level/privileged lock-detection settings such as ``deadlock_timeout``
     remain an administrator-owned PostgreSQL configuration boundary.
   • Sync engine is preserved for legacy Celery tasks and uses the declared
-    Psycopg 3 driver; new tenant-sensitive workers use the bounded worker async
-    identity below.
+    Psycopg 3 driver; new tenant-sensitive workers use bounded async identities.
 """
 
 from __future__ import annotations
@@ -56,9 +58,9 @@ _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 _API_LOCK_TIMEOUT_MS = 500
 _API_STMT_TIMEOUT_MS = 5000
 _API_IDLE_TIMEOUT_MS = 15000
-_WORKER_LOCK_TIMEOUT_MS = 2000
-_WORKER_STMT_TIMEOUT_MS = 15000
-_WORKER_IDLE_TIMEOUT_MS = 30000
+_BACKGROUND_LOCK_TIMEOUT_MS = 2000
+_BACKGROUND_STMT_TIMEOUT_MS = 15000
+_BACKGROUND_IDLE_TIMEOUT_MS = 30000
 
 
 async_engine = create_async_engine(
@@ -98,6 +100,25 @@ WorkerAsyncSessionLocal = async_sessionmaker(
 
 worker_async_session_maker = WorkerAsyncSessionLocal
 
+# Lifecycle maintenance is deliberately separate from both API and queue-worker
+# credentials. It is cross-tenant by design, so its database role is restricted
+# to watchdog/reconciliation surfaces and requires transaction-local maintenance
+# context before FORCE-RLS policies expose those rows.
+maintenance_async_engine = create_async_engine(
+    settings.maintenance_database_url,
+    poolclass=NullPool,
+    pool_pre_ping=True,
+    echo=settings.ENVIRONMENT == "development",
+)
+
+MaintenanceAsyncSessionLocal = async_sessionmaker(
+    maintenance_async_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
+maintenance_async_session_maker = MaintenanceAsyncSessionLocal
+
 
 def _validate_principal_type(principal_type: Optional[str]) -> Optional[str]:
     if principal_type is None:
@@ -112,7 +133,7 @@ def _context_settings(context: dict[str, Optional[str]]):
     org_id = context.get("org_id")
     trace_id = context.get("trace_id") or "unknown"
     org_label = org_id or "anon"
-    is_worker = bool(context.get("internal_maintenance"))
+    is_background = bool(context.get("internal_maintenance"))
 
     yield "application_name", f"doers:org:{org_label}:trace:{trace_id}"
 
@@ -133,10 +154,10 @@ def _context_settings(context: dict[str, Optional[str]]):
         if value is not None:
             yield name, str(value)
 
-    if is_worker:
-        yield "statement_timeout", f"{_WORKER_STMT_TIMEOUT_MS}ms"
-        yield "lock_timeout", f"{_WORKER_LOCK_TIMEOUT_MS}ms"
-        yield "idle_in_transaction_session_timeout", f"{_WORKER_IDLE_TIMEOUT_MS}ms"
+    if is_background:
+        yield "statement_timeout", f"{_BACKGROUND_STMT_TIMEOUT_MS}ms"
+        yield "lock_timeout", f"{_BACKGROUND_LOCK_TIMEOUT_MS}ms"
+        yield "idle_in_transaction_session_timeout", f"{_BACKGROUND_IDLE_TIMEOUT_MS}ms"
     else:
         yield "statement_timeout", f"{_API_STMT_TIMEOUT_MS}ms"
         yield "lock_timeout", f"{_API_LOCK_TIMEOUT_MS}ms"
@@ -238,8 +259,8 @@ async def initialize_request_session(session: AsyncSession, request=None) -> Non
     """Attach verified request state to any application database identity.
 
     Ordinary and auth/bootstrap pools use this helper; background workers use
-    ``update_session_context`` after claiming a durable event because their
-    tenant is derived from persisted job data rather than a request.
+    ``update_session_context`` after claiming durable work because their scope
+    is derived from persisted task data rather than a request.
     """
     principal_id = _ZERO_UUID
     principal_type = None
