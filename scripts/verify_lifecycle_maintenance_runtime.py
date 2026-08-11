@@ -342,7 +342,7 @@ def main() -> None:
     parser.add_argument(
         "--stage",
         choices=("all", *STAGES),
-        default="acl_contract",
+        default="context_gate",
     )
     args = parser.parse_args()
 
