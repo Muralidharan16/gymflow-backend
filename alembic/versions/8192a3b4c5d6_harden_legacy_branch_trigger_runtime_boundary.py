@@ -4,31 +4,22 @@ Revision ID: 8192a3b4c5d6
 Revises: 708192a3b4c5
 Create Date: 2026-08-11
 
-The legacy branch-state triggers predate the lifecycle control plane.  Two of
+The legacy branch-state triggers predate the lifecycle control plane. Two of
 those triggers ran on every UPDATE of ``org_branch_state``:
 
 * ``enforce_branch_rbac()`` unconditionally queried ``gym_owners``;
 * ``prevent_critical_branch_deletion()`` unconditionally locked
   ``organizations`` with ``FOR UPDATE``.
 
-A lifecycle-only UPDATE therefore acquired unrelated legacy dependencies even
-though neither ``branch_status`` nor ``deleted_at`` changed.  Granting the
-ordinary runtime broad access to those tables would defeat the least-privilege
-boundary established by 708192a3b4c5.
+Lifecycle-only updates therefore acquired unrelated legacy dependencies even
+when neither ``branch_status`` nor ``deleted_at`` changed. Granting ordinary
+runtime broad access to either table would defeat the least-privilege boundary
+established by 708192a3b4c5.
 
-This revision instead:
-
-* scopes the legacy RBAC trigger to actual ``branch_status``/``deleted_at``
-  changes;
-* executes the legacy owner-role lookup through a tightly-owned
-  SECURITY DEFINER trigger function, with only column-level SELECT capability
-  on ``gym_owners`` held by the non-login ``app_security_owner`` role;
-* scopes the critical-deletion trigger to real soft deletes and replaces the
-  tenant-root row lock with a transaction-scoped advisory organization lock,
-  preserving concurrent last-branch deletion safety without requiring UPDATE
-  capability on ``organizations``;
-* proves that ``app_runtime`` still has no direct SELECT capability on
-  ``gym_owners``.
+This revision scopes the legacy triggers to the columns they actually protect,
+keeps the owner-role lookup behind a tightly-owned SECURITY DEFINER function,
+and replaces the tenant-root row lock with an organization-scoped advisory
+transaction lock. ``app_runtime`` remains unable to read ``gym_owners``.
 
 Downgrade restores the exact 0007/0005 predecessor trigger behaviour and
 removes the revision-owned column privileges.
@@ -50,15 +41,13 @@ _ADVISORY_LOCK_SEED = 81924356
 
 
 def _require_migration_owner(bind) -> None:
-    identity = bind.execute(
-        sa.text(
-            "SELECT session_user::text, current_user::text"
-        )
+    session_user, current_user = bind.execute(
+        sa.text("SELECT session_user::text, current_user::text")
     ).one()
-    if identity[0] != "migration_owner" or identity[1] != "migration_owner":
+    if session_user != "migration_owner" or current_user != "migration_owner":
         raise RuntimeError(
             "8192a3b4c5d6 requires session_user=current_user=migration_owner; "
-            f"observed session_user={identity[0]!r}, current_user={identity[1]!r}."
+            f"observed session_user={session_user!r}, current_user={current_user!r}."
         )
 
 
@@ -83,6 +72,12 @@ def _function_contract(bind, signature: str):
 
 
 def _trigger_definition(bind, trigger_name: str) -> str | None:
+    """Return trigger DDL after structurally pinning schema/table/name.
+
+    PostgreSQL's pretty-printer may omit schema qualification, so callers must
+    validate semantic clauses rather than compare a rendered table spelling.
+    """
+
     return bind.execute(
         sa.text(
             """
@@ -100,6 +95,36 @@ def _trigger_definition(bind, trigger_name: str) -> str | None:
         ),
         {"trigger_name": trigger_name},
     ).scalar_one_or_none()
+
+
+def _is_unscoped_update_trigger(definition: str | None, function_name: str) -> bool:
+    if not definition:
+        return False
+    normalized = " ".join(definition.upper().split())
+    return (
+        "BEFORE UPDATE ON" in normalized
+        and "BEFORE UPDATE OF" not in normalized
+        and function_name.upper() in normalized
+    )
+
+
+def _is_scoped_update_trigger(
+    definition: str | None,
+    *,
+    function_name: str,
+    columns: tuple[str, ...],
+    requires_when: bool,
+) -> bool:
+    if not definition:
+        return False
+    normalized = " ".join(definition.upper().split())
+    if "BEFORE UPDATE OF" not in normalized:
+        return False
+    if function_name.upper() not in normalized:
+        return False
+    if requires_when and " WHEN " not in normalized:
+        return False
+    return all(column.upper() in normalized for column in columns)
 
 
 def _require_predecessor(bind) -> None:
@@ -148,7 +173,7 @@ def _require_predecessor(bind) -> None:
             "8192 refuses to adopt pre-existing CREATE capability for app_security_owner on public."
         )
 
-    if bind.execute(
+    preexisting_columns = bind.execute(
         sa.text(
             """
             SELECT EXISTS (
@@ -163,7 +188,8 @@ def _require_predecessor(bind) -> None:
             """
         ),
         {"role_name": _SECURITY_OWNER},
-    ).scalar_one():
+    ).scalar_one()
+    if preexisting_columns:
         raise RuntimeError(
             "8192 refuses to adopt pre-existing app_security_owner SELECT column grants on gym_owners."
         )
@@ -180,14 +206,21 @@ def _require_predecessor(bind) -> None:
         )
     if "FROM gym_owners" not in rbac["function_definition"]:
         raise RuntimeError("8192 predecessor enforce_branch_rbac body drifted.")
-    if "FROM organizations" not in delete_guard["function_definition"] or "FOR UPDATE" not in delete_guard["function_definition"]:
+    if (
+        "FROM organizations" not in delete_guard["function_definition"]
+        or "FOR UPDATE" not in delete_guard["function_definition"]
+    ):
         raise RuntimeError("8192 predecessor critical-deletion guard body drifted.")
 
-    rbac_trigger = _trigger_definition(bind, "trg_branch_rbac")
-    delete_trigger = _trigger_definition(bind, "trg_prevent_critical_branch_deletion")
-    if not rbac_trigger or "BEFORE UPDATE ON public.org_branch_state" not in rbac_trigger:
+    if not _is_unscoped_update_trigger(
+        _trigger_definition(bind, "trg_branch_rbac"),
+        "enforce_branch_rbac",
+    ):
         raise RuntimeError("8192 predecessor trg_branch_rbac definition drifted.")
-    if not delete_trigger or "BEFORE UPDATE ON public.org_branch_state" not in delete_trigger:
+    if not _is_unscoped_update_trigger(
+        _trigger_definition(bind, "trg_prevent_critical_branch_deletion"),
+        "prevent_critical_branch_deletion",
+    ):
         raise RuntimeError(
             "8192 predecessor trg_prevent_critical_branch_deletion definition drifted."
         )
@@ -329,7 +362,7 @@ def _create_forward_rbac_guard() -> None:
     )
 
     # ALTER OWNER requires the target owner to have CREATE on the containing
-    # schema.  Grant it only for the ownership transfer and restore the schema
+    # schema. Grant it only for the ownership transfer and restore the schema
     # boundary immediately afterward.
     op.execute("GRANT CREATE ON SCHEMA public TO app_security_owner")
     op.execute(
@@ -368,14 +401,25 @@ def _verify_forward(bind) -> None:
         raise RuntimeError("8192 forward delete guard owner/security contract failed.")
     if "pg_advisory_xact_lock" not in delete_guard["function_definition"]:
         raise RuntimeError("8192 forward delete guard lost organization serialization.")
-    if "FROM public.organizations" in delete_guard["function_definition"] or "FOR UPDATE" in delete_guard["function_definition"]:
+    if (
+        "FROM public.organizations" in delete_guard["function_definition"]
+        or "FOR UPDATE" in delete_guard["function_definition"]
+    ):
         raise RuntimeError("8192 forward delete guard retained tenant-root row locking.")
 
-    rbac_trigger = _trigger_definition(bind, "trg_branch_rbac")
-    delete_trigger = _trigger_definition(bind, "trg_prevent_critical_branch_deletion")
-    if not rbac_trigger or "UPDATE OF deleted_at, branch_status" not in rbac_trigger:
+    if not _is_scoped_update_trigger(
+        _trigger_definition(bind, "trg_branch_rbac"),
+        function_name="enforce_branch_rbac",
+        columns=("deleted_at", "branch_status"),
+        requires_when=True,
+    ):
         raise RuntimeError("8192 forward RBAC trigger is not column scoped.")
-    if not delete_trigger or "UPDATE OF deleted_at" not in delete_trigger:
+    if not _is_scoped_update_trigger(
+        _trigger_definition(bind, "trg_prevent_critical_branch_deletion"),
+        function_name="prevent_critical_branch_deletion",
+        columns=("deleted_at",),
+        requires_when=True,
+    ):
         raise RuntimeError("8192 forward delete trigger is not column scoped.")
 
     privilege_row = bind.execute(
@@ -537,17 +581,23 @@ def _verify_predecessor(bind) -> None:
         raise RuntimeError("8192 downgrade failed to restore predecessor delete guard.")
     if "FROM gym_owners" not in rbac["function_definition"]:
         raise RuntimeError("8192 downgrade RBAC body does not match predecessor.")
-    if "FROM organizations" not in delete_guard["function_definition"] or "FOR UPDATE" not in delete_guard["function_definition"]:
+    if (
+        "FROM organizations" not in delete_guard["function_definition"]
+        or "FOR UPDATE" not in delete_guard["function_definition"]
+    ):
         raise RuntimeError("8192 downgrade delete-guard body does not match predecessor.")
-    if "BEFORE UPDATE ON public.org_branch_state" not in (
-        _trigger_definition(bind, "trg_branch_rbac") or ""
+    if not _is_unscoped_update_trigger(
+        _trigger_definition(bind, "trg_branch_rbac"),
+        "enforce_branch_rbac",
     ):
         raise RuntimeError("8192 downgrade did not restore predecessor RBAC trigger.")
-    if "BEFORE UPDATE ON public.org_branch_state" not in (
-        _trigger_definition(bind, "trg_prevent_critical_branch_deletion") or ""
+    if not _is_unscoped_update_trigger(
+        _trigger_definition(bind, "trg_prevent_critical_branch_deletion"),
+        "prevent_critical_branch_deletion",
     ):
         raise RuntimeError("8192 downgrade did not restore predecessor delete trigger.")
-    if bind.execute(
+
+    leaked_columns = bind.execute(
         sa.text(
             """
             SELECT EXISTS (
@@ -561,7 +611,8 @@ def _verify_predecessor(bind) -> None:
             )
             """
         )
-    ).scalar_one():
+    ).scalar_one()
+    if leaked_columns:
         raise RuntimeError("8192 downgrade leaked revision-owned gym_owners privileges.")
 
 
