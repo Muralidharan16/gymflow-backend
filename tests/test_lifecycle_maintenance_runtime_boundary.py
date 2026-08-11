@@ -73,6 +73,26 @@ def _function(path: Path, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     return matches[0]
 
 
+def _executed_sql_fragments(path: Path) -> list[str]:
+    """Return string fragments that are actual arguments to SQL execute calls.
+
+    Module/function docstrings, comments and error messages are intentionally
+    excluded. ``bind.execute(sa.text(...))``, ``op.execute(...)`` and f-string
+    execute arguments are all covered by walking only the execute-call argument
+    subtree.
+    """
+    fragments: list[str] = []
+    for node in ast.walk(_tree(path)):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "execute":
+            continue
+        for child in ast.walk(node.args[0]):
+            if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                fragments.append(child.value)
+    return fragments
+
+
 def test_production_requires_four_distinct_database_identities() -> None:
     source = _source(CONFIG)
 
@@ -154,18 +174,21 @@ def test_revision_91_is_single_head_and_never_manages_cluster_roles() -> None:
     assert _literal_assignment(MIGRATION, "down_revision") == "a4b5c6d7e8f9"
 
     source = _source(MIGRATION)
-    executable_strings = [
-        node.value
-        for node in ast.walk(_tree(MIGRATION))
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    ]
-    executable = "\n".join(executable_strings).upper()
-    assert "CREATE ROLE " not in executable
-    assert "ALTER ROLE " not in executable
-    assert "DROP ROLE " not in executable
-    assert "BYPASSRLS" not in executable.replace("NOBYPASSRLS", "")
-    assert "CASCADE" not in executable
+    executed_sql = "\n".join(_executed_sql_fragments(MIGRATION)).upper()
+    for forbidden_role_ddl in (
+        "CREATE ROLE ",
+        "ALTER ROLE ",
+        "DROP ROLE ",
+    ):
+        assert forbidden_role_ddl not in executed_sql
+    assert "CASCADE" not in executed_sql
     assert "lifecycle_maintenance_runtime" in source
+
+    # Reading rolbypassrls from pg_catalog is a required fail-closed preflight;
+    # role mutation is what is forbidden. Alembic must never manufacture a
+    # BYPASSRLS capability to make maintenance work.
+    assert "ROLBYPASSRLS" in executed_sql
+    assert "ALTER ROLE" not in executed_sql
 
 
 def test_revision_91_column_surfaces_are_exact_and_disjoint() -> None:
