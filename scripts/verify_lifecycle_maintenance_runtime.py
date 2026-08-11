@@ -123,13 +123,13 @@ def _assert_login_posture(engine: sa.Engine, expected_user: str) -> None:
         assert not any(bool(value) for value in row[1:])
         assert not conn.execute(
             sa.text(
-                "SELECT pg_catalog.has_database_privilege(" 
+                "SELECT pg_catalog.has_database_privilege("
                 "current_user, current_database(), 'CREATE')"
             )
         ).scalar_one()
         assert not conn.execute(
             sa.text(
-                "SELECT pg_catalog.has_schema_privilege(" 
+                "SELECT pg_catalog.has_schema_privilege("
                 "current_user, 'public', 'CREATE')"
             )
         ).scalar_one()
@@ -179,26 +179,26 @@ def stage_acl_contract(engines: dict[str, sa.Engine]) -> None:
         )
         assert conn.execute(
             sa.text(
-                "SELECT pg_catalog.has_table_privilege(" 
+                "SELECT pg_catalog.has_table_privilege("
                 "'lifecycle_maintenance_runtime', 'public.org_branch_state', 'SELECT')"
             )
         ).scalar_one()
         assert not conn.execute(
             sa.text(
-                "SELECT pg_catalog.has_table_privilege(" 
+                "SELECT pg_catalog.has_table_privilege("
                 "'lifecycle_maintenance_runtime', 'public.org_branch_state', 'UPDATE')"
             )
         ).scalar_one()
         assert conn.execute(
             sa.text(
-                "SELECT pg_catalog.has_table_privilege(" 
+                "SELECT pg_catalog.has_table_privilege("
                 "'lifecycle_maintenance_runtime', "
                 "'public.branch_watchdog_alerts', 'SELECT')"
             )
         ).scalar_one()
         assert conn.execute(
             sa.text(
-                "SELECT pg_catalog.has_table_privilege(" 
+                "SELECT pg_catalog.has_table_privilege("
                 "'lifecycle_maintenance_runtime', "
                 "'public.branch_watchdog_alerts', 'INSERT')"
             )
@@ -209,8 +209,6 @@ def stage_context_gate(engines: dict[str, sa.Engine]) -> None:
     maintenance = engines["maintenance"]
 
     with maintenance.begin() as conn:
-        # FORCE RLS: the capability role is inert until task code installs the
-        # transaction-local maintenance context.
         assert conn.execute(
             sa.text(
                 "SELECT count(*) FROM public.org_branch_state "
@@ -295,8 +293,6 @@ def stage_negative_boundaries(engines: dict[str, sa.Engine]) -> None:
         "VALUES (gen_random_uuid(), 'forbidden', 'basic', true)",
     )
 
-    # API still owns tenant-scoped lifecycle domain columns, but the five
-    # maintenance control columns and watchdog relation are no longer reachable.
     _expect_db_denial(
         api,
         "UPDATE public.org_branch_state "
@@ -312,8 +308,6 @@ def stage_negative_boundaries(engines: dict[str, sa.Engine]) -> None:
         {"branch_id": BRANCH_ID},
     )
 
-    # Queue and auth identities cannot acquire reconciliation capability merely
-    # by setting the maintenance GUC; ACL separation is the hard boundary.
     for engine, identity in ((worker, "worker"), (auth, "auth")):
         try:
             with engine.begin() as conn:
@@ -345,7 +339,11 @@ def run_stage(stage: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stage", choices=("all", *STAGES), default="all")
+    parser.add_argument(
+        "--stage",
+        choices=("all", *STAGES),
+        default="login_posture",
+    )
     args = parser.parse_args()
 
     selected = STAGES if args.stage == "all" else (args.stage,)
