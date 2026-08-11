@@ -90,8 +90,15 @@ async def cleanup_lifecycle_fixture(
 
 
 @pytest_asyncio.fixture
-async def lifecycle_setup():
-    """Seed lifecycle prerequisites administratively; exercise behavior as runtime."""
+async def lifecycle_setup(auth_db_session):
+    """Seed lifecycle prerequisites through the same bounded identities as production.
+
+    Tenant-root and actor records are administrative fixture evidence. First
+    branch/state creation is an auth/bootstrap capability under FORCE RLS, so it
+    must use the dedicated bounded auth identity with explicit tenant and typed
+    principal context. Lifecycle behavior itself continues to run through the
+    reduced application runtime identity below.
+    """
     org_id = uuid.uuid4()
     owner_id = uuid.uuid4()
     admin_id = uuid.uuid4()
@@ -169,48 +176,52 @@ async def lifecycle_setup():
             is_verified=True,
         )
         session.add_all([org_owner, org_admin, org_trainer])
-        await session.flush()
-
-        b1 = OrgBranch(
-            id=b1_id,
-            org_id=org_id,
-            branch_name="Branch HQ",
-            branch_code=f"HQ-{uuid.uuid4().hex[:4]}",
-            internal_slug=f"hq-{uuid.uuid4().hex[:4]}",
-            timezone="America/Los_Angeles",
-            currency_code="USD",
-            created_by=owner_id,
-        )
-        s1 = OrgBranchState(
-            branch_id=b1_id,
-            org_id=org_id,
-            status="active",
-            is_operational=True,
-            search_epoch_ulid="01AN4V07BY79KA1307SR1XF31A",
-        )
-        b1.state = s1
-
-        b2 = OrgBranch(
-            id=b2_id,
-            org_id=org_id,
-            branch_name="Branch East",
-            branch_code=f"EA-{uuid.uuid4().hex[:4]}",
-            internal_slug=f"ea-{uuid.uuid4().hex[:4]}",
-            timezone="America/New_York",
-            currency_code="USD",
-            created_by=owner_id,
-        )
-        s2 = OrgBranchState(
-            branch_id=b2_id,
-            org_id=org_id,
-            status="active",
-            is_operational=True,
-            search_epoch_ulid="01AN4V07BY79KA1307SR1XF31B",
-        )
-        b2.state = s2
-
-        session.add_all([b1, b2])
         await session.commit()
+
+    await set_db_session_context(
+        auth_db_session, str(org_id), str(owner_id), "owner"
+    )
+
+    b1 = OrgBranch(
+        id=b1_id,
+        org_id=org_id,
+        branch_name="Branch HQ",
+        branch_code=f"HQ-{uuid.uuid4().hex[:4]}",
+        internal_slug=f"hq-{uuid.uuid4().hex[:4]}",
+        timezone="America/Los_Angeles",
+        currency_code="USD",
+        created_by=owner_id,
+    )
+    s1 = OrgBranchState(
+        branch_id=b1_id,
+        org_id=org_id,
+        status="active",
+        is_operational=True,
+        search_epoch_ulid="01AN4V07BY79KA1307SR1XF31A",
+    )
+    b1.state = s1
+
+    b2 = OrgBranch(
+        id=b2_id,
+        org_id=org_id,
+        branch_name="Branch East",
+        branch_code=f"EA-{uuid.uuid4().hex[:4]}",
+        internal_slug=f"ea-{uuid.uuid4().hex[:4]}",
+        timezone="America/New_York",
+        currency_code="USD",
+        created_by=owner_id,
+    )
+    s2 = OrgBranchState(
+        branch_id=b2_id,
+        org_id=org_id,
+        status="active",
+        is_operational=True,
+        search_epoch_ulid="01AN4V07BY79KA1307SR1XF31B",
+    )
+    b2.state = s2
+
+    auth_db_session.add_all([b1, b2])
+    await auth_db_session.commit()
 
     yield {
         "org_id": org_id,
