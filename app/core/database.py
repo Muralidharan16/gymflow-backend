@@ -11,11 +11,15 @@ Key design decisions:
     RLS/audit GUCs correct even when a route commits and starts another transaction,
     while preventing tenant context from leaking through the connection pool.
   • All application database identities use one request→Session context initializer.
+  • Asynchronous workers use a separate database pool/credential boundary and
+    explicitly install tenant/internal-maintenance context per unit of work.
   • User-settable statement, lock, and idle-in-transaction timeouts are enforced
     on every transaction.
   • Cluster-level/privileged lock-detection settings such as ``deadlock_timeout``
     remain an administrator-owned PostgreSQL configuration boundary.
-  • Sync engine is preserved for Celery tasks and uses the declared Psycopg 3 driver.
+  • Sync engine is preserved for legacy Celery tasks and uses the declared
+    Psycopg 3 driver; new tenant-sensitive workers must use the bounded worker
+    async pool below.
 """
 
 from __future__ import annotations
@@ -64,6 +68,27 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 async_session_maker = AsyncSessionLocal
+
+# Worker sessions intentionally do not participate in the request pool manager.
+# They use a distinct production login and receive tenant context explicitly per
+# claimed job.  A compromised API login therefore cannot inherit worker queue or
+# projection capabilities, and a worker cannot inherit auth/bootstrap rights.
+worker_async_engine = create_async_engine(
+    settings.worker_database_url,
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,
+    echo=settings.ENVIRONMENT == "development",
+    pool_recycle=1800,
+)
+
+WorkerAsyncSessionLocal = async_sessionmaker(
+    worker_async_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
+worker_async_session_maker = WorkerAsyncSessionLocal
 
 
 def _validate_principal_type(principal_type: Optional[str]) -> Optional[str]:
@@ -195,8 +220,9 @@ class SessionContextInitializer:
 async def initialize_request_session(session: AsyncSession, request=None) -> None:
     """Attach verified request state to any application database identity.
 
-    Ordinary, auth/bootstrap, and future bounded pools must all call this helper;
-    they may differ in PostgreSQL privileges, never in tenant/principal semantics.
+    Ordinary and auth/bootstrap pools use this helper; background workers use
+    ``update_session_context`` after claiming a durable event because their
+    tenant is derived from persisted job data rather than a request.
     """
     principal_id = _ZERO_UUID
     principal_type = None
