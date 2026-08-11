@@ -15,9 +15,13 @@ three event columns required for validation plus one owner-only RLS policy. The
 correlation must match the same branch and exact event timestamp. Validation is
 a DEFERRABLE INITIALLY DEFERRED constraint trigger so event/history flush order
 inside one atomic transaction is irrelevant while commit still fails closed.
-PUBLIC execution is revoked on both internal trigger functions. ``migration_owner``
-receives EXECUTE on the hardened function only for the exact trigger-creation
-window, after which that capability is immediately revoked and verified absent.
+PUBLIC execution is revoked on both internal trigger functions.
+
+PostgreSQL requires the role creating a trigger to have EXECUTE on its trigger
+function. The trigger is therefore created while the new function is still
+owned by ``migration_owner`` (implicit owner EXECUTE), and the function is then
+transferred to ``app_security_owner`` before the migration transaction commits.
+No EXECUTE grant is opened to migration_owner, API, auth, worker, or PUBLIC.
 Downgrade restores the exact predecessor trigger target and PUBLIC-execute
 surface.
 """
@@ -375,6 +379,28 @@ def _create_hardened_validator() -> None:
     )
 
 
+def _replace_trigger() -> None:
+    # At this point the hardened function is still owned by migration_owner, so
+    # CREATE TRIGGER uses only the owner's implicit EXECUTE. No ACL grant is
+    # opened. The function is transferred to app_security_owner immediately
+    # afterward, before this migration transaction can commit.
+    op.execute(
+        "REVOKE ALL ON FUNCTION public.validate_history_correlation() FROM PUBLIC"
+    )
+    op.execute(
+        "DROP TRIGGER trg_validate_history_correlation ON public.branch_status_history"
+    )
+    op.execute(
+        """
+        CREATE CONSTRAINT TRIGGER trg_validate_history_correlation
+        AFTER INSERT ON public.branch_status_history
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION public.validate_history_correlation_hardened()
+        """
+    )
+
+
 def _install_security_owner_boundary() -> None:
     # CREATE exists only for the owner-transfer statement and is removed again
     # in the same migration transaction.
@@ -397,40 +423,6 @@ def _install_security_owner_boundary() -> None:
         USING (TRUE)
         """
     )
-
-
-def _replace_trigger(bind) -> None:
-    op.execute(
-        "REVOKE ALL ON FUNCTION public.validate_history_correlation() FROM PUBLIC"
-    )
-    op.execute(
-        "DROP TRIGGER trg_validate_history_correlation ON public.branch_status_history"
-    )
-
-    # PostgreSQL requires the role creating a trigger to hold EXECUTE on the
-    # trigger function. Keep this capability open only around CREATE TRIGGER;
-    # transaction rollback closes the entire window on any failure.
-    op.execute(
-        "GRANT EXECUTE ON FUNCTION "
-        "public.validate_history_correlation_hardened() TO migration_owner"
-    )
-    if not _role_execute(bind, _MIGRATION_OWNER, _HARDENED_FUNCTION):
-        raise RuntimeError("8293 failed to open bounded migration-owner EXECUTE")
-    op.execute(
-        """
-        CREATE CONSTRAINT TRIGGER trg_validate_history_correlation
-        AFTER INSERT ON public.branch_status_history
-        DEFERRABLE INITIALLY DEFERRED
-        FOR EACH ROW
-        EXECUTE FUNCTION public.validate_history_correlation_hardened()
-        """
-    )
-    op.execute(
-        "REVOKE EXECUTE ON FUNCTION "
-        "public.validate_history_correlation_hardened() FROM migration_owner"
-    )
-    if _role_execute(bind, _MIGRATION_OWNER, _HARDENED_FUNCTION):
-        raise RuntimeError("8293 leaked migration-owner EXECUTE after trigger creation")
 
 
 def _verify_forward(bind) -> None:
@@ -513,8 +505,8 @@ def upgrade() -> None:
     bind = op.get_bind()
     _require_predecessor(bind)
     _create_hardened_validator()
+    _replace_trigger()
     _install_security_owner_boundary()
-    _replace_trigger(bind)
     _verify_forward(bind)
 
 
