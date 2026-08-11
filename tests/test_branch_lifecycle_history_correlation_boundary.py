@@ -24,6 +24,20 @@ def _literal_assignment(path: Path, name: str):
     raise AssertionError(f"missing assignment {name}")
 
 
+def _function_source(path: Path, name: str) -> str:
+    source = _source(path)
+    module = ast.parse(source, filename=str(path))
+    node = next(
+        item
+        for item in module.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and item.name == name
+    )
+    assert node.end_lineno is not None
+    lines = source.splitlines(keepends=True)
+    return "".join(lines[node.lineno - 1 : node.end_lineno])
+
+
 def test_correlation_hardening_is_a_single_head_successor() -> None:
     assert _literal_assignment(MIGRATION, "revision") == "8293a4b5c6d7"
     assert _literal_assignment(MIGRATION, "down_revision") == "718293a4b5c6"
@@ -51,33 +65,32 @@ def test_validator_uses_bounded_security_owner_capability() -> None:
     assert "BYPASSRLS" not in source.replace("NOBYPASSRLS", "")
 
 
-def test_trigger_creation_execute_window_is_exact_and_closes_at_head() -> None:
+def test_trigger_is_created_before_security_owner_transfer_without_execute_grant() -> None:
     source = _source(MIGRATION)
+    upgrade = _function_source(MIGRATION, "upgrade")
 
-    grant = (
+    assert upgrade.index("_create_hardened_validator()") < upgrade.index("_replace_trigger()")
+    assert upgrade.index("_replace_trigger()") < upgrade.index("_install_security_owner_boundary()")
+    assert (
+        "ALTER FUNCTION public.validate_history_correlation_hardened() "
+        "OWNER TO app_security_owner"
+        in source
+    )
+
+    # migration_owner relies only on implicit owner EXECUTE before transfer.
+    assert (
         "GRANT EXECUTE ON FUNCTION "
         "public.validate_history_correlation_hardened() TO migration_owner"
+        not in source
     )
-    create = "CREATE CONSTRAINT TRIGGER trg_validate_history_correlation"
-    revoke = (
-        "REVOKE EXECUTE ON FUNCTION "
-        "public.validate_history_correlation_hardened() FROM migration_owner"
-    )
-    assert source.count(grant) == 1
-    assert source.count(revoke) == 1
-    assert source.index(grant) < source.index(create) < source.index(revoke)
-    assert "8293 failed to open bounded migration-owner EXECUTE" in source
-    assert "8293 leaked migration-owner EXECUTE after trigger creation" in source
-    assert "8293 leaked migration-owner EXECUTE on hardened validator" in source
-    assert 'for runtime_role in _RUNTIME_ROLES:' in source
-    assert "8293 leaked hardened validator EXECUTE to" in source
-
-    # Never replace the bounded owner window with a PUBLIC shortcut.
     assert (
         "GRANT EXECUTE ON FUNCTION "
         "public.validate_history_correlation_hardened() TO PUBLIC"
         not in source
     )
+    assert "8293 leaked migration-owner EXECUTE on hardened validator" in source
+    assert 'for runtime_role in _RUNTIME_ROLES:' in source
+    assert "8293 leaked hardened validator EXECUTE to" in source
 
 
 def test_validator_is_exact_branch_correlation_and_transaction_deferred() -> None:
