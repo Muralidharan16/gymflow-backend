@@ -1,0 +1,361 @@
+name: Branch Hours Production Boundary
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-hours-production-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branch-hours-production-boundary:
+    name: PG16 branch-hours production boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+
+      - name: Install PostgreSQL 16 extension packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+          test -f /usr/share/postgresql/16/extension/pg_partman.control
+
+      - name: Bootstrap reduced cluster and deployment identities
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          CREATE ROLE migration_owner
+            LOGIN PASSWORD 'ci-migration-owner'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          CREATE ROLE app_rls_executor
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_security_owner
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_runtime
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_runtime
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_runtime
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_user
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE audit_writer
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_admin
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_viewer
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE internal_billing_worker
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE ops_support
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE readonly_analytics
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          CREATE ROLE test_runner
+            LOGIN PASSWORD 'ci-test-runner'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime
+            LOGIN PASSWORD 'ci-app-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime
+            LOGIN PASSWORD 'ci-auth-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime
+            LOGIN PASSWORD 'ci-worker-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_runtime SET statement_timeout = '5s';
+          ALTER ROLE app_runtime SET lock_timeout = '2s';
+          ALTER ROLE app_runtime SET row_security = 'on';
+          ALTER ROLE worker_runtime SET statement_timeout = '15s';
+          ALTER ROLE worker_runtime SET lock_timeout = '2s';
+          ALTER ROLE worker_runtime SET idle_in_transaction_session_timeout = '30s';
+          ALTER ROLE worker_runtime SET row_security = 'on';
+
+          ALTER ROLE app_test_runtime SET row_security = 'on';
+          ALTER ROLE app_test_runtime SET statement_timeout = '5s';
+          ALTER ROLE app_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE app_test_runtime SET idle_in_transaction_session_timeout = '15s';
+          ALTER ROLE auth_test_runtime SET row_security = 'on';
+          ALTER ROLE auth_test_runtime SET statement_timeout = '5s';
+          ALTER ROLE auth_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE auth_test_runtime SET idle_in_transaction_session_timeout = '15s';
+          ALTER ROLE worker_test_runtime SET row_security = 'on';
+          ALTER ROLE worker_test_runtime SET statement_timeout = '15s';
+          ALTER ROLE worker_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE worker_test_runtime SET idle_in_transaction_session_timeout = '30s';
+
+          GRANT app_rls_executor TO migration_owner
+            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+          GRANT app_security_owner TO migration_owner
+            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+          GRANT test_runner TO migration_owner
+            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+
+          GRANT app_runtime TO app_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          GRANT auth_runtime TO auth_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          GRANT worker_runtime TO worker_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_migration_test OWNER migration_owner;
+          CREATE DATABASE gymflow_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_test
+            TO app_test_runtime, auth_test_runtime, worker_test_runtime;
+          SQL
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          for database in gymflow_migration_test gymflow_test; do
+            sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$database" <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+          done
+
+      - name: Prove cluster-role separation before migration
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_migration_test <<'SQL'
+          DO $$
+          DECLARE worker_record record;
+          BEGIN
+            SELECT * INTO worker_record
+            FROM pg_catalog.pg_roles WHERE rolname = 'worker_runtime';
+            IF worker_record.rolcanlogin OR worker_record.rolsuper
+               OR worker_record.rolinherit OR worker_record.rolcreatedb
+               OR worker_record.rolcreaterole OR worker_record.rolreplication
+               OR worker_record.rolbypassrls THEN
+              RAISE EXCEPTION 'worker_runtime attributes violate the production contract';
+            END IF;
+            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') THEN
+              RAISE EXCEPTION 'migration_owner may access worker_runtime';
+            END IF;
+            IF pg_catalog.pg_has_role('worker_test_runtime', 'app_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('worker_test_runtime', 'auth_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('worker_test_runtime', 'app_user', 'MEMBER') THEN
+              RAISE EXCEPTION 'worker login inherited API/auth privileges';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Fresh PG16 lineage on migration database
+        run: python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Fresh PG16 lineage on application database
+        env:
+          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+        run: python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Prove final API and worker privilege posture
+        run: |
+          PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
+          DO $$
+          BEGIN
+            IF pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'SELECT')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'INSERT')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'UPDATE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'DELETE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'TRUNCATE') THEN
+              RAISE EXCEPTION 'API runtime has direct outbox table capability';
+            END IF;
+            IF NOT pg_catalog.has_function_privilege(
+                current_user,
+                'public.enqueue_branch_hours_rebuild(uuid,uuid)',
+                'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'API runtime lacks bounded branch-hours enqueue function';
+            END IF;
+            IF pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN
+              RAISE EXCEPTION 'API runtime has schema CREATE';
+            END IF;
+          END
+          $$;
+          SQL
+
+          PGPASSWORD="$WORKER_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_test <<'SQL'
+          DO $$
+          BEGIN
+            IF pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT')
+               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'UPDATE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'DELETE') THEN
+              RAISE EXCEPTION 'worker has tenant-root or DDL capability';
+            END IF;
+            IF NOT pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'SELECT') THEN
+              RAISE EXCEPTION 'worker lacks queue SELECT';
+            END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'INSERT')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'DELETE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'TRUNCATE') THEN
+              RAISE EXCEPTION 'worker has direct/destructive queue capability';
+            END IF;
+            IF NOT pg_catalog.has_column_privilege(
+                current_user, 'public.transactional_outbox', 'leased_by', 'UPDATE'
+            ) OR NOT pg_catalog.has_column_privilege(
+                current_user, 'public.transactional_outbox', 'processed_at', 'UPDATE'
+            ) THEN
+              RAISE EXCEPTION 'worker lacks bounded lease/completion columns';
+            END IF;
+            IF pg_catalog.has_column_privilege(
+                current_user, 'public.transactional_outbox', 'tenant_id', 'UPDATE'
+            ) OR pg_catalog.has_column_privilege(
+                current_user, 'public.transactional_outbox', 'payload', 'UPDATE'
+            ) THEN
+              RAISE EXCEPTION 'worker may mutate immutable queue identity/payload';
+            END IF;
+            IF NOT pg_catalog.has_function_privilege(
+                current_user,
+                'public.enqueue_branch_hours_child(uuid,uuid,uuid,timestamptz,text)',
+                'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'worker lacks bounded child enqueue function';
+            END IF;
+          END
+          $$;
+
+          -- Source RLS must fail closed before a live lease context exists.
+          SELECT pg_catalog.set_config('app.current_org_id', gen_random_uuid()::text, true);
+          SELECT pg_catalog.set_config('app.internal_maintenance', 'branch_hours_projection', true);
+          SELECT pg_catalog.set_config('app.worker_id', gen_random_uuid()::text, true);
+          DO $$
+          DECLARE visible_count bigint;
+          BEGIN
+            SELECT count(*) INTO visible_count FROM public.org_branches;
+            IF visible_count <> 0 THEN
+              RAISE EXCEPTION 'worker source RLS is visible without a matching live lease';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Compile branch-hours production surfaces
+        run: |
+          python -m py_compile \
+            app/core/config.py \
+            app/core/database.py \
+            app/core/celery_app.py \
+            app/models/outbox.py \
+            app/models/branch_operating_hours.py \
+            app/routers/branch_operating_hours.py \
+            app/tasks/outbox_poller.py \
+            app/tasks/branch_hours_projection.py \
+            alembic/versions/e7f8091a2b3c_harden_branch_hours_outbox_worker.py \
+            alembic/versions/f8091a2b3c4d_bound_branch_hours_enqueue_source_read.py \
+            alembic/versions/091a2b3c4d5e_authorize_branch_hours_enqueue_callers.py \
+            alembic/versions/0a1b2c3d4e5f_bind_branch_hours_worker_to_leases.py \
+            alembic/versions/1b2c3d4e5f60_enforce_branch_hours_outbox_state.py
+
+      - name: Run architecture boundary contracts
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          python -m pytest --noconftest -q \
+            tests/test_celery_single_app_boundary.py \
+            tests/test_branch_hours_durable_worker_boundary.py \
+            tests/test_worker_database_identity_boundary.py \
+            tests/test_cluster_role_contract_manifests.py
+
+      - name: Run branch-hours API regression against reduced identities
+        run: |
+          python -m pytest -q --maxfail=1 tests/test_branch_operating_hours_api.py
