@@ -446,7 +446,7 @@ def _create_child_function() -> None:
                     || ':' || p_branch_id::text;
             ELSE
                 v_dedupe_key := 'temporal:' || p_branch_id::text
-                    || ':' || pg_catalog.extract(epoch FROM p_available_at)::text;
+                    || ':' || EXTRACT(EPOCH FROM p_available_at)::text;
             END IF;
 
             INSERT INTO public.transactional_outbox (
