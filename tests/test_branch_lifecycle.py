@@ -277,7 +277,7 @@ async def test_initiate_transition_missing_reason_on_terminal(lifecycle_setup):
                 actor_role="owner",
             )
         assert exc_info.value.status_code == 400
-        assert "requires a reason" in exc_info.value.detail
+        assert "status reason is required" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
