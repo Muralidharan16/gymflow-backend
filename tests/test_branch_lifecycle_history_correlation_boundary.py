@@ -40,24 +40,43 @@ def _function_source(path: Path, name: str) -> str:
     return "".join(lines[node.lineno - 1 : node.end_lineno])
 
 
-def _op_execute_sql(path: Path) -> list[str]:
+def _literal_sql_argument(node: ast.AST) -> str | None:
+    candidate = node
+    if (
+        isinstance(candidate, ast.Call)
+        and isinstance(candidate.func, ast.Attribute)
+        and isinstance(candidate.func.value, ast.Name)
+        and candidate.func.value.id == "sa"
+        and candidate.func.attr == "text"
+        and len(candidate.args) == 1
+        and not candidate.keywords
+    ):
+        candidate = candidate.args[0]
+
+    try:
+        value = ast.literal_eval(candidate)
+    except (ValueError, TypeError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _migration_execute_sql(path: Path) -> list[str]:
     module = ast.parse(_source(path), filename=str(path))
     statements: list[str] = []
     for node in ast.walk(module):
         if not isinstance(node, ast.Call) or len(node.args) != 1 or node.keywords:
             continue
-        if not (
-            isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "op"
-            and node.func.attr == "execute"
-        ):
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "execute":
             continue
-        try:
-            value = ast.literal_eval(node.args[0])
-        except (ValueError, TypeError):
+
+        receiver = node.func.value
+        is_op_execute = isinstance(receiver, ast.Name) and receiver.id == "op"
+        is_bind_execute = isinstance(receiver, ast.Name) and receiver.id == "bind"
+        if not (is_op_execute or is_bind_execute):
             continue
-        if isinstance(value, str):
+
+        value = _literal_sql_argument(node.args[0])
+        if value is not None:
             statements.append(" ".join(value.split()))
     return statements
 
@@ -69,7 +88,7 @@ def test_correlation_hardening_is_a_single_head_successor() -> None:
 
 def test_validator_uses_bounded_security_owner_capability() -> None:
     source = _source(MIGRATION)
-    statements = _op_execute_sql(MIGRATION)
+    statements = _migration_execute_sql(MIGRATION)
 
     assert "app_security_owner" in source
     assert "NOLOGIN/NOINHERIT/NOBYPASSRLS" in source
@@ -96,7 +115,7 @@ def test_validator_uses_bounded_security_owner_capability() -> None:
 def test_trigger_is_created_before_security_owner_transfer_without_execute_grant() -> None:
     source = _source(MIGRATION)
     upgrade = _function_source(MIGRATION, "upgrade")
-    statements = _op_execute_sql(MIGRATION)
+    statements = _migration_execute_sql(MIGRATION)
 
     assert upgrade.index("_create_hardened_validator()") < upgrade.index("_replace_trigger()")
     assert upgrade.index("_replace_trigger()") < upgrade.index("_install_security_owner_boundary()")
@@ -124,7 +143,7 @@ def test_trigger_is_created_before_security_owner_transfer_without_execute_grant
 
 def test_validator_is_exact_branch_correlation_and_transaction_deferred() -> None:
     source = _source(MIGRATION)
-    statements = _op_execute_sql(MIGRATION)
+    statements = _migration_execute_sql(MIGRATION)
 
     for predicate in (
         "event_data.correlation_id = NEW.correlation_id",
@@ -153,7 +172,7 @@ def test_validator_is_exact_branch_correlation_and_transaction_deferred() -> Non
 
 def test_internal_trigger_functions_are_closed_to_public_at_head() -> None:
     source = _source(MIGRATION)
-    statements = _op_execute_sql(MIGRATION)
+    statements = _migration_execute_sql(MIGRATION)
 
     assert (
         "REVOKE ALL ON FUNCTION "
@@ -173,7 +192,7 @@ def test_internal_trigger_functions_are_closed_to_public_at_head() -> None:
 
 def test_downgrade_removes_only_the_revision_owned_delta() -> None:
     source = _source(MIGRATION)
-    statements = _op_execute_sql(MIGRATION)
+    statements = _migration_execute_sql(MIGRATION)
 
     assert (
         "DROP POLICY lifecycle_correlation_validator_event_read "
