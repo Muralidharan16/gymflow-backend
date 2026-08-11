@@ -412,9 +412,21 @@ def _create_nonmember_validator() -> None:
         """
     )
 
+    # Remove the default function EXECUTE grant while migration_owner is still
+    # the function owner. After transfer, repeat the ACL changes while explicitly
+    # SET ROLE'd to the no-login owner so ownership semantics cannot silently
+    # preserve or restore PUBLIC EXECUTE.
+    op.execute(
+        """
+        REVOKE ALL ON FUNCTION
+        public.branch_hours_current_nonmember_principal_valid(uuid)
+        FROM PUBLIC
+        """
+    )
+
     # ALTER OWNER requires temporary CREATE for the target owner on the
-    # containing schema. Keep the privilege window transaction-local in effect
-    # and restore the standing no-CREATE boundary immediately afterward.
+    # containing schema. Keep the privilege window bounded and restore the
+    # standing no-CREATE boundary immediately afterward.
     op.execute("GRANT CREATE ON SCHEMA public TO app_security_owner")
     op.execute(
         """
@@ -423,6 +435,8 @@ def _create_nonmember_validator() -> None:
         """
     )
     op.execute("REVOKE CREATE ON SCHEMA public FROM app_security_owner")
+
+    op.execute("SET LOCAL ROLE app_security_owner")
     op.execute(
         """
         REVOKE ALL ON FUNCTION
@@ -437,6 +451,7 @@ def _create_nonmember_validator() -> None:
         TO app_runtime
         """
     )
+    op.execute("RESET ROLE")
 
 
 def _active_owner_expr(target_org: str) -> str:
