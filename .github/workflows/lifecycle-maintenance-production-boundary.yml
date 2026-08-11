@@ -236,13 +236,14 @@ jobs:
           );
 
           INSERT INTO public.org_branch_state (
-            branch_id, org_id, status, is_operational,
+            branch_id, org_id, status, is_operational, transition_source,
             search_epoch_ulid, search_visibility_version
           ) VALUES (
             '20000000-0000-0000-0000-000000000091',
             '10000000-0000-0000-0000-000000000091',
             'active',
             TRUE,
+            'api',
             '01AN4V07BY79KA1307SR1XF31A',
             1
           );
