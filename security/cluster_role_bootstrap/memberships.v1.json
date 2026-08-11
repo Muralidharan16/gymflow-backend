@@ -32,7 +32,8 @@
     "branch_admin",
     "branch_viewer",
     "ops_support",
-    "readonly_analytics"
+    "readonly_analytics",
+    "worker_runtime"
   ],
   "schema_version": 1,
   "source_evidence": {
