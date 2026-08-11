@@ -342,7 +342,7 @@ def main() -> None:
     parser.add_argument(
         "--stage",
         choices=("all", *STAGES),
-        default="login_posture",
+        default="acl_contract",
     )
     args = parser.parse_args()
 
