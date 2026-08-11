@@ -176,48 +176,53 @@ async def get_branch_history(
     return (await db.execute(stmt)).scalars().all()
 
 
-@router.post(
-    "/watchdog/sweep",
-    status_code=status.HTTP_200_OK,
-    summary="Manually trigger watchdog alert sweep",
-)
-async def trigger_watchdog_sweep(
-    current_staff: Staff = Depends(get_current_active_staff),
-    db: AsyncSession = Depends(get_db),
-):
+def _require_maintenance_operator(current_staff: Staff) -> None:
     if current_staff.role not in ("owner", "admin", "superadmin", "compliance"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied.",
         )
 
-    service = BranchLifecycleService(db)
-    await service.run_watchdog_sweep()
+
+@router.post(
+    "/watchdog/sweep",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Queue a lifecycle watchdog alert sweep",
+)
+async def trigger_watchdog_sweep(
+    current_staff: Staff = Depends(get_current_active_staff),
+):
+    """Authorize the operator and enqueue cross-tenant maintenance.
+
+    The HTTP request identity never receives watchdog/reconciliation database
+    capability. Celery executes the task with the dedicated maintenance login.
+    """
+    _require_maintenance_operator(current_staff)
+
+    from app.tasks.branch_lifecycle_sweeps import run_watchdog
+
+    task = run_watchdog.delay()
     return {
-        "message": (
-            "Watchdog sweep completed. Durable saga failures are alerted; "
-            "live/retryable work is not force-rolled back."
-        )
+        "message": "Watchdog sweep accepted for bounded maintenance execution.",
+        "task_id": task.id,
     }
 
 
 @router.post(
     "/reconciliation/sweep",
-    status_code=status.HTTP_200_OK,
-    summary="Manually trigger reconciliation sync sweep",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Queue a lifecycle reconciliation sweep",
 )
 async def trigger_reconciliation_sweep(
     current_staff: Staff = Depends(get_current_active_staff),
-    db: AsyncSession = Depends(get_db),
 ):
-    if current_staff.role not in ("owner", "admin", "superadmin", "compliance"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied.",
-        )
+    """Authorize the operator and enqueue reconciliation outside the API pool."""
+    _require_maintenance_operator(current_staff)
 
-    service = BranchLifecycleService(db)
-    synced_count = await service.run_reconciliation_sweep()
+    from app.tasks.branch_lifecycle_sweeps import run_reconciliation
+
+    task = run_reconciliation.delay()
     return {
-        "message": f"Reconciliation sweep completed. Synced {synced_count} branches."
+        "message": "Reconciliation sweep accepted for bounded maintenance execution.",
+        "task_id": task.id,
     }
