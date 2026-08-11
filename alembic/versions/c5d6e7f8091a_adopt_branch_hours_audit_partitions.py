@@ -428,7 +428,7 @@ def _require_current_and_future_coverage(bind) -> None:
                     offset_value,
                     'branch_hours_audit_log_p' ||
                     pg_catalog.to_char(
-                        pg_catalog.date_trunc('month', pg_catalog.current_timestamp)
+                        pg_catalog.date_trunc('month', CURRENT_TIMESTAMP)
                         + pg_catalog.make_interval(months => offset_value),
                         'YYYYMMDD'
                     ) AS child_name
