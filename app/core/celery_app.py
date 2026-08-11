@@ -26,10 +26,17 @@ celery_app.conf.update(
 # Automatic Task Discovery
 celery_app.autodiscover_tasks(["app.tasks"])
 
-# Define the Periodic Schedule (Midnight IST)
+# Periodic operational schedule (IST).
 celery_app.conf.beat_schedule = {
     "daily-trial-monitor": {
         "task": "app.tasks.trial_tasks.monitor_trial_lifecycles",
-        "schedule": crontab(hour=0, minute=0), # Run at 12:00 AM IST daily
+        "schedule": crontab(hour=0, minute=0),
+    },
+    # Creation is owned by pg_partman/database infrastructure.  The application
+    # worker performs a read-only coverage check so partition-maintenance drift
+    # becomes an observable task failure without granting runtime DDL rights.
+    "daily-branch-hours-audit-partition-readiness": {
+        "task": "app.tasks.branch_hours_partition.run",
+        "schedule": crontab(hour=3, minute=15),
     },
 }
