@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
 
@@ -166,10 +165,14 @@ def test_runtime_revision_downgrade_restores_legacy_hours_contract() -> None:
 def test_partition_revision_moves_ddl_to_existing_pg_partman_control_plane() -> None:
     source = _source(PARTITION_MIGRATION)
     literals = _literal_text(PARTITION_MIGRATION)
+    configure = _function_source(PARTITION_MIGRATION, "_configure_partman")
+    cleanup = _function_source(PARTITION_MIGRATION, "_remove_partman_management")
 
     assert 'revision = "c5d6e7f8091a"' in source
     assert 'down_revision = "b4c5d6e7f809"' in source
     assert '_PARTMAN_VERSION = "5.0.1"' in source
+    assert '_TEMPLATE = "partman.template_public_branch_hours_audit_log"' in source
+
     assert "partman.create_parent" in literals
     assert "p_interval := '1 month'" in literals
     assert "p_type := 'range'" in literals
@@ -178,6 +181,24 @@ def test_partition_revision_moves_ddl_to_existing_pg_partman_control_plane() -> 
     assert "p_automatic_maintenance := 'on'" in literals
     assert "infinite_time_partitions = true" in literals
     assert "partman.run_maintenance" in literals
+
+    # With a DEFAULT partition, pg_partman 5.0.1 must own its managed template.
+    # The old literal 'false' sentinel registered no template and failed during
+    # default-partition inheritance on a fresh PostgreSQL installation.
+    assert "p_template_table := 'false'" not in configure
+    assert "p_template_table := \"false\"" not in configure
+    assert "template_table::text AS template_table" in literals
+    assert '"template_table": _TEMPLATE' in source
+
+    # Rollback uses pg_partman's supported cleanup API so both config metadata
+    # and the extension-managed template disappear before child cleanup.
+    assert "partman.config_cleanup" in cleanup
+    assert "p_config_table := true" in cleanup
+    assert "p_config_sub_table := true" in cleanup
+    assert "p_template_table := true" in cleanup
+    assert "pg_partman audit configuration survived cleanup" in cleanup
+    assert "pg_partman audit template survived cleanup" in cleanup
+    assert "DELETE FROM partman.part_config" not in cleanup
 
     # Audit retention is intentionally a governance decision, not an implicit
     # destructive default introduced by this hardening revision.
