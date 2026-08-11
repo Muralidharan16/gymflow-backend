@@ -796,8 +796,16 @@ def _verify_forward(bind) -> None:
                 pg_catalog.has_function_privilege(
                     'app_runtime', procedure_data.oid, 'EXECUTE'
                 ) AS runtime_execute,
-                pg_catalog.has_function_privilege(
-                    'PUBLIC', procedure_data.oid, 'EXECUTE'
+                EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.aclexplode(
+                        COALESCE(
+                            procedure_data.proacl,
+                            pg_catalog.acldefault('f', procedure_data.proowner)
+                        )
+                    ) AS acl_data
+                    WHERE acl_data.grantee = 0
+                      AND acl_data.privilege_type = 'EXECUTE'
                 ) AS public_execute
             FROM pg_catalog.pg_proc AS procedure_data
             JOIN pg_catalog.pg_roles AS owner_role
