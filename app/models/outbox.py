@@ -12,9 +12,9 @@ from app.models.base import Base
 class TransactionalOutbox(Base):
     """Durable internal queue for branch-hours projection work.
 
-    API code must not insert this model directly.  Producers enqueue through the
+    API code must not insert this model directly. Producers enqueue through the
     database-owned branch-hours enqueue functions so tenant/event shape checks
-    remain inside the same transaction as the schedule mutation.  Worker code
+    remain inside the same transaction as the schedule mutation. Worker code
     claims rows with a dedicated database identity.
     """
 
@@ -82,7 +82,20 @@ class TransactionalOutbox(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "delivery_attempts >= 0 AND delivery_attempts <= 15",
-            name="chk_outbox_attempt_bounds_model",
+            "delivery_attempts BETWEEN 0 AND 15",
+            name="chk_transactional_outbox_attempts_range",
+        ),
+        CheckConstraint(
+            "NOT (processed_at IS NOT NULL AND dead_lettered_at IS NOT NULL)",
+            name="chk_transactional_outbox_terminal_state",
+        ),
+        CheckConstraint(
+            "(leased_by IS NULL) = (leased_until IS NULL)",
+            name="chk_transactional_outbox_lease_pair",
+        ),
+        CheckConstraint(
+            "(processed_at IS NULL AND dead_lettered_at IS NULL) "
+            "OR (leased_by IS NULL AND leased_until IS NULL)",
+            name="chk_transactional_outbox_terminal_unleased",
         ),
     )
