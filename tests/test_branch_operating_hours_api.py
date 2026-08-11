@@ -4,49 +4,32 @@ from httpx import AsyncClient, ASGITransport
 from typing import AsyncGenerator
 import sys
 import os
+import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.main import app
 from app.core.redis import init_redis, get_redis_utils, close_redis
-from conftest import cleanup_test_database_tables
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def cleanup_database_and_redis():
-    # Audit partitions are migration/infrastructure-owned.  This suite must run
-    # entirely through the reduced application identity and never bootstrap DDL.
+async def isolate_redis_state():
+    """Keep cache state isolated without mutating shared database rows.
+
+    Every test provisions a unique tenant identity. Database isolation therefore
+    comes from real tenant/RLS boundaries instead of TRUNCATE/CASCADE cleanup.
+    This suite must remain executable through the reduced application/auth
+    identities and must never require destructive cross-domain fixture powers.
+    """
     await close_redis()
     await init_redis()
     redis_utils = get_redis_utils()
     await redis_utils.client.flushdb()
 
-    await cleanup_test_database_tables([
-        "branch_hours_audit_log",
-        "branch_hours_projection",
-        "branch_operating_hours",
-        "branch_special_hours",
-        "organization_operating_hours",
-        "org_branch_state",
-        "org_branches",
-        "owners",
-        "organizations",
-    ])
-
     yield
 
-    await cleanup_test_database_tables([
-        "branch_hours_audit_log",
-        "branch_hours_projection",
-        "branch_operating_hours",
-        "branch_special_hours",
-        "organization_operating_hours",
-        "org_branch_state",
-        "org_branches",
-        "owners",
-        "organizations",
-    ])
+    await redis_utils.client.flushdb()
 
 
 @pytest_asyncio.fixture
@@ -60,25 +43,37 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
 @pytest_asyncio.fixture
 async def auth_session(client):
-    # Register main tenant
+    tenant_suffix = uuid.uuid4().hex
+    email = f"branch_hours_api_{tenant_suffix}@example.com"
+
+    # Register a tenant unique to this test.  Do not clean shared tenant roots or
+    # protected branch/contact tables between tests: uniqueness plus forced RLS
+    # is the production isolation contract we want this API suite to exercise.
     signup_payload = {
-        "org_name": "API Test Gym",
+        "org_name": f"API Test Gym {tenant_suffix}",
         "owner_name": "API Tester",
-        "email": "branch_hours_api@example.com",
+        "email": email,
         "password": "StrongPassword123!",
         "facility_type": "gym"
     }
 
     with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
-        await client.post("/auth/signup", json=signup_payload)
+        signup_resp = await client.post("/auth/signup", json=signup_payload)
+        assert signup_resp.status_code == 200
         raw_token = mock_send.call_args[1]["raw_token"]
-        await client.get(f"/auth/verify?token={raw_token}", follow_redirects=False)
+        verify_resp = await client.get(
+            f"/auth/verify?token={raw_token}",
+            follow_redirects=False,
+        )
+        assert verify_resp.status_code == 307
+        assert verify_resp.headers["location"].endswith("/auth/verify-success")
 
     login_payload = {
-        "email": "branch_hours_api@example.com",
+        "email": email,
         "password": "StrongPassword123!"
     }
-    await client.post("/auth/login", json=login_payload)
+    login_resp = await client.post("/auth/login", json=login_payload)
+    assert login_resp.status_code == 200
 
     onboard_payload = {
         "phone": "9876543210",
@@ -88,12 +83,14 @@ async def auth_session(client):
         "pincode": "600001",
         "country": "India"
     }
-    await client.post("/onboarding/complete", json=onboard_payload)
+    onboard_resp = await client.post("/onboarding/complete", json=onboard_payload)
+    assert onboard_resp.status_code == 200
 
     branches_resp = await client.get("/branches")
+    assert branches_resp.status_code == 200
     branch_id = branches_resp.json()["data"][0]["id"]
 
-    return {"client": client, "branch_id": branch_id}
+    return {"client": client, "branch_id": branch_id, "email": email}
 
 
 @pytest.mark.asyncio
@@ -127,7 +124,6 @@ async def test_api_put_and_get_branch_hours(auth_session):
     resp = await client.put(f"/branches/{branch_id}/hours", json=payload)
     assert resp.status_code == 200
 
-    # GET after save
     get_resp = await client.get(f"/branches/{branch_id}/hours")
     assert get_resp.status_code == 200
     data = get_resp.json()
@@ -140,7 +136,6 @@ async def test_api_put_and_get_branch_hours(auth_session):
 async def test_api_put_and_get_org_default_hours(auth_session):
     client = auth_session["client"]
 
-    # Get empty
     empty_resp = await client.get("/organizations/hours")
     assert empty_resp.status_code == 200
     assert empty_resp.json() == []
@@ -207,29 +202,36 @@ async def test_api_projection_works(auth_session):
 async def test_unauthorized_cross_tenant(auth_session):
     branch_id = auth_session["branch_id"]
 
-    # Create another tenant and try to read tenant A's branch hours.
     other_client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    other_suffix = uuid.uuid4().hex
+    other_email = f"branch_hours_other_{other_suffix}@example.com"
     signup_payload = {
-        "org_name": "Other Gym",
+        "org_name": f"Other Gym {other_suffix}",
         "owner_name": "Other Tester",
-        "email": "other_tenant@example.com",
+        "email": other_email,
         "password": "StrongPassword123!",
         "facility_type": "gym"
     }
     with patch("app.services.auth_service.send_verification_email", return_value=True) as mock_send:
-        await other_client.post("/auth/signup", json=signup_payload)
+        signup_resp = await other_client.post("/auth/signup", json=signup_payload)
+        assert signup_resp.status_code == 200
         raw_token = mock_send.call_args[1]["raw_token"]
-        await other_client.get(f"/auth/verify?token={raw_token}", follow_redirects=False)
+        verify_resp = await other_client.get(
+            f"/auth/verify?token={raw_token}",
+            follow_redirects=False,
+        )
+        assert verify_resp.status_code == 307
 
-    await other_client.post("/auth/login", json={
-        "email": "other_tenant@example.com",
+    login_resp = await other_client.post("/auth/login", json={
+        "email": other_email,
         "password": "StrongPassword123!"
     })
+    assert login_resp.status_code == 200
 
     resp = await other_client.get(f"/branches/{branch_id}/hours")
 
-    # The route itself is valid for an authenticated staff member; PostgreSQL
-    # forced RLS must deterministically hide the foreign tenant's rows.
+    # The route itself is valid for authenticated staff. PostgreSQL forced RLS
+    # must deterministically hide the foreign tenant's rows.
     assert resp.status_code == 200
     assert resp.json() == []
 
@@ -252,14 +254,11 @@ async def test_soft_deleted_not_returned(auth_session):
         ]
     }
 
-    # 1. Put
     await client.put(f"/branches/{branch_id}/hours", json=payload)
 
-    # 2. Put empty (should soft delete the old ones)
     payload_empty = {"schedules": []}
     await client.put(f"/branches/{branch_id}/hours", json=payload_empty)
 
-    # 3. Get should be empty
     get_resp = await client.get(f"/branches/{branch_id}/hours")
     assert get_resp.status_code == 200
     assert get_resp.json() == []
@@ -297,7 +296,6 @@ async def test_api_multi_slot_hours(auth_session):
     data = get_resp.json()
     assert len(data) == 2
 
-    # Sort by slot_index to verify order
     data.sort(key=lambda x: x["slot_index"])
 
     assert data[0]["day_of_week"] == 0
@@ -367,7 +365,6 @@ async def test_api_special_hours_empty_deletes_all(auth_session):
     client = auth_session["client"]
     branch_id = auth_session["branch_id"]
 
-    # 1. Create special hour
     payload = {
         "schedules": [
             {
@@ -380,15 +377,12 @@ async def test_api_special_hours_empty_deletes_all(auth_session):
     resp = await client.put(f"/branches/{branch_id}/special-hours", json=payload)
     assert resp.status_code == 200
 
-    # Verify created
     get_resp = await client.get(f"/branches/{branch_id}/special-hours")
     assert len(get_resp.json()) == 1
 
-    # 2. Put empty schedules
     resp_empty = await client.put(f"/branches/{branch_id}/special-hours", json={"schedules": []})
     assert resp_empty.status_code == 200
 
-    # Verify all deleted
     get_resp_empty = await client.get(f"/branches/{branch_id}/special-hours")
     assert get_resp_empty.json() == []
 
@@ -398,7 +392,6 @@ async def test_api_special_hours_partial_replacement(auth_session):
     client = auth_session["client"]
     branch_id = auth_session["branch_id"]
 
-    # 1. Create two dates
     payload = {
         "schedules": [
             {
@@ -416,7 +409,6 @@ async def test_api_special_hours_partial_replacement(auth_session):
     resp = await client.put(f"/branches/{branch_id}/special-hours", json=payload)
     assert resp.status_code == 200
 
-    # 2. Save only one date (omitting Christmas Eve)
     payload_one = {
         "schedules": [
             {
@@ -429,7 +421,6 @@ async def test_api_special_hours_partial_replacement(auth_session):
     resp_one = await client.put(f"/branches/{branch_id}/special-hours", json=payload_one)
     assert resp_one.status_code == 200
 
-    # Verify only Christmas remains
     get_resp = await client.get(f"/branches/{branch_id}/special-hours")
     data = get_resp.json()
     assert len(data) == 1
