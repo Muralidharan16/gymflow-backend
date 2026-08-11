@@ -93,6 +93,7 @@ jobs:
           CREATE ROLE app_security_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE auth_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_user NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE audit_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE branch_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
@@ -115,6 +116,10 @@ jobs:
           ALTER ROLE app_runtime SET statement_timeout = '5s';
           ALTER ROLE app_runtime SET lock_timeout = '2s';
           ALTER ROLE app_runtime SET row_security = 'on';
+          ALTER ROLE worker_runtime SET statement_timeout = '15s';
+          ALTER ROLE worker_runtime SET lock_timeout = '2s';
+          ALTER ROLE worker_runtime SET idle_in_transaction_session_timeout = '30s';
+          ALTER ROLE worker_runtime SET row_security = 'on';
           ALTER ROLE finance_test_runtime SET row_security = 'on';
           ALTER ROLE finance_test_runtime SET statement_timeout = '10s';
           ALTER ROLE finance_test_runtime SET lock_timeout = '3s';
@@ -133,6 +138,29 @@ jobs:
           CREATE DATABASE gymflow_finance_test_ci OWNER migration_owner;
           GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO finance_test_runtime;
           GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO synthetic_test_runtime;
+          SQL
+
+      - name: Prove worker role is isolated from Finance identities
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d postgres <<'SQL'
+          DO $$
+          DECLARE worker_record record;
+          BEGIN
+            SELECT * INTO worker_record FROM pg_catalog.pg_roles WHERE rolname = 'worker_runtime';
+            IF NOT FOUND OR worker_record.rolcanlogin OR worker_record.rolsuper
+               OR worker_record.rolcreatedb OR worker_record.rolcreaterole
+               OR worker_record.rolinherit OR worker_record.rolreplication
+               OR worker_record.rolbypassrls THEN
+              RAISE EXCEPTION 'worker_runtime posture is unsafe';
+            END IF;
+            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET')
+               OR pg_catalog.pg_has_role('finance_test_runtime', 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('synthetic_test_runtime', 'worker_runtime', 'MEMBER') THEN
+              RAISE EXCEPTION 'worker_runtime leaked into migration/Finance test identities';
+            END IF;
+          END
+          $$;
           SQL
 
       - name: Provision infrastructure-owned extensions
@@ -210,8 +238,9 @@ jobs:
             IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'SET')
                OR pg_catalog.pg_has_role(current_user, 'app_user', 'SET')
                OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'test_runner', 'MEMBER') THEN
-              RAISE EXCEPTION 'Finance Core runtime has an invalid application/auth/test role edge';
+              RAISE EXCEPTION 'Finance Core runtime has an invalid application/auth/worker/test role edge';
             END IF;
             IF NOT pg_catalog.has_schema_privilege(current_user, 'finance', 'USAGE') THEN
               RAISE EXCEPTION 'Finance Core runtime lacks finance schema USAGE';
@@ -269,8 +298,9 @@ jobs:
             END IF;
             IF pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'app_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER') THEN
-              RAISE EXCEPTION 'synthetic bootstrap runtime has unrelated application membership';
+              RAISE EXCEPTION 'synthetic bootstrap runtime has unrelated application/worker membership';
             END IF;
 
             SELECT member_edge.* INTO membership_record
