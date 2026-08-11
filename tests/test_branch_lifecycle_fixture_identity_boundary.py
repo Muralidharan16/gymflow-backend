@@ -13,12 +13,14 @@ def _source() -> str:
 
 def _function_node(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     module = ast.parse(_source(), filename=str(SOURCE))
-    return next(
+    matches = [
         item
         for item in module.body
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         and item.name == name
-    )
+    ]
+    assert len(matches) == 1, f"expected exactly one lifecycle test/function named {name}, found {len(matches)}"
+    return matches[0]
 
 
 def _function_source(name: str) -> str:
@@ -102,8 +104,9 @@ def test_lifecycle_behavior_still_executes_on_reduced_runtime() -> None:
         "test_initiate_transition_unauthorized_role",
         "test_initiate_transition_missing_reason_on_terminal",
         "test_initiate_transition_last_active_branch_guard",
-        "test_saga_happy_path_and_failure",
-        "test_watchdog_and_reconcile",
+        "test_saga_happy_path_and_transaction_b_failure_is_retry_safe",
+        "test_watchdog_alerts_without_compensating_retryable_saga",
+        "test_reconciliation_sweep_releases_claim_and_advances_projection",
     ):
         test_source = _function_source(test_name)
         assert "AsyncSessionLocal()" in test_source
