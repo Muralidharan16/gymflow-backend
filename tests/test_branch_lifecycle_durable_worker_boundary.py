@@ -21,14 +21,35 @@ def test_http_transition_never_carries_request_session_into_background_work() ->
     source = _source(ROUTER)
     tree = ast.parse(source)
 
-    assert "BackgroundTasks" not in source
-    assert ".add_task(" not in source
-    assert "execute_saga_cascade" not in source
     assert "branch.lifecycle_saga" in source
     assert not any(
         isinstance(node, ast.ImportFrom)
         and node.module == "fastapi"
         and any(alias.name == "BackgroundTasks" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "BackgroundTasks"
+        for node in ast.walk(tree)
+    )
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_task"
+        for node in ast.walk(tree)
+    )
+    assert not any(
+        isinstance(node, ast.Call)
+        and (
+            (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "execute_saga_cascade"
+            )
+            or (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "execute_saga_cascade"
+            )
+        )
         for node in ast.walk(tree)
     )
 
