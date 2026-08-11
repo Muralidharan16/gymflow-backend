@@ -54,12 +54,17 @@ def _assignment(path: Path, name: str):
 
 
 def _function(path: Path, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
-    return next(
+    matches = [
         node
-        for node in _tree(path).body
+        for node in ast.walk(_tree(path))
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name == name
+    ]
+    assert len(matches) == 1, (
+        f"expected exactly one function/method {name!r} in {path}, "
+        f"found {len(matches)}"
     )
+    return matches[0]
 
 
 def _executable_string_literals(path: Path) -> list[str]:
