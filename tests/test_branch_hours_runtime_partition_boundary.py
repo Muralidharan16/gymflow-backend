@@ -12,6 +12,7 @@ PARTITION_MIGRATION = ROOT / "alembic" / "versions" / (
     "c5d6e7f8091a_adopt_branch_hours_audit_partitions.py"
 )
 PARTITION_TASK = ROOT / "app" / "tasks" / "branch_hours_partition.py"
+BRANCH_HOURS_API_TEST = ROOT / "tests" / "test_branch_operating_hours_api.py"
 MAIN = ROOT / "app" / "main.py"
 CELERY = ROOT / "app" / "core" / "celery_app.py"
 
@@ -177,14 +178,10 @@ def test_partition_revision_moves_ddl_to_existing_pg_partman_control_plane() -> 
     assert '_TEMPLATE_SCHEMA = "public"' in source
     assert '_TEMPLATE_NAME = "branch_hours_audit_log_partman_template"' in source
 
-    # The migration identity must never be allowed to create objects inside the
-    # infrastructure-owned extension schema.
     assert "has_schema_privilege(current_user, 'partman', 'CREATE')" in dependency
     assert "migration_owner must not gain CREATE on infrastructure-owned partman schema" in dependency
     assert "GRANT CREATE ON SCHEMA partman" not in literals
 
-    # The template is revision-owned in public and explicitly passed to
-    # pg_partman; no implicit extension-schema template creation is required.
     assert "CREATE TABLE" in create_template
     assert "INCLUDING ALL" in create_template
     assert "REVOKE ALL ON TABLE" in create_template
@@ -202,15 +199,9 @@ def test_partition_revision_moves_ddl_to_existing_pg_partman_control_plane() -> 
     assert "infinite_time_partitions = true" in literals
     assert "partman.run_maintenance" in literals
 
-    # CURRENT_TIMESTAMP is SQL syntax, not a pg_catalog function. Qualifying it
-    # as pg_catalog.current_timestamp makes PostgreSQL parse pg_catalog as a
-    # missing FROM-clause relation and breaks fresh-lineage verification.
     assert "CURRENT_TIMESTAMP" in coverage
     assert "pg_catalog.current_timestamp" not in coverage
 
-    # Rollback follows the repository's proven bounded part_config deletion,
-    # validates exactly one owned row, and removes only empty revision-owned
-    # children/template with RESTRICT.
     assert "DELETE FROM partman.part_config WHERE parent_table = :parent_table" in cleanup
     assert "result.rowcount != 1" in cleanup
     assert "pg_partman audit configuration survived bounded cleanup" in cleanup
@@ -218,8 +209,6 @@ def test_partition_revision_moves_ddl_to_existing_pg_partman_control_plane() -> 
     assert "RESTRICT" in cleanup
     assert "revision-owned audit template survived downgrade" in cleanup
 
-    # Audit retention is intentionally a governance decision, not an implicit
-    # destructive default introduced by this hardening revision.
     assert "SET retention" not in literals
     assert '"retention": None' in source
 
@@ -253,3 +242,16 @@ def test_application_partition_task_is_read_only_and_startup_is_ddl_free() -> No
 
     assert '"daily-branch-hours-audit-partition-readiness"' in celery_source
     assert '"app.tasks.branch_hours_partition.run"' in celery_source
+
+
+def test_branch_hours_api_uses_unique_tenants_not_destructive_cleanup() -> None:
+    source = _source(BRANCH_HOURS_API_TEST)
+
+    assert "uuid.uuid4().hex" in source
+    assert "branch_hours_api_{tenant_suffix}@example.com" in source
+    assert "branch_hours_other_{other_suffix}@example.com" in source
+    assert "cleanup_test_database_tables" not in source
+    assert "truncate_test_tables" not in source
+    assert "TRUNCATE TABLE" not in source.upper()
+    assert "CASCADE" not in source.upper()
+    assert "AdminTestSessionLocal" not in source
