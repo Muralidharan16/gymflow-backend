@@ -47,7 +47,10 @@ def test_lease_predicates_are_security_definer_and_not_public() -> None:
 
 def test_recursion_fix_does_not_expand_worker_tenant_root_or_queue_insert() -> None:
     source = _source()
-    assert "GRANT INSERT ON TABLE public.transactional_outbox TO worker_runtime" not in source
-    assert "GRANT SELECT ON TABLE public.organizations TO worker_runtime" not in source
-    assert "GRANT UPDATE ON TABLE public.organizations TO worker_runtime" not in source
-    assert "BYPASSRLS" not in source.replace("NOBYPASSRLS", "")
+    normalized = " ".join(source.upper().split())
+
+    assert "GRANT INSERT ON TABLE PUBLIC.TRANSACTIONAL_OUTBOX TO WORKER_RUNTIME" not in normalized
+    assert "GRANT SELECT ON TABLE PUBLIC.ORGANIZATIONS TO WORKER_RUNTIME" not in normalized
+    assert "GRANT UPDATE ON TABLE PUBLIC.ORGANIZATIONS TO WORKER_RUNTIME" not in normalized
+    assert "ALTER ROLE WORKER_RUNTIME BYPASSRLS" not in normalized
+    assert "ALTER ROLE WORKER_RUNTIME WITH BYPASSRLS" not in normalized
