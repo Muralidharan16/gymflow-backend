@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import uuid
@@ -9,12 +8,10 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Optional, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from celery import shared_task
 from sqlalchemy import case, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import update_session_context, worker_async_session_maker
 from app.models.org_branch import OrgBranch, OrgBranchState
 from app.models.branch_operating_hours import (
     BranchOperatingHours,
@@ -26,7 +23,6 @@ from app.models.branch_operating_hours import (
 
 UTC = timezone.utc
 _PROJECTION_HORIZON_DAYS = 31
-_MAINTENANCE_TOKEN = "branch_hours_projection"
 
 
 @dataclass(frozen=True)
@@ -47,7 +43,6 @@ class _OpenInterval:
 
 def compute_source_hash(data: dict[str, Any]) -> str:
     """Hash the effective schedule source, not the wall-clock status."""
-
     canonical_json = json.dumps(data, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
@@ -61,13 +56,11 @@ def _wall_time_to_utc(
 ) -> datetime:
     """Resolve a local wall time deterministically across DST transitions.
 
-    For an ambiguous fall-back wall time, openings use the earliest occurrence
-    and closings use the latest occurrence so an advertised interval is never
-    accidentally shortened.  For a nonexistent spring-forward wall time, the
-    boundary is normalized forward to the first round-trippable local instant
-    produced by ZoneInfo (for example 02:30 -> 03:30 in a one-hour gap).
+    Ambiguous fall-back openings use the earliest occurrence and closings use
+    the latest occurrence so an advertised interval is not shortened. A
+    nonexistent spring-forward wall time is normalized forward to the first
+    round-trippable local instant produced by ZoneInfo.
     """
-
     naive = datetime.combine(local_date, local_time.replace(tzinfo=None))
     candidates: list[tuple[datetime, datetime]] = []
     round_trips: list[tuple[datetime, datetime]] = []
@@ -173,7 +166,6 @@ def _intervals_for_slots(
 def _resolve_temporal_state(
     *,
     current_utc: datetime,
-    current_local_date: date,
     today_has_special_override: bool,
     today_has_standard_configuration: bool,
     intervals: Sequence[_OpenInterval],
@@ -182,7 +174,7 @@ def _resolve_temporal_state(
 
     current_interval: Optional[_OpenInterval] = None
     if today_has_special_override:
-        # A special-date definition owns the local calendar day.  Standard
+        # A special-date definition owns the local calendar day. Standard
         # weekly intervals, including a previous-day overnight interval, must
         # not leak through a holiday/exception override.
         current_interval = next(
@@ -229,13 +221,12 @@ async def rebuild_branch_hours_projection(
     *,
     current_utc: Optional[datetime] = None,
 ) -> ProjectionRebuildResult:
-    """Rebuild one projection inside the caller-owned worker transaction.
+    """Rebuild one projection inside the caller-owned leased transaction.
 
-    The tenant is an explicit durable input from the claimed outbox row.  The
-    branch lookup additionally pins the same tenant, so a malformed/stale job
-    cannot cross the RLS boundary even before database policy evaluation.
+    This function intentionally creates no database session and performs no
+    commit. The outbox worker must first install tenant + worker lease context;
+    projection changes and the event's processed marker then commit together.
     """
-
     now_utc = (current_utc or datetime.now(UTC)).astimezone(UTC)
 
     branch_stmt = (
@@ -270,7 +261,7 @@ async def rebuild_branch_hours_projection(
     today = current_local.date()
     horizon_end = today + timedelta(days=_PROJECTION_HORIZON_DAYS)
 
-    branch_stmt = (
+    branch_hours_stmt = (
         select(BranchOperatingHours)
         .where(
             BranchOperatingHours.branch_id == branch_id,
@@ -287,12 +278,10 @@ async def rebuild_branch_hours_projection(
             BranchOperatingHours.valid_from,
         )
     )
-    branch_hours = list((await db.scalars(branch_stmt)).all())
+    branch_hours = list((await db.scalars(branch_hours_stmt)).all())
 
     if branch_hours:
-        standard_hours: list[BranchOperatingHours | OrganizationOperatingHours] = (
-            branch_hours
-        )
+        standard_hours: list[BranchOperatingHours | OrganizationOperatingHours] = branch_hours
     else:
         org_stmt = (
             select(OrganizationOperatingHours)
@@ -359,7 +348,6 @@ async def rebuild_branch_hours_projection(
     today_standard = _effective_standard_slots(standard_hours, today)
     status, next_open_at, next_close_at = _resolve_temporal_state(
         current_utc=now_utc,
-        current_local_date=today,
         today_has_special_override=bool(today_special),
         today_has_standard_configuration=bool(today_standard),
         intervals=intervals,
@@ -373,9 +361,7 @@ async def rebuild_branch_hours_projection(
             {
                 "slot_index": slot.slot_index,
                 "valid_from": slot.valid_from.isoformat(),
-                "valid_until": slot.valid_until.isoformat()
-                if slot.valid_until
-                else None,
+                "valid_until": slot.valid_until.isoformat() if slot.valid_until else None,
                 "is_closed": slot.is_closed,
                 "is_24_hours": slot.is_24_hours,
                 "open_time": slot.open_time.isoformat() if slot.open_time else None,
@@ -451,38 +437,3 @@ async def rebuild_branch_hours_projection(
         current_status=status,
         next_refresh_at=min(refresh_candidates) if refresh_candidates else None,
     )
-
-
-@shared_task(name="app.tasks.branch_hours_projection.run_projection")
-def run_projection(
-    branch_id: str,
-    tenant_id: str,
-    correlation_id: Optional[str] = None,
-):
-    """Compatibility task using the bounded worker identity and tenant context.
-
-    Durable outbox processing calls the rebuild function directly so projection
-    state and the processed marker commit together.  This wrapper remains only
-    for explicit operational rebuilds and therefore requires tenant identity.
-    """
-
-    async def _runner() -> None:
-        branch_uuid = uuid.UUID(branch_id)
-        tenant_uuid = uuid.UUID(tenant_id)
-        trace = correlation_id or str(uuid.uuid4())
-        async with worker_async_session_maker() as db:
-            await update_session_context(
-                db,
-                org_id=str(tenant_uuid),
-                trace_id=trace,
-                role="branch_hours_worker",
-                internal_maintenance=_MAINTENANCE_TOKEN,
-            )
-            await rebuild_branch_hours_projection(
-                db,
-                branch_uuid,
-                tenant_uuid,
-            )
-            await db.commit()
-
-    asyncio.run(_runner())
