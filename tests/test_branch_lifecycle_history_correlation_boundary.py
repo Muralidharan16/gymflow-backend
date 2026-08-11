@@ -51,6 +51,35 @@ def test_validator_uses_bounded_security_owner_capability() -> None:
     assert "BYPASSRLS" not in source.replace("NOBYPASSRLS", "")
 
 
+def test_trigger_creation_execute_window_is_exact_and_closes_at_head() -> None:
+    source = _source(MIGRATION)
+
+    grant = (
+        "GRANT EXECUTE ON FUNCTION "
+        "public.validate_history_correlation_hardened() TO migration_owner"
+    )
+    create = "CREATE CONSTRAINT TRIGGER trg_validate_history_correlation"
+    revoke = (
+        "REVOKE EXECUTE ON FUNCTION "
+        "public.validate_history_correlation_hardened() FROM migration_owner"
+    )
+    assert source.count(grant) == 1
+    assert source.count(revoke) == 1
+    assert source.index(grant) < source.index(create) < source.index(revoke)
+    assert "8293 failed to open bounded migration-owner EXECUTE" in source
+    assert "8293 leaked migration-owner EXECUTE after trigger creation" in source
+    assert "8293 leaked migration-owner EXECUTE on hardened validator" in source
+    assert 'for runtime_role in _RUNTIME_ROLES:' in source
+    assert "8293 leaked hardened validator EXECUTE to" in source
+
+    # Never replace the bounded owner window with a PUBLIC shortcut.
+    assert (
+        "GRANT EXECUTE ON FUNCTION "
+        "public.validate_history_correlation_hardened() TO PUBLIC"
+        not in source
+    )
+
+
 def test_validator_is_exact_branch_correlation_and_transaction_deferred() -> None:
     source = _source(MIGRATION)
 
