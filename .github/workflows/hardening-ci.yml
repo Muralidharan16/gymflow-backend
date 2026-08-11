@@ -62,11 +62,14 @@ jobs:
             alembic/versions/a3b4c5d6e7f8_allow_legacy_branch_transition_reference_read.py \
             alembic/versions/b4c5d6e7f809_harden_branch_hours_runtime_boundary.py \
             alembic/versions/c5d6e7f8091a_adopt_branch_hours_audit_partitions.py \
+            alembic/versions/b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py \
             app/core/database.py \
             app/core/celery_app.py \
             app/main.py \
             app/tasks/branch_hours_partition.py \
-            tests/test_branch_hours_runtime_partition_boundary.py
+            app/tasks/branch_lifecycle_sweeps.py \
+            tests/test_branch_hours_runtime_partition_boundary.py \
+            tests/test_lifecycle_maintenance_runtime_boundary.py
 
       - name: Run migration hardening static regressions
         env:
@@ -91,7 +94,8 @@ jobs:
             tests/test_rbac_expand_contract_root_cause.py \
             tests/test_legacy_branch_trigger_runtime_boundary.py \
             tests/test_legacy_branch_transition_reference_acl.py \
-            tests/test_branch_hours_runtime_partition_boundary.py
+            tests/test_branch_hours_runtime_partition_boundary.py \
+            tests/test_lifecycle_maintenance_runtime_boundary.py
 
   fresh-lineage-and-regressions:
     name: Fresh PG16 lineage and general regressions
@@ -160,60 +164,22 @@ jobs:
       - name: Bootstrap migration, runtime and test roles and databases
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          CREATE ROLE migration_owner
-            LOGIN PASSWORD 'ci-migration-owner'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-
-          CREATE ROLE app_rls_executor
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_security_owner
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_runtime
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE auth_runtime
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE worker_runtime
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_user
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE audit_writer
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_admin
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_viewer
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE internal_billing_worker
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE ops_support
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE readonly_analytics
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-
-          CREATE ROLE test_runner
-            LOGIN PASSWORD 'ci-test-runner'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_test_runtime
-            LOGIN PASSWORD 'ci-app-test-runtime'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE auth_test_runtime
-            LOGIN PASSWORD 'ci-auth-test-runtime'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE migration_owner LOGIN PASSWORD 'ci-migration-owner' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_rls_executor NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_security_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_user NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE audit_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_viewer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE internal_billing_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE ops_support NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE readonly_analytics NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE test_runner LOGIN PASSWORD 'ci-test-runner' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-test-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime LOGIN PASSWORD 'ci-auth-test-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
 
           ALTER ROLE app_runtime SET statement_timeout = '5s';
           ALTER ROLE app_runtime SET lock_timeout = '2s';
@@ -231,29 +197,22 @@ jobs:
           ALTER ROLE auth_test_runtime SET lock_timeout = '2s';
           ALTER ROLE auth_test_runtime SET idle_in_transaction_session_timeout = '15s';
 
-          GRANT app_rls_executor TO migration_owner
-            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT app_security_owner TO migration_owner
-            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT test_runner TO migration_owner
-            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-
-          GRANT app_runtime TO app_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO app_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-
-          GRANT auth_runtime TO auth_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_runtime TO auth_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO auth_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_rls_executor TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+          GRANT app_security_owner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+          GRANT test_runner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 
           CREATE DATABASE gymflow_migration_test OWNER migration_owner;
           CREATE DATABASE gymflow_test OWNER migration_owner;
           GRANT CONNECT ON DATABASE gymflow_test TO app_test_runtime, auth_test_runtime;
           SQL
+
+      - name: Provision lifecycle maintenance capability role
+        run: bash scripts/ci/provision_lifecycle_maintenance_role.sh
 
       - name: Provision infrastructure-owned extensions
         run: |
@@ -265,7 +224,6 @@ jobs:
           CREATE EXTENSION IF NOT EXISTS citext;
           CREATE EXTENSION IF NOT EXISTS pg_trgm;
           CREATE EXTENSION IF NOT EXISTS postgis;
-
           GRANT USAGE ON SCHEMA partman TO migration_owner;
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
           GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
@@ -278,52 +236,31 @@ jobs:
         run: |
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_migration_test <<'SQL'
           DO $$
-          DECLARE
-            migration_record record;
-            test_record record;
-            worker_record record;
+          DECLARE migration_record record; test_record record; worker_record record; maintenance_record record;
           BEGIN
             SELECT * INTO migration_record FROM pg_catalog.pg_roles WHERE rolname = 'migration_owner';
             SELECT * INTO test_record FROM pg_catalog.pg_roles WHERE rolname = 'test_runner';
             SELECT * INTO worker_record FROM pg_catalog.pg_roles WHERE rolname = 'worker_runtime';
-
-            IF migration_record.rolsuper OR migration_record.rolcreatedb
-               OR migration_record.rolcreaterole OR migration_record.rolinherit
-               OR migration_record.rolreplication OR migration_record.rolbypassrls THEN
-              RAISE EXCEPTION 'migration_owner is over-privileged';
-            END IF;
-            IF test_record.rolsuper OR test_record.rolcreatedb OR test_record.rolcreaterole
-               OR test_record.rolinherit OR test_record.rolreplication OR test_record.rolbypassrls THEN
-              RAISE EXCEPTION 'test_runner is over-privileged';
-            END IF;
-            IF worker_record.rolcanlogin OR worker_record.rolsuper OR worker_record.rolcreatedb
-               OR worker_record.rolcreaterole OR worker_record.rolinherit
-               OR worker_record.rolreplication OR worker_record.rolbypassrls THEN
-              RAISE EXCEPTION 'worker_runtime is over-privileged';
-            END IF;
-            IF NOT pg_catalog.pg_has_role('migration_owner', 'test_runner', 'SET') THEN
-              RAISE EXCEPTION 'missing bounded SET test_runner edge';
-            END IF;
-            IF pg_catalog.pg_has_role('migration_owner', 'app_user', 'MEMBER')
-               OR pg_catalog.pg_has_role('migration_owner', 'app_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role('migration_owner', 'auth_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') THEN
-              RAISE EXCEPTION 'migration_owner must not be an application/auth/worker runtime member';
+            SELECT * INTO maintenance_record FROM pg_catalog.pg_roles WHERE rolname = 'lifecycle_maintenance_runtime';
+            IF migration_record.rolsuper OR migration_record.rolcreatedb OR migration_record.rolcreaterole OR migration_record.rolinherit OR migration_record.rolreplication OR migration_record.rolbypassrls THEN RAISE EXCEPTION 'migration_owner is over-privileged'; END IF;
+            IF test_record.rolsuper OR test_record.rolcreatedb OR test_record.rolcreaterole OR test_record.rolinherit OR test_record.rolreplication OR test_record.rolbypassrls THEN RAISE EXCEPTION 'test_runner is over-privileged'; END IF;
+            IF worker_record.rolcanlogin OR worker_record.rolsuper OR worker_record.rolcreatedb OR worker_record.rolcreaterole OR worker_record.rolinherit OR worker_record.rolreplication OR worker_record.rolbypassrls THEN RAISE EXCEPTION 'worker_runtime is over-privileged'; END IF;
+            IF maintenance_record.rolcanlogin OR maintenance_record.rolsuper OR maintenance_record.rolcreatedb OR maintenance_record.rolcreaterole OR maintenance_record.rolinherit OR maintenance_record.rolreplication OR maintenance_record.rolbypassrls THEN RAISE EXCEPTION 'lifecycle_maintenance_runtime is over-privileged'; END IF;
+            IF NOT pg_catalog.pg_has_role('migration_owner', 'test_runner', 'SET') THEN RAISE EXCEPTION 'missing bounded SET test_runner edge'; END IF;
+            IF pg_catalog.pg_has_role('migration_owner', 'app_user', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'app_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') OR pg_catalog.pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'SET') THEN
+              RAISE EXCEPTION 'migration_owner must not access application/auth/worker/maintenance runtime capabilities';
             END IF;
           END
           $$;
           SQL
 
       - name: Fresh Alembic lineage on migration database
-        run: |
-          python -s -m alembic -c alembic.ini upgrade head
+        run: python -s -m alembic -c alembic.ini upgrade head
 
       - name: Fresh Alembic lineage on test database
         env:
           DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
-        run: |
-          python -s -m alembic -c alembic.ini upgrade head
+        run: python -s -m alembic -c alembic.ini upgrade head
 
       - name: Prove general and auth runtime separation
         run: |
@@ -332,52 +269,21 @@ jobs:
           DECLARE runtime_record record;
           BEGIN
             SELECT * INTO runtime_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
-            IF current_user <> 'app_test_runtime' OR current_database() <> 'gymflow_test' THEN
-              RAISE EXCEPTION 'unexpected general runtime identity/database';
-            END IF;
-            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb
-               OR runtime_record.rolcreaterole OR runtime_record.rolinherit
-               OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN
-              RAISE EXCEPTION 'general runtime role attributes are unsafe';
-            END IF;
-            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE')
-               OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN
-              RAISE EXCEPTION 'general runtime has object-creation capability';
-            END IF;
-            IF pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'SET')
-               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') THEN
-              RAISE EXCEPTION 'general runtime may access auth/worker runtime';
-            END IF;
-            IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT') THEN
-              RAISE EXCEPTION 'general runtime may create tenant roots';
-            END IF;
-            IF NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'SELECT')
-               OR NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'INSERT')
-               OR NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'UPDATE') THEN
-              RAISE EXCEPTION 'general runtime lacks branch_contacts DML';
-            END IF;
-            IF pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'DELETE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'TRUNCATE') THEN
-              RAISE EXCEPTION 'general runtime has forbidden branch_contacts privileges';
-            END IF;
-            IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'SET')
-               OR pg_catalog.pg_has_role(current_user, 'app_user', 'SET') THEN
-              RAISE EXCEPTION 'general runtime may SET ROLE to a privilege group';
-            END IF;
+            IF current_user <> 'app_test_runtime' OR current_database() <> 'gymflow_test' THEN RAISE EXCEPTION 'unexpected general runtime identity/database'; END IF;
+            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb OR runtime_record.rolcreaterole OR runtime_record.rolinherit OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN RAISE EXCEPTION 'general runtime role attributes are unsafe'; END IF;
+            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE') OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN RAISE EXCEPTION 'general runtime has object-creation capability'; END IF;
+            IF pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET') THEN RAISE EXCEPTION 'general runtime may access auth/worker/maintenance runtime'; END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT') THEN RAISE EXCEPTION 'general runtime may create tenant roots'; END IF;
+            IF NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'SELECT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'INSERT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'UPDATE') THEN RAISE EXCEPTION 'general runtime lacks branch_contacts DML'; END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'TRUNCATE') THEN RAISE EXCEPTION 'general runtime has forbidden branch_contacts privileges'; END IF;
+            IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'app_user', 'SET') THEN RAISE EXCEPTION 'general runtime may SET ROLE to a privilege group'; END IF;
             IF EXISTS (
-              SELECT 1
-              FROM pg_catalog.pg_class AS relation_data
+              SELECT 1 FROM pg_catalog.pg_class AS relation_data
               JOIN pg_catalog.pg_namespace AS namespace_data ON namespace_data.oid = relation_data.relnamespace
-              CROSS JOIN LATERAL pg_catalog.aclexplode(
-                COALESCE(relation_data.relacl, pg_catalog.acldefault('r', relation_data.relowner))
-              ) AS acl_data
+              CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(relation_data.relacl, pg_catalog.acldefault('r', relation_data.relowner))) AS acl_data
               JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = acl_data.grantee
               WHERE namespace_data.nspname = 'public' AND grantee.rolname = current_user
-            ) THEN
-              RAISE EXCEPTION 'general runtime has unexpected direct table ACLs';
-            END IF;
+            ) THEN RAISE EXCEPTION 'general runtime has unexpected direct table ACLs'; END IF;
           END
           $$;
           SQL
@@ -387,42 +293,18 @@ jobs:
           DECLARE runtime_record record;
           BEGIN
             SELECT * INTO runtime_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
-            IF current_user <> 'auth_test_runtime' OR current_database() <> 'gymflow_test' THEN
-              RAISE EXCEPTION 'unexpected auth runtime identity/database';
-            END IF;
-            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb
-               OR runtime_record.rolcreaterole OR runtime_record.rolinherit
-               OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN
-              RAISE EXCEPTION 'auth runtime login attributes are unsafe';
-            END IF;
-            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE')
-               OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN
-              RAISE EXCEPTION 'auth runtime has object-creation capability';
-            END IF;
-            IF NOT pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'SET')
-               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') THEN
-              RAISE EXCEPTION 'auth runtime inheritance edge is invalid';
-            END IF;
-            IF NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT')
-               OR NOT pg_catalog.has_table_privilege(current_user, 'public.owners', 'INSERT')
-               OR NOT pg_catalog.has_table_privilege(current_user, 'public.auth_sessions', 'UPDATE') THEN
-              RAISE EXCEPTION 'auth runtime lacks required bootstrap/session privileges';
-            END IF;
-            IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'DELETE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'TRUNCATE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.auth_sessions', 'DELETE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.auth_sessions', 'TRUNCATE') THEN
-              RAISE EXCEPTION 'auth runtime has forbidden destructive privileges';
-            END IF;
+            IF current_user <> 'auth_test_runtime' OR current_database() <> 'gymflow_test' THEN RAISE EXCEPTION 'unexpected auth runtime identity/database'; END IF;
+            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb OR runtime_record.rolcreaterole OR runtime_record.rolinherit OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN RAISE EXCEPTION 'auth runtime login attributes are unsafe'; END IF;
+            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE') OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN RAISE EXCEPTION 'auth runtime has object-creation capability'; END IF;
+            IF NOT pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET') THEN RAISE EXCEPTION 'auth runtime inheritance edge is invalid'; END IF;
+            IF NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.owners', 'INSERT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.auth_sessions', 'UPDATE') THEN RAISE EXCEPTION 'auth runtime lacks required bootstrap/session privileges'; END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'TRUNCATE') OR pg_catalog.has_table_privilege(current_user, 'public.auth_sessions', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.auth_sessions', 'TRUNCATE') THEN RAISE EXCEPTION 'auth runtime has forbidden destructive privileges'; END IF;
           END
           $$;
           SQL
 
       - name: Run general regression suite fail-fast
-        run: |
-          python -m pytest -q --maxfail=1 --ignore=tests/platform_billing
+        run: python -m pytest -q --maxfail=1 --ignore=tests/platform_billing
 
   platform-billing-regressions:
     name: Isolated Platform Billing regressions
@@ -432,8 +314,7 @@ jobs:
     services:
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
@@ -461,40 +342,27 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
-
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-test.txt
-
       - name: Install PostgreSQL 16 extension packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            postgresql-16 \
-            postgresql-client-16 \
-            postgresql-contrib \
-            postgresql-16-partman \
-            postgresql-16-postgis-3
+          sudo apt-get install -y postgresql-16 postgresql-client-16 postgresql-contrib postgresql-16-partman postgresql-16-postgis-3
           sudo systemctl start postgresql
           pg_config --version
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
           test -f /usr/share/postgresql/16/extension/pg_partman.control
-
       - name: Bootstrap isolated Platform Billing identities and databases
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          CREATE ROLE migration_owner
-            LOGIN PASSWORD 'ci-migration-owner'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-
+          CREATE ROLE migration_owner LOGIN PASSWORD 'ci-migration-owner' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_rls_executor NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_security_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
@@ -508,10 +376,7 @@ jobs:
           CREATE ROLE ops_support NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE readonly_analytics NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE platform_billing_test_runtime
-            LOGIN PASSWORD 'ci-platform-billing-runtime'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-
+          CREATE ROLE platform_billing_test_runtime LOGIN PASSWORD 'ci-platform-billing-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           ALTER ROLE app_runtime SET statement_timeout = '5s';
           ALTER ROLE app_runtime SET lock_timeout = '2s';
           ALTER ROLE app_runtime SET row_security = 'on';
@@ -522,13 +387,14 @@ jobs:
           ALTER ROLE platform_billing_test_runtime SET row_security = 'on';
           ALTER ROLE platform_billing_test_runtime SET statement_timeout = '30s';
           ALTER ROLE platform_billing_test_runtime SET lock_timeout = '5s';
-
           GRANT app_rls_executor TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
           GRANT app_security_owner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-
           CREATE DATABASE gymflow_test OWNER migration_owner;
           CREATE DATABASE gymflow_platform_billing_test_ci OWNER migration_owner;
           SQL
+
+      - name: Provision lifecycle maintenance capability role
+        run: bash scripts/ci/provision_lifecycle_maintenance_role.sh
 
       - name: Provision Platform Billing infrastructure-owned extensions
         run: |
@@ -546,24 +412,18 @@ jobs:
           GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
           SQL
 
-      - name: Prove isolated worker role contract
+      - name: Prove isolated worker and maintenance role contracts
         run: |
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d postgres <<'SQL'
           DO $$
-          DECLARE worker_record record;
+          DECLARE worker_record record; maintenance_record record;
           BEGIN
             SELECT * INTO worker_record FROM pg_catalog.pg_roles WHERE rolname = 'worker_runtime';
-            IF NOT FOUND OR worker_record.rolcanlogin OR worker_record.rolsuper
-               OR worker_record.rolcreatedb OR worker_record.rolcreaterole
-               OR worker_record.rolinherit OR worker_record.rolreplication
-               OR worker_record.rolbypassrls THEN
-              RAISE EXCEPTION 'worker_runtime posture is unsafe';
-            END IF;
-            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET')
-               OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'worker_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'worker_runtime', 'SET') THEN
-              RAISE EXCEPTION 'worker_runtime leaked into migration/Platform Billing identities';
+            SELECT * INTO maintenance_record FROM pg_catalog.pg_roles WHERE rolname = 'lifecycle_maintenance_runtime';
+            IF NOT FOUND OR worker_record.rolcanlogin OR worker_record.rolsuper OR worker_record.rolcreatedb OR worker_record.rolcreaterole OR worker_record.rolinherit OR worker_record.rolreplication OR worker_record.rolbypassrls THEN RAISE EXCEPTION 'worker_runtime posture is unsafe'; END IF;
+            IF maintenance_record.rolcanlogin OR maintenance_record.rolsuper OR maintenance_record.rolcreatedb OR maintenance_record.rolcreaterole OR maintenance_record.rolinherit OR maintenance_record.rolreplication OR maintenance_record.rolbypassrls THEN RAISE EXCEPTION 'maintenance runtime posture is unsafe'; END IF;
+            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') OR pg_catalog.pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'SET') OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'worker_runtime', 'SET') OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'lifecycle_maintenance_runtime', 'SET') THEN
+              RAISE EXCEPTION 'worker/maintenance capability leaked into migration/Platform Billing identities';
             END IF;
           END
           $$;
@@ -572,8 +432,7 @@ jobs:
       - name: Fresh Alembic lineage on isolated Platform Billing database
         env:
           DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_platform_billing_test_ci
-        run: |
-          python -s -m alembic -c alembic.ini upgrade head
+        run: python -s -m alembic -c alembic.ini upgrade head
 
       - name: Grant test-only Platform Billing DML surface
         run: |
@@ -585,15 +444,10 @@ jobs:
               SELECT n.nspname AS schema_name, c.relname AS relation_name
               FROM pg_catalog.pg_class AS c
               JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-              WHERE n.nspname = 'public'
-                AND c.relkind IN ('r', 'p')
+              WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
                 AND (c.relname = 'organizations' OR c.relname LIKE 'platform\_%' ESCAPE '\')
             LOOP
-              EXECUTE format(
-                'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE %I.%I TO platform_billing_test_runtime',
-                target.schema_name,
-                target.relation_name
-              );
+              EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE %I.%I TO platform_billing_test_runtime', target.schema_name, target.relation_name);
             END LOOP;
           END
           $$;
@@ -606,44 +460,20 @@ jobs:
           DECLARE runtime_record record;
           BEGIN
             SELECT * INTO runtime_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
-            IF current_user <> 'platform_billing_test_runtime' THEN
-              RAISE EXCEPTION 'unexpected Platform Billing runtime identity';
-            END IF;
-            IF current_database() <> 'gymflow_platform_billing_test_ci' THEN
-              RAISE EXCEPTION 'unexpected Platform Billing runtime database';
-            END IF;
-            IF runtime_record.rolsuper OR runtime_record.rolcreatedb OR runtime_record.rolcreaterole
-               OR runtime_record.rolinherit OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN
-              RAISE EXCEPTION 'Platform Billing runtime is over-privileged';
-            END IF;
-            IF EXISTS (
-              SELECT 1 FROM pg_catalog.pg_database
-              WHERE datname = current_database() AND pg_catalog.pg_get_userbyid(datdba) = current_user
-            ) THEN
-              RAISE EXCEPTION 'Platform Billing runtime owns its database';
-            END IF;
-            IF pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN
-              RAISE EXCEPTION 'Platform Billing runtime may create in public schema';
-            END IF;
-            IF pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') THEN
-              RAISE EXCEPTION 'Platform Billing runtime may access worker_runtime';
-            END IF;
+            IF current_user <> 'platform_billing_test_runtime' OR current_database() <> 'gymflow_platform_billing_test_ci' THEN RAISE EXCEPTION 'unexpected Platform Billing runtime identity/database'; END IF;
+            IF runtime_record.rolsuper OR runtime_record.rolcreatedb OR runtime_record.rolcreaterole OR runtime_record.rolinherit OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN RAISE EXCEPTION 'Platform Billing runtime is over-privileged'; END IF;
+            IF EXISTS (SELECT 1 FROM pg_catalog.pg_database WHERE datname = current_database() AND pg_catalog.pg_get_userbyid(datdba) = current_user) THEN RAISE EXCEPTION 'Platform Billing runtime owns its database'; END IF;
+            IF pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN RAISE EXCEPTION 'Platform Billing runtime may create in public schema'; END IF;
+            IF pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET') THEN RAISE EXCEPTION 'Platform Billing runtime may access worker/maintenance capability'; END IF;
             IF EXISTS (
               SELECT 1 FROM information_schema.table_privileges
               WHERE grantee = current_user AND table_schema = 'public'
-                AND ((table_name <> 'organizations' AND table_name NOT LIKE 'platform\_%' ESCAPE '\')
-                     OR privilege_type NOT IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE'))
-            ) THEN
-              RAISE EXCEPTION 'Platform Billing runtime has out-of-bound table privileges';
-            END IF;
-            IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'TRUNCATE') THEN
-              RAISE EXCEPTION 'Platform Billing runtime may truncate organizations';
-            END IF;
+                AND ((table_name <> 'organizations' AND table_name NOT LIKE 'platform\_%' ESCAPE '\') OR privilege_type NOT IN ('SELECT','INSERT','UPDATE','DELETE'))
+            ) THEN RAISE EXCEPTION 'Platform Billing runtime has out-of-bound table privileges'; END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'TRUNCATE') THEN RAISE EXCEPTION 'Platform Billing runtime may truncate organizations'; END IF;
           END
           $$;
           SQL
 
       - name: Run isolated Platform Billing regressions fail-fast
-        run: |
-          python -m pytest -q --maxfail=1 tests/platform_billing
+        run: python -m pytest -q --maxfail=1 tests/platform_billing
