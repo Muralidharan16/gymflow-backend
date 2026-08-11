@@ -123,9 +123,10 @@ class BranchAccessGuard:
     """
     Evaluates a strict access matrix prior to route execution:
     - active: Owner, Admin, Manager, Trainer.
-    - temporarily_closed: Owner, Admin, Manager. (Trainers blocked).
+    - temporarily_closed / under_renovation: Owner, Admin, Manager.
     - compliance_suspended: Owner, Admin. (Managers and Trainers blocked globally).
     - permanently_closed: Owner, Admin (Read-Only ledger queries).
+    - unknown status: denied fail-closed.
     """
     def __init__(self, allowed_actions: list[str] = None):
         self.allowed_actions = allowed_actions or []
@@ -181,6 +182,14 @@ class BranchAccessGuard:
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Access denied. Branch is permanently closed."
                 )
+        else:
+            # A database/application rollout skew or corrupt lifecycle value must
+            # never become an authorization bypass. Unknown states are denied
+            # until a deliberate matrix decision is deployed at both layers.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. Branch lifecycle status is not recognized."
+            )
 
         # Scope enforcement (for non-owners/non-admins scoped to specific branch)
         if role in ("manager", "trainer") and staff.gym_id is not None:
@@ -191,4 +200,3 @@ class BranchAccessGuard:
                 )
 
         return staff
-
