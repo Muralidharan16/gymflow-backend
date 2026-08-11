@@ -63,10 +63,12 @@ def test_rls_status_matrix_is_explicit_and_fail_closed() -> None:
     assert "'saga_orchestrator'" in policy
     assert "'system_watchdog'" in policy
 
-    # Every allow branch carries an explicit status predicate. There is no
-    # catch-all role branch that could make a newly introduced/corrupt status
-    # visible before an authorization decision is deployed.
-    assert "OR auth.role() IN" not in policy
+    # Trainer has its single explicit status equality; manager, owner/admin and
+    # internal-system branches each carry a bounded status IN allowlist. This
+    # rejects a newly introduced/corrupt status until both authorization layers
+    # deliberately learn it.
+    assert policy.count("status IN") == 3
+    assert policy.count("status = 'active'") == 1
 
 
 def test_application_guard_denies_unknown_status_explicitly() -> None:
