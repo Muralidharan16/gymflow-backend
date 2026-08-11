@@ -31,6 +31,7 @@
     "audit_writer",
     "branch_admin",
     "branch_viewer",
+    "lifecycle_maintenance_runtime",
     "ops_support",
     "readonly_analytics",
     "worker_runtime"
