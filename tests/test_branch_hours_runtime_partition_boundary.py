@@ -246,12 +246,42 @@ def test_application_partition_task_is_read_only_and_startup_is_ddl_free() -> No
 
 def test_branch_hours_api_uses_unique_tenants_not_destructive_cleanup() -> None:
     source = _source(BRANCH_HOURS_API_TEST)
+    module = ast.parse(source, filename=str(BRANCH_HOURS_API_TEST))
 
     assert "uuid.uuid4().hex" in source
     assert "branch_hours_api_{tenant_suffix}@example.com" in source
     assert "branch_hours_other_{other_suffix}@example.com" in source
-    assert "cleanup_test_database_tables" not in source
-    assert "truncate_test_tables" not in source
-    assert "TRUNCATE TABLE" not in source.upper()
-    assert "CASCADE" not in source.upper()
-    assert "AdminTestSessionLocal" not in source
+
+    imported_modules = set()
+    imported_names = set()
+    called_names = set()
+    sql_literals = []
+    for node in ast.walk(module):
+        if isinstance(node, ast.Import):
+            imported_modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported_modules.add(node.module or "")
+            imported_names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                called_names.add(node.func.id)
+            elif isinstance(node.func, ast.Attribute):
+                called_names.add(node.func.attr)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            normalized = node.value.strip().upper()
+            if normalized.startswith((
+                "TRUNCATE ",
+                "DELETE FROM ",
+                "DROP TABLE ",
+                "ALTER TABLE ",
+            )):
+                sql_literals.append(normalized)
+
+    assert "conftest" not in imported_modules
+    assert "sqlalchemy" not in imported_modules
+    assert "AdminTestSessionLocal" not in imported_names
+    assert "cleanup_test_database_tables" not in imported_names
+    assert "truncate_test_tables" not in imported_names
+    assert "cleanup_test_database_tables" not in called_names
+    assert "truncate_test_tables" not in called_names
+    assert sql_literals == []
