@@ -112,6 +112,20 @@
       "purpose": "Tenant-scoped branch read group.",
       "role": "branch_viewer"
     },
+    "lifecycle_maintenance_runtime": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "Dedicated cross-tenant lifecycle-maintenance capability group. Deployment maintenance logins may inherit this role, but lifecycle_maintenance_runtime is NOLOGIN/NOBYPASSRLS, owns no schema objects, has no API/auth/queue-worker membership, and must never be granted to migration_owner.",
+      "purpose": "Bounded watchdog and search-reconciliation maintenance capability gated by transaction-local lifecycle maintenance context.",
+      "role": "lifecycle_maintenance_runtime"
+    },
     "migration_owner": {
       "attributes": {
         "bypass_rls": false,
