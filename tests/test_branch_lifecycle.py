@@ -8,7 +8,11 @@ from app.models.organization import Organization
 from app.models.staff import GymOwner
 from app.models.enums import StaffRole
 from app.models.org_branch import OrgBranch, OrgBranchState
-from app.models.branch_lifecycle import BranchLifecycleEvent, BranchOutboxEvent
+from app.models.branch_lifecycle import (
+    BranchLifecycleEvent,
+    BranchOutboxEvent,
+    BranchWatchdogAlert,
+)
 from app.services.branch_lifecycle_service import BranchLifecycleService
 from app.core.database import AsyncSessionLocal, update_session_context
 from conftest import AdminTestSessionLocal, assert_test_database
@@ -429,7 +433,7 @@ async def test_saga_happy_path_and_transaction_b_failure_is_retry_safe(
 
 
 @pytest.mark.asyncio
-async def test_watchdog_and_reconcile(lifecycle_setup):
+async def test_watchdog_alerts_without_compensating_retryable_saga(lifecycle_setup):
     org_id = lifecycle_setup["org_id"]
     owner_id = lifecycle_setup["owner_id"]
     branch1_id = lifecycle_setup["branch1_id"]
@@ -438,7 +442,7 @@ async def test_watchdog_and_reconcile(lifecycle_setup):
         await set_db_session_context(session, str(org_id), str(owner_id), "owner")
         service = BranchLifecycleService(session)
 
-        await service.initiate_transition(
+        correlation_id = await service.initiate_transition(
             branch_id=branch1_id,
             org_id=org_id,
             to_status="temporarily_closed",
@@ -447,41 +451,101 @@ async def test_watchdog_and_reconcile(lifecycle_setup):
             reason="Watchdog",
         )
 
-        state_res = await session.execute(
-            select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-        )
-        state = state_res.scalar_one()
+        state = (
+            await session.execute(
+                select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
+            )
+        ).scalar_one()
         assert state.lifecycle_transition_in_progress is True
-
         state.status_changed_at = datetime.now(timezone.utc) - timedelta(hours=2)
         await session.commit()
 
+        # Repeated sweeps must alert idempotently and must never race the
+        # retry/dead-letter worker by rolling back Transaction A themselves.
+        await service.run_watchdog_sweep()
         await service.run_watchdog_sweep()
 
-        recovered_res = await session.execute(
-            select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-        )
-        recovered = recovered_res.scalar_one()
-        assert recovered.status == "active"
-        assert recovered.is_operational is True
-        assert recovered.lifecycle_transition_in_progress is False
-        assert recovered.saga_last_checkpoint is None
-        assert recovered.saga_compensation_strategy is None
-        assert recovered.watchdog_recovery_count >= 1
-        assert recovered.watchdog_recovered_at is not None
+        frozen = (
+            await session.execute(
+                select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
+            )
+        ).scalar_one()
+        assert frozen.status == "temporarily_closed"
+        assert frozen.is_operational is False
+        assert frozen.lifecycle_transition_in_progress is True
+        assert frozen.saga_last_checkpoint is None
+        assert frozen.saga_compensation_strategy == "rollback_to_origin"
+        assert int(frozen.watchdog_recovery_count or 0) == 0
+        assert frozen.watchdog_recovered_at is None
 
-        recovered.search_last_synced_at = datetime.now(timezone.utc) - timedelta(days=2)
-        recovered.reconciliation_claimed_by = None
-        recovered.reconciliation_claimed_at = None
+        alerts = (
+            await session.execute(
+                select(BranchWatchdogAlert).where(
+                    BranchWatchdogAlert.branch_id == branch1_id,
+                    BranchWatchdogAlert.alert_type == "freeze_threshold_15m",
+                    BranchWatchdogAlert.resolved_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        assert len(alerts) == 1
+
+        parent = (
+            await session.execute(
+                select(BranchOutboxEvent).where(
+                    BranchOutboxEvent.branch_id == branch1_id,
+                    BranchOutboxEvent.correlation_id == correlation_id,
+                    BranchOutboxEvent.event_type == "branch.lifecycle_saga",
+                )
+            )
+        ).scalar_one()
+        assert parent.status == "pending"
+        assert parent.attempt_count == 0
+        assert parent.leased_by is None
+        assert parent.leased_until is None
+
+        compensation_events = (
+            await session.execute(
+                select(BranchLifecycleEvent.event_id).where(
+                    BranchLifecycleEvent.branch_id == branch1_id,
+                    BranchLifecycleEvent.correlation_id == correlation_id,
+                    BranchLifecycleEvent.event_type == "compensation_completed",
+                )
+            )
+        ).scalars().all()
+        assert compensation_events == []
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_sweep_releases_claim_and_advances_projection(lifecycle_setup):
+    org_id = lifecycle_setup["org_id"]
+    owner_id = lifecycle_setup["owner_id"]
+    branch1_id = lifecycle_setup["branch1_id"]
+
+    async with AsyncSessionLocal() as session:
+        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
+        service = BranchLifecycleService(session)
+
+        state = (
+            await session.execute(
+                select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
+            )
+        ).scalar_one()
+        assert state.status == "active"
+        assert state.lifecycle_transition_in_progress is False
+        starting_version = state.search_visibility_version
+        state.search_last_synced_at = datetime.now(timezone.utc) - timedelta(days=2)
+        state.reconciliation_claimed_by = None
+        state.reconciliation_claimed_at = None
         await session.commit()
 
         reconciled = await service.run_reconciliation_sweep()
         assert reconciled >= 1
 
-        reconciled_res = await session.execute(
-            select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-        )
-        reconciled_state = reconciled_res.scalar_one()
+        reconciled_state = (
+            await session.execute(
+                select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
+            )
+        ).scalar_one()
         # Reconciliation is intentionally set-based SQL and production sessions
         # keep expire_on_commit=False. Explicitly refresh the already-loaded ORM
         # identity before asserting the persisted row rather than confusing a
@@ -491,4 +555,4 @@ async def test_watchdog_and_reconcile(lifecycle_setup):
         assert reconciled_state.reconciliation_claimed_at is None
         assert reconciled_state.search_sync_failed_at is None
         assert reconciled_state.search_last_synced_at is not None
-        assert reconciled_state.search_visibility_version >= 2
+        assert reconciled_state.search_visibility_version > starting_version
