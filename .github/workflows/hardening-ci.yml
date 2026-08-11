@@ -177,6 +177,9 @@ jobs:
           CREATE ROLE auth_runtime
             NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
             NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_runtime
+            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_user
             NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
             NOREPLICATION NOBYPASSRLS;
@@ -215,6 +218,10 @@ jobs:
           ALTER ROLE app_runtime SET statement_timeout = '5s';
           ALTER ROLE app_runtime SET lock_timeout = '2s';
           ALTER ROLE app_runtime SET row_security = 'on';
+          ALTER ROLE worker_runtime SET statement_timeout = '15s';
+          ALTER ROLE worker_runtime SET lock_timeout = '2s';
+          ALTER ROLE worker_runtime SET idle_in_transaction_session_timeout = '30s';
+          ALTER ROLE worker_runtime SET row_security = 'on';
           ALTER ROLE app_test_runtime SET row_security = 'on';
           ALTER ROLE app_test_runtime SET statement_timeout = '5s';
           ALTER ROLE app_test_runtime SET lock_timeout = '2s';
@@ -274,9 +281,11 @@ jobs:
           DECLARE
             migration_record record;
             test_record record;
+            worker_record record;
           BEGIN
             SELECT * INTO migration_record FROM pg_catalog.pg_roles WHERE rolname = 'migration_owner';
             SELECT * INTO test_record FROM pg_catalog.pg_roles WHERE rolname = 'test_runner';
+            SELECT * INTO worker_record FROM pg_catalog.pg_roles WHERE rolname = 'worker_runtime';
 
             IF migration_record.rolsuper OR migration_record.rolcreatedb
                OR migration_record.rolcreaterole OR migration_record.rolinherit
@@ -287,13 +296,20 @@ jobs:
                OR test_record.rolinherit OR test_record.rolreplication OR test_record.rolbypassrls THEN
               RAISE EXCEPTION 'test_runner is over-privileged';
             END IF;
+            IF worker_record.rolcanlogin OR worker_record.rolsuper OR worker_record.rolcreatedb
+               OR worker_record.rolcreaterole OR worker_record.rolinherit
+               OR worker_record.rolreplication OR worker_record.rolbypassrls THEN
+              RAISE EXCEPTION 'worker_runtime is over-privileged';
+            END IF;
             IF NOT pg_catalog.pg_has_role('migration_owner', 'test_runner', 'SET') THEN
               RAISE EXCEPTION 'missing bounded SET test_runner edge';
             END IF;
             IF pg_catalog.pg_has_role('migration_owner', 'app_user', 'MEMBER')
                OR pg_catalog.pg_has_role('migration_owner', 'app_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role('migration_owner', 'auth_runtime', 'MEMBER') THEN
-              RAISE EXCEPTION 'migration_owner must not be an application/auth runtime member';
+               OR pg_catalog.pg_has_role('migration_owner', 'auth_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') THEN
+              RAISE EXCEPTION 'migration_owner must not be an application/auth/worker runtime member';
             END IF;
           END
           $$;
@@ -329,8 +345,10 @@ jobs:
               RAISE EXCEPTION 'general runtime has object-creation capability';
             END IF;
             IF pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'SET') THEN
-              RAISE EXCEPTION 'general runtime may access auth_runtime';
+               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'SET')
+               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') THEN
+              RAISE EXCEPTION 'general runtime may access auth/worker runtime';
             END IF;
             IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT') THEN
               RAISE EXCEPTION 'general runtime may create tenant roots';
@@ -382,7 +400,9 @@ jobs:
               RAISE EXCEPTION 'auth runtime has object-creation capability';
             END IF;
             IF NOT pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'SET') THEN
+               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'SET')
+               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') THEN
               RAISE EXCEPTION 'auth runtime inheritance edge is invalid';
             END IF;
             IF NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT')
@@ -479,6 +499,7 @@ jobs:
           CREATE ROLE app_security_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE auth_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_user NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE audit_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE branch_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
@@ -494,6 +515,10 @@ jobs:
           ALTER ROLE app_runtime SET statement_timeout = '5s';
           ALTER ROLE app_runtime SET lock_timeout = '2s';
           ALTER ROLE app_runtime SET row_security = 'on';
+          ALTER ROLE worker_runtime SET statement_timeout = '15s';
+          ALTER ROLE worker_runtime SET lock_timeout = '2s';
+          ALTER ROLE worker_runtime SET idle_in_transaction_session_timeout = '30s';
+          ALTER ROLE worker_runtime SET row_security = 'on';
           ALTER ROLE platform_billing_test_runtime SET row_security = 'on';
           ALTER ROLE platform_billing_test_runtime SET statement_timeout = '30s';
           ALTER ROLE platform_billing_test_runtime SET lock_timeout = '5s';
@@ -519,6 +544,29 @@ jobs:
           GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
           GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
           GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Prove isolated worker role contract
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d postgres <<'SQL'
+          DO $$
+          DECLARE worker_record record;
+          BEGIN
+            SELECT * INTO worker_record FROM pg_catalog.pg_roles WHERE rolname = 'worker_runtime';
+            IF NOT FOUND OR worker_record.rolcanlogin OR worker_record.rolsuper
+               OR worker_record.rolcreatedb OR worker_record.rolcreaterole
+               OR worker_record.rolinherit OR worker_record.rolreplication
+               OR worker_record.rolbypassrls THEN
+              RAISE EXCEPTION 'worker_runtime posture is unsafe';
+            END IF;
+            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET')
+               OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'worker_runtime', 'SET') THEN
+              RAISE EXCEPTION 'worker_runtime leaked into migration/Platform Billing identities';
+            END IF;
+          END
+          $$;
           SQL
 
       - name: Fresh Alembic lineage on isolated Platform Billing database
@@ -576,6 +624,10 @@ jobs:
             END IF;
             IF pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN
               RAISE EXCEPTION 'Platform Billing runtime may create in public schema';
+            END IF;
+            IF pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') THEN
+              RAISE EXCEPTION 'Platform Billing runtime may access worker_runtime';
             END IF;
             IF EXISTS (
               SELECT 1 FROM information_schema.table_privileges
