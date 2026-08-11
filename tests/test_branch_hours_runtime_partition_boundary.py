@@ -168,6 +168,7 @@ def test_partition_revision_moves_ddl_to_existing_pg_partman_control_plane() -> 
     dependency = _function_source(PARTITION_MIGRATION, "_require_partman_dependency")
     create_template = _function_source(PARTITION_MIGRATION, "_create_template")
     configure = _function_source(PARTITION_MIGRATION, "_configure_partman")
+    coverage = _function_source(PARTITION_MIGRATION, "_require_current_and_future_coverage")
     cleanup = _function_source(PARTITION_MIGRATION, "_remove_partman_management")
 
     assert 'revision = "c5d6e7f8091a"' in source
@@ -200,6 +201,12 @@ def test_partition_revision_moves_ddl_to_existing_pg_partman_control_plane() -> 
     assert "p_automatic_maintenance := 'on'" in literals
     assert "infinite_time_partitions = true" in literals
     assert "partman.run_maintenance" in literals
+
+    # CURRENT_TIMESTAMP is SQL syntax, not a pg_catalog function. Qualifying it
+    # as pg_catalog.current_timestamp makes PostgreSQL parse pg_catalog as a
+    # missing FROM-clause relation and breaks fresh-lineage verification.
+    assert "CURRENT_TIMESTAMP" in coverage
+    assert "pg_catalog.current_timestamp" not in coverage
 
     # Rollback follows the repository's proven bounded part_config deletion,
     # validates exactly one owned row, and removes only empty revision-owned
