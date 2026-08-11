@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 
@@ -13,16 +14,34 @@ def _source() -> str:
     return MIGRATION.read_text(encoding="utf-8")
 
 
+def _module() -> ast.Module:
+    return ast.parse(_source(), filename=str(MIGRATION))
+
+
 def _function_source(name: str) -> str:
     source = _source()
-    module = ast.parse(source, filename=str(MIGRATION))
     node = next(
         item
-        for item in module.body
+        for item in _module().body
         if isinstance(item, ast.FunctionDef) and item.name == name
     )
     assert node.end_lineno is not None
     return "".join(source.splitlines(keepends=True)[node.lineno - 1 : node.end_lineno])
+
+
+def _sql_literals() -> list[str]:
+    result = []
+    for node in ast.walk(_module()):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        normalized = re.sub(r"\s+", " ", node.value).strip()
+        if re.match(
+            r"^(?:CREATE|ALTER|DROP|GRANT|REVOKE|COMMENT|SET|RESET|DO|SELECT|WITH|UPDATE|INSERT|DELETE)\b",
+            normalized,
+            re.IGNORECASE,
+        ):
+            result.append(normalized)
+    return result
 
 
 def test_revision_is_forward_only_after_partition_adoption() -> None:
@@ -93,24 +112,29 @@ def test_cross_tenant_branch_state_and_active_state_remain_required() -> None:
 
 
 def test_revision_changes_policies_only_and_adds_no_privilege_escape() -> None:
-    source = _source().upper()
-    for forbidden in (
-        "GRANT ALL",
-        "BYPASSRLS",
-        "DISABLE ROW LEVEL SECURITY",
-        "NO FORCE ROW LEVEL SECURITY",
-        "GRANT SELECT ON",
-        "GRANT INSERT ON",
-        "GRANT UPDATE ON",
-        "GRANT DELETE ON",
-        "CREATE ROLE",
-        "ALTER ROLE",
-    ):
-        assert forbidden not in source
+    # Inspect executable SQL rather than raw source words.  The preflight must
+    # inspect rolbypassrls so it can reject a privileged migration identity;
+    # that defensive catalog read is not itself a BYPASSRLS escape.
+    preflight = _function_source("_require_preflight")
+    assert "rolbypassrls" in preflight
+    assert "migration_owner violates the reduced role contract" in preflight
+
+    forbidden_sql = (
+        r"\bALTER\s+ROLE\b.*\b(?:SUPERUSER|BYPASSRLS|INHERIT|CREATEDB|CREATEROLE)\b",
+        r"\bCREATE\s+(?:ROLE|USER)\b",
+        r"\bGRANT\s+ALL\b",
+        r"\bGRANT\s+(?:SELECT|INSERT|UPDATE|DELETE|TRUNCATE|REFERENCES|TRIGGER)\b",
+        r"\bDISABLE\s+ROW\s+LEVEL\s+SECURITY\b",
+        r"\bNO\s+FORCE\s+ROW\s+LEVEL\s+SECURITY\b",
+        r"\bSET(?:\s+LOCAL)?\s+ROLE\b",
+        r"\bRESET\s+ROLE\b",
+    )
+    for sql in _sql_literals():
+        for pattern in forbidden_sql:
+            assert not re.search(pattern, sql, re.IGNORECASE | re.DOTALL), sql
 
 
 def test_downgrade_restores_member_only_b4_policy_shape() -> None:
-    source = _source()
     restore = _function_source("_restore_b4_policies")
     member = _function_source("_b4_active_member_expr")
     branch = _function_source("_b4_branch_member_expr")
