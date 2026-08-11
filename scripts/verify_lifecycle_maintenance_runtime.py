@@ -10,6 +10,7 @@ from sqlalchemy.exc import DBAPIError
 ORG_ID = uuid.UUID("10000000-0000-0000-0000-000000000091")
 BRANCH_ID = uuid.UUID("20000000-0000-0000-0000-000000000091")
 CLAIM_ID = uuid.UUID("30000000-0000-0000-0000-000000000091")
+WATCHDOG_ALERT_TYPE = "reconciliation_stale"
 API_COLUMNS = {
     "branch_status", "deleted_at", "is_active", "is_operational",
     "lifecycle_transition_in_progress", "saga_compensation_strategy",
@@ -139,8 +140,8 @@ def stage_context_gate(engines: dict[str, sa.Engine]) -> None:
         ), {"claim_id": CLAIM_ID, "branch_id": BRANCH_ID}).rowcount == 0
     _expect_db_denial(
         maintenance,
-        "INSERT INTO public.branch_watchdog_alerts (branch_id,alert_type) VALUES (:branch_id,'without_context')",
-        {"branch_id": BRANCH_ID},
+        "INSERT INTO public.branch_watchdog_alerts (branch_id,alert_type) VALUES (:branch_id,:alert_type)",
+        {"branch_id": BRANCH_ID, "alert_type": WATCHDOG_ALERT_TYPE},
     )
 
 
@@ -160,11 +161,10 @@ def stage_positive_maintenance(engines: dict[str, sa.Engine]) -> None:
             WHERE branch_id=:branch_id
         """), {"claim_id": CLAIM_ID, "branch_id": BRANCH_ID})
         assert updated.rowcount == 1
-        alert_type = f"maintenance_boundary_{uuid.uuid4().hex}"
         alert_id = conn.execute(sa.text("""
             INSERT INTO public.branch_watchdog_alerts (branch_id, alert_type)
             VALUES (:branch_id, :alert_type) RETURNING alert_id
-        """), {"branch_id": BRANCH_ID, "alert_type": alert_type}).scalar_one()
+        """), {"branch_id": BRANCH_ID, "alert_type": WATCHDOG_ALERT_TYPE}).scalar_one()
         assert alert_id is not None
 
 
@@ -182,8 +182,8 @@ def stage_negative_boundaries(engines: dict[str, sa.Engine]) -> None:
         {"branch_id": BRANCH_ID})
     _expect_db_denial(api, "SELECT * FROM public.branch_watchdog_alerts LIMIT 1")
     _expect_db_denial(api,
-        "INSERT INTO public.branch_watchdog_alerts (branch_id,alert_type) VALUES (:branch_id,'forbidden_api')",
-        {"branch_id": BRANCH_ID})
+        "INSERT INTO public.branch_watchdog_alerts (branch_id,alert_type) VALUES (:branch_id,:alert_type)",
+        {"branch_id": BRANCH_ID, "alert_type": WATCHDOG_ALERT_TYPE})
     for engine, identity in ((worker, "worker"), (auth, "auth")):
         try:
             with engine.begin() as conn:
