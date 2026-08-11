@@ -4,18 +4,21 @@ Revision ID: 5f60718293a4
 Revises: 4e5f60718293
 Create Date: 2026-08-11
 
-Dead-letter compensation restores the branch to ``from_status``.  Search
+Dead-letter compensation restores the branch to ``from_status``. Search
 restoration must follow the canonical operational property of that status, not
-a caller-provided event type.  This revision makes the security-owned lifecycle
+a caller-provided event type. This revision makes the security-owned lifecycle
 child-command boundary authoritative for compensation direction: when the
 payload declares ``saga_dead_letter_compensation``, the function resolves
 ``payload.status`` in ``branch_status_definitions`` and emits search_index only
 for operational statuses, otherwise search_deindex.
 
 The application worker still cannot read or mutate the status catalog through
-this change.  Only ``app_security_owner`` receives SELECT(code,is_operational),
+this change. Only ``app_security_owner`` receives SELECT(code,is_operational),
 PUBLIC execution stays revoked, and the existing live-parent-lease / tenant /
-branch lineage checks remain intact.
+branch lineage checks remain intact. Function replacement uses a transaction-
+scoped privilege window: migration_owner grants app_security_owner CREATE on
+public only while that owner recreates its own function, then immediately
+revokes it. A failed transactional migration rolls the temporary grant back.
 """
 
 from __future__ import annotations
@@ -89,6 +92,14 @@ def _function_contract(bind):
         ),
         {"signature": _FUNCTION},
     ).mappings().one_or_none()
+
+
+def _grant_temporary_security_owner_create() -> None:
+    op.execute("GRANT CREATE ON SCHEMA public TO app_security_owner")
+
+
+def _revoke_temporary_security_owner_create() -> None:
+    op.execute("REVOKE CREATE ON SCHEMA public FROM app_security_owner")
 
 
 def _create_function() -> None:
@@ -246,6 +257,10 @@ def upgrade() -> None:
         "ON TABLE public.branch_status_definitions TO app_security_owner"
     )
 
+    # app_security_owner owns the existing function but intentionally has no
+    # standing CREATE privilege on public. Open the smallest possible privilege
+    # window for replacement, then close it in the same transactional migration.
+    _grant_temporary_security_owner_create()
     op.execute("SET LOCAL ROLE app_security_owner")
     op.execute(
         "DROP FUNCTION public.enqueue_branch_lifecycle_child(uuid,uuid,text,jsonb,uuid)"
@@ -260,6 +275,7 @@ def upgrade() -> None:
         "public.enqueue_branch_lifecycle_child(uuid,uuid,text,jsonb,uuid) TO worker_runtime"
     )
     op.execute("RESET ROLE")
+    _revoke_temporary_security_owner_create()
 
     final = _function_contract(bind)
     settings = set(final["proconfig"] or []) if final else set()
@@ -300,6 +316,7 @@ def downgrade() -> None:
     if current is None or current["owner_name"] != _SECURITY_OWNER:
         raise RuntimeError("5f607 downgrade lifecycle child function drift")
 
+    _grant_temporary_security_owner_create()
     op.execute("SET LOCAL ROLE app_security_owner")
     op.execute(
         "DROP FUNCTION public.enqueue_branch_lifecycle_child(uuid,uuid,text,jsonb,uuid)"
@@ -393,6 +410,7 @@ def downgrade() -> None:
         "public.enqueue_branch_lifecycle_child(uuid,uuid,text,jsonb,uuid) TO worker_runtime"
     )
     op.execute("RESET ROLE")
+    _revoke_temporary_security_owner_create()
     op.execute(
         "REVOKE SELECT (code, is_operational) "
         "ON TABLE public.branch_status_definitions FROM app_security_owner"
