@@ -5,29 +5,29 @@ Revises: c5d6e7f8091a
 Create Date: 2026-08-11
 
 The branch-hours runtime boundary initially treated every authenticated actor as
-an ``organization_member``.  That is not the application's identity model.
-The active owner-authentication flow uses ``public.owners`` and deliberately
-sets ``app.current_principal_type = 'owner'``; modern RBAC users use
+an ``organization_member``. That is not the application's identity model. The
+owner-authentication flow uses ``public.owners``; modern RBAC users use
 ``organization_users``/``organization_members``; and legacy staff remain in
-``gym_owners``.  The typed audit-principal migration explicitly preserves these
-three namespaces.
+``gym_owners``. The typed audit-principal registry deliberately preserves these
+namespaces.
 
-This revision changes only the application branch-hours policies.  It does not
-add table privileges, weaken FORCE RLS, or trust ``app.current_role`` by itself.
-A role claim is accepted only after the current UUID/org pair is validated
-against the matching source registry:
-
-* owner: verified, onboarding-complete ``owners`` row; role must be ``owner``;
-* organization_user: active ``organization_members`` row;
-* legacy_gym_owner: active + verified ``gym_owners`` row whose stored role
-  matches ``app.current_role``.
+Ordinary app_runtime must not receive SELECT on credential/staff registries just
+so an RLS predicate can validate the caller. This revision therefore keeps the
+modern organization-member path under ordinary tenant RLS and validates the
+owner/legacy-staff namespaces through a current-session-only SECURITY DEFINER
+boolean function owned by the no-login ``app_security_owner``. The helper has a
+fixed search_path, row_security=on, derives identity exclusively from the
+current ``app.*`` GUCs, and receives only the source columns needed to validate
+that principal. PUBLIC cannot execute it and app_runtime receives no direct
+registry SELECT capability.
 
 Organization-default writes are limited to validated owner/admin identities.
 Branch writes allow those same org-level identities or an active modern RBAC
-member with an active branch-manager assignment.  Reads require a validated
-active principal and same-tenant branch state.
+member with an active branch-manager assignment. Reads require a validated
+active principal and same-tenant active branch state.
 
-Downgrade restores the exact b4c5 member-only policy semantics.
+Downgrade restores the exact b4c5 member-only policy semantics and removes only
+the grants/function owned by this revision.
 """
 
 from __future__ import annotations
@@ -43,6 +43,8 @@ depends_on = None
 
 _MIGRATION_OWNER = "migration_owner"
 _RUNTIME = "app_runtime"
+_SECURITY_OWNER = "app_security_owner"
+_VALIDATOR_SIGNATURE = "public.branch_hours_current_nonmember_principal_valid(uuid)"
 
 _APPLICATION_POLICIES = {
     "public.organization_operating_hours": {
@@ -95,6 +97,39 @@ def _policy_names(bind, relation: str) -> set[str]:
     )
 
 
+def _column_privilege(
+    bind,
+    *,
+    table_name: str,
+    column_name: str,
+    grantee: str,
+    privilege: str = "SELECT",
+) -> bool:
+    return bool(
+        bind.execute(
+            sa.text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.column_privileges
+                    WHERE table_schema = 'public'
+                      AND table_name = :table_name
+                      AND column_name = :column_name
+                      AND grantee = :grantee
+                      AND privilege_type = :privilege
+                )
+                """
+            ),
+            {
+                "table_name": table_name,
+                "column_name": column_name,
+                "grantee": grantee,
+                "privilege": privilege,
+            },
+        ).scalar_one()
+    )
+
+
 def _require_preflight(bind) -> None:
     identity = bind.execute(
         sa.text(
@@ -131,6 +166,51 @@ def _require_preflight(bind) -> None:
     ):
         raise RuntimeError("migration_owner violates the reduced role contract")
 
+    security_owner = bind.execute(
+        sa.text(
+            """
+            SELECT
+                role_data.rolname IS NOT NULL AS role_exists,
+                role_data.rolcanlogin,
+                role_data.rolsuper,
+                role_data.rolbypassrls,
+                pg_catalog.pg_has_role(
+                    session_user,
+                    CAST(:role_name AS name),
+                    'SET'
+                ) AS migration_owner_can_set,
+                pg_catalog.has_schema_privilege(
+                    CAST(:role_name AS name), 'public', 'USAGE'
+                ) AS has_public_usage,
+                pg_catalog.has_schema_privilege(
+                    CAST(:role_name AS name), 'public', 'CREATE'
+                ) AS has_public_create
+            FROM (SELECT 1) AS singleton
+            LEFT JOIN pg_catalog.pg_roles AS role_data
+              ON role_data.rolname = :role_name
+            """
+        ),
+        {"role_name": _SECURITY_OWNER},
+    ).mappings().one()
+    if not security_owner["role_exists"]:
+        raise RuntimeError("d6e7 requires managed role app_security_owner")
+    if (
+        security_owner["rolcanlogin"]
+        or security_owner["rolsuper"]
+        or security_owner["rolbypassrls"]
+    ):
+        raise RuntimeError(
+            "app_security_owner must remain NOLOGIN/NOSUPERUSER/NOBYPASSRLS"
+        )
+    if not security_owner["migration_owner_can_set"]:
+        raise RuntimeError("migration_owner cannot SET ROLE app_security_owner")
+    if not security_owner["has_public_usage"]:
+        raise RuntimeError("app_security_owner lacks required public USAGE")
+    if security_owner["has_public_create"]:
+        raise RuntimeError(
+            "d6e7 refuses pre-existing CREATE on public for app_security_owner"
+        )
+
     required = (
         "public.owners",
         "public.organization_members",
@@ -156,6 +236,51 @@ def _require_preflight(bind) -> None:
         raise RuntimeError(
             f"d6e7 required relations are missing: {tuple(missing)!r}"
         )
+
+    if bind.execute(
+        sa.text("SELECT pg_catalog.to_regprocedure(:signature) IS NOT NULL"),
+        {"signature": _VALIDATOR_SIGNATURE},
+    ).scalar_one():
+        raise RuntimeError("d6e7 principal validator already exists")
+
+    for relation in ("public.owners", "public.gym_owners"):
+        if bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_table_privilege(:role, :relation, 'SELECT')"
+            ),
+            {"role": _RUNTIME, "relation": relation},
+        ).scalar_one():
+            raise RuntimeError(
+                f"d6e7 refuses a predecessor with app_runtime SELECT on {relation}"
+            )
+
+    # 8192 owns id/org_id/role SELECT on gym_owners for its legacy RBAC guard.
+    for column_name in ("id", "org_id", "role"):
+        if not _column_privilege(
+            bind,
+            table_name="gym_owners",
+            column_name=column_name,
+            grantee=_SECURITY_OWNER,
+        ):
+            raise RuntimeError(
+                "d6e7 requires the 8192 bounded gym_owners identity columns"
+            )
+
+    for table_name, columns in (
+        ("owners", ("id", "org_id", "email_verified", "onboarding_completed")),
+        ("gym_owners", ("is_active", "is_verified")),
+    ):
+        for column_name in columns:
+            if _column_privilege(
+                bind,
+                table_name=table_name,
+                column_name=column_name,
+                grantee=_SECURITY_OWNER,
+            ):
+                raise RuntimeError(
+                    "d6e7 refuses to adopt pre-existing validation column grant: "
+                    f"{table_name}.{column_name}"
+                )
 
     for relation, application_names in _APPLICATION_POLICIES.items():
         expected = set(application_names) | _REQUIRED_OTHER_POLICIES.get(relation, set())
@@ -192,22 +317,136 @@ def _uuid_guc(name: str) -> str:
     """
 
 
+def _create_nonmember_validator() -> None:
+    op.execute(
+        """
+        GRANT SELECT (id, org_id, email_verified, onboarding_completed)
+        ON TABLE public.owners
+        TO app_security_owner
+        """
+    )
+    op.execute(
+        """
+        GRANT SELECT (is_active, is_verified)
+        ON TABLE public.gym_owners
+        TO app_security_owner
+        """
+    )
+    op.execute(
+        """
+        CREATE FUNCTION public.branch_hours_current_nonmember_principal_valid(
+            p_org_id uuid
+        )
+        RETURNS boolean
+        LANGUAGE plpgsql
+        STABLE
+        SECURITY DEFINER
+        SET search_path = pg_catalog, public
+        SET row_security = on
+        AS $function$
+        DECLARE
+            v_principal_type text;
+            v_role text;
+            v_user_id uuid;
+            v_context_org uuid;
+        BEGIN
+            v_principal_type := NULLIF(
+                pg_catalog.current_setting('app.current_principal_type', true), ''
+            );
+            v_role := NULLIF(
+                pg_catalog.current_setting('app.current_role', true), ''
+            );
+
+            IF NOT pg_catalog.pg_input_is_valid(
+                NULLIF(pg_catalog.current_setting('app.current_user_id', true), ''),
+                'uuid'
+            ) OR NOT pg_catalog.pg_input_is_valid(
+                NULLIF(pg_catalog.current_setting('app.current_org_id', true), ''),
+                'uuid'
+            ) THEN
+                RETURN FALSE;
+            END IF;
+
+            v_user_id := CAST(
+                NULLIF(pg_catalog.current_setting('app.current_user_id', true), '')
+                AS uuid
+            );
+            v_context_org := CAST(
+                NULLIF(pg_catalog.current_setting('app.current_org_id', true), '')
+                AS uuid
+            );
+
+            IF p_org_id IS NULL OR p_org_id IS DISTINCT FROM v_context_org THEN
+                RETURN FALSE;
+            END IF;
+
+            IF v_principal_type = 'owner' THEN
+                IF v_role IS DISTINCT FROM 'owner' THEN
+                    RETURN FALSE;
+                END IF;
+                RETURN EXISTS (
+                    SELECT 1
+                    FROM public.owners AS owner_data
+                    WHERE owner_data.id = v_user_id
+                      AND owner_data.org_id = p_org_id
+                      AND owner_data.email_verified IS TRUE
+                      AND owner_data.onboarding_completed IS TRUE
+                );
+            END IF;
+
+            IF v_principal_type = 'legacy_gym_owner' THEN
+                RETURN EXISTS (
+                    SELECT 1
+                    FROM public.gym_owners AS staff_data
+                    WHERE staff_data.id = v_user_id
+                      AND staff_data.org_id = p_org_id
+                      AND staff_data.is_active IS TRUE
+                      AND staff_data.is_verified IS TRUE
+                      AND staff_data.role::text = v_role
+                );
+            END IF;
+
+            RETURN FALSE;
+        END;
+        $function$;
+        """
+    )
+
+    # ALTER OWNER requires temporary CREATE for the target owner on the
+    # containing schema. Keep the privilege window transaction-local in effect
+    # and restore the standing no-CREATE boundary immediately afterward.
+    op.execute("GRANT CREATE ON SCHEMA public TO app_security_owner")
+    op.execute(
+        """
+        ALTER FUNCTION public.branch_hours_current_nonmember_principal_valid(uuid)
+        OWNER TO app_security_owner
+        """
+    )
+    op.execute("REVOKE CREATE ON SCHEMA public FROM app_security_owner")
+    op.execute(
+        """
+        REVOKE ALL ON FUNCTION
+        public.branch_hours_current_nonmember_principal_valid(uuid)
+        FROM PUBLIC
+        """
+    )
+    op.execute(
+        """
+        GRANT EXECUTE ON FUNCTION
+        public.branch_hours_current_nonmember_principal_valid(uuid)
+        TO app_runtime
+        """
+    )
+
+
 def _active_owner_expr(target_org: str) -> str:
-    current_user = _uuid_guc("app.current_user_id")
     current_org = _uuid_guc("app.current_org_id")
     return f"""
         (
             NULLIF(pg_catalog.current_setting('app.current_principal_type', true), '') = 'owner'
             AND NULLIF(pg_catalog.current_setting('app.current_role', true), '') = 'owner'
             AND {target_org} = {current_org}
-            AND EXISTS (
-                SELECT 1
-                FROM public.owners AS owner_data
-                WHERE owner_data.id = {current_user}
-                  AND owner_data.org_id = {target_org}
-                  AND owner_data.email_verified IS TRUE
-                  AND owner_data.onboarding_completed IS TRUE
-            )
+            AND public.branch_hours_current_nonmember_principal_valid({target_org})
         )
     """
 
@@ -232,23 +471,12 @@ def _active_org_user_expr(target_org: str) -> str:
 
 
 def _active_legacy_staff_expr(target_org: str) -> str:
-    current_user = _uuid_guc("app.current_user_id")
     current_org = _uuid_guc("app.current_org_id")
     return f"""
         (
             NULLIF(pg_catalog.current_setting('app.current_principal_type', true), '') = 'legacy_gym_owner'
             AND {target_org} = {current_org}
-            AND EXISTS (
-                SELECT 1
-                FROM public.gym_owners AS staff_data
-                WHERE staff_data.id = {current_user}
-                  AND staff_data.org_id = {target_org}
-                  AND staff_data.is_active IS TRUE
-                  AND staff_data.is_verified IS TRUE
-                  AND staff_data.role::text = NULLIF(
-                        pg_catalog.current_setting('app.current_role', true), ''
-                      )
-            )
+            AND public.branch_hours_current_nonmember_principal_valid({target_org})
         )
     """
 
@@ -273,8 +501,8 @@ def _org_write_expr(target_org: str) -> str:
         )
     """
     # Modern organization-user org-admin semantics are not yet represented by a
-    # canonical org-scoped role relation.  Do not authorize them from a JWT role
-    # string alone.  They remain eligible for branch-manager writes below.
+    # canonical org-scoped role relation. Do not authorize from a role claim
+    # alone. Modern managers remain eligible for scoped branch writes below.
     return f"({owner} OR {legacy_admin})"
 
 
@@ -547,7 +775,7 @@ def _restore_b4_policies() -> None:
         )
 
 
-def _verify_policy_inventory(bind) -> None:
+def _verify_forward(bind) -> None:
     for relation, application_names in _APPLICATION_POLICIES.items():
         expected = set(application_names) | _REQUIRED_OTHER_POLICIES.get(relation, set())
         observed = _policy_names(bind, relation)
@@ -557,18 +785,102 @@ def _verify_policy_inventory(bind) -> None:
                 f"observed={sorted(observed)!r}, expected={sorted(expected)!r}"
             )
 
+    function = bind.execute(
+        sa.text(
+            """
+            SELECT
+                owner_role.rolname::text AS owner_name,
+                procedure_data.prosecdef AS security_definer,
+                procedure_data.provolatile::text AS volatility,
+                procedure_data.proconfig,
+                pg_catalog.has_function_privilege(
+                    'app_runtime', procedure_data.oid, 'EXECUTE'
+                ) AS runtime_execute,
+                pg_catalog.has_function_privilege(
+                    'PUBLIC', procedure_data.oid, 'EXECUTE'
+                ) AS public_execute
+            FROM pg_catalog.pg_proc AS procedure_data
+            JOIN pg_catalog.pg_roles AS owner_role
+              ON owner_role.oid = procedure_data.proowner
+            WHERE procedure_data.oid = pg_catalog.to_regprocedure(:signature)
+            """
+        ),
+        {"signature": _VALIDATOR_SIGNATURE},
+    ).mappings().one_or_none()
+    if function is None:
+        raise RuntimeError("d6e7 principal validator is missing")
+    if (
+        function["owner_name"] != _SECURITY_OWNER
+        or not function["security_definer"]
+        or function["volatility"] != "s"
+        or not function["runtime_execute"]
+        or function["public_execute"]
+    ):
+        raise RuntimeError(f"d6e7 validator contract drifted: {dict(function)!r}")
+    settings = set(function["proconfig"] or [])
+    if "search_path=pg_catalog, public" not in settings or "row_security=on" not in settings:
+        raise RuntimeError(f"d6e7 validator settings drifted: {settings!r}")
+
+    if bind.execute(
+        sa.text(
+            """
+            SELECT
+                pg_catalog.has_table_privilege('app_runtime', 'public.owners', 'SELECT')
+                OR pg_catalog.has_table_privilege(
+                    'app_runtime', 'public.gym_owners', 'SELECT'
+                )
+            """
+        )
+    ).scalar_one():
+        raise RuntimeError("d6e7 leaked source-registry SELECT to app_runtime")
+
+    if bind.execute(
+        sa.text(
+            "SELECT pg_catalog.has_schema_privilege('app_security_owner', 'public', 'CREATE')"
+        )
+    ).scalar_one():
+        raise RuntimeError("d6e7 left app_security_owner with public CREATE")
+
+
+def _drop_nonmember_validator() -> None:
+    op.execute("SET LOCAL ROLE app_security_owner")
+    op.execute(
+        "DROP FUNCTION public.branch_hours_current_nonmember_principal_valid(uuid)"
+    )
+    op.execute("RESET ROLE")
+    op.execute(
+        """
+        REVOKE SELECT (id, org_id, email_verified, onboarding_completed)
+        ON TABLE public.owners
+        FROM app_security_owner
+        """
+    )
+    op.execute(
+        """
+        REVOKE SELECT (is_active, is_verified)
+        ON TABLE public.gym_owners
+        FROM app_security_owner
+        """
+    )
+
 
 def upgrade() -> None:
     bind = op.get_bind()
     _require_preflight(bind)
+    _create_nonmember_validator()
     _drop_application_policies()
     _create_typed_policies()
-    _verify_policy_inventory(bind)
+    _verify_forward(bind)
 
 
 def downgrade() -> None:
     bind = op.get_bind()
-    _require_preflight(bind)
+    _require_migration_owner_only = bind.execute(
+        sa.text("SELECT session_user::text, current_user::text")
+    ).one()
+    if _require_migration_owner_only != (_MIGRATION_OWNER, _MIGRATION_OWNER):
+        raise RuntimeError("d6e7 downgrade requires migration_owner")
+    _verify_forward(bind)
     _drop_application_policies()
     _restore_b4_policies()
-    _verify_policy_inventory(bind)
+    _drop_nonmember_validator()
