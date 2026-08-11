@@ -376,6 +376,18 @@ async def admin_db_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest_asyncio.fixture
+async def auth_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Auth/bootstrap fixture using the dedicated bounded auth identity."""
+    if AuthTestSessionLocal is None:
+        raise RuntimeError(
+            "AUTH_DATABASE_URL is required for auth/bootstrap integration fixtures"
+        )
+    async with AuthTestSessionLocal() as session:
+        await assert_test_database(session)
+        yield session
+
+
+@pytest_asyncio.fixture
 async def client() -> AsyncGenerator[AsyncClient, None]:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
