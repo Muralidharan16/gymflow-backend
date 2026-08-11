@@ -317,7 +317,7 @@ async def test_initiate_transition_last_active_branch_guard(lifecycle_setup):
                 reason="Closing",
             )
         assert exc_info.value.status_code == 409
-        assert "last active branch" in exc_info.value.detail
+        assert "last operational branch" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
