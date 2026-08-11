@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 import uuid
 
@@ -33,6 +34,14 @@ MAINTENANCE_COLUMNS = {
     "search_visibility_version",
 }
 
+STAGES = (
+    "login_posture",
+    "acl_contract",
+    "context_gate",
+    "positive_maintenance",
+    "negative_boundaries",
+)
+
 
 def _sync_url(env_name: str) -> str:
     value = os.environ[env_name]
@@ -41,6 +50,15 @@ def _sync_url(env_name: str) -> str:
 
 def _engine(env_name: str) -> sa.Engine:
     return sa.create_engine(_sync_url(env_name), pool_pre_ping=True)
+
+
+def _engines() -> dict[str, sa.Engine]:
+    return {
+        "api": _engine("API_DATABASE_URL"),
+        "auth": _engine("AUTH_DATABASE_URL"),
+        "worker": _engine("WORKER_DATABASE_URL"),
+        "maintenance": _engine("MAINTENANCE_DATABASE_URL"),
+    }
 
 
 def _set_context(conn: sa.Connection, *, org_id: uuid.UUID | None = None) -> None:
@@ -57,7 +75,11 @@ def _set_context(conn: sa.Connection, *, org_id: uuid.UUID | None = None) -> Non
         )
 
 
-def _expect_db_denial(engine: sa.Engine, statement: str, params: dict | None = None) -> None:
+def _expect_db_denial(
+    engine: sa.Engine,
+    statement: str,
+    params: dict | None = None,
+) -> None:
     try:
         with engine.begin() as conn:
             conn.execute(sa.text(statement), params or {})
@@ -100,26 +122,36 @@ def _assert_login_posture(engine: sa.Engine, expected_user: str) -> None:
         assert row[0] == expected_user
         assert not any(bool(value) for value in row[1:])
         assert not conn.execute(
-            sa.text("SELECT pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE')")
+            sa.text(
+                "SELECT pg_catalog.has_database_privilege(" 
+                "current_user, current_database(), 'CREATE')"
+            )
         ).scalar_one()
         assert not conn.execute(
-            sa.text("SELECT pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE')")
+            sa.text(
+                "SELECT pg_catalog.has_schema_privilege(" 
+                "current_user, 'public', 'CREATE')"
+            )
         ).scalar_one()
 
 
-def main() -> None:
-    api = _engine("API_DATABASE_URL")
-    auth = _engine("AUTH_DATABASE_URL")
-    worker = _engine("WORKER_DATABASE_URL")
-    maintenance = _engine("MAINTENANCE_DATABASE_URL")
+def stage_login_posture(engines: dict[str, sa.Engine]) -> None:
+    _assert_login_posture(engines["api"], "app_test_runtime")
+    _assert_login_posture(engines["auth"], "auth_test_runtime")
+    _assert_login_posture(engines["worker"], "worker_test_runtime")
+    _assert_login_posture(engines["maintenance"], "maintenance_test_runtime")
 
-    _assert_login_posture(api, "app_test_runtime")
-    _assert_login_posture(auth, "auth_test_runtime")
-    _assert_login_posture(worker, "worker_test_runtime")
-    _assert_login_posture(maintenance, "maintenance_test_runtime")
+
+def stage_acl_contract(engines: dict[str, sa.Engine]) -> None:
+    api = engines["api"]
+    maintenance = engines["maintenance"]
 
     with api.begin() as conn:
-        assert _column_updates(conn, "app_runtime") == API_COLUMNS
+        observed = _column_updates(conn, "app_runtime")
+        assert observed == API_COLUMNS, (
+            "app_runtime state UPDATE column drift: "
+            f"expected={sorted(API_COLUMNS)!r}, observed={sorted(observed)!r}"
+        )
         assert not conn.execute(
             sa.text(
                 "SELECT pg_catalog.has_table_privilege('app_runtime', "
@@ -140,7 +172,11 @@ def main() -> None:
         ).scalar_one()
 
     with maintenance.begin() as conn:
-        assert _column_updates(conn, "lifecycle_maintenance_runtime") == MAINTENANCE_COLUMNS
+        observed = _column_updates(conn, "lifecycle_maintenance_runtime")
+        assert observed == MAINTENANCE_COLUMNS, (
+            "maintenance state UPDATE column drift: "
+            f"expected={sorted(MAINTENANCE_COLUMNS)!r}, observed={sorted(observed)!r}"
+        )
         assert conn.execute(
             sa.text(
                 "SELECT pg_catalog.has_table_privilege(" 
@@ -156,21 +192,29 @@ def main() -> None:
         assert conn.execute(
             sa.text(
                 "SELECT pg_catalog.has_table_privilege(" 
-                "'lifecycle_maintenance_runtime', 'public.branch_watchdog_alerts', 'SELECT')"
+                "'lifecycle_maintenance_runtime', "
+                "'public.branch_watchdog_alerts', 'SELECT')"
             )
         ).scalar_one()
         assert conn.execute(
             sa.text(
                 "SELECT pg_catalog.has_table_privilege(" 
-                "'lifecycle_maintenance_runtime', 'public.branch_watchdog_alerts', 'INSERT')"
+                "'lifecycle_maintenance_runtime', "
+                "'public.branch_watchdog_alerts', 'INSERT')"
             )
         ).scalar_one()
 
+
+def stage_context_gate(engines: dict[str, sa.Engine]) -> None:
+    maintenance = engines["maintenance"]
+
+    with maintenance.begin() as conn:
         # FORCE RLS: the capability role is inert until task code installs the
         # transaction-local maintenance context.
         assert conn.execute(
             sa.text(
-                "SELECT count(*) FROM public.org_branch_state WHERE branch_id = :branch_id"
+                "SELECT count(*) FROM public.org_branch_state "
+                "WHERE branch_id = :branch_id"
             ),
             {"branch_id": BRANCH_ID},
         ).scalar_one() == 0
@@ -189,6 +233,10 @@ def main() -> None:
         "VALUES (:branch_id, 'without_context')",
         {"branch_id": BRANCH_ID},
     )
+
+
+def stage_positive_maintenance(engines: dict[str, sa.Engine]) -> None:
+    maintenance = engines["maintenance"]
 
     with maintenance.begin() as conn:
         _set_context(conn)
@@ -214,19 +262,27 @@ def main() -> None:
         )
         assert updated.rowcount == 1
 
+        alert_type = f"maintenance_boundary_{uuid.uuid4().hex}"
         inserted = conn.execute(
             sa.text(
                 "INSERT INTO public.branch_watchdog_alerts (branch_id, alert_type) "
-                "VALUES (:branch_id, 'maintenance_boundary') "
-                "RETURNING alert_id"
+                "VALUES (:branch_id, :alert_type) RETURNING alert_id"
             ),
-            {"branch_id": BRANCH_ID},
+            {"branch_id": BRANCH_ID, "alert_type": alert_type},
         ).scalar_one()
         assert inserted is not None
 
+
+def stage_negative_boundaries(engines: dict[str, sa.Engine]) -> None:
+    api = engines["api"]
+    auth = engines["auth"]
+    worker = engines["worker"]
+    maintenance = engines["maintenance"]
+
     _expect_db_denial(
         maintenance,
-        "UPDATE public.org_branch_state SET status = 'suspended' WHERE branch_id = :branch_id",
+        "UPDATE public.org_branch_state "
+        "SET status = 'suspended' WHERE branch_id = :branch_id",
         {"branch_id": BRANCH_ID},
     )
     _expect_db_denial(
@@ -248,10 +304,7 @@ def main() -> None:
         "WHERE branch_id = :branch_id",
         {"branch_id": BRANCH_ID},
     )
-    _expect_db_denial(
-        api,
-        "SELECT * FROM public.branch_watchdog_alerts LIMIT 1",
-    )
+    _expect_db_denial(api, "SELECT * FROM public.branch_watchdog_alerts LIMIT 1")
     _expect_db_denial(
         api,
         "INSERT INTO public.branch_watchdog_alerts (branch_id, alert_type) "
@@ -261,7 +314,7 @@ def main() -> None:
 
     # Queue and auth identities cannot acquire reconciliation capability merely
     # by setting the maintenance GUC; ACL separation is the hard boundary.
-    for engine in (worker, auth):
+    for engine, identity in ((worker, "worker"), (auth, "auth")):
         try:
             with engine.begin() as conn:
                 _set_context(conn, org_id=ORG_ID)
@@ -276,9 +329,40 @@ def main() -> None:
         except DBAPIError:
             pass
         else:
-            raise AssertionError("non-maintenance identity updated reconciliation state")
+            raise AssertionError(
+                f"{identity} identity updated maintenance reconciliation state"
+            )
 
-    print("PASS: lifecycle maintenance runtime boundary verified")
+
+def run_stage(stage: str) -> None:
+    engines = _engines()
+    try:
+        globals()[f"stage_{stage}"](engines)
+    finally:
+        for engine in engines.values():
+            engine.dispose()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--stage", choices=("all", *STAGES), default="all")
+    args = parser.parse_args()
+
+    selected = STAGES if args.stage == "all" else (args.stage,)
+    for stage in selected:
+        print(f"VERIFY_STAGE_START: {stage}", flush=True)
+        try:
+            run_stage(stage)
+        except Exception as exc:
+            print(
+                f"VERIFY_STAGE_FAILURE: {stage}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            raise
+        print(f"VERIFY_STAGE_PASS: {stage}", flush=True)
+
+    print("PASS: lifecycle maintenance runtime boundary verified", flush=True)
 
 
 if __name__ == "__main__":
