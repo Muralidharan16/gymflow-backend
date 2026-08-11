@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     # ── Database ───────────────────────────────────
     DATABASE_URL: str
     AUTH_DATABASE_URL: str = ""
+    WORKER_DATABASE_URL: str = ""
     TEST_DATABASE_URL: str = ""
     REDIS_URL: str
     CELERY_BROKER_URL: str
@@ -85,11 +86,34 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "AUTH_DATABASE_URL must use a distinct production database identity"
                 )
+            if not self.WORKER_DATABASE_URL:
+                raise ValueError(
+                    "WORKER_DATABASE_URL is required in production so asynchronous "
+                    "workers do not reuse API or auth credentials"
+                )
+            if self.WORKER_DATABASE_URL in {
+                self.DATABASE_URL,
+                self.AUTH_DATABASE_URL,
+            }:
+                raise ValueError(
+                    "WORKER_DATABASE_URL must use a distinct production database identity"
+                )
         return self
 
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def worker_database_url(self) -> str:
+        """Return the bounded worker URL.
+
+        Production is fail-closed by the model validator above. Development and
+        test environments may intentionally share the application URL so the
+        repository remains easy to run locally before a dedicated worker login
+        is provisioned.
+        """
+        return self.WORKER_DATABASE_URL or self.DATABASE_URL
 
     @property
     def is_production(self) -> bool:
