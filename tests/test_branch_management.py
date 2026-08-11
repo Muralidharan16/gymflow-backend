@@ -3,6 +3,7 @@ import uuid
 import pytest_asyncio
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.models.organization import Organization
 from app.models.staff import GymOwner
@@ -408,31 +409,31 @@ async def test_rbac_privileges_on_branch_actions(test_setup):
         await repo.create(b2)
         await session.commit()
 
-    # All authorization behavior below is exercised on the ordinary reduced
-    # runtime. Only the typed app role changes; PostgreSQL privileges do not.
+    # Forced RLS rejects trainer/admin UPDATE visibility before the legacy RBAC
+    # trigger can run. SQLAlchemy therefore reports a zero-row protected update
+    # as StaleDataError. This is the expected least-privilege boundary: do not
+    # widen p_branch_update merely to recover legacy trigger-specific messages.
     async with AsyncSessionLocal() as session:
         await set_tenant_context(session, str(org_id), str(trainer_id), "trainer")
         repo = BranchRepository(session)
-        with pytest.raises(DBAPIError) as exc_info:
+        with pytest.raises(StaleDataError):
             await repo.soft_delete(
                 b2_id,
                 org_id,
                 trainer_id,
                 reason="Trainer delete attempt",
             )
-        assert "Insufficient privileges" in str(exc_info.value)
 
     async with AsyncSessionLocal() as session:
         await set_tenant_context(session, str(org_id), str(admin_id), "admin")
         repo = BranchRepository(session)
-        with pytest.raises(DBAPIError) as exc_info:
+        with pytest.raises(StaleDataError):
             await repo.soft_delete(
                 b2_id,
                 org_id,
                 admin_id,
                 reason="Admin delete attempt",
             )
-        assert "only owners can soft-delete" in str(exc_info.value)
 
     async with AsyncSessionLocal() as session:
         await set_tenant_context(session, str(org_id), str(owner_id), "owner")
