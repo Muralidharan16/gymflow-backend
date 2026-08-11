@@ -14,13 +14,16 @@ pg_partman 5.0.1 is already an externally provisioned infrastructure dependency
 for lifecycle partitions. This revision adopts the existing declarative
 branch_hours_audit_log parent into that same control plane. The historical May
 2026 partition is renamed into pg_partman's canonical naming convention without
-moving data. pg_partman creates current/future monthly children plus a DEFAULT
-safety partition and maintains four months ahead. ``infinite_time_partitions``
-is enabled so a quiet audit stream cannot let future coverage expire.
+moving data. pg_partman creates and owns its normal template metadata, creates
+current/future monthly children plus a DEFAULT safety partition, and maintains
+four months ahead. ``infinite_time_partitions`` is enabled so a quiet audit
+stream cannot let future coverage expire.
 
 No retention is configured here: audit retention is a governance decision and
 must not be silently invented by infrastructure hardening. Downgrade refuses to
-discard any data that has landed in revision-created/default partitions.
+discard any data that has landed in revision-created/default partitions, then
+uses pg_partman's supported config cleanup path to remove both configuration and
+the managed template without touching the partitioned parent.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ _PARTMAN_VERSION = "5.0.1"
 _PARENT_SCHEMA = "public"
 _PARENT_NAME = "branch_hours_audit_log"
 _PARENT = f"{_PARENT_SCHEMA}.{_PARENT_NAME}"
+_TEMPLATE = "partman.template_public_branch_hours_audit_log"
 _LEGACY_TO_PARTMAN = (
     ("branch_hours_audit_log_y2026m05", "branch_hours_audit_log_p20260501"),
 )
@@ -133,6 +137,7 @@ def _require_partman_dependency(bind) -> None:
     routines = (
         "partman.create_parent(text,text,text,text,text,integer,text,boolean,text,text[],text,boolean,text)",
         "partman.run_maintenance(text,boolean,boolean)",
+        "partman.config_cleanup(text,boolean,boolean,boolean)",
     )
     for signature in routines:
         row = _fetch_one(
@@ -223,6 +228,18 @@ def _lock_and_require_predecessor(bind) -> None:
             f"c5d6 predecessor already has pg_partman configuration: {config!r}"
         )
 
+    template_conflict = _fetch_one(
+        bind,
+        """
+        SELECT pg_catalog.to_regclass(:template_name) IS NOT NULL AS template_exists
+        """,
+        {"template_name": _TEMPLATE},
+    )
+    if template_conflict != {"template_exists": False}:
+        raise RuntimeError(
+            f"c5d6 predecessor already has managed template {_TEMPLATE}"
+        )
+
     children = _fetch_all(
         bind,
         """
@@ -302,7 +319,6 @@ def _configure_partman(bind) -> None:
                 p_start_partition := '2026-05-01 00:00:00+00',
                 p_default_table := true,
                 p_automatic_maintenance := 'on',
-                p_template_table := 'false',
                 p_jobmon := false
             )
             """
@@ -372,7 +388,7 @@ def _expected_config():
         "partition_type": "range",
         "premake": 4,
         "automatic_maintenance": "on",
-        "template_table": None,
+        "template_table": _TEMPLATE,
         "retention": None,
         "default_table": True,
         "jobmon": False,
@@ -439,6 +455,23 @@ def _verify_forward(bind) -> None:
         raise RuntimeError(
             "pg_partman audit configuration drifted: "
             f"observed={observed!r}, expected={expected!r}"
+        )
+
+    template = _fetch_one(
+        bind,
+        """
+        SELECT
+            pg_catalog.pg_get_userbyid(relation_data.relowner)::text AS owner_name,
+            relation_data.relkind::text AS relation_kind
+        FROM pg_catalog.pg_class AS relation_data
+        WHERE relation_data.oid = pg_catalog.to_regclass(:template_name)
+        """,
+        {"template_name": _TEMPLATE},
+    )
+    if template != {"owner_name": _MIGRATION_OWNER, "relation_kind": "r"}:
+        raise RuntimeError(
+            "pg_partman managed audit template drifted: "
+            f"observed={template!r}"
         )
 
     preserved = _fetch_one(
@@ -509,16 +542,27 @@ def _remove_partman_management(bind) -> None:
     extras = [name for name in _child_names(bind) if name not in preserved]
     _require_extra_partitions_empty(bind, extras)
 
-    result = bind.execute(
+    bind.execute(
         sa.text(
-            "DELETE FROM partman.part_config WHERE parent_table = :parent_table"
+            """
+            SELECT partman.config_cleanup(
+                p_parent_table := :parent_table,
+                p_config_table := true,
+                p_config_sub_table := true,
+                p_template_table := true
+            )
+            """
         ),
         {"parent_table": _PARENT},
     )
-    if result.rowcount != 1:
-        raise RuntimeError(
-            "expected exactly one pg_partman audit config row during downgrade"
-        )
+
+    if _config(bind) is not None:
+        raise RuntimeError("pg_partman audit configuration survived cleanup")
+    if bind.execute(
+        sa.text("SELECT pg_catalog.to_regclass(:template_name) IS NOT NULL"),
+        {"template_name": _TEMPLATE},
+    ).scalar_one():
+        raise RuntimeError("pg_partman audit template survived cleanup")
 
     for name in extras:
         bind.execute(
@@ -533,9 +577,6 @@ def _remove_partman_management(bind) -> None:
         for old_name, new_name in reversed(_LEGACY_TO_PARTMAN)
     )
     _rename_partitions(bind, reverse_mapping)
-
-    if _config(bind) is not None:
-        raise RuntimeError("pg_partman audit configuration survived downgrade")
 
     children = _child_names(bind)
     if children != [_LEGACY_TO_PARTMAN[0][0]]:
