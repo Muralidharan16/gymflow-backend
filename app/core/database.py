@@ -11,16 +11,19 @@ Key design decisions:
     RLS/audit GUCs correct even when a route commits and starts another transaction,
     while preventing tenant context from leaking through the connection pool.
   • All application database identities use one request→Session context initializer.
-  • Asynchronous workers use a separate database pool/credential boundary and
+  • Asynchronous workers use a separate database credential boundary and
     explicitly install tenant/internal-maintenance context per unit of work.
+  • Celery's synchronous task wrappers create short-lived asyncio loops, so the
+    worker async engine uses NullPool: asyncpg connections are never reused by a
+    later task running on a different event loop.
   • API and worker transactions have separate bounded timeout budgets; installing
     tenant context must never silently replace the worker role's operational
     budget with the shorter request budget.
   • Cluster-level/privileged lock-detection settings such as ``deadlock_timeout``
     remain an administrator-owned PostgreSQL configuration boundary.
   • Sync engine is preserved for legacy Celery tasks and uses the declared
-    Psycopg 3 driver; new tenant-sensitive workers must use the bounded worker
-    async pool below.
+    Psycopg 3 driver; new tenant-sensitive workers use the bounded worker async
+    identity below.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 
@@ -74,16 +78,15 @@ AsyncSessionLocal = async_sessionmaker(
 async_session_maker = AsyncSessionLocal
 
 # Worker sessions intentionally do not participate in the request pool manager.
-# They use a distinct production login and receive tenant context explicitly per
-# claimed job.  A compromised API login therefore cannot inherit worker queue or
-# projection capabilities, and a worker cannot inherit auth/bootstrap rights.
+# Celery task wrappers use asyncio.run(), which creates a new event loop for each
+# invocation. asyncpg connections are loop-bound, therefore reusing an async
+# connection pool across task loops is unsafe. NullPool gives every worker
+# transaction a loop-local connection and closes it before that loop exits.
 worker_async_engine = create_async_engine(
     settings.worker_database_url,
-    pool_size=5,
-    max_overflow=10,
+    poolclass=NullPool,
     pool_pre_ping=True,
     echo=settings.ENVIRONMENT == "development",
-    pool_recycle=1800,
 )
 
 WorkerAsyncSessionLocal = async_sessionmaker(
