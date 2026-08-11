@@ -55,37 +55,26 @@ def test_branch_hours_runtime_revision_is_forward_only_after_transition_acl() ->
 
 def test_runtime_acl_is_route_bounded_and_audit_insert_is_internal() -> None:
     source = _literal_text(RUNTIME_MIGRATION)
+    runtime_grants = _function_source(RUNTIME_MIGRATION, "_grant_runtime_acl")
 
     for relation in (
         "public.organization_operating_hours",
         "public.branch_operating_hours",
         "public.branch_special_hours",
     ):
-        assert re.search(
-            rf"GRANT\s+SELECT,\s*INSERT,\s*UPDATE\s+ON\s+TABLE\s+"
-            rf"{re.escape(relation)}\s+TO\s+app_runtime",
-            source,
-            re.IGNORECASE,
+        assert (
+            f"GRANT SELECT, INSERT, UPDATE ON TABLE {relation} TO app_runtime"
+            in runtime_grants
         )
 
-    assert re.search(
-        r"GRANT\s+SELECT\s+ON\s+TABLE\s+"
-        r"public\.branch_hours_projection\s+TO\s+app_runtime",
-        source,
-        re.IGNORECASE,
+    assert (
+        "GRANT SELECT ON TABLE public.branch_hours_projection TO app_runtime"
+        in runtime_grants
     )
-    assert not re.search(
-        r"GRANT\s+(?:ALL|DELETE|TRUNCATE|REFERENCES|TRIGGER)\b[^;]*"
-        r"\bTO\s+app_runtime\b",
-        source,
-        re.IGNORECASE | re.DOTALL,
-    )
-    assert not re.search(
-        r"GRANT\b[^;]*\bINSERT\b[^;]*"
-        r"branch_hours_audit_log[^;]*\bTO\s+app_runtime\b",
-        source,
-        re.IGNORECASE | re.DOTALL,
-    )
+    assert "GRANT ALL" not in runtime_grants.upper()
+    for privilege in ("DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"):
+        assert privilege not in runtime_grants.upper()
+    assert "branch_hours_audit_log" not in runtime_grants
 
     assert "GRANT INSERT (table_name, record_id, branch_id, operation, changed_by, old_data, new_data)" in source
     assert "TO app_security_owner" in source
@@ -118,6 +107,24 @@ def test_branch_hours_rls_matches_application_authorization_contract() -> None:
     assert "app.current_org_id" in source
     assert "app.current_user_id" in source
     assert "app.current_role" in source
+
+
+def test_runtime_revision_preserves_8192_internal_cascade_policies() -> None:
+    source = _source(RUNTIME_MIGRATION)
+    for policy in (
+        "internal_branch_hours_soft_delete_update",
+        "internal_branch_special_hours_soft_delete_update",
+        "internal_branch_hours_projection_delete",
+    ):
+        assert source.count(policy) >= 2
+
+    drop_forward = _function_source(RUNTIME_MIGRATION, "_drop_forward_objects")
+    for policy in (
+        "internal_branch_hours_soft_delete_update",
+        "internal_branch_special_hours_soft_delete_update",
+        "internal_branch_hours_projection_delete",
+    ):
+        assert f"DROP POLICY {policy}" not in drop_forward
 
 
 def test_audit_trigger_is_tenant_bound_security_definer_and_not_public() -> None:
