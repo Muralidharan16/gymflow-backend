@@ -152,6 +152,20 @@
       },
       "purpose": "Read-only analytics privilege group.",
       "role": "readonly_analytics"
+    },
+    "worker_runtime": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "Dedicated asynchronous-worker privilege group. Deployment worker logins may inherit this role, but worker_runtime is NOLOGIN/NOBYPASSRLS, owns no schema objects, is not a member of API/auth roles, and must never be granted to migration_owner.",
+      "purpose": "Bounded cross-tenant queue claim and tenant-scoped background processing capability.",
+      "role": "worker_runtime"
     }
   },
   "schema_version": 1,
