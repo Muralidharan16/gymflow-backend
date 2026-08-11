@@ -163,6 +163,35 @@ def _intervals_for_slots(
     return intervals
 
 
+def _mask_standard_intervals_for_special_day(
+    intervals: Sequence[_OpenInterval],
+    *,
+    special_date: date,
+    tz: ZoneInfo,
+) -> list[_OpenInterval]:
+    """Remove standard intervals that overlap a special local calendar day.
+
+    Special-day semantics own the whole local date, including the portion of a
+    previous day's standard overnight slot that would otherwise carry through
+    midnight. Future standard intervals beginning on the next local date remain
+    eligible for ``next_open_at`` / ``next_close_at``.
+    """
+    day_start = _wall_time_to_utc(special_date, time.min, tz, boundary="open")
+    day_end = _wall_time_to_utc(
+        special_date + timedelta(days=1),
+        time.min,
+        tz,
+        boundary="close",
+    )
+    return [
+        interval
+        for interval in intervals
+        if interval.source != "standard"
+        or interval.ends_at <= day_start
+        or interval.starts_at >= day_end
+    ]
+
+
 def _resolve_temporal_state(
     *,
     current_utc: datetime,
@@ -172,29 +201,14 @@ def _resolve_temporal_state(
 ) -> tuple[str, Optional[datetime], Optional[datetime]]:
     ordered = sorted(intervals, key=lambda item: (item.starts_at, item.ends_at))
 
-    current_interval: Optional[_OpenInterval] = None
-    if today_has_special_override:
-        # A special-date definition owns the local calendar day. Standard
-        # weekly intervals, including a previous-day overnight interval, must
-        # not leak through a holiday/exception override.
-        current_interval = next(
-            (
-                item
-                for item in ordered
-                if item.source == "special"
-                and item.starts_at <= current_utc < item.ends_at
-            ),
-            None,
-        )
-    else:
-        current_interval = next(
-            (
-                item
-                for item in ordered
-                if item.starts_at <= current_utc < item.ends_at
-            ),
-            None,
-        )
+    current_interval = next(
+        (
+            item
+            for item in ordered
+            if item.starts_at <= current_utc < item.ends_at
+        ),
+        None,
+    )
 
     if current_interval is not None:
         status = "HOLIDAY" if current_interval.source == "special" else "OPEN"
@@ -345,6 +359,13 @@ async def rebuild_branch_hours_projection(
         )
 
     today_special = special_by_date.get(today, [])
+    if today_special:
+        intervals = _mask_standard_intervals_for_special_day(
+            intervals,
+            special_date=today,
+            tz=tz,
+        )
+
     today_standard = _effective_standard_slots(standard_hours, today)
     status, next_open_at, next_close_at = _resolve_temporal_state(
         current_utc=now_utc,
