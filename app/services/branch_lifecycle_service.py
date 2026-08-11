@@ -99,14 +99,14 @@ class BranchLifecycleService:
         # then branch advisory lock, then the row lock.
         await self.db.execute(
             text(
-                "SELECT pg_catalog.pg_advisory_xact_lock(" 
+                "SELECT pg_catalog.pg_advisory_xact_lock("
                 "pg_catalog.hashtextextended(:scope, 0))"
             ),
             {"scope": f"branch-lifecycle:org:{org_id}"},
         )
         await self.db.execute(
             text(
-                "SELECT pg_catalog.pg_advisory_xact_lock(" 
+                "SELECT pg_catalog.pg_advisory_xact_lock("
                 "pg_catalog.hashtextextended(:scope, 0))"
             ),
             {"scope": f"branch-lifecycle:branch:{branch_id}"},
@@ -157,6 +157,8 @@ class BranchLifecycleService:
         branch_state.is_operational = target_def.is_operational
         branch_state.status_changed_at = now
         branch_state.status_changed_by = actor_id
+        branch_state.status_reason = reason.strip() if reason and reason.strip() else None
+        branch_state.transition_source = transition_source
         branch_state.lifecycle_transition_in_progress = True
         branch_state.saga_last_checkpoint = None
         # Transaction B is atomic. If it repeatedly fails, compensation may
@@ -549,6 +551,26 @@ class BranchLifecycleService:
         ).scalar_one()
         if not state.lifecycle_transition_in_progress:
             return
+        if state.status != to_status:
+            raise RuntimeError(
+                "Lifecycle compensation target drift: "
+                f"expected={to_status}, observed={state.status}"
+            )
+        if state.saga_compensation_strategy != "rollback_to_origin":
+            raise RuntimeError(
+                "Lifecycle compensation strategy drift: "
+                f"observed={state.saga_compensation_strategy!r}"
+            )
+        if state.saga_last_checkpoint is not None:
+            raise RuntimeError(
+                "Lifecycle compensation refuses persisted Transaction-B checkpoint: "
+                f"{state.saga_last_checkpoint!r}"
+            )
+        if state.status_changed_by != actor_id:
+            raise RuntimeError(
+                "Lifecycle compensation actor drift: "
+                f"expected={actor_id}, observed={state.status_changed_by}"
+            )
 
         origin_def = (
             await self.db.execute(
@@ -557,8 +579,13 @@ class BranchLifecycleService:
                 )
             )
         ).scalar_one()
+        now = datetime.now(timezone.utc)
+        compensation_reason = "Saga dead-letter compensation rollback"
         state.status = from_status
         state.is_operational = origin_def.is_operational
+        state.status_changed_at = now
+        state.status_reason = compensation_reason
+        state.transition_source = "saga_compensation"
         state.lifecycle_transition_in_progress = False
         state.saga_last_checkpoint = None
         state.saga_compensation_strategy = None
@@ -571,7 +598,6 @@ class BranchLifecycleService:
             parent_outbox_id=parent_outbox_id,
             worker_id=worker_id,
         )
-        now = datetime.now(timezone.utc)
         self.db.add(
             BranchLifecycleEvent(
                 event_id=uuid.uuid4(),
@@ -591,7 +617,7 @@ class BranchLifecycleService:
                 to_status=from_status,
                 changed_by=actor_id,
                 changed_at=now,
-                reason="Saga dead-letter compensation rollback",
+                reason=compensation_reason,
                 transition_source="saga_compensation",
                 snapshot={"reason": "transaction_b_retry_exhausted"},
                 correlation_id=correlation_id,
