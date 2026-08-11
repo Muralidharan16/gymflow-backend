@@ -207,7 +207,7 @@ def run_stage(stage: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stage", choices=("all", *STAGES), default="positive_maintenance")
+    parser.add_argument("--stage", choices=("all", *STAGES), default="all")
     args = parser.parse_args()
     selected = STAGES if args.stage == "all" else (args.stage,)
     for stage in selected:
