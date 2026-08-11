@@ -458,6 +458,11 @@ async def test_watchdog_and_reconcile(lifecycle_setup):
             select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
         )
         reconciled_state = reconciled_res.scalar_one()
+        # Reconciliation is intentionally set-based SQL and production sessions
+        # keep expire_on_commit=False. Explicitly refresh the already-loaded ORM
+        # identity before asserting the persisted row rather than confusing a
+        # caller-local identity-map cache with a failed database update.
+        await session.refresh(reconciled_state)
         assert reconciled_state.reconciliation_claimed_by is None
         assert reconciled_state.reconciliation_claimed_at is None
         assert reconciled_state.search_sync_failed_at is None
