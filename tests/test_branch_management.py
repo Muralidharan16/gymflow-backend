@@ -184,7 +184,6 @@ async def test_create_and_fetch_active_branch(test_setup):
         branch=branch,
     )
 
-    # Ordinary application reads stay on the reduced runtime identity.
     async with AsyncSessionLocal() as session:
         await set_tenant_context(session, str(org_id), str(owner_id), "owner")
         repo = BranchRepository(session)
@@ -225,8 +224,6 @@ async def test_rls_isolation_across_tenants(test_setup):
         branch=branch,
     )
 
-    # A different tenant context must not observe Org A through either the
-    # security-invoker view or the base table.
     other_org_id = uuid.uuid4()
     async with AsyncSessionLocal() as session:
         await set_tenant_context(
@@ -255,9 +252,6 @@ async def test_enforce_max_branches_trigger(test_setup):
     owner_id = test_setup["owner_id"]
     assert AuthTestSessionLocal is not None
 
-    # Branch insertion is a bounded bootstrap capability. Exercise the database
-    # max-branch invariant through that real write-capable identity, never by
-    # granting ALL to the ordinary runtime.
     async with AuthTestSessionLocal() as session:
         await assert_test_database(session)
         await set_tenant_context(session, str(org_id), str(owner_id), "owner")
@@ -367,7 +361,6 @@ async def test_rbac_privileges_on_branch_actions(test_setup):
     trainer_id = test_setup["trainer_id"]
     assert AuthTestSessionLocal is not None
 
-    # Seed two branches through the bounded branch-creation identity.
     async with AuthTestSessionLocal() as session:
         await assert_test_database(session)
         await set_tenant_context(session, str(org_id), str(owner_id), "owner")
@@ -409,10 +402,10 @@ async def test_rbac_privileges_on_branch_actions(test_setup):
         await repo.create(b2)
         await session.commit()
 
-    # Forced RLS rejects trainer/admin UPDATE visibility before the legacy RBAC
-    # trigger can run. SQLAlchemy therefore reports a zero-row protected update
-    # as StaleDataError. This is the expected least-privilege boundary: do not
-    # widen p_branch_update merely to recover legacy trigger-specific messages.
+    # The layered boundary is intentional and must remain distinguishable:
+    # trainer lacks UPDATE visibility at forced RLS and gets SQLAlchemy's zero-row
+    # StaleDataError; admin is allowed through p_branch_update, then the owner-only
+    # legacy soft-delete trigger rejects the operation with a DBAPI error.
     async with AsyncSessionLocal() as session:
         await set_tenant_context(session, str(org_id), str(trainer_id), "trainer")
         repo = BranchRepository(session)
@@ -427,13 +420,14 @@ async def test_rbac_privileges_on_branch_actions(test_setup):
     async with AsyncSessionLocal() as session:
         await set_tenant_context(session, str(org_id), str(admin_id), "admin")
         repo = BranchRepository(session)
-        with pytest.raises(StaleDataError):
+        with pytest.raises(DBAPIError) as exc_info:
             await repo.soft_delete(
                 b2_id,
                 org_id,
                 admin_id,
                 reason="Admin delete attempt",
             )
+        assert "only owners can soft-delete" in str(exc_info.value)
 
     async with AsyncSessionLocal() as session:
         await set_tenant_context(session, str(org_id), str(owner_id), "owner")
