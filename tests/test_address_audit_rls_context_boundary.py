@@ -64,7 +64,7 @@ def test_address_audit_integration_uses_session_owned_typed_context():
     test = _test_function()
     source = ast.unparse(test)
 
-    # Fixture administration, reduced runtime behavior, and the protected evidence
+    # Auth/bootstrap seeding, reduced runtime behavior, and the protected evidence
     # read must all use the centralized typed context API. No phase may duplicate
     # raw PostgreSQL GUC manipulation.
     assert "update_session_context" in source
@@ -80,27 +80,49 @@ def test_address_audit_fixture_seed_respects_forced_rls_and_runtime_is_reduced()
     test = _test_function()
     source = ast.unparse(test)
 
-    assert any(arg.arg == "admin_db_session" for arg in test.args.args)
-    for required_seed in (
+    arg_names = {arg.arg for arg in test.args.args}
+    assert {"admin_db_session", "auth_db_session"} <= arg_names
+
+    # Tenant-root actor setup is explicit fixture administration. First branch and
+    # state creation is a bounded auth/bootstrap capability and must never borrow
+    # the migration-owner session merely because this is a test.
+    for required_admin_seed in (
         "admin_db_session.add(Organization",
-        "admin_db_session.add(branch)",
-        "admin_db_session.add(branch_state)",
         "admin_db_session.add(owner)",
     ):
-        assert required_seed in source
+        assert required_admin_seed in source
+    for forbidden_admin_seed in (
+        "admin_db_session.add(branch)",
+        "admin_db_session.add(branch_state)",
+    ):
+        assert forbidden_admin_seed not in source
 
-    first_admin_commit = source.index("await admin_db_session.commit()")
-    admin_context = source.index("await update_session_context(admin_db_session")
-    branch_seed = source.index("admin_db_session.add(branch)")
-    state_seed = source.index("admin_db_session.add(branch_state)")
-    assert first_admin_commit < admin_context < branch_seed < state_seed
-    assert source.count("await admin_db_session.commit()") == 2
+    for required_auth_seed in (
+        "auth_db_session.add(branch)",
+        "auth_db_session.add(branch_state)",
+    ):
+        assert required_auth_seed in source
+    for forbidden_auth_seed in (
+        "auth_db_session.add(Organization",
+        "auth_db_session.add(owner)",
+    ):
+        assert forbidden_auth_seed not in source
+
+    admin_commit = source.index("await admin_db_session.commit()")
+    auth_context = source.index("await update_session_context(auth_db_session")
+    branch_seed = source.index("auth_db_session.add(branch)")
+    state_seed = source.index("auth_db_session.add(branch_state)")
+    auth_commit = source.index("await auth_db_session.commit()")
+    assert admin_commit < auth_context < branch_seed < state_seed < auth_commit
+    assert source.count("await admin_db_session.commit()") == 1
+    assert source.count("await auth_db_session.commit()") == 1
 
     # Inspect the runtime scope itself rather than slicing to the end of the test:
-    # the post-runtime admin evidence read is deliberately a separate trust phase.
+    # bootstrap and post-runtime evidence are deliberately separate trust phases.
     runtime = _runtime_block(test)
     runtime_source = ast.unparse(runtime)
     assert "admin_db_session" not in runtime_source
+    assert "auth_db_session" not in runtime_source
     assert "db.add(branch)" not in runtime_source
     assert "db.add(branch_state)" not in runtime_source
     assert "db.add(owner)" not in runtime_source
@@ -115,6 +137,7 @@ def test_address_audit_fixture_seed_respects_forced_rls_and_runtime_is_reduced()
     assert "select(AddressAuditLog)" not in runtime_source
 
     evidence_source = _post_runtime_source(test)
+    assert "auth_db_session" not in evidence_source
     assert "await update_session_context(admin_db_session" in evidence_source
     assert "select(AddressAuditLog)" in evidence_source
     assert "AddressAuditLog.org_id == org_id" in evidence_source
@@ -138,16 +161,17 @@ def test_address_audit_context_survives_commit_without_manual_reapplication():
     assert ast.unparse(runtime_call.value.args[0]) == "db"
     assert runtime_source.count("await db.commit()") == 2
 
-    # Two separate administrative context attachments are intentional: one before
-    # FORCE-RLS fixture seeding and one after the runtime phase for protected audit
-    # evidence verification. They do not substitute for runtime context replay.
+    # The other explicit contexts have distinct trust purposes: auth/bootstrap
+    # seeding and post-runtime protected audit evidence verification. Neither may
+    # substitute for runtime context replay or share the migration-owner session.
     call_sessions = [
         ast.unparse(node.value.args[0])
         for node in all_context_calls
         if node.value.args
     ]
     assert call_sessions.count("db") == 1
-    assert call_sessions.count("admin_db_session") == 2
+    assert call_sessions.count("auth_db_session") == 1
+    assert call_sessions.count("admin_db_session") == 1
     assert len(all_context_calls) == 3
 
     evidence_source = _post_runtime_source(test)
