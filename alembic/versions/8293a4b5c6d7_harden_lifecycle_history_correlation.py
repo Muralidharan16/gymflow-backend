@@ -15,8 +15,11 @@ three event columns required for validation plus one owner-only RLS policy. The
 correlation must match the same branch and exact event timestamp. Validation is
 a DEFERRABLE INITIALLY DEFERRED constraint trigger so event/history flush order
 inside one atomic transaction is irrelevant while commit still fails closed.
-PUBLIC execution is revoked on both internal trigger functions. Downgrade
-restores the exact predecessor trigger target and PUBLIC-execute surface.
+PUBLIC execution is revoked on both internal trigger functions. ``migration_owner``
+receives EXECUTE on the hardened function only for the exact trigger-creation
+window, after which that capability is immediately revoked and verified absent.
+Downgrade restores the exact predecessor trigger target and PUBLIC-execute
+surface.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ _HARDENED_FUNCTION = "public.validate_history_correlation_hardened()"
 _TRIGGER = "trg_validate_history_correlation"
 _POLICY = "lifecycle_correlation_validator_event_read"
 _REQUIRED_EVENT_COLUMNS = {"branch_id", "correlation_id", "emitted_at"}
+_RUNTIME_ROLES = ("app_runtime", "auth_runtime", "worker_runtime")
 
 
 def _scalar(bind, sql: str, params: dict[str, object] | None = None):
@@ -158,6 +162,22 @@ def _public_execute(bind, signature: str) -> bool:
     )
 
 
+def _role_execute(bind, role_name: str, signature: str) -> bool:
+    return bool(
+        _scalar(
+            bind,
+            """
+            SELECT pg_catalog.has_function_privilege(
+                CAST(:role_name AS name),
+                pg_catalog.to_regprocedure(:signature),
+                'EXECUTE'
+            )
+            """,
+            {"role_name": role_name, "signature": signature},
+        )
+    )
+
+
 def _has_public_schema_create(bind, role_name: str) -> bool:
     return bool(
         _scalar(
@@ -225,7 +245,7 @@ def _require_identity_and_roles(bind) -> None:
     ):
         raise RuntimeError("migration_owner cannot SET ROLE app_security_owner")
 
-    for runtime_role in ("app_runtime", "auth_runtime", "worker_runtime"):
+    for runtime_role in _RUNTIME_ROLES:
         if _scalar(
             bind,
             """
@@ -379,13 +399,23 @@ def _install_security_owner_boundary() -> None:
     )
 
 
-def _replace_trigger() -> None:
+def _replace_trigger(bind) -> None:
     op.execute(
         "REVOKE ALL ON FUNCTION public.validate_history_correlation() FROM PUBLIC"
     )
     op.execute(
         "DROP TRIGGER trg_validate_history_correlation ON public.branch_status_history"
     )
+
+    # PostgreSQL requires the role creating a trigger to hold EXECUTE on the
+    # trigger function. Keep this capability open only around CREATE TRIGGER;
+    # transaction rollback closes the entire window on any failure.
+    op.execute(
+        "GRANT EXECUTE ON FUNCTION "
+        "public.validate_history_correlation_hardened() TO migration_owner"
+    )
+    if not _role_execute(bind, _MIGRATION_OWNER, _HARDENED_FUNCTION):
+        raise RuntimeError("8293 failed to open bounded migration-owner EXECUTE")
     op.execute(
         """
         CREATE CONSTRAINT TRIGGER trg_validate_history_correlation
@@ -395,6 +425,12 @@ def _replace_trigger() -> None:
         EXECUTE FUNCTION public.validate_history_correlation_hardened()
         """
     )
+    op.execute(
+        "REVOKE EXECUTE ON FUNCTION "
+        "public.validate_history_correlation_hardened() FROM migration_owner"
+    )
+    if _role_execute(bind, _MIGRATION_OWNER, _HARDENED_FUNCTION):
+        raise RuntimeError("8293 leaked migration-owner EXECUTE after trigger creation")
 
 
 def _verify_forward(bind) -> None:
@@ -443,6 +479,13 @@ def _verify_forward(bind) -> None:
         raise RuntimeError("8293 leaked PUBLIC EXECUTE on hardened validator")
     if _public_execute(bind, _PREDECESSOR_FUNCTION):
         raise RuntimeError("8293 left PUBLIC EXECUTE on detached predecessor validator")
+    if _role_execute(bind, _MIGRATION_OWNER, _HARDENED_FUNCTION):
+        raise RuntimeError("8293 leaked migration-owner EXECUTE on hardened validator")
+    for runtime_role in _RUNTIME_ROLES:
+        if _role_execute(bind, runtime_role, _HARDENED_FUNCTION):
+            raise RuntimeError(
+                f"8293 leaked hardened validator EXECUTE to {runtime_role}"
+            )
 
     policy = _policy_contract(bind)
     if policy is None:
@@ -471,7 +514,7 @@ def upgrade() -> None:
     _require_predecessor(bind)
     _create_hardened_validator()
     _install_security_owner_boundary()
-    _replace_trigger()
+    _replace_trigger(bind)
     _verify_forward(bind)
 
 
