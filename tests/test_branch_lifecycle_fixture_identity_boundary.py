@@ -49,31 +49,52 @@ def test_lifecycle_fixture_seeds_tenant_root_only_through_admin_identity() -> No
     assert "async with AdminTestSessionLocal() as session:" in fixture
     assert "Organization(id=org_id" in fixture
     assert "await set_db_session_context(session, str(org_id), str(owner_id), \"owner\")" in fixture
+    assert "auth_db_session" in fixture
+    assert "auth_db_session.add_all([b1, b2])" in fixture
 
-    # The reduced production-equivalent runtime must not become a fixture
+    # The reduced production-equivalent API runtime must not become a fixture
     # backdoor for tenant-root or initial branch creation.
     assert "async with AsyncSessionLocal() as session:" not in fixture
 
 
-def test_lifecycle_cleanup_is_admin_only_without_cascade_or_runtime_grants() -> None:
+def test_lifecycle_cleanup_does_not_invent_hard_delete_or_rls_bypass() -> None:
     cleanup = _function_source("cleanup_lifecycle_fixture")
     executable_literals = _executable_string_literals("cleanup_lifecycle_fixture")
+    normalized_literals = [literal.upper() for literal in executable_literals]
 
     assert "async with AdminTestSessionLocal() as session:" in cleanup
     assert "await assert_test_database(session)" in cleanup
     assert "RESET ROLE" in cleanup
     assert "TRUNCATE TABLE" in cleanup
-    # Inspect executable literals rather than comments/docstrings. A truthful
-    # explanation that cleanup runs "without CASCADE" must not trip the guard;
-    # an actual SQL statement containing CASCADE still fails closed.
-    assert all("CASCADE" not in literal.upper() for literal in executable_literals)
-    assert "branch_status_history" in cleanup
-    assert "branch_lifecycle_events" in cleanup
-    assert "branch_outbox_events" in cleanup
-    assert "branch_watchdog_alerts" in cleanup
-    assert "DELETE FROM public.org_branch_state WHERE org_id = :org_id" in cleanup
-    assert "DELETE FROM public.org_branches WHERE org_id = :org_id" in cleanup
-    assert "DELETE FROM public.organizations WHERE id = :org_id" in cleanup
+
+    # Lifecycle append/queue rows are test-owned evidence and may be cleared in
+    # the disposable CI database. Tenant roots and branch state intentionally
+    # have no production hard-delete capability, so teardown must never weaken
+    # FORCE RLS or create a transient privilege just to remove fixture roots.
+    for relation in (
+        "branch_status_history",
+        "branch_lifecycle_events",
+        "branch_outbox_events",
+        "branch_watchdog_alerts",
+    ):
+        assert relation in cleanup
+
+    forbidden_fragments = (
+        "CASCADE",
+        "ALTER TABLE",
+        "DISABLE ROW LEVEL SECURITY",
+        "NO FORCE ROW LEVEL SECURITY",
+        "SET ROW_SECURITY",
+        "BYPASSRLS",
+        "GRANT DELETE",
+        "DELETE FROM PUBLIC.ORG_BRANCH_STATE",
+        "DELETE FROM PUBLIC.ORG_BRANCHES",
+        "DELETE FROM PUBLIC.ORGANIZATIONS",
+        "DELETE FROM PUBLIC.ORGANIZATION_USERS",
+        "DELETE FROM PUBLIC.GYM_OWNERS",
+    )
+    for literal in normalized_literals:
+        assert all(fragment not in literal for fragment in forbidden_fragments)
 
 
 def test_lifecycle_behavior_still_executes_on_reduced_runtime() -> None:
