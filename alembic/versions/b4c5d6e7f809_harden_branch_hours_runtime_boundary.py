@@ -13,7 +13,9 @@ The predecessor also contains two authorization defects:
 
 * organization default-hours uses a tenant-only ALL policy, so database writes
   are not restricted to owner/admin even though the API is; and
-* branch special-hours is FORCE-RLS protected but has no policies at all.
+* branch special-hours has no application-runtime read/write policies (the
+  later 8192 hardening revision adds only its narrowly scoped internal
+  soft-delete policy for app_security_owner).
 
 This revision establishes an explicit least-privilege contract:
 
@@ -23,14 +25,16 @@ This revision establishes an explicit least-privilege contract:
   owner/admin role;
 * branch standard/special writes require an active tenant member plus either
   owner/admin role or an active branch-manager assignment;
-* branch special-hours receives tenant-scoped read/write policies;
+* branch special-hours receives tenant-scoped application read/write policies;
+* the internal 8192 branch soft-delete policies are preserved unchanged;
 * audit rows are appended through a tenant-bound SECURITY DEFINER trigger
   owned by the NOLOGIN/NOBYPASSRLS app_security_owner, with only column-level
   INSERT capability and an explicit INSERT RLS policy; and
 * app_runtime receives no direct audit-log INSERT capability.
 
-Downgrade restores the exact DBEB policy/trigger shape and removes all ACL and
-security objects owned by this revision.
+Downgrade restores the exact DBEB application policy/trigger shape while
+preserving the predecessor 8192 internal cascade policies, and removes all ACL
+and security objects owned by this revision.
 """
 
 from __future__ import annotations
@@ -61,12 +65,18 @@ _FORBIDDEN = {"DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
 _PREDECESSOR_POLICIES = {
     "public.organization_operating_hours": {"tenant_isolation_org_hours"},
     "public.branch_operating_hours": {
+        "internal_branch_hours_soft_delete_update",
         "tenant_isolation_read_hours",
         "write_branch_hours_org_admin",
         "write_branch_hours_manager",
     },
-    "public.branch_special_hours": set(),
-    "public.branch_hours_projection": {"tenant_isolation_projection"},
+    "public.branch_special_hours": {
+        "internal_branch_special_hours_soft_delete_update",
+    },
+    "public.branch_hours_projection": {
+        "internal_branch_hours_projection_delete",
+        "tenant_isolation_projection",
+    },
     "public.branch_hours_audit_log": {"tenant_isolation_audit"},
 }
 
@@ -80,13 +90,18 @@ _FORWARD_POLICIES = {
         "branch_hours_read_active_member",
         "branch_hours_insert_authorized",
         "branch_hours_update_authorized",
+        "internal_branch_hours_soft_delete_update",
     },
     "public.branch_special_hours": {
         "branch_special_hours_read_active_member",
         "branch_special_hours_insert_authorized",
         "branch_special_hours_update_authorized",
+        "internal_branch_special_hours_soft_delete_update",
     },
-    "public.branch_hours_projection": {"tenant_isolation_projection"},
+    "public.branch_hours_projection": {
+        "internal_branch_hours_projection_delete",
+        "tenant_isolation_projection",
+    },
     "public.branch_hours_audit_log": {
         "tenant_isolation_audit",
         "internal_branch_hours_audit_insert",
