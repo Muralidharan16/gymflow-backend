@@ -13,8 +13,9 @@ Key design decisions:
   • All application database identities use one request→Session context initializer.
   • Asynchronous workers use a separate database pool/credential boundary and
     explicitly install tenant/internal-maintenance context per unit of work.
-  • User-settable statement, lock, and idle-in-transaction timeouts are enforced
-    on every transaction.
+  • API and worker transactions have separate bounded timeout budgets; installing
+    tenant context must never silently replace the worker role's operational
+    budget with the shorter request budget.
   • Cluster-level/privileged lock-detection settings such as ``deadlock_timeout``
     remain an administrator-owned PostgreSQL configuration boundary.
   • Sync engine is preserved for legacy Celery tasks and uses the declared
@@ -47,9 +48,12 @@ _ALLOWED_PRINCIPAL_TYPES = frozenset(
 )
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
-_LOCK_TIMEOUT_MS = 500
-_STMT_TIMEOUT_MS = 5000
-_IDLE_TIMEOUT_MS = 15000
+_API_LOCK_TIMEOUT_MS = 500
+_API_STMT_TIMEOUT_MS = 5000
+_API_IDLE_TIMEOUT_MS = 15000
+_WORKER_LOCK_TIMEOUT_MS = 2000
+_WORKER_STMT_TIMEOUT_MS = 15000
+_WORKER_IDLE_TIMEOUT_MS = 30000
 
 
 async_engine = create_async_engine(
@@ -104,6 +108,7 @@ def _context_settings(context: dict[str, Optional[str]]):
     org_id = context.get("org_id")
     trace_id = context.get("trace_id") or "unknown"
     org_label = org_id or "anon"
+    is_worker = bool(context.get("internal_maintenance"))
 
     yield "application_name", f"doers:org:{org_label}:trace:{trace_id}"
 
@@ -123,9 +128,14 @@ def _context_settings(context: dict[str, Optional[str]]):
         if value is not None:
             yield name, str(value)
 
-    yield "statement_timeout", f"{_STMT_TIMEOUT_MS}ms"
-    yield "lock_timeout", f"{_LOCK_TIMEOUT_MS}ms"
-    yield "idle_in_transaction_session_timeout", f"{_IDLE_TIMEOUT_MS}ms"
+    if is_worker:
+        yield "statement_timeout", f"{_WORKER_STMT_TIMEOUT_MS}ms"
+        yield "lock_timeout", f"{_WORKER_LOCK_TIMEOUT_MS}ms"
+        yield "idle_in_transaction_session_timeout", f"{_WORKER_IDLE_TIMEOUT_MS}ms"
+    else:
+        yield "statement_timeout", f"{_API_STMT_TIMEOUT_MS}ms"
+        yield "lock_timeout", f"{_API_LOCK_TIMEOUT_MS}ms"
+        yield "idle_in_transaction_session_timeout", f"{_API_IDLE_TIMEOUT_MS}ms"
 
 
 def _apply_context_sync(connection, context: dict[str, Optional[str]]) -> None:
