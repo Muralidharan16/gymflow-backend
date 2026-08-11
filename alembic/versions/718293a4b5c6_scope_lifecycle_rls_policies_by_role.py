@@ -5,7 +5,7 @@ Revises: 60718293a4b5
 Create Date: 2026-08-11
 
 The lifecycle policies introduced by 708/92 were created without ``TO`` and
-therefore applied to PUBLIC.  After the dedicated worker boundary was added,
+therefore applied to PUBLIC. After the dedicated worker boundary was added,
 PostgreSQL composed those ordinary API policies into worker queries as well.
 In particular, ``p_outbox_select`` resolves tenant ownership through
 ``org_branches`` while ``lifecycle_worker_branch_read`` resolves its lease
@@ -13,12 +13,14 @@ through ``branch_outbox_events``, creating the RLS rewrite cycle:
 
     org_branches -> branch_outbox_events -> org_branches
 
-This revision changes no policy predicates and grants no new table capability.
-It only assigns each existing policy to the database identity that already owns
-the corresponding ACL: application read/update/append policies to app_runtime,
-and onboarding branch-state INSERT to auth_runtime.  Dedicated worker and
-security-owner policies remain separate and are no longer polluted by PUBLIC
-application policy composition.
+This revision changes *only* the policy role domain. It uses ``ALTER POLICY ...
+TO ...`` so PostgreSQL preserves the exact predecessor ``USING`` and
+``WITH CHECK`` expressions, command and permissive mode rather than asking this
+revision to reconstruct security predicates owned by 708/92. Normal lifecycle
+policies are scoped to ``app_runtime``; onboarding branch-state INSERT is scoped
+to ``auth_runtime``. Dedicated worker/security-owner policies remain separate.
+Downgrade restores the exact predecessor policy definitions by changing only the
+role list back to PUBLIC.
 """
 
 from __future__ import annotations
@@ -96,8 +98,8 @@ def _policy_row(bind, relation: str, policy_name: str):
             SELECT p.polcmd::text AS command,
                    p.polpermissive,
                    p.polroles,
-                   pg_catalog.pg_get_expr(p.polqual, p.polrelid) AS using_expr,
-                   pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid) AS check_expr
+                   pg_catalog.pg_get_expr(p.polqual, p.polrelid, true)::text AS using_expr,
+                   pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid, true)::text AS check_expr
             FROM pg_catalog.pg_policy AS p
             WHERE p.polrelid = CAST(:relation AS regclass)
               AND p.polname = :policy_name
@@ -107,7 +109,17 @@ def _policy_row(bind, relation: str, policy_name: str):
     ).mappings().one_or_none()
 
 
-def _require_public_predecessor(bind) -> None:
+def _predicate_contract(row) -> tuple[object, ...]:
+    return (
+        row["command"],
+        bool(row["polpermissive"]),
+        row["using_expr"],
+        row["check_expr"],
+    )
+
+
+def _capture_public_predecessor(bind) -> dict[tuple[str, str], tuple[object, ...]]:
+    contracts: dict[tuple[str, str], tuple[object, ...]] = {}
     for relation, policies in _POLICY_RELATIONS.items():
         for policy_name in policies:
             row = _policy_row(bind, relation, policy_name)
@@ -120,211 +132,58 @@ def _require_public_predecessor(bind) -> None:
                     "718293 refuses policy-role drift before scoping: "
                     f"{relation}.{policy_name}: roles={list(row['polroles'])!r}"
                 )
+            contracts[(relation, policy_name)] = _predicate_contract(row)
+    return contracts
 
 
-def _drop_target_policies() -> None:
-    for relation, policies in _POLICY_RELATIONS.items():
-        for policy_name in policies:
-            op.execute(f"DROP POLICY {policy_name} ON {relation}")
+def _role_oid(bind, role_name: str) -> int:
+    value = bind.execute(
+        sa.text("SELECT oid FROM pg_catalog.pg_roles WHERE rolname = :name"),
+        {"name": role_name},
+    ).scalar_one_or_none()
+    if value is None:
+        raise RuntimeError(f"718293 required role is missing: {role_name}")
+    return int(value)
 
 
-def _create_scoped_policies() -> None:
-    tenant = """
-        CASE
-            WHEN pg_catalog.pg_input_is_valid(
-                NULLIF(pg_catalog.current_setting('app.current_org_id', true), ''),
-                'uuid'
-            )
-            THEN CAST(
-                NULLIF(pg_catalog.current_setting('app.current_org_id', true), '')
-                AS uuid
-            )
-            ELSE CAST(NULL AS uuid)
-        END
-    """
-
-    # Preserve the exact 92a application visibility matrix; only TO changes.
-    op.execute(
-        f"""
-        CREATE POLICY p_branch_select ON public.org_branch_state
-        FOR SELECT TO app_runtime
-        USING (
-            org_id = {tenant}
-            AND (
-                (auth.role() = 'trainer' AND status = 'active')
-                OR (
-                    auth.role() = 'manager'
-                    AND status IN ('active','temporarily_closed','under_renovation')
-                )
-                OR (
-                    auth.role() IN ('owner','admin','org_admin')
-                    AND status IN (
-                        'active','temporarily_closed','under_renovation',
-                        'compliance_suspended','permanently_closed'
-                    )
-                )
-                OR (
-                    auth.role() IN (
-                        'compliance','superadmin','system',
-                        'saga_orchestrator','system_watchdog'
-                    )
-                    AND status IN (
-                        'active','temporarily_closed','under_renovation',
-                        'compliance_suspended','permanently_closed'
-                    )
-                )
-            )
-        )
-        """
-    )
-    op.execute(
-        f"""
-        CREATE POLICY p_branch_update ON public.org_branch_state
-        FOR UPDATE TO app_runtime
-        USING (
-            org_id = {tenant}
-            AND auth.role() IN (
-                'owner','admin','org_admin','compliance','superadmin',
-                'system','saga_orchestrator','system_watchdog'
-            )
-        )
-        WITH CHECK (
-            org_id = {tenant}
-            AND auth.role() IN (
-                'owner','admin','org_admin','compliance','superadmin',
-                'system','saga_orchestrator','system_watchdog'
-            )
-        )
-        """
-    )
-    op.execute(
-        f"""
-        CREATE POLICY p_branch_insert ON public.org_branch_state
-        FOR INSERT TO auth_runtime
-        WITH CHECK (
-            org_id = {tenant}
-            AND auth.role() IN ('owner','admin','org_admin','superadmin','system')
-        )
-        """
-    )
-    op.execute(
-        f"""
-        CREATE POLICY p_branch_delete ON public.org_branch_state
-        FOR DELETE TO app_runtime
-        USING (org_id = {tenant} AND auth.role() = 'superadmin')
-        """
-    )
-
-    append_roles = (
-        "'owner','admin','org_admin','compliance','superadmin',"
-        "'system','saga_orchestrator','system_watchdog'"
-    )
-    for relation, prefix in (
-        ("public.branch_status_history", "history"),
-        ("public.branch_lifecycle_events", "events"),
-        ("public.branch_outbox_events", "outbox"),
-        ("public.branch_watchdog_alerts", "watchdog"),
-    ):
-        short_name = relation.split(".", 1)[1]
-        tenant_expr = (
-            "EXISTS (SELECT 1 FROM public.org_branches AS tenant_branch "
-            f"WHERE tenant_branch.id = {short_name}.branch_id "
-            f"AND tenant_branch.org_id = {tenant})"
-        )
-        op.execute(
-            f"""
-            CREATE POLICY p_{prefix}_select ON {relation}
-            FOR SELECT TO app_runtime
-            USING ({tenant_expr} AND auth.role() IN ({append_roles}))
-            """
-        )
-        op.execute(
-            f"""
-            CREATE POLICY p_{prefix}_insert ON {relation}
-            FOR INSERT TO app_runtime
-            WITH CHECK ({tenant_expr} AND auth.role() IN ({append_roles}))
-            """
-        )
+def _alter_policy_roles(targets: dict[tuple[str, str], str]) -> None:
+    for (relation, policy_name), role_name in targets.items():
+        op.execute(f"ALTER POLICY {policy_name} ON {relation} TO {role_name}")
 
 
-def _create_public_predecessor() -> None:
-    # Downgrade restores exactly the public role scope represented by 607's
-    # predecessor. Predicates remain the same as the forward definitions above.
-    tenant = """
-        CASE
-            WHEN pg_catalog.pg_input_is_valid(
-                NULLIF(pg_catalog.current_setting('app.current_org_id', true), ''),
-                'uuid'
-            )
-            THEN CAST(NULLIF(pg_catalog.current_setting('app.current_org_id', true), '') AS uuid)
-            ELSE CAST(NULL AS uuid)
-        END
-    """
-    op.execute(
-        f"""
-        CREATE POLICY p_branch_select ON public.org_branch_state FOR SELECT USING (
-            org_id = {tenant} AND (
-                (auth.role() = 'trainer' AND status = 'active') OR
-                (auth.role() = 'manager' AND status IN ('active','temporarily_closed','under_renovation')) OR
-                (auth.role() IN ('owner','admin','org_admin') AND status IN ('active','temporarily_closed','under_renovation','compliance_suspended','permanently_closed')) OR
-                (auth.role() IN ('compliance','superadmin','system','saga_orchestrator','system_watchdog') AND status IN ('active','temporarily_closed','under_renovation','compliance_suspended','permanently_closed'))
-            )
-        )
-        """
-    )
-    roles = "'owner','admin','org_admin','compliance','superadmin','system','saga_orchestrator','system_watchdog'"
-    op.execute(
-        f"CREATE POLICY p_branch_update ON public.org_branch_state FOR UPDATE "
-        f"USING (org_id = {tenant} AND auth.role() IN ({roles})) "
-        f"WITH CHECK (org_id = {tenant} AND auth.role() IN ({roles}))"
-    )
-    op.execute(
-        f"CREATE POLICY p_branch_insert ON public.org_branch_state FOR INSERT "
-        f"WITH CHECK (org_id = {tenant} AND auth.role() IN ('owner','admin','org_admin','superadmin','system'))"
-    )
-    op.execute(
-        f"CREATE POLICY p_branch_delete ON public.org_branch_state FOR DELETE "
-        f"USING (org_id = {tenant} AND auth.role() = 'superadmin')"
-    )
-    for relation, prefix in (
-        ("public.branch_status_history", "history"),
-        ("public.branch_lifecycle_events", "events"),
-        ("public.branch_outbox_events", "outbox"),
-        ("public.branch_watchdog_alerts", "watchdog"),
-    ):
-        short_name = relation.split(".", 1)[1]
-        tenant_expr = (
-            "EXISTS (SELECT 1 FROM public.org_branches AS tenant_branch "
-            f"WHERE tenant_branch.id = {short_name}.branch_id "
-            f"AND tenant_branch.org_id = {tenant})"
-        )
-        op.execute(
-            f"CREATE POLICY p_{prefix}_select ON {relation} FOR SELECT "
-            f"USING ({tenant_expr} AND auth.role() IN ({roles}))"
-        )
-        op.execute(
-            f"CREATE POLICY p_{prefix}_insert ON {relation} FOR INSERT "
-            f"WITH CHECK ({tenant_expr} AND auth.role() IN ({roles}))"
-        )
-
-
-def _verify_scoped(bind) -> None:
-    role_oids = {
-        name: bind.execute(
-            sa.text("SELECT oid FROM pg_catalog.pg_roles WHERE rolname = :name"),
-            {"name": name},
-        ).scalar_one()
-        for name in ("app_runtime", "auth_runtime", "worker_runtime", "app_security_owner")
+def _target_map() -> dict[tuple[str, str], str]:
+    return {
+        (relation, policy_name): role_name
+        for relation, policies in _POLICY_RELATIONS.items()
+        for policy_name, role_name in policies.items()
     }
-    for relation, policies in _POLICY_RELATIONS.items():
-        for policy_name, role_name in policies.items():
-            row = _policy_row(bind, relation, policy_name)
-            if row is None or list(row["polroles"]) != [role_oids[role_name]]:
-                raise RuntimeError(
-                    "718293 policy scope postcondition failed: "
-                    f"{relation}.{policy_name}: expected={role_name}, "
-                    f"observed={None if row is None else list(row['polroles'])!r}"
-                )
+
+
+def _verify_scoped(
+    bind,
+    predecessor_contracts: dict[tuple[str, str], tuple[object, ...]],
+) -> None:
+    role_oids = {
+        name: _role_oid(bind, name)
+        for name in ("app_runtime", "auth_runtime")
+    }
+    for (relation, policy_name), role_name in _target_map().items():
+        row = _policy_row(bind, relation, policy_name)
+        if row is None:
+            raise RuntimeError(
+                f"718293 scoped policy disappeared: {relation}.{policy_name}"
+            )
+        if list(row["polroles"]) != [role_oids[role_name]]:
+            raise RuntimeError(
+                "718293 policy scope postcondition failed: "
+                f"{relation}.{policy_name}: expected={role_name}, "
+                f"observed={list(row['polroles'])!r}"
+            )
+        if _predicate_contract(row) != predecessor_contracts[(relation, policy_name)]:
+            raise RuntimeError(
+                "718293 changed lifecycle policy predicate while scoping roles: "
+                f"{relation}.{policy_name}"
+            )
 
     # Worker and security owner must still have their dedicated policies; this
     # revision does not replace or broaden them.
@@ -367,19 +226,44 @@ def _verify_scoped(bind) -> None:
             raise RuntimeError(f"718293 leaked public CREATE to {role_name}")
 
 
+def _capture_scoped_for_downgrade(bind) -> dict[tuple[str, str], tuple[object, ...]]:
+    contracts: dict[tuple[str, str], tuple[object, ...]] = {}
+    role_oids = {
+        name: _role_oid(bind, name)
+        for name in ("app_runtime", "auth_runtime")
+    }
+    for (relation, policy_name), role_name in _target_map().items():
+        row = _policy_row(bind, relation, policy_name)
+        if row is None or list(row["polroles"]) != [role_oids[role_name]]:
+            raise RuntimeError(
+                f"718293 downgrade policy-role drift: {relation}.{policy_name}"
+            )
+        contracts[(relation, policy_name)] = _predicate_contract(row)
+    return contracts
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     _require_migration_owner(bind)
-    _require_public_predecessor(bind)
-    _drop_target_policies()
-    _create_scoped_policies()
-    _verify_scoped(bind)
+    predecessor_contracts = _capture_public_predecessor(bind)
+    _alter_policy_roles(_target_map())
+    _verify_scoped(bind, predecessor_contracts)
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     _require_migration_owner(bind)
-    _verify_scoped(bind)
-    _drop_target_policies()
-    _create_public_predecessor()
-    _require_public_predecessor(bind)
+    scoped_contracts = _capture_scoped_for_downgrade(bind)
+    _alter_policy_roles({key: "PUBLIC" for key in _target_map()})
+
+    for (relation, policy_name), expected_contract in scoped_contracts.items():
+        row = _policy_row(bind, relation, policy_name)
+        if row is None or list(row["polroles"]) != [0]:
+            raise RuntimeError(
+                f"718293 failed to restore PUBLIC scope: {relation}.{policy_name}"
+            )
+        if _predicate_contract(row) != expected_contract:
+            raise RuntimeError(
+                "718293 downgrade changed lifecycle policy predicate: "
+                f"{relation}.{policy_name}"
+            )
