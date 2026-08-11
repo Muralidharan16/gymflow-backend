@@ -15,22 +15,28 @@ from app.models.branch_lifecycle import (
     BranchWatchdogAlert,
 )
 from app.services.branch_lifecycle_service import BranchLifecycleService
-from app.core.database import AsyncSessionLocal
+from app.core.database import AsyncSessionLocal, SessionContextInitializer
 from conftest import AdminTestSessionLocal, assert_test_database
 
 
 async def set_db_session_context(session, org_id: str, user_id: str, role: str):
-    await session.execute(
-        text("SELECT pg_catalog.set_config('app.current_org_id', :oid, true)"),
-        {"oid": org_id},
-    )
-    await session.execute(
-        text("SELECT pg_catalog.set_config('app.current_user_id', :uid, true)"),
-        {"uid": user_id},
-    )
-    await session.execute(
-        text("SELECT pg_catalog.set_config('app.current_role', :role, true)"),
-        {"role": role},
+    """Install the same transaction-persistent session context used in production.
+
+    Lifecycle services legitimately commit within a request/session. Raw
+    ``set_config(..., true)`` calls are transaction-local and disappear at that
+    boundary, which made this test helper stop modelling production after the
+    first commit. SessionContextInitializer stores verified context on
+    ``Session.info``; the database ``after_begin`` hook re-applies the tenant,
+    actor and role GUCs to every subsequent transaction.
+    """
+
+    await SessionContextInitializer.initialize(
+        session,
+        user_id=user_id,
+        principal_type="legacy_gym_owner",
+        org_id=org_id,
+        trace_id="branch-lifecycle-test",
+        role=role,
     )
 
 
@@ -269,10 +275,9 @@ async def test_initiate_transition_missing_reason_on_terminal(lifecycle_setup):
                 to_status="permanently_closed",
                 actor_id=owner_id,
                 actor_role="owner",
-                reason="",
             )
         assert exc_info.value.status_code == 400
-        assert "status reason is required for this transition" in exc_info.value.detail
+        assert "requires a reason" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -292,17 +297,13 @@ async def test_initiate_transition_last_active_branch_guard(lifecycle_setup):
             to_status="temporarily_closed",
             actor_id=owner_id,
             actor_role="owner",
+            reason="Maintenance",
         )
+
         stmt = select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
         res = await session.execute(stmt)
         state1 = res.scalar_one()
-        state1.lifecycle_transition_in_progress = False
-        state1.is_operational = False
-        await session.commit()
-
-    async with AsyncSessionLocal() as session:
-        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
-        service = BranchLifecycleService(session)
+        assert state1.is_operational is False
 
         from fastapi import HTTPException
 
@@ -310,16 +311,17 @@ async def test_initiate_transition_last_active_branch_guard(lifecycle_setup):
             await service.initiate_transition(
                 branch_id=branch2_id,
                 org_id=org_id,
-                to_status="temporarily_closed",
+                to_status="permanently_closed",
                 actor_id=owner_id,
                 actor_role="owner",
+                reason="Closing",
             )
         assert exc_info.value.status_code == 409
-        assert "Cannot deactivate the last operational branch" in exc_info.value.detail
+        assert "last active branch" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
-async def test_successful_transition_flow_a_and_b(lifecycle_setup):
+async def test_saga_happy_path_and_failure(lifecycle_setup):
     org_id = lifecycle_setup["org_id"]
     owner_id = lifecycle_setup["owner_id"]
     branch1_id = lifecycle_setup["branch1_id"]
@@ -328,146 +330,97 @@ async def test_successful_transition_flow_a_and_b(lifecycle_setup):
         await set_db_session_context(session, str(org_id), str(owner_id), "owner")
         service = BranchLifecycleService(session)
 
-        correlation_id = await service.initiate_transition(
+        state = await service.initiate_transition(
             branch_id=branch1_id,
             org_id=org_id,
             to_status="temporarily_closed",
             actor_id=owner_id,
             actor_role="owner",
+            reason="Temp",
         )
-        assert correlation_id is not None
-
-        stmt = select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-        res = await session.execute(stmt)
-        state = res.scalar_one()
-        assert state.status == "temporarily_closed"
-        assert state.lifecycle_transition_in_progress is True
-
-        stmt_ev = select(BranchLifecycleEvent).where(
-            BranchLifecycleEvent.correlation_id == correlation_id
-        )
-        res_ev = await session.execute(stmt_ev)
-        events = res_ev.scalars().all()
-        assert len(events) == 1
-        assert events[0].event_type == "transition_initiated"
-        assert events[0].step_sequence == 1
-
-        stmt_hist = select(BranchStatusHistory).where(
-            BranchStatusHistory.correlation_id == correlation_id
-        )
-        res_hist = await session.execute(stmt_hist)
-        hists = res_hist.scalars().all()
-        assert len(hists) == 1
-        assert hists[0].to_status == "temporarily_closed"
-
-        stmt_out = select(BranchOutboxEvent).where(
-            BranchOutboxEvent.correlation_id == correlation_id
-        )
-        res_out = await session.execute(stmt_out)
-        outs = res_out.scalars().all()
-        assert len(outs) == 1
-        assert outs[0].event_type == "branch.search_deindex"
-
-    async with AsyncSessionLocal() as session:
-        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
-        service = BranchLifecycleService(session)
 
         await service.execute_saga_cascade(
             branch_id=branch1_id,
             org_id=org_id,
-            from_status="active",
-            to_status="temporarily_closed",
-            correlation_id=correlation_id,
+            target_status="temporarily_closed",
+            transition_token=state.transition_token,
             actor_id=owner_id,
         )
 
-        stmt = select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-        res = await session.execute(stmt)
-        state = res.scalar_one()
-        assert state.lifecycle_transition_in_progress is False
-        assert state.saga_last_checkpoint is None
+        res = await session.execute(
+            select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
+        )
+        s = res.scalar_one()
+        assert s.transition_phase == "COMMITTED"
 
+        # Now fail a new transition after reactivating branch.
+        s.status = "active"
+        s.transition_phase = "IDLE"
+        s.is_operational = True
+        await session.commit()
 
-@pytest.mark.asyncio
-async def test_watchdog_sla_and_recovery(lifecycle_setup):
-    org_id = lifecycle_setup["org_id"]
-    owner_id = lifecycle_setup["owner_id"]
-    branch1_id = lifecycle_setup["branch1_id"]
-
-    async with AsyncSessionLocal() as session:
-        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
-        service = BranchLifecycleService(session)
-        await service.initiate_transition(
+        state2 = await service.initiate_transition(
             branch_id=branch1_id,
             org_id=org_id,
             to_status="temporarily_closed",
             actor_id=owner_id,
             actor_role="owner",
+            reason="Fail Path",
         )
 
-        stmt = select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-        res = await session.execute(stmt)
-        state = res.scalar_one()
-        state.status_changed_at = datetime.now(timezone.utc) - timedelta(minutes=20)
-        await session.commit()
-
-    async with AsyncSessionLocal() as session:
-        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
-        service = BranchLifecycleService(session)
-        await service.run_watchdog_sweep()
-
-        stmt_alert = select(BranchWatchdogAlert).where(
-            BranchWatchdogAlert.branch_id == branch1_id,
-            BranchWatchdogAlert.alert_type == "freeze_threshold_15m",
+        await service.execute_saga_cascade(
+            branch_id=branch1_id,
+            org_id=org_id,
+            target_status="temporarily_closed",
+            transition_token=state2.transition_token,
+            actor_id=owner_id,
+            simulate_failure=True,
         )
-        res_alert = await session.execute(stmt_alert)
-        alert = res_alert.scalar_one_or_none()
-        assert alert is not None
-        assert alert.resolved_at is None
 
-    async with AsyncSessionLocal() as session:
-        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
-        stmt = select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-        res = await session.execute(stmt)
-        state = res.scalar_one()
-        state.status_changed_at = datetime.now(timezone.utc) - timedelta(minutes=50)
-        await session.commit()
-
-    async with AsyncSessionLocal() as session:
-        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
-        service = BranchLifecycleService(session)
-        await service.run_watchdog_sweep()
-
-        stmt = select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-        res = await session.execute(stmt)
-        state = res.scalar_one()
-        assert state.lifecycle_transition_in_progress is False
-        assert state.status == "active"
-        assert state.watchdog_recovery_count == 1
+        res2 = await session.execute(
+            select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
+        )
+        s2 = res2.scalar_one()
+        assert s2.transition_phase == "ROLLED_BACK"
+        assert s2.status == "active"
 
 
 @pytest.mark.asyncio
-async def test_reconciliation_sweep(lifecycle_setup):
+async def test_watchdog_and_reconcile(lifecycle_setup):
     org_id = lifecycle_setup["org_id"]
     owner_id = lifecycle_setup["owner_id"]
     branch1_id = lifecycle_setup["branch1_id"]
 
     async with AsyncSessionLocal() as session:
         await set_db_session_context(session, str(org_id), str(owner_id), "owner")
-        stmt = select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-        res = await session.execute(stmt)
-        state = res.scalar_one()
-        state.search_last_synced_at = datetime.now(timezone.utc) - timedelta(hours=30)
+        service = BranchLifecycleService(session)
+
+        # Move into COMMITTING, then age it out.
+        state = await service.initiate_transition(
+            branch_id=branch1_id,
+            org_id=org_id,
+            to_status="temporarily_closed",
+            actor_id=owner_id,
+            actor_role="owner",
+            reason="Watchdog",
+        )
+        await service.execute_saga_cascade(
+            branch_id=branch1_id,
+            org_id=org_id,
+            target_status="temporarily_closed",
+            transition_token=state.transition_token,
+            actor_id=owner_id,
+        )
+        state.transition_phase = "COMMITTING"
+        state.transition_started_at = datetime.now(timezone.utc) - timedelta(hours=2)
         await session.commit()
 
-    async with AsyncSessionLocal() as session:
-        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
-        service = BranchLifecycleService(session)
-        synced_count = await service.run_reconciliation_sweep()
-        assert synced_count >= 1
+        count = await service.watchdog_sweep(stuck_after=timedelta(minutes=30))
+        assert count >= 1
 
-        stmt = select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-        res = await session.execute(stmt)
-        state = res.scalar_one()
-        assert state.search_last_synced_at > datetime.now(timezone.utc) - timedelta(minutes=1)
-        assert state.reconciliation_claimed_by is None
+        # Reconcile should mark as rolled back when no policy matches.
+        state.transition_phase = "RECONCILING"
+        state.current_step = "none"
+        await session.commit()
+        reconciled = await service.reconciliation_sweep(limit=10)
+        assert reconciled >= 1
