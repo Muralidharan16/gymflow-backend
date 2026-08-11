@@ -12,7 +12,8 @@ Key design decisions:
     while preventing tenant context from leaking through the connection pool.
   • All application database identities use one request→Session context initializer.
   • Asynchronous workers use a separate database credential boundary and
-    explicitly install tenant/internal-maintenance context per unit of work.
+    explicitly install tenant/internal-maintenance plus lease-owner context per
+    unit of work.
   • Celery's synchronous task wrappers create short-lived asyncio loops, so the
     worker async engine uses NullPool: asyncpg connections are never reused by a
     later task running on a different event loop.
@@ -126,6 +127,7 @@ def _context_settings(context: dict[str, Optional[str]]):
         ("app.ip_address", context.get("ip_address")),
         ("app.user_agent", context.get("user_agent")),
         ("app.internal_maintenance", context.get("internal_maintenance")),
+        ("app.worker_id", context.get("worker_id")),
     )
     for name, value in mapping:
         if value is not None:
@@ -172,6 +174,7 @@ async def update_session_context(
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
     internal_maintenance: Optional[str] = None,
+    worker_id: Optional[str] = None,
 ) -> None:
     context = dict(session.info.get(_SESSION_CONTEXT_KEY, {}))
     updates = {
@@ -187,6 +190,7 @@ async def update_session_context(
         "ip_address": ip_address,
         "user_agent": user_agent,
         "internal_maintenance": internal_maintenance,
+        "worker_id": worker_id,
     }
     for key, value in updates.items():
         if value is not None:
