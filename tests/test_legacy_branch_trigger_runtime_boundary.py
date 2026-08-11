@@ -90,10 +90,47 @@ def test_critical_delete_guard_is_scoped_and_does_not_lock_tenant_root() -> None
     assert "FROM organizations WHERE id = OLD.org_id FOR UPDATE" in predecessor
 
 
+def test_branch_soft_delete_cascade_uses_internal_tenant_scoped_authority() -> None:
+    source = _source()
+    forward = _function_source("_create_forward_branch_cascade")
+    verify = _function_source("_verify_forward")
+
+    assert "CREATE FUNCTION public.cascade_branch_soft_delete_runtime()" in forward
+    assert "SECURITY DEFINER" in forward
+    assert "SET search_path = pg_catalog, public" in forward
+    assert "SET row_security = on" in forward
+    assert "current_setting('app.current_org_id', true)" in forward
+    assert "Branch cascade tenant mismatch" in forward
+
+    # Only the no-login security owner receives the dependent-data capability.
+    assert "UPDATE (deleted_at) ON TABLE public.branch_operating_hours TO app_security_owner" in forward
+    assert "UPDATE (deleted_at) ON TABLE public.branch_special_hours TO app_security_owner" in forward
+    assert "DELETE ON TABLE public.branch_hours_projection TO app_security_owner" in forward
+    assert "UPDATE (deleted_at) ON TABLE public.branch_operating_hours TO app_runtime" not in source
+    assert "UPDATE (deleted_at) ON TABLE public.branch_special_hours TO app_runtime" not in source
+    assert "DELETE ON TABLE public.branch_hours_projection TO app_runtime" not in source
+
+    # FORCE-RLS remains meaningful: internal writes get explicit tenant-scoped
+    # policies instead of BYPASSRLS or broad runtime privileges.
+    assert "CREATE POLICY internal_branch_hours_soft_delete_update" in forward
+    assert "CREATE POLICY internal_branch_special_hours_soft_delete_update" in forward
+    assert "CREATE POLICY internal_branch_hours_projection_delete" in forward
+    assert "TO app_security_owner" in forward
+    assert "app.current_org_id" in forward
+    assert "runtime_branch_hours_update" in verify
+    assert "runtime_special_hours_update" in verify
+    assert "runtime_projection_delete" in verify
+
+    # The trigger is narrowed to the actual soft-delete edge.
+    assert "AFTER UPDATE OF deleted_at ON public.org_branch_state" in forward
+    assert "WHEN (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL)" in forward
+
+
 def test_downgrade_restores_exact_legacy_trigger_shape_and_acl() -> None:
     source = _source()
     predecessor = _function_source("_create_predecessor_objects")
     drop_forward = _function_source("_drop_forward_objects")
+    restore_cascade = _function_source("_restore_predecessor_cascade_trigger")
     verify_predecessor = _function_source("_verify_predecessor")
 
     assert "BEFORE UPDATE ON public.org_branch_state" in predecessor
@@ -101,7 +138,16 @@ def test_downgrade_restores_exact_legacy_trigger_shape_and_acl() -> None:
     assert "FROM organizations WHERE id = OLD.org_id FOR UPDATE" in predecessor
     assert "REVOKE SELECT (id, org_id, role)" in drop_forward
     assert "FROM app_security_owner" in drop_forward
-    assert "downgrade leaked revision-owned gym_owners privileges" in verify_predecessor
+    assert "downgrade leaked revision-owned branch privileges" in verify_predecessor
+
+    # The untouched DBEB function is rediscovered structurally and its original
+    # AFTER UPDATE OF deleted_at trigger shape is restored without CASCADE.
+    assert "cascade_branch_soft_delete" in restore_cascade
+    assert "UPDATE public.branch_operating_hours" in restore_cascade
+    assert "AFTER UPDATE OF deleted_at ON public.org_branch_state" in restore_cascade
+    assert "DROP POLICY internal_branch_hours_soft_delete_update" in drop_forward
+    assert "DROP POLICY internal_branch_special_hours_soft_delete_update" in drop_forward
+    assert "DROP POLICY internal_branch_hours_projection_delete" in drop_forward
 
     downgrade = _function_source("downgrade")
     assert "_verify_forward(bind)" in downgrade
