@@ -81,6 +81,7 @@ async def _install_tenant_worker_context(
     *,
     tenant_id: uuid.UUID,
     correlation_id: uuid.UUID,
+    worker_id: uuid.UUID,
 ) -> None:
     await update_session_context(
         session,
@@ -88,6 +89,7 @@ async def _install_tenant_worker_context(
         trace_id=str(correlation_id),
         role="branch_hours_worker",
         internal_maintenance=_MAINTENANCE_TOKEN,
+        worker_id=str(worker_id),
     )
 
 
@@ -159,9 +161,8 @@ async def _schedule_temporal_refresh(
     session: AsyncSession,
     *,
     parent_event_id: uuid.UUID,
-    tenant_id: uuid.UUID,
     branch_id: uuid.UUID,
-    correlation_id: uuid.UUID,
+    worker_id: uuid.UUID,
     next_refresh_at: datetime | None,
 ) -> None:
     if next_refresh_at is None:
@@ -170,46 +171,23 @@ async def _schedule_temporal_refresh(
     # Run just after the boundary so equality/clock granularity cannot rebuild
     # the old state and immediately reschedule the same transition.
     available_at = next_refresh_at.astimezone(UTC) + timedelta(seconds=1)
-    dedupe_key = f"temporal:{branch_id}:{available_at.isoformat()}"
     await session.execute(
         text(
             """
-            INSERT INTO public.transactional_outbox (
-                tenant_id,
-                branch_id,
-                event_type,
-                payload,
-                dedupe_key,
-                event_version,
-                correlation_id,
-                available_at,
-                parent_event_id
-            )
-            VALUES (
-                :tenant_id,
+            SELECT public.enqueue_branch_hours_child(
+                :parent_event_id,
                 :branch_id,
-                'branch_hours.branch_changed',
-                pg_catalog.jsonb_build_object(
-                    'branch_id', :branch_id,
-                    'reason', 'temporal_refresh',
-                    'correlation_id', :correlation_id
-                ),
-                :dedupe_key,
-                1,
-                :correlation_id,
+                :worker_id,
                 :available_at,
-                :parent_event_id
+                'temporal_refresh'
             )
-            ON CONFLICT (event_type, dedupe_key) DO NOTHING
             """
         ),
         {
-            "tenant_id": tenant_id,
-            "branch_id": branch_id,
-            "correlation_id": correlation_id,
-            "dedupe_key": dedupe_key,
-            "available_at": available_at,
             "parent_event_id": parent_event_id,
+            "branch_id": branch_id,
+            "worker_id": worker_id,
+            "available_at": available_at,
         },
     )
 
@@ -230,6 +208,7 @@ async def _process_branch_event(
         session,
         tenant_id=tenant_id,
         correlation_id=correlation_id,
+        worker_id=worker_id,
     )
 
     try:
@@ -274,9 +253,8 @@ async def _process_branch_event(
     await _schedule_temporal_refresh(
         session,
         parent_event_id=event["id"],
-        tenant_id=tenant_id,
         branch_id=branch_id,
-        correlation_id=correlation_id,
+        worker_id=worker_id,
         next_refresh_at=rebuild.next_refresh_at,
     )
     await _complete_owned_event(
@@ -301,40 +279,23 @@ async def _process_organization_event(
         session,
         tenant_id=tenant_id,
         correlation_id=correlation_id,
+        worker_id=worker_id,
     )
 
-    # Fan-out is durable and database-side; the request transaction creates one
-    # organization event regardless of tenant size.  Child dedupe is stable per
-    # parent+branch so retrying this parent cannot multiply work.
+    # The request creates one organization event regardless of tenant size.
+    # Fan-out stays in this leased worker transaction. Each child is created by
+    # the security-owned function, which verifies live parent lease and lineage;
+    # retrying the parent is idempotent through parent+branch dedupe.
     await session.execute(
         text(
             """
-            INSERT INTO public.transactional_outbox (
-                tenant_id,
-                branch_id,
-                event_type,
-                payload,
-                dedupe_key,
-                event_version,
-                correlation_id,
-                available_at,
-                parent_event_id
-            )
-            SELECT
-                :tenant_id,
+            SELECT public.enqueue_branch_hours_child(
+                :parent_event_id,
                 branch_data.id,
-                'branch_hours.branch_changed',
-                pg_catalog.jsonb_build_object(
-                    'branch_id', branch_data.id,
-                    'reason', 'organization_hours_changed',
-                    'correlation_id', :correlation_id
-                ),
-                'fanout:' || CAST(:parent_event_id AS text)
-                    || ':' || branch_data.id::text,
-                1,
-                :correlation_id,
+                :worker_id,
                 pg_catalog.clock_timestamp(),
-                :parent_event_id
+                'organization_hours_changed'
+            )
             FROM public.org_branches AS branch_data
             JOIN public.org_branch_state AS branch_state
               ON branch_state.branch_id = branch_data.id
@@ -342,13 +303,12 @@ async def _process_organization_event(
             WHERE branch_data.org_id = :tenant_id
               AND branch_state.deleted_at IS NULL
               AND branch_state.is_active IS TRUE
-            ON CONFLICT (event_type, dedupe_key) DO NOTHING
             """
         ),
         {
-            "tenant_id": tenant_id,
-            "correlation_id": correlation_id,
             "parent_event_id": event["id"],
+            "worker_id": worker_id,
+            "tenant_id": tenant_id,
         },
     )
     await _complete_owned_event(
@@ -466,6 +426,8 @@ async def _process_claimed_event(
                     event=event,
                     worker_id=worker_id,
                 )
+            # Projection/fan-out side effects and the processed marker commit as
+            # one transaction. A crash before commit leaves the lease reclaimable.
             await session.commit()
         return "processed"
     except Exception as exc:
