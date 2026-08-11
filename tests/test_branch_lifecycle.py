@@ -36,25 +36,20 @@ async def set_db_session_context(session, org_id: str, user_id: str, role: str):
     )
 
 
-async def cleanup_lifecycle_fixture(
-    org_id: uuid.UUID, actor_id: uuid.UUID
-) -> None:
-    """Remove only lifecycle-fixture state through the guarded admin identity.
+async def cleanup_lifecycle_fixture() -> None:
+    """Clear only lifecycle-owned append/queue surfaces in the disposable DB.
 
-    branch_status_history is intentionally append-only for DELETE/UPDATE, so the
-    test harness truncates only the four lifecycle-owned child surfaces and does
-    so without CASCADE. Tenant/root rows are then deleted explicitly in FK order.
-    FORCE-RLS tables are cleaned with explicit tenant context instead of relying
-    on owner identity as an implicit RLS bypass. This avoids granting TRUNCATE on
-    unrelated tables and keeps destructive capability outside runtime.
+    Production deliberately exposes no hard-delete capability for branch roots or
+    branch state. Test teardown must not invent one through temporary grants, RLS
+    weakening, owner bypass tricks, or CASCADE. Every fixture uses fresh UUIDs,
+    and the CI database itself is disposable, so tenant/branch roots remain until
+    the job database is destroyed. Only lifecycle-owned append/queue relations,
+    which cannot be tenant-deleted through production identities, are truncated
+    by the guarded database owner between lifecycle scenarios.
     """
     async with AdminTestSessionLocal() as session:
         await session.execute(text("RESET ROLE"))
         await assert_test_database(session)
-        await set_db_session_context(
-            session, str(org_id), str(actor_id), "superadmin"
-        )
-
         await session.execute(
             text(
                 """
@@ -65,26 +60,6 @@ async def cleanup_lifecycle_fixture(
                     public.branch_status_history
                 """
             )
-        )
-        await session.execute(
-            text("DELETE FROM public.org_branch_state WHERE org_id = :org_id"),
-            {"org_id": org_id},
-        )
-        await session.execute(
-            text("DELETE FROM public.org_branches WHERE org_id = :org_id"),
-            {"org_id": org_id},
-        )
-        await session.execute(
-            text("DELETE FROM public.organization_users WHERE org_id = :org_id"),
-            {"org_id": org_id},
-        )
-        await session.execute(
-            text("DELETE FROM public.gym_owners WHERE org_id = :org_id"),
-            {"org_id": org_id},
-        )
-        await session.execute(
-            text("DELETE FROM public.organizations WHERE id = :org_id"),
-            {"org_id": org_id},
         )
         await session.commit()
 
@@ -232,7 +207,7 @@ async def lifecycle_setup(auth_db_session):
         "branch2_id": b2_id,
     }
 
-    await cleanup_lifecycle_fixture(org_id, owner_id)
+    await cleanup_lifecycle_fixture()
 
 
 @pytest.mark.asyncio
