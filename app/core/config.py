@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     AUTH_DATABASE_URL: str = ""
     WORKER_DATABASE_URL: str = ""
+    MAINTENANCE_DATABASE_URL: str = ""
     TEST_DATABASE_URL: str = ""
     REDIS_URL: str
     CELERY_BROKER_URL: str
@@ -98,6 +99,19 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "WORKER_DATABASE_URL must use a distinct production database identity"
                 )
+            if not self.MAINTENANCE_DATABASE_URL:
+                raise ValueError(
+                    "MAINTENANCE_DATABASE_URL is required in production so lifecycle "
+                    "watchdog/reconciliation sweeps do not reuse API, auth, or worker credentials"
+                )
+            if self.MAINTENANCE_DATABASE_URL in {
+                self.DATABASE_URL,
+                self.AUTH_DATABASE_URL,
+                self.WORKER_DATABASE_URL,
+            }:
+                raise ValueError(
+                    "MAINTENANCE_DATABASE_URL must use a distinct production database identity"
+                )
         return self
 
     @property
@@ -114,6 +128,16 @@ class Settings(BaseSettings):
         is provisioned.
         """
         return self.WORKER_DATABASE_URL or self.DATABASE_URL
+
+    @property
+    def maintenance_database_url(self) -> str:
+        """Return the bounded lifecycle-maintenance URL.
+
+        Production must use a fourth database identity. Development and tests
+        may share the application URL until the dedicated maintenance login is
+        provisioned, matching the worker-local-development behavior above.
+        """
+        return self.MAINTENANCE_DATABASE_URL or self.DATABASE_URL
 
     @property
     def is_production(self) -> bool:
