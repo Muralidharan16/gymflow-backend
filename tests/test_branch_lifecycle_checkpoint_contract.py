@@ -35,11 +35,21 @@ def _tree(path: Path) -> ast.Module:
 
 def _assignment(path: Path, name: str):
     for node in _tree(path).body:
-        if isinstance(node, ast.Assign) and any(
+        if not isinstance(node, ast.Assign) or not any(
             isinstance(target, ast.Name) and target.id == name
             for target in node.targets
         ):
-            return ast.literal_eval(node.value)
+            continue
+        value = node.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "frozenset"
+            and len(value.args) == 1
+            and not value.keywords
+        ):
+            return frozenset(ast.literal_eval(value.args[0]))
+        return ast.literal_eval(value)
     raise AssertionError(f"missing assignment {name}")
 
 
@@ -50,6 +60,17 @@ def _function(path: Path, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name == name
     )
+
+
+def _executable_string_literals(path: Path) -> list[str]:
+    tree = _tree(path)
+    module_body = tree.body[1:] if ast.get_docstring(tree, clean=False) is not None else tree.body
+    values: list[str] = []
+    for statement in module_body:
+        for node in ast.walk(statement):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                values.append(node.value)
+    return values
 
 
 def test_checkpoint_migration_is_single_head_successor() -> None:
@@ -104,8 +125,8 @@ def test_checkpoint_migration_refuses_unresolved_state_both_directions() -> None
 
 
 def test_checkpoint_migration_changes_no_security_boundary() -> None:
-    source = _source(MIGRATION).upper()
-    forbidden = (
+    executable = "\n".join(_executable_string_literals(MIGRATION)).upper()
+    forbidden_mutations = (
         "GRANT ",
         "REVOKE ",
         "CREATE POLICY",
@@ -117,18 +138,17 @@ def test_checkpoint_migration_changes_no_security_boundary() -> None:
         "ALTER ROLE",
         "SET ROLE",
         "SET LOCAL ROLE",
-        "BYPASSRLS",
         "SECURITY DEFINER",
         "SECURITY INVOKER",
         "CASCADE",
     )
-    executable = "\n".join(
-        value.value.upper()
-        for value in ast.walk(_tree(MIGRATION))
-        if isinstance(value, ast.Constant) and isinstance(value.value, str)
-    )
-    for token in forbidden:
+    for token in forbidden_mutations:
         assert token not in executable
+
+    # Reading role/RLS catalog attributes is required for the fail-closed
+    # preflight and is not itself a privilege mutation.
+    assert "ROLBYPASSRLS" in executable
+    assert "RELFORCEROWSECURITY" in executable
 
 
 def test_constraint_replacement_is_exact_and_non_destructive() -> None:
