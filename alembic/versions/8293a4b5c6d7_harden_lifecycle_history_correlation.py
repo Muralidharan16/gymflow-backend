@@ -5,21 +5,18 @@ Revises: 718293a4b5c6
 Create Date: 2026-08-11
 
 Revision 708 correctly moved lifecycle append relations to FORCE RLS. The
-predecessor ``validate_history_correlation()`` trigger function remained a
-SECURITY DEFINER function owned by ``migration_owner``. Once FORCE RLS applied,
-that definer became subject to lifecycle-event RLS and could no longer see a
-valid event that the API had already flushed, causing false correlation
-rejections.
+predecessor history-correlation trigger remained SECURITY DEFINER under
+``migration_owner``. FORCE RLS therefore made that definer subject to event RLS,
+so it could become blind to a valid event flushed in the same transaction.
 
-This revision does not broaden API or worker reads. It installs a dedicated
-trigger function owned by the non-login, non-bypass ``app_security_owner`` and
-grants that owner only SELECT on the three lifecycle-event columns required for
-correlation validation. A dedicated RLS policy exists only for that internal
-owner. The trigger additionally binds correlation to the same branch and exact
-emission timestamp. PUBLIC execution is closed on both internal trigger
-functions. The predecessor function remains intact but detached so downgrade
-can restore the exact 718 trigger/function contract without reconstructing its
-body.
+This revision keeps API and worker event-read privileges unchanged. A dedicated,
+non-login ``app_security_owner`` trigger function receives only SELECT on the
+three event columns required for validation plus one owner-only RLS policy. The
+correlation must match the same branch and exact event timestamp. Validation is
+a DEFERRABLE INITIALLY DEFERRED constraint trigger so event/history flush order
+inside one atomic transaction is irrelevant while commit still fails closed.
+PUBLIC execution is revoked on both internal trigger functions. Downgrade
+restores the exact predecessor trigger target and PUBLIC-execute surface.
 """
 
 from __future__ import annotations
@@ -53,24 +50,28 @@ def _function_contract(bind, signature: str):
         sa.text(
             """
             SELECT
-                pg_catalog.pg_get_userbyid(proc_data.proowner)::text AS owner_name,
-                proc_data.prosecdef AS security_definer,
-                proc_data.prorettype = 'pg_catalog.trigger'::regtype AS returns_trigger,
-                proc_data.proconfig,
-                proc_data.prosrc::text AS source
-            FROM pg_catalog.pg_proc AS proc_data
-            WHERE proc_data.oid = pg_catalog.to_regprocedure(:signature)
+                pg_catalog.pg_get_userbyid(p.proowner)::text AS owner_name,
+                p.prosecdef AS security_definer,
+                p.prorettype = 'pg_catalog.trigger'::regtype AS returns_trigger,
+                p.proconfig,
+                p.prosrc::text AS source
+            FROM pg_catalog.pg_proc AS p
+            WHERE p.oid = pg_catalog.to_regprocedure(:signature)
             """
         ),
         {"signature": signature},
     ).mappings().one_or_none()
 
 
-def _trigger_function(bind) -> str | None:
+def _trigger_contract(bind):
     return bind.execute(
         sa.text(
             """
-            SELECT proc_ns.nspname || '.' || proc_data.proname || '()'
+            SELECT
+                proc_ns.nspname || '.' || proc_data.proname || '()' AS function_name,
+                trigger_data.tgdeferrable AS is_deferrable,
+                trigger_data.tginitdeferred AS is_initially_deferred,
+                pg_catalog.pg_get_triggerdef(trigger_data.oid, true)::text AS definition
             FROM pg_catalog.pg_trigger AS trigger_data
             JOIN pg_catalog.pg_proc AS proc_data
               ON proc_data.oid = trigger_data.tgfoid
@@ -82,7 +83,7 @@ def _trigger_function(bind) -> str | None:
             """
         ),
         {"relation": _HISTORY, "trigger_name": _TRIGGER},
-    ).scalar_one_or_none()
+    ).mappings().one_or_none()
 
 
 def _policy_contract(bind):
@@ -110,23 +111,23 @@ def _policy_contract(bind):
     ).mappings().one_or_none()
 
 
-def _security_owner_event_column_selects(bind) -> set[str]:
+def _security_owner_event_select_columns(bind) -> set[str]:
     return set(
         bind.execute(
             sa.text(
                 """
-                SELECT attribute_data.attname::text
-                FROM pg_catalog.pg_attribute AS attribute_data
-                WHERE attribute_data.attrelid = CAST(:relation AS regclass)
-                  AND attribute_data.attnum > 0
-                  AND NOT attribute_data.attisdropped
+                SELECT a.attname::text
+                FROM pg_catalog.pg_attribute AS a
+                WHERE a.attrelid = CAST(:relation AS regclass)
+                  AND a.attnum > 0
+                  AND NOT a.attisdropped
                   AND pg_catalog.has_column_privilege(
                         CAST(:role_name AS name),
-                        attribute_data.attrelid,
-                        attribute_data.attnum,
+                        a.attrelid,
+                        a.attnum,
                         'SELECT'
                   )
-                ORDER BY attribute_data.attname
+                ORDER BY a.attname
                 """
             ),
             {"relation": _EVENTS, "role_name": _SECURITY_OWNER},
@@ -139,11 +140,34 @@ def _public_execute(bind, signature: str) -> bool:
         _scalar(
             bind,
             """
-            SELECT pg_catalog.has_function_privilege(
-                'public', pg_catalog.to_regprocedure(:signature), 'EXECUTE'
-            )
+            SELECT COALESCE(bool_or(
+                acl_data.grantee = 0
+                AND acl_data.privilege_type = 'EXECUTE'
+            ), FALSE)
+            FROM pg_catalog.pg_proc AS proc_data
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                    proc_data.proacl,
+                    pg_catalog.acldefault('f', proc_data.proowner)
+                )
+            ) AS acl_data
+            WHERE proc_data.oid = pg_catalog.to_regprocedure(:signature)
             """,
             {"signature": signature},
+        )
+    )
+
+
+def _has_public_schema_create(bind, role_name: str) -> bool:
+    return bool(
+        _scalar(
+            bind,
+            """
+            SELECT pg_catalog.has_schema_privilege(
+                CAST(:role_name AS name), 'public', 'CREATE'
+            )
+            """,
+            {"role_name": role_name},
         )
     )
 
@@ -165,7 +189,7 @@ def _require_identity_and_roles(bind) -> None:
         identity["session_name"] != _MIGRATION_OWNER
         or identity["current_name"] != _MIGRATION_OWNER
     ):
-        raise RuntimeError("8293 lifecycle correlation migration requires migration_owner")
+        raise RuntimeError("8293 requires session_user=current_user=migration_owner")
     if any(
         bool(identity[name])
         for name in (
@@ -205,33 +229,33 @@ def _require_identity_and_roles(bind) -> None:
         if _scalar(
             bind,
             """
-            SELECT pg_catalog.pg_has_role(:member, :role_name, 'MEMBER')
-                OR pg_catalog.pg_has_role(:member, :role_name, 'SET')
+            SELECT pg_catalog.pg_has_role(:member, :owner, 'MEMBER')
+                OR pg_catalog.pg_has_role(:member, :owner, 'SET')
             """,
-            {"member": runtime_role, "role_name": _SECURITY_OWNER},
+            {"member": runtime_role, "owner": _SECURITY_OWNER},
         ):
             raise RuntimeError(
                 f"{runtime_role} must not inherit or SET app_security_owner"
             )
 
 
-def _require_rls_and_owners(bind) -> None:
+def _require_rls_and_relation_owners(bind) -> None:
     for relation in (_EVENTS, _HISTORY):
         row = bind.execute(
             sa.text(
                 """
                 SELECT
-                    pg_catalog.pg_get_userbyid(rel_data.relowner)::text AS owner_name,
-                    rel_data.relrowsecurity,
-                    rel_data.relforcerowsecurity
-                FROM pg_catalog.pg_class AS rel_data
-                WHERE rel_data.oid = CAST(:relation AS regclass)
+                    pg_catalog.pg_get_userbyid(c.relowner)::text AS owner_name,
+                    c.relrowsecurity,
+                    c.relforcerowsecurity
+                FROM pg_catalog.pg_class AS c
+                WHERE c.oid = CAST(:relation AS regclass)
                 """
             ),
             {"relation": relation},
         ).mappings().one_or_none()
         if row is None:
-            raise RuntimeError(f"8293 required relation is missing: {relation}")
+            raise RuntimeError(f"8293 required relation missing: {relation}")
         if row["owner_name"] != _MIGRATION_OWNER:
             raise RuntimeError(f"8293 relation owner drift: {relation}")
         if not row["relrowsecurity"] or not row["relforcerowsecurity"]:
@@ -240,17 +264,17 @@ def _require_rls_and_owners(bind) -> None:
 
 def _require_predecessor(bind) -> None:
     _require_identity_and_roles(bind)
-    _require_rls_and_owners(bind)
+    _require_rls_and_relation_owners(bind)
 
     predecessor = _function_contract(bind, _PREDECESSOR_FUNCTION)
     if predecessor is None:
-        raise RuntimeError("8293 predecessor correlation function is missing")
+        raise RuntimeError("8293 predecessor validator is missing")
     if (
         predecessor["owner_name"] != _MIGRATION_OWNER
         or not predecessor["security_definer"]
         or not predecessor["returns_trigger"]
     ):
-        raise RuntimeError("8293 predecessor correlation function contract drifted")
+        raise RuntimeError("8293 predecessor validator contract drifted")
     predecessor_source = predecessor["source"].lower()
     for token in (
         "branch_lifecycle_events",
@@ -259,36 +283,30 @@ def _require_predecessor(bind) -> None:
     ):
         if token not in predecessor_source:
             raise RuntimeError(
-                f"8293 predecessor correlation function body drifted: missing {token}"
+                f"8293 predecessor validator body drifted: missing {token}"
             )
 
+    trigger = _trigger_contract(bind)
+    if trigger is None or trigger["function_name"] != _PREDECESSOR_FUNCTION:
+        raise RuntimeError("8293 predecessor trigger target drifted")
+    if trigger["is_deferrable"] or trigger["is_initially_deferred"]:
+        raise RuntimeError("8293 predecessor trigger unexpectedly became deferred")
+
     if _function_contract(bind, _HARDENED_FUNCTION) is not None:
-        raise RuntimeError("8293 hardened correlation function already exists")
-    if _trigger_function(bind) != _PREDECESSOR_FUNCTION:
-        raise RuntimeError("8293 predecessor history trigger target drifted")
+        raise RuntimeError("8293 hardened validator already exists")
     if _policy_contract(bind) is not None:
-        raise RuntimeError("8293 correlation-validator policy already exists")
-    if _security_owner_event_column_selects(bind):
+        raise RuntimeError("8293 validator RLS policy already exists")
+    if _security_owner_event_select_columns(bind):
         raise RuntimeError(
             "8293 refuses pre-existing app_security_owner event SELECT capability"
         )
     if not _public_execute(bind, _PREDECESSOR_FUNCTION):
-        raise RuntimeError(
-            "8293 predecessor function PUBLIC EXECUTE contract unexpectedly changed"
-        )
-    if _scalar(
-        bind,
-        """
-        SELECT pg_catalog.has_schema_privilege(
-            CAST(:role_name AS name), 'public', 'CREATE'
-        )
-        """,
-        {"role_name": _SECURITY_OWNER},
-    ):
+        raise RuntimeError("8293 predecessor PUBLIC EXECUTE contract drifted")
+    if _has_public_schema_create(bind, _SECURITY_OWNER):
         raise RuntimeError("8293 refuses pre-existing public CREATE for app_security_owner")
 
 
-def _create_hardened_function() -> None:
+def _create_hardened_validator() -> None:
     op.execute(
         """
         CREATE FUNCTION public.validate_history_correlation_hardened()
@@ -332,14 +350,14 @@ def _create_hardened_function() -> None:
         """
     )
     op.execute(
-        "REVOKE ALL ON FUNCTION public.validate_history_correlation_hardened() FROM PUBLIC"
+        "REVOKE ALL ON FUNCTION "
+        "public.validate_history_correlation_hardened() FROM PUBLIC"
     )
 
 
 def _install_security_owner_boundary() -> None:
-    # app_security_owner needs CREATE only long enough to become owner of this
-    # one function. The privilege is revoked immediately in the same migration
-    # transaction and verified absent afterward.
+    # CREATE exists only for the owner-transfer statement and is removed again
+    # in the same migration transaction.
     op.execute("GRANT CREATE ON SCHEMA public TO app_security_owner")
     op.execute(
         "ALTER FUNCTION public.validate_history_correlation_hardened() "
@@ -370,8 +388,9 @@ def _replace_trigger() -> None:
     )
     op.execute(
         """
-        CREATE TRIGGER trg_validate_history_correlation
-        BEFORE INSERT ON public.branch_status_history
+        CREATE CONSTRAINT TRIGGER trg_validate_history_correlation
+        AFTER INSERT ON public.branch_status_history
+        DEFERRABLE INITIALLY DEFERRED
         FOR EACH ROW
         EXECUTE FUNCTION public.validate_history_correlation_hardened()
         """
@@ -380,22 +399,22 @@ def _replace_trigger() -> None:
 
 def _verify_forward(bind) -> None:
     _require_identity_and_roles(bind)
-    _require_rls_and_owners(bind)
+    _require_rls_and_relation_owners(bind)
 
     hardened = _function_contract(bind, _HARDENED_FUNCTION)
     if hardened is None:
-        raise RuntimeError("8293 hardened function disappeared")
+        raise RuntimeError("8293 hardened validator disappeared")
     if (
         hardened["owner_name"] != _SECURITY_OWNER
         or not hardened["security_definer"]
         or not hardened["returns_trigger"]
     ):
-        raise RuntimeError("8293 hardened function owner/security contract failed")
+        raise RuntimeError("8293 hardened validator owner/security contract failed")
     config = set(hardened["proconfig"] or ())
     if "row_security=on" not in config or not any(
         item.startswith("search_path=") for item in config
     ):
-        raise RuntimeError("8293 hardened function runtime configuration drifted")
+        raise RuntimeError("8293 hardened validator runtime config drifted")
     source = hardened["source"].lower()
     for token in (
         "event_data.correlation_id = new.correlation_id",
@@ -404,19 +423,30 @@ def _verify_forward(bind) -> None:
     ):
         if token not in source:
             raise RuntimeError(
-                f"8293 hardened function predicate drifted: missing {token}"
+                f"8293 hardened validator predicate drifted: missing {token}"
             )
 
+    trigger = _trigger_contract(bind)
+    if trigger is None or trigger["function_name"] != _HARDENED_FUNCTION:
+        raise RuntimeError("8293 history trigger does not use hardened validator")
+    definition = trigger["definition"].upper()
+    if (
+        not trigger["is_deferrable"]
+        or not trigger["is_initially_deferred"]
+        or "CREATE CONSTRAINT TRIGGER" not in definition
+        or "AFTER INSERT" not in definition
+        or "DEFERRABLE INITIALLY DEFERRED" not in definition
+    ):
+        raise RuntimeError("8293 history trigger is not deferred to transaction end")
+
     if _public_execute(bind, _HARDENED_FUNCTION):
-        raise RuntimeError("8293 leaked PUBLIC EXECUTE on hardened function")
+        raise RuntimeError("8293 leaked PUBLIC EXECUTE on hardened validator")
     if _public_execute(bind, _PREDECESSOR_FUNCTION):
-        raise RuntimeError("8293 left PUBLIC EXECUTE on detached predecessor function")
-    if _trigger_function(bind) != _HARDENED_FUNCTION:
-        raise RuntimeError("8293 history trigger does not target hardened function")
+        raise RuntimeError("8293 left PUBLIC EXECUTE on detached predecessor validator")
 
     policy = _policy_contract(bind)
     if policy is None:
-        raise RuntimeError("8293 hardened event-read policy is missing")
+        raise RuntimeError("8293 validator RLS policy is missing")
     if (
         policy["command"] != "r"
         or not policy["permissive"]
@@ -424,30 +454,22 @@ def _verify_forward(bind) -> None:
         or str(policy["using_expr"]).strip().lower() != "true"
         or policy["check_expr"] is not None
     ):
-        raise RuntimeError("8293 hardened event-read policy drifted")
+        raise RuntimeError("8293 validator RLS policy drifted")
 
-    observed_columns = _security_owner_event_column_selects(bind)
+    observed_columns = _security_owner_event_select_columns(bind)
     if observed_columns != _REQUIRED_EVENT_COLUMNS:
         raise RuntimeError(
-            "8293 app_security_owner event-column SELECT drift: "
+            "8293 app_security_owner event SELECT drift: "
             f"observed={sorted(observed_columns)!r}"
         )
-    if _scalar(
-        bind,
-        """
-        SELECT pg_catalog.has_schema_privilege(
-            CAST(:role_name AS name), 'public', 'CREATE'
-        )
-        """,
-        {"role_name": _SECURITY_OWNER},
-    ):
+    if _has_public_schema_create(bind, _SECURITY_OWNER):
         raise RuntimeError("8293 leaked public CREATE to app_security_owner")
 
 
 def upgrade() -> None:
     bind = op.get_bind()
     _require_predecessor(bind)
-    _create_hardened_function()
+    _create_hardened_validator()
     _install_security_owner_boundary()
     _replace_trigger()
     _verify_forward(bind)
@@ -485,35 +507,26 @@ def downgrade() -> None:
     )
     bind.execute(sa.text("RESET ROLE"))
 
-    # Restore the predecessor's default PUBLIC EXECUTE surface exactly. It is
-    # intentionally present only after downgrading to the older security model.
+    # The older 718 contract inherited PostgreSQL's default PUBLIC EXECUTE on
+    # this trigger function. Restore that only when explicitly downgrading.
     op.execute(
         "GRANT EXECUTE ON FUNCTION public.validate_history_correlation() TO PUBLIC"
     )
 
     _require_identity_and_roles(bind)
-    _require_rls_and_owners(bind)
+    _require_rls_and_relation_owners(bind)
     if _function_contract(bind, _HARDENED_FUNCTION) is not None:
-        raise RuntimeError("8293 hardened function remained after downgrade")
-    if _trigger_function(bind) != _PREDECESSOR_FUNCTION:
+        raise RuntimeError("8293 hardened validator remained after downgrade")
+    trigger = _trigger_contract(bind)
+    if trigger is None or trigger["function_name"] != _PREDECESSOR_FUNCTION:
         raise RuntimeError("8293 failed to restore predecessor trigger target")
+    if trigger["is_deferrable"] or trigger["is_initially_deferred"]:
+        raise RuntimeError("8293 failed to restore predecessor trigger timing")
     if _policy_contract(bind) is not None:
-        raise RuntimeError("8293 hardened policy remained after downgrade")
-    if _security_owner_event_column_selects(bind):
-        raise RuntimeError(
-            "8293 app_security_owner event SELECT remained after downgrade"
-        )
+        raise RuntimeError("8293 validator policy remained after downgrade")
+    if _security_owner_event_select_columns(bind):
+        raise RuntimeError("8293 security-owner event SELECT remained after downgrade")
     if not _public_execute(bind, _PREDECESSOR_FUNCTION):
         raise RuntimeError("8293 failed to restore predecessor PUBLIC EXECUTE")
-    if _scalar(
-        bind,
-        """
-        SELECT pg_catalog.has_schema_privilege(
-            CAST(:role_name AS name), 'public', 'CREATE'
-        )
-        """,
-        {"role_name": _SECURITY_OWNER},
-    ):
-        raise RuntimeError(
-            "8293 app_security_owner retained public CREATE after downgrade"
-        )
+    if _has_public_schema_create(bind, _SECURITY_OWNER):
+        raise RuntimeError("8293 security owner retained public CREATE after downgrade")
