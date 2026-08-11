@@ -329,15 +329,14 @@ def test_spatial_and_filtering_indexes_exist() -> None:
 # =====================================================================
 
 @pytest.mark.asyncio
-async def test_audit_log_captured_on_update(admin_db_session) -> None:
+async def test_audit_log_captured_on_update(admin_db_session, auth_db_session) -> None:
     """
     Validates that typed actor provenance and tenant context survive transaction
     boundaries while address triggers record immutable audit snapshots.
 
-    Organization and actor creation are administrative root-fixture setup. The
-    branch/state rows are also fixture administration, but FORCE RLS still
-    applies: the admin fixture must attach the same explicit tenant/principal
-    context that production sessions use before inserting tenant-scoped rows.
+    Organization and actor creation are administrative root-fixture setup.
+    Branch/state creation uses the dedicated bounded auth/bootstrap identity,
+    matching production onboarding rather than borrowing migration-owner power.
     Address mutation remains on the reduced application runtime identity. Direct
     audit-table reads remain forbidden to app_runtime; immutable audit evidence is
     verified through the reduced migration/admin session under the same tenant RLS
@@ -366,17 +365,17 @@ async def test_audit_log_captured_on_update(admin_db_session) -> None:
     admin_db_session.add(owner)
     await admin_db_session.commit()
 
-    # migration_owner is intentionally NOBYPASSRLS and org_branches FORCEs RLS.
-    # Attach explicit tenant/actor context before administrative branch seeding;
-    # this proves even fixture administration obeys the production tenant policy.
+    # First branch/state creation is an auth/bootstrap capability in production.
+    # The bounded auth login remains subject to FORCE RLS and receives explicit
+    # tenant + typed-principal context before any tenant-scoped write.
     await update_session_context(
-        admin_db_session,
+        auth_db_session,
         principal_id=str(owner_id),
         principal_type="legacy_gym_owner",
         org_id=str(org_id),
         role="owner",
         ip_address="127.0.0.1",
-        user_agent="pytest-admin-fixture",
+        user_agent="pytest-auth-bootstrap-fixture",
         request_id=str(uuid.uuid4()),
     )
 
@@ -389,7 +388,7 @@ async def test_audit_log_captured_on_update(admin_db_session) -> None:
         timezone="UTC",
         currency_code="USD"
     )
-    admin_db_session.add(branch)
+    auth_db_session.add(branch)
     branch_state = OrgBranchState(
         branch_id=branch_id,
         org_id=org_id,
@@ -400,8 +399,8 @@ async def test_audit_log_captured_on_update(admin_db_session) -> None:
         version=1,
         search_epoch_ulid="01AN4V07BY79KA1307SR9XFMAT"
     )
-    admin_db_session.add(branch_state)
-    await admin_db_session.commit()
+    auth_db_session.add(branch_state)
+    await auth_db_session.commit()
 
     async with AsyncSessionLocal() as db:
         # Attach complete typed actor provenance once. Session.after_begin must
