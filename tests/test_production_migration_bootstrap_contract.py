@@ -74,6 +74,18 @@ def _normalized(text: str) -> str:
     return " ".join(text.split())
 
 
+def _executable_source(text: str) -> str:
+    """Return shell/SQL source without comment-only lines.
+
+    Security assertions about executable commands must not trip on explanatory
+    comments such as "does not use sudo". Inline SQL and here-doc bodies stay
+    intact because they are executable input to psql.
+    """
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def _assert_migration_owner_isolated_from_maintenance(text: str) -> None:
     normalized = _normalized(text)
     for access_mode in ("MEMBER", "SET"):
@@ -146,28 +158,31 @@ def test_release_lifecycle_maintenance_provisioner_is_idempotent_and_fail_closed
     assert provisioner_path.is_file(), "production lifecycle maintenance provisioner is missing"
     text = provisioner_path.read_text(encoding="utf-8")
     normalized = _normalized(text)
+    executable = _executable_source(text)
 
     for token in _REQUIRED_REDUCED_ROLE_TOKENS:
         assert token in text, f"release maintenance provisioner lost contract token: {token}"
 
     # Production bootstrap must use the operator's approved libpq identity, not
-    # CI host privilege escalation or embedded credentials.
-    assert "sudo" not in text
-    assert "PGPASSWORD=" not in text
-    assert "PASSWORD '" not in text
-    assert "ci-" not in text
-    assert "--dbname=\"$ADMIN_DATABASE\"" in text
-    assert "operator_record.rolsuper OR operator_record.rolcreaterole" in text
+    # CI host privilege escalation or embedded credentials. Inspect executable
+    # input rather than documentation comments that may explicitly describe
+    # forbidden commands by name.
+    assert "sudo" not in executable
+    assert "PGPASSWORD=" not in executable
+    assert "PASSWORD '" not in executable
+    assert "ci-" not in executable
+    assert "--dbname=\"$ADMIN_DATABASE\"" in executable
+    assert "operator_record.rolsuper OR operator_record.rolcreaterole" in executable
 
     # Existing safe capability is accepted; unsafe state is rejected before any
     # role-setting mutation. Conditional \gexec makes first creation idempotent.
-    preflight_index = text.index("existing lifecycle_maintenance_runtime has unsafe attributes")
-    conditional_create_index = text.index("WHERE NOT EXISTS (")
-    first_alter_index = text.index("ALTER ROLE lifecycle_maintenance_runtime SET")
+    preflight_index = executable.index("existing lifecycle_maintenance_runtime has unsafe attributes")
+    conditional_create_index = executable.index("WHERE NOT EXISTS (")
+    first_alter_index = executable.index("ALTER ROLE lifecycle_maintenance_runtime SET")
     assert preflight_index < first_alter_index
     assert conditional_create_index < first_alter_index
-    assert "\\gexec" in text
-    assert "refuse automatic repair" in text
+    assert "\\gexec" in executable
+    assert "refuse automatic repair" in executable
 
     # The capability must remain isolated from migration/API/auth/worker/security
     # groups. Incoming membership from a separately managed maintenance login is
@@ -179,11 +194,11 @@ def test_release_lifecycle_maintenance_provisioner_is_idempotent_and_fail_closed
         "app_security_owner",
         "app_rls_executor",
     ):
-        assert f"'{forbidden_role}'" in text
-    _assert_migration_owner_isolated_from_maintenance(text)
+        assert f"'{forbidden_role}'" in executable
+    _assert_migration_owner_isolated_from_maintenance(executable)
 
-    assert "DROP ROLE lifecycle_maintenance_runtime" not in text
-    assert "BYPASSRLS" not in normalized.replace("NOBYPASSRLS", "")
+    assert "DROP ROLE lifecycle_maintenance_runtime" not in executable
+    assert "BYPASSRLS" not in _normalized(executable).replace("NOBYPASSRLS", "")
 
 
 def test_rollout_runbook_requires_cluster_bootstrap_before_alembic() -> None:
