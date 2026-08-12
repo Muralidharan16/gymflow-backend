@@ -25,6 +25,21 @@ def _source(name: str) -> str:
     return segment
 
 
+def _session_calls(node: ast.AST, session_name: str) -> list[ast.Call]:
+    calls = []
+    for item in ast.walk(node):
+        if not isinstance(item, ast.Call):
+            continue
+        if not isinstance(item.func, ast.Attribute):
+            continue
+        if not isinstance(item.func.value, ast.Name):
+            continue
+        if item.func.value.id != session_name:
+            continue
+        calls.append(item)
+    return sorted(calls, key=lambda item: item.lineno)
+
+
 def test_member_fixture_is_isolated_and_non_destructive() -> None:
     source = TARGET.read_text()
     fixture = _function("test_data")
@@ -57,15 +72,23 @@ def test_member_tenant_bootstrap_is_auth_owned_and_fk_ordered() -> None:
 
 
 def test_member_admin_fixture_scope_is_legacy_gym_seed_only() -> None:
-    fixture_source = _source("test_data")
+    fixture = _function("test_data")
+    admin_calls = _session_calls(fixture, "admin_db_session")
 
-    assert fixture_source.count("admin_db_session.add(") == 1
-    admin_seed = fixture_source.split("admin_db_session.add(", 1)[1]
-    assert admin_seed.lstrip().startswith("Gym(")
-    assert "await admin_db_session.commit()" in admin_seed
+    assert [call.func.attr for call in admin_calls] == ["add", "commit"]
+    assert sum(
+        isinstance(item, ast.Name) and item.id == "admin_db_session"
+        for item in ast.walk(fixture)
+    ) == 2
 
-    before_admin = fixture_source.split("admin_db_session.add(", 1)[0]
-    assert "admin_db_session" not in before_admin
+    add_call, commit_call = admin_calls
+    assert len(add_call.args) == 1
+    gym_seed = add_call.args[0]
+    assert isinstance(gym_seed, ast.Call)
+    assert isinstance(gym_seed.func, ast.Name)
+    assert gym_seed.func.id == "Gym"
+    assert commit_call.args == []
+    assert commit_call.keywords == []
 
 
 def test_direct_member_domain_seeds_use_runtime_context() -> None:
