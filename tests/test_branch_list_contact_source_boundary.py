@@ -32,7 +32,8 @@ def test_branch_list_uses_branch_contacts_as_canonical_contact_source() -> None:
     assert "ContactKind.PHONE" in source
     assert "ContactKind.EMAIL" in source
     assert "BranchContactORM.org_id == current_staff.org_id" in source
-    assert "BranchContactORM.is_primary == True" in source
+    assert "BranchContactORM.is_primary.is_(True)" in source
+    assert "BranchContactORM.is_primary == True" not in source
 
     # Branch listing must not expand its database privilege surface merely to
     # synthesize contact fallbacks. Organization profile data has a separate
