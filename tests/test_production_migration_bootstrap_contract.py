@@ -6,7 +6,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
-PROVISIONER = "scripts/ci/provision_lifecycle_maintenance_role.sh"
+CI_PROVISIONER = "scripts/ci/provision_lifecycle_maintenance_role.sh"
+RELEASE_PROVISIONER = "scripts/release/provision_lifecycle_maintenance_role.sh"
+ROLLOUT_RUNBOOK = "docs/preprod-prod-database-rollout.md"
 
 # These workflows intentionally create fresh production-shaped PostgreSQL
 # databases and run the Alembic lineage. Cluster-scoped maintenance identity
@@ -24,6 +26,23 @@ FRESH_MIGRATION_WORKFLOWS = (
 
 _JOB_HEADER = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 _UPGRADE_HEAD = re.compile(r"\balembic\b[^\n]*\bupgrade\s+head\b")
+
+_REQUIRED_REDUCED_ROLE_TOKENS = (
+    "CREATE ROLE lifecycle_maintenance_runtime",
+    "NOLOGIN",
+    "NOSUPERUSER",
+    "NOCREATEDB",
+    "NOCREATEROLE",
+    "NOINHERIT",
+    "NOREPLICATION",
+    "NOBYPASSRLS",
+    "statement_timeout",
+    "lock_timeout",
+    "idle_in_transaction_session_timeout",
+    "row_security",
+    "pg_has_role(\n       'migration_owner',\n       'lifecycle_maintenance_runtime',\n       'MEMBER'",
+    "pg_has_role(\n       'migration_owner',\n       'lifecycle_maintenance_runtime',\n       'SET'",
+)
 
 
 def _job_blocks(workflow_text: str) -> list[tuple[str, str]]:
@@ -53,6 +72,10 @@ def _job_blocks(workflow_text: str) -> list[tuple[str, str]]:
     return blocks
 
 
+def _normalized(text: str) -> str:
+    return " ".join(text.split())
+
+
 def test_every_fresh_migration_job_provisions_external_maintenance_role_first() -> None:
     checked_jobs: list[str] = []
 
@@ -67,7 +90,7 @@ def test_every_fresh_migration_job_provisions_external_maintenance_role_first() 
                 continue
 
             checked_jobs.append(f"{workflow_name}:{job_name}")
-            provision_index = job_text.find(PROVISIONER)
+            provision_index = job_text.find(CI_PROVISIONER)
             assert provision_index >= 0, (
                 f"{workflow_name}:{job_name} runs fresh Alembic without the "
                 "infrastructure-owned lifecycle maintenance role provisioner"
@@ -86,28 +109,96 @@ def test_every_fresh_migration_job_provisions_external_maintenance_role_first() 
     assert checked_jobs, "no fresh-migration production jobs were inspected"
 
 
-def test_lifecycle_maintenance_provisioner_is_fail_closed_and_reduced() -> None:
-    provisioner_path = ROOT / PROVISIONER
-    assert provisioner_path.is_file(), "lifecycle maintenance provisioner is missing"
+def test_ci_lifecycle_maintenance_provisioner_is_fail_closed_and_reduced() -> None:
+    provisioner_path = ROOT / CI_PROVISIONER
+    assert provisioner_path.is_file(), "CI lifecycle maintenance provisioner is missing"
     text = provisioner_path.read_text(encoding="utf-8")
+    normalized = _normalized(text)
 
-    required_contract_tokens = (
-        "CREATE ROLE lifecycle_maintenance_runtime",
-        "NOLOGIN",
-        "NOSUPERUSER",
-        "NOCREATEDB",
-        "NOCREATEROLE",
-        "NOINHERIT",
-        "NOREPLICATION",
-        "NOBYPASSRLS",
-        "statement_timeout",
-        "lock_timeout",
-        "idle_in_transaction_session_timeout",
-        "row_security",
-        "pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'MEMBER')",
-        "pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'SET')",
-    )
-    for token in required_contract_tokens:
-        assert token in text, f"maintenance provisioner lost required contract token: {token}"
+    for token in _REQUIRED_REDUCED_ROLE_TOKENS[:10]:
+        assert token in text, f"CI maintenance provisioner lost contract token: {token}"
+
+    assert "migration_owner lifecycle maintenance capability" in text
+    assert "MEMBER" in text and "SET" in text
+    assert "DROP ROLE lifecycle_maintenance_runtime" not in text
+    assert "BYPASSRLS" not in normalized.replace("NOBYPASSRLS", "")
+
+
+def test_release_lifecycle_maintenance_provisioner_is_idempotent_and_fail_closed() -> None:
+    provisioner_path = ROOT / RELEASE_PROVISIONER
+    assert provisioner_path.is_file(), "production lifecycle maintenance provisioner is missing"
+    text = provisioner_path.read_text(encoding="utf-8")
+    normalized = _normalized(text)
+
+    for token in _REQUIRED_REDUCED_ROLE_TOKENS[:10]:
+        assert token in text, f"release maintenance provisioner lost contract token: {token}"
+
+    # Production bootstrap must use the operator's approved libpq identity, not
+    # CI host privilege escalation or embedded credentials.
+    assert "sudo" not in text
+    assert "PGPASSWORD=" not in text
+    assert "PASSWORD '" not in text
+    assert "ci-" not in text
+    assert "--dbname=\"$ADMIN_DATABASE\"" in text
+    assert "operator_record.rolsuper OR operator_record.rolcreaterole" in text
+
+    # Existing safe capability is accepted; unsafe state is rejected before any
+    # role-setting mutation. Conditional \gexec makes first creation idempotent.
+    preflight_index = text.index("existing lifecycle_maintenance_runtime has unsafe attributes")
+    conditional_create_index = text.index("WHERE NOT EXISTS (")
+    first_alter_index = text.index("ALTER ROLE lifecycle_maintenance_runtime SET")
+    assert preflight_index < first_alter_index
+    assert conditional_create_index < first_alter_index
+    assert "\\gexec" in text
+    assert "refuse automatic repair" in text
+
+    # The capability must remain isolated from migration/API/auth/worker/security
+    # groups. Incoming membership from a separately managed maintenance login is
+    # allowed and is verified independently by the runtime boundary.
+    for forbidden_role in (
+        "app_runtime",
+        "auth_runtime",
+        "worker_runtime",
+        "app_security_owner",
+        "app_rls_executor",
+    ):
+        assert f"'{forbidden_role}'" in text
+    assert "'migration_owner'" in text
+    assert "'MEMBER'" in text and "'SET'" in text
 
     assert "DROP ROLE lifecycle_maintenance_runtime" not in text
+    assert "GRANT lifecycle_maintenance_runtime TO migration_owner" not in text
+    assert "BYPASSRLS" not in normalized.replace("NOBYPASSRLS", "")
+
+
+def test_rollout_runbook_requires_cluster_bootstrap_before_alembic() -> None:
+    runbook_path = ROOT / ROLLOUT_RUNBOOK
+    assert runbook_path.is_file(), "production database rollout runbook is missing"
+    text = runbook_path.read_text(encoding="utf-8")
+
+    release_index = text.index(RELEASE_PROVISIONER)
+    first_upgrade_index = text.index("alembic -c alembic.ini upgrade head")
+    assert release_index < first_upgrade_index
+
+    required_tokens = (
+        "MAINTENANCE_DATABASE_URL",
+        "DATABASE_URL",
+        "AUTH_DATABASE_URL",
+        "WORKER_DATABASE_URL",
+        "migration_owner",
+        "lifecycle_maintenance_runtime",
+        "NOLOGIN",
+        "NOINHERIT",
+        "NOBYPASSRLS",
+        "ADMIN FALSE",
+        "CI-only",
+        CI_PROVISIONER,
+        "Never use the CI provisioner as a production runbook command",
+        "Production rollback is recovery-driven",
+        "Green tests are supporting evidence",
+    )
+    for token in required_tokens:
+        assert token in text, f"production rollout runbook lost required contract: {token}"
+
+    # Prevent the stale deployment instruction from returning.
+    assert "Create a fresh pre-production database from scratch.\n2. Run `alembic upgrade head`." not in text
