@@ -93,6 +93,9 @@ jobs:
           CREATE DATABASE gymflow_lifecycle_test OWNER migration_owner;
           SQL
 
+      - name: Provision external lifecycle maintenance capability
+        run: bash scripts/ci/provision_lifecycle_maintenance_role.sh
+
       - name: Provision infrastructure-owned extensions
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_lifecycle_test <<'SQL'
@@ -118,6 +121,7 @@ jobs:
           DECLARE
             migration_record record;
             worker_record record;
+            maintenance_record record;
           BEGIN
             SELECT * INTO migration_record
             FROM pg_catalog.pg_roles
@@ -147,10 +151,26 @@ jobs:
               RAISE EXCEPTION 'worker_runtime posture is unsafe';
             END IF;
 
+            SELECT * INTO maintenance_record
+            FROM pg_catalog.pg_roles
+            WHERE rolname = 'lifecycle_maintenance_runtime';
+            IF NOT FOUND
+               OR maintenance_record.rolcanlogin
+               OR maintenance_record.rolsuper
+               OR maintenance_record.rolcreatedb
+               OR maintenance_record.rolcreaterole
+               OR maintenance_record.rolinherit
+               OR maintenance_record.rolreplication
+               OR maintenance_record.rolbypassrls THEN
+              RAISE EXCEPTION 'lifecycle_maintenance_runtime posture is unsafe';
+            END IF;
+
             IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET')
+               OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET')
                OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'internal_billing_worker', 'MEMBER') THEN
               RAISE EXCEPTION 'migration_owner leaked into a runtime capability';
@@ -355,6 +375,7 @@ jobs:
           DECLARE
             migration_record record;
             worker_record record;
+            maintenance_record record;
           BEGIN
             SELECT * INTO migration_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
             IF migration_record.rolsuper OR migration_record.rolcreatedb
@@ -371,10 +392,21 @@ jobs:
               RAISE EXCEPTION 'final worker_runtime posture is unsafe';
             END IF;
 
+            SELECT * INTO maintenance_record FROM pg_catalog.pg_roles
+            WHERE rolname = 'lifecycle_maintenance_runtime';
+            IF NOT FOUND OR maintenance_record.rolcanlogin OR maintenance_record.rolsuper
+               OR maintenance_record.rolcreatedb OR maintenance_record.rolcreaterole
+               OR maintenance_record.rolinherit OR maintenance_record.rolreplication
+               OR maintenance_record.rolbypassrls THEN
+              RAISE EXCEPTION 'final lifecycle_maintenance_runtime posture is unsafe';
+            END IF;
+
             IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET')
+               OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET')
                OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'internal_billing_worker', 'MEMBER') THEN
               RAISE EXCEPTION 'final migration_owner leaked into a runtime capability';
