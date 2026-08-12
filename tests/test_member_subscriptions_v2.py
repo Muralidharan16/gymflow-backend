@@ -47,14 +47,14 @@ async def _set_owner_context(session, *, owner_id, org_id, request_suffix: str) 
 
 
 @pytest_asyncio.fixture
-async def test_data(admin_db_session, auth_db_session, db_session):
+async def test_data(auth_db_session, db_session):
     """Create an isolated two-tenant subscription fixture without global teardown.
 
     The General CI database is disposable. Each test therefore uses unique
     tenant natural keys instead of truncating tenant-root/security tables.
-    Root organization/owner setup stays on the administrative fixture identity;
-    branch bootstrap uses the bounded auth identity; member/plan data uses the
-    ordinary runtime identity under explicit tenant context.
+    Organization/owner bootstrap stays on the bounded auth identity; branches
+    are created through the same auth identity under typed tenant context; and
+    member/plan data uses the ordinary runtime identity under explicit context.
     """
     suffix = uuid.uuid4().hex[:10]
     phone_seed = uuid.uuid4().int % 100_000_000
@@ -66,7 +66,7 @@ async def test_data(admin_db_session, auth_db_session, db_session):
     owner1_email = f"owner1+{suffix}@test.com"
     owner2_email = f"owner2+{suffix}@test.com"
 
-    admin_db_session.add_all(
+    auth_db_session.add_all(
         [
             Organization(
                 id=org1_id,
@@ -82,6 +82,14 @@ async def test_data(admin_db_session, auth_db_session, db_session):
                 max_branches=5,
                 default_currency_code="USD",
             ),
+        ]
+    )
+    # Organization/Owner ORM mappings do not encode a unit-of-work dependency.
+    # Flush tenant roots first so PostgreSQL's FK remains the ordering authority
+    # while preserving one atomic auth/bootstrap transaction.
+    await auth_db_session.flush()
+    auth_db_session.add_all(
+        [
             Owner(
                 id=owner1_id,
                 org_id=org1_id,
@@ -100,7 +108,7 @@ async def test_data(admin_db_session, auth_db_session, db_session):
             ),
         ]
     )
-    await admin_db_session.commit()
+    await auth_db_session.commit()
 
     branch1_id = uuid.uuid4()
     branch2_id = uuid.uuid4()
