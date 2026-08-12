@@ -18,7 +18,10 @@ from app.finance_core.domain.invoice_engine import (
     IssueInvoiceCommand,
 )
 from app.finance_core.services.invoice_engine import FinanceInvoiceEngine
-from tests.finance_core.admin_database import finance_admin_session
+from tests.finance_core.admin_database import (
+    finance_admin_session,
+    truncate_finance_test_tables,
+)
 
 
 ORG_ID = uuid.UUID("91000000-0000-0000-0000-000000000901")
@@ -33,38 +36,7 @@ FY = "2425"
 
 async def cleanup_finance_tables() -> None:
     async with finance_admin_session() as session:
-        await session.execute(
-            text(
-                """
-                TRUNCATE TABLE
-                    finance.outbox_events,
-                    finance.audit_events,
-                    finance.ledger_entry_lines,
-                    finance.ledger_entries,
-                    finance.credit_note_lines,
-                    finance.credit_notes,
-                    finance.refunds,
-                    finance.payment_events,
-                    finance.payment_allocations,
-                    finance.payments,
-                    finance.tax_records,
-                    finance.invoice_lines,
-                    finance.invoices,
-                    finance.idempotency_keys,
-                    finance.brand_ref_series,
-                    finance.invoice_series,
-                    finance.billing_parties,
-                    finance.ledger_accounts,
-                    finance.tax_codes,
-                    finance.bank_accounts,
-                    finance.brands,
-                    finance.divisions,
-                    finance.gst_registrations,
-                    finance.legal_entities
-                RESTART IDENTITY CASCADE
-                """
-            )
-        )
+        await truncate_finance_test_tables(session)
         await session.execute(
             text("DELETE FROM organizations WHERE id = :organization_id"),
             {"organization_id": ORG_ID},
