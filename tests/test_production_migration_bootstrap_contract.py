@@ -40,8 +40,6 @@ _REQUIRED_REDUCED_ROLE_TOKENS = (
     "lock_timeout",
     "idle_in_transaction_session_timeout",
     "row_security",
-    "pg_has_role(\n       'migration_owner',\n       'lifecycle_maintenance_runtime',\n       'MEMBER'",
-    "pg_has_role(\n       'migration_owner',\n       'lifecycle_maintenance_runtime',\n       'SET'",
 )
 
 
@@ -74,6 +72,26 @@ def _job_blocks(workflow_text: str) -> list[tuple[str, str]]:
 
 def _normalized(text: str) -> str:
     return " ".join(text.split())
+
+
+def _assert_migration_owner_isolated_from_maintenance(text: str) -> None:
+    normalized = _normalized(text)
+    for access_mode in ("MEMBER", "SET"):
+        predicate = (
+            "pg_catalog.pg_has_role( "
+            "'migration_owner', "
+            "'lifecycle_maintenance_runtime', "
+            f"'{access_mode}' )"
+        )
+        assert predicate in normalized, (
+            "maintenance provisioner must fail closed if migration_owner gains "
+            f"{access_mode} access to lifecycle_maintenance_runtime"
+        )
+
+    # Keep the guard executable/fail-closed without coupling the regression to
+    # human-facing exception prose, which may legitimately change.
+    assert "RAISE EXCEPTION" in text
+    assert "GRANT lifecycle_maintenance_runtime TO migration_owner" not in text
 
 
 def test_every_fresh_migration_job_provisions_external_maintenance_role_first() -> None:
@@ -115,11 +133,10 @@ def test_ci_lifecycle_maintenance_provisioner_is_fail_closed_and_reduced() -> No
     text = provisioner_path.read_text(encoding="utf-8")
     normalized = _normalized(text)
 
-    for token in _REQUIRED_REDUCED_ROLE_TOKENS[:10]:
+    for token in _REQUIRED_REDUCED_ROLE_TOKENS:
         assert token in text, f"CI maintenance provisioner lost contract token: {token}"
 
-    assert "migration_owner lifecycle maintenance capability" in text
-    assert "MEMBER" in text and "SET" in text
+    _assert_migration_owner_isolated_from_maintenance(text)
     assert "DROP ROLE lifecycle_maintenance_runtime" not in text
     assert "BYPASSRLS" not in normalized.replace("NOBYPASSRLS", "")
 
@@ -130,7 +147,7 @@ def test_release_lifecycle_maintenance_provisioner_is_idempotent_and_fail_closed
     text = provisioner_path.read_text(encoding="utf-8")
     normalized = _normalized(text)
 
-    for token in _REQUIRED_REDUCED_ROLE_TOKENS[:10]:
+    for token in _REQUIRED_REDUCED_ROLE_TOKENS:
         assert token in text, f"release maintenance provisioner lost contract token: {token}"
 
     # Production bootstrap must use the operator's approved libpq identity, not
@@ -163,11 +180,9 @@ def test_release_lifecycle_maintenance_provisioner_is_idempotent_and_fail_closed
         "app_rls_executor",
     ):
         assert f"'{forbidden_role}'" in text
-    assert "'migration_owner'" in text
-    assert "'MEMBER'" in text and "'SET'" in text
+    _assert_migration_owner_isolated_from_maintenance(text)
 
     assert "DROP ROLE lifecycle_maintenance_runtime" not in text
-    assert "GRANT lifecycle_maintenance_runtime TO migration_owner" not in text
     assert "BYPASSRLS" not in normalized.replace("NOBYPASSRLS", "")
 
 
