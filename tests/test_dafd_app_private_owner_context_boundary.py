@@ -339,9 +339,9 @@ def _app_private_ddl_categories(path: Path) -> set[str]:
     return categories
 
 
-def test_complete_91_revision_private_and_executor_inventories_are_closed() -> None:
+def test_complete_92_revision_private_and_executor_inventories_are_closed() -> None:
     migrations = sorted(VERSIONS.glob("*.py"))
-    assert len(migrations) == 91
+    assert len(migrations) == 92
     app_private = {
         path.name
         for path in migrations
@@ -568,6 +568,30 @@ def test_0029_freezes_the_canonical_function_security_contract() -> None:
         "bsr.deleted_at IS NULL",
     ):
         assert token in normalized
+
+    function_names = {
+        node.id
+        for node in ast.walk(_functions(DAFD)["_require_canonical_function"])
+        if isinstance(node, ast.Name)
+    }
+    assert "_CANONICAL_FUNCTION" in function_names
+    assert "_CANONICAL_PROSRC_SHA256" in function_names
+
+    acl = _normalized(_function_source(DAFD, "_require_function_acl"))
+    assert "pg_catalog.aclexplode" in acl
+    assert "pg_catalog.acldefault('f', routine.proowner)" in acl
+    assert (
+        'expected = ((_RLS_EXECUTOR, "EXECUTE", False, _RLS_EXECUTOR),)'
+        in acl
+    )
+
+    predecessor_body = _normalized(_canonical_0029_prosrc())
+    expected_digest = hashlib.sha256(
+        predecessor_body.encode("utf-8")
+    ).hexdigest()
+    assert _module_literal_assignment(
+        DAFD, "_CANONICAL_PROSRC_SHA256"
+    ) == expected_digest
 
 
 def test_duplicate_objects_are_collision_literals_only_and_never_ddl() -> None:
