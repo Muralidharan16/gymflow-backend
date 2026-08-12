@@ -3,8 +3,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE = ROOT / "app/core/database.py"
-TEST_DB_CLEANUP = ROOT / "tests/db_cleanup.py"
-BRANCH_MANAGEMENT = ROOT / "tests/test_branch_management.py"
+TESTS = ROOT / "tests"
+TEST_DB_CLEANUP = TESTS / "db_cleanup.py"
+BRANCH_MANAGEMENT = TESTS / "test_branch_management.py"
+THIS_TEST = Path(__file__).resolve()
 
 
 def _source() -> str:
@@ -158,6 +160,22 @@ def test_pytest_forced_rls_cleanup_is_transactional_and_test_runner_only() -> No
         "CASCADE",
     ):
         assert forbidden not in source
+
+
+def test_no_test_module_bypasses_forced_rls_branch_state_cleanup_helper() -> None:
+    direct_delete = "DELETE FROM public.org_branch_state"
+    offenders = []
+
+    for path in sorted(TESTS.glob("test_*.py")):
+        if path.resolve() == THIS_TEST:
+            continue
+        if direct_delete in path.read_text(encoding="utf-8"):
+            offenders.append(path.name)
+
+    assert offenders == [], (
+        "forced-RLS org_branch_state teardown must route through "
+        f"tests/db_cleanup.py; direct cleanup remains in: {offenders}"
+    )
 
 
 def test_branch_management_routes_forced_rls_child_cleanup_through_helper() -> None:
