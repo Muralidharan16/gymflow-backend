@@ -29,12 +29,29 @@ def test_subscription_fixture_is_identity_split_and_non_destructive() -> None:
     assert "CASCADE" not in source.upper()
 
     args = {arg.arg for arg in node.args.args}
-    assert {"admin_db_session", "auth_db_session", "db_session"} <= args
-    assert "admin_db_session.add_all" in fixture_source
+    assert {"auth_db_session", "db_session"} <= args
+    assert "admin_db_session" not in args
+    assert "admin_db_session" not in fixture_source
     assert "auth_db_session.add_all" in fixture_source
     assert "db_session.add_all" in fixture_source
     assert fixture_source.count("_set_owner_context(") >= 4
     assert "suffix = uuid.uuid4().hex" in fixture_source
+
+
+def test_subscription_tenant_root_bootstrap_is_auth_owned_and_fk_ordered() -> None:
+    source = TARGET.read_text()
+    node = _function("test_data")
+    fixture_source = ast.get_source_segment(source, node)
+    assert fixture_source is not None
+
+    organization_position = fixture_source.find("Organization(")
+    flush_position = fixture_source.find("await auth_db_session.flush()")
+    owner_position = fixture_source.find("Owner(")
+    commit_position = fixture_source.find("await auth_db_session.commit()")
+
+    assert min(organization_position, flush_position, owner_position, commit_position) >= 0
+    assert organization_position < flush_position < owner_position < commit_position
+    assert "auth_db_session.add_all" in fixture_source
 
 
 def test_subscription_request_headers_use_fixture_owner_email() -> None:
