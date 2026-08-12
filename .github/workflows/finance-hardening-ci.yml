@@ -140,6 +140,9 @@ jobs:
           GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO synthetic_test_runtime;
           SQL
 
+      - name: Provision external lifecycle maintenance capability
+        run: bash scripts/ci/provision_lifecycle_maintenance_role.sh
+
       - name: Prove worker role is isolated from Finance identities
         run: |
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d postgres <<'SQL'
