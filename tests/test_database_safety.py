@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -84,15 +85,58 @@ async def test_assert_test_database_rejects_non_test_db(monkeypatch, db_session)
         await test_db.assert_test_database(db_session)
 
 
+def _literal_strings(node: ast.AST) -> list[str]:
+    return [
+        item.value
+        for item in ast.walk(node)
+        if isinstance(item, ast.Constant) and isinstance(item.value, str)
+    ]
+
+
+def _call_name(call: ast.Call) -> str:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
+def _contains_executable_fk_bypass(path: Path, forbidden: str) -> bool:
+    module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _call_name(node)
+        if call_name not in {
+            "text",
+            "execute",
+            "exec_driver_sql",
+            "executemany",
+            "run",
+            "Popen",
+            "check_call",
+            "check_output",
+        }:
+            continue
+        if any(forbidden in value for value in _literal_strings(node)):
+            return True
+    return False
+
+
 def test_tests_do_not_disable_fk_constraints():
     forbidden = "session_" + "replication_role"
     test_root = Path(__file__).resolve().parent
     offenders: list[str] = []
 
-    for path in test_root.glob("*.py"):
+    for path in sorted(test_root.glob("*.py")):
         if path.name == Path(__file__).name:
             continue
-        if forbidden in path.read_text():
+        if _contains_executable_fk_bypass(path, forbidden):
             offenders.append(path.name)
 
-    assert offenders == []
+    assert offenders == [], (
+        "tests must not execute PostgreSQL FK/trigger bypass through "
+        f"session_replication_role; offenders: {offenders}"
+    )
