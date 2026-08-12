@@ -39,6 +39,16 @@ async def set_db_session_context(session, org_id: str, user_id: str, role: str):
     )
 
 
+async def set_maintenance_session_context(session):
+    """Install the exact lifecycle-maintenance context used by background tasks."""
+    await update_session_context(
+        session,
+        trace_id="branch-lifecycle-maintenance-test",
+        role="lifecycle_maintenance",
+        internal_maintenance="lifecycle",
+    )
+
+
 async def cleanup_lifecycle_fixture() -> None:
     """Clear only lifecycle-owned append/queue surfaces in the disposable DB.
 
@@ -433,11 +443,14 @@ async def test_saga_happy_path_and_transaction_b_failure_is_retry_safe(
 
 
 @pytest.mark.asyncio
-async def test_watchdog_alerts_without_compensating_retryable_saga(lifecycle_setup):
+async def test_watchdog_alerts_without_compensating_retryable_saga(
+    lifecycle_setup, maintenance_db_session
+):
     org_id = lifecycle_setup["org_id"]
     owner_id = lifecycle_setup["owner_id"]
     branch1_id = lifecycle_setup["branch1_id"]
 
+    # Transaction A remains an ordinary tenant/API capability.
     async with AsyncSessionLocal() as session:
         await set_db_session_context(session, str(org_id), str(owner_id), "owner")
         service = BranchLifecycleService(session)
@@ -460,35 +473,45 @@ async def test_watchdog_alerts_without_compensating_retryable_saga(lifecycle_set
         state.status_changed_at = datetime.now(timezone.utc) - timedelta(hours=2)
         await session.commit()
 
-        # Repeated sweeps must alert idempotently and must never race the
-        # retry/dead-letter worker by rolling back Transaction A themselves.
-        await service.run_watchdog_sweep()
-        await service.run_watchdog_sweep()
+    # Cross-tenant watchdog execution is maintenance-owned. The dedicated login
+    # must also carry the transaction-local lifecycle context required by FORCE RLS.
+    await set_maintenance_session_context(maintenance_db_session)
+    maintenance_service = BranchLifecycleService(maintenance_db_session)
 
-        frozen = (
-            await session.execute(
-                select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
+    # Repeated sweeps must alert idempotently and must never race the
+    # retry/dead-letter worker by rolling back Transaction A themselves.
+    await maintenance_service.run_watchdog_sweep()
+    await maintenance_service.run_watchdog_sweep()
+
+    frozen = (
+        await maintenance_db_session.execute(
+            select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
+        )
+    ).scalar_one()
+    assert frozen.status == "temporarily_closed"
+    assert frozen.is_operational is False
+    assert frozen.lifecycle_transition_in_progress is True
+    assert frozen.saga_last_checkpoint is None
+    assert frozen.saga_compensation_strategy == "rollback_to_origin"
+    assert int(frozen.watchdog_recovery_count or 0) == 0
+    assert frozen.watchdog_recovered_at is None
+
+    alerts = (
+        await maintenance_db_session.execute(
+            select(BranchWatchdogAlert).where(
+                BranchWatchdogAlert.branch_id == branch1_id,
+                BranchWatchdogAlert.alert_type == "freeze_threshold_15m",
+                BranchWatchdogAlert.resolved_at.is_(None),
             )
-        ).scalar_one()
-        assert frozen.status == "temporarily_closed"
-        assert frozen.is_operational is False
-        assert frozen.lifecycle_transition_in_progress is True
-        assert frozen.saga_last_checkpoint is None
-        assert frozen.saga_compensation_strategy == "rollback_to_origin"
-        assert int(frozen.watchdog_recovery_count or 0) == 0
-        assert frozen.watchdog_recovered_at is None
+        )
+    ).scalars().all()
+    assert len(alerts) == 1
 
-        alerts = (
-            await session.execute(
-                select(BranchWatchdogAlert).where(
-                    BranchWatchdogAlert.branch_id == branch1_id,
-                    BranchWatchdogAlert.alert_type == "freeze_threshold_15m",
-                    BranchWatchdogAlert.resolved_at.is_(None),
-                )
-            )
-        ).scalars().all()
-        assert len(alerts) == 1
-
+    # Outbox/lifecycle history are not maintenance inspection privileges. Verify
+    # those invariants through the tenant-scoped application identity instead of
+    # broadening the maintenance role just for test convenience.
+    async with AsyncSessionLocal() as session:
+        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
         parent = (
             await session.execute(
                 select(BranchOutboxEvent).where(
@@ -516,43 +539,44 @@ async def test_watchdog_alerts_without_compensating_retryable_saga(lifecycle_set
 
 
 @pytest.mark.asyncio
-async def test_reconciliation_sweep_releases_claim_and_advances_projection(lifecycle_setup):
-    org_id = lifecycle_setup["org_id"]
-    owner_id = lifecycle_setup["owner_id"]
+async def test_reconciliation_sweep_releases_claim_and_advances_projection(
+    lifecycle_setup, maintenance_db_session
+):
     branch1_id = lifecycle_setup["branch1_id"]
 
-    async with AsyncSessionLocal() as session:
-        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
-        service = BranchLifecycleService(session)
+    # Reconciliation markers are maintenance-owned state. Seed and execute the
+    # scenario through the same dedicated identity used by the scheduled task.
+    await set_maintenance_session_context(maintenance_db_session)
+    service = BranchLifecycleService(maintenance_db_session)
 
-        state = (
-            await session.execute(
-                select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-            )
-        ).scalar_one()
-        assert state.status == "active"
-        assert state.lifecycle_transition_in_progress is False
-        starting_version = state.search_visibility_version
-        state.search_last_synced_at = datetime.now(timezone.utc) - timedelta(days=2)
-        state.reconciliation_claimed_by = None
-        state.reconciliation_claimed_at = None
-        await session.commit()
+    state = (
+        await maintenance_db_session.execute(
+            select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
+        )
+    ).scalar_one()
+    assert state.status == "active"
+    assert state.lifecycle_transition_in_progress is False
+    starting_version = state.search_visibility_version
+    state.search_last_synced_at = datetime.now(timezone.utc) - timedelta(days=2)
+    state.reconciliation_claimed_by = None
+    state.reconciliation_claimed_at = None
+    await maintenance_db_session.commit()
 
-        reconciled = await service.run_reconciliation_sweep()
-        assert reconciled >= 1
+    reconciled = await service.run_reconciliation_sweep()
+    assert reconciled >= 1
 
-        reconciled_state = (
-            await session.execute(
-                select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
-            )
-        ).scalar_one()
-        # Reconciliation is intentionally set-based SQL and production sessions
-        # keep expire_on_commit=False. Explicitly refresh the already-loaded ORM
-        # identity before asserting the persisted row rather than confusing a
-        # caller-local identity-map cache with a failed database update.
-        await session.refresh(reconciled_state)
-        assert reconciled_state.reconciliation_claimed_by is None
-        assert reconciled_state.reconciliation_claimed_at is None
-        assert reconciled_state.search_sync_failed_at is None
-        assert reconciled_state.search_last_synced_at is not None
-        assert reconciled_state.search_visibility_version > starting_version
+    reconciled_state = (
+        await maintenance_db_session.execute(
+            select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
+        )
+    ).scalar_one()
+    # Reconciliation is intentionally set-based SQL and production sessions
+    # keep expire_on_commit=False. Explicitly refresh the already-loaded ORM
+    # identity before asserting the persisted row rather than confusing a
+    # caller-local identity-map cache with a failed database update.
+    await maintenance_db_session.refresh(reconciled_state)
+    assert reconciled_state.reconciliation_claimed_by is None
+    assert reconciled_state.reconciliation_claimed_at is None
+    assert reconciled_state.search_sync_failed_at is None
+    assert reconciled_state.search_last_synced_at is not None
+    assert reconciled_state.search_visibility_version > starting_version
