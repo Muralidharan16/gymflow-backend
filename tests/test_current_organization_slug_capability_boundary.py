@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 
@@ -59,14 +60,26 @@ def test_slug_capability_is_tenant_bound_security_definer_with_closed_execute_ac
 def test_slug_capability_has_bounded_create_window_and_exact_downgrade() -> None:
     source = MIGRATION.read_text()
     normalized = " ".join(source.split())
+    tree = ast.parse(source)
 
     assert "GRANT CREATE ON SCHEMA public TO app_security_owner" in normalized
     assert "REVOKE CREATE ON SCHEMA public FROM app_security_owner" in normalized
     assert "DROP FUNCTION public.current_organization_slug() RESTRICT" in normalized
     assert "REVOKE SELECT (id, slug) ON TABLE public.organizations FROM app_security_owner" in normalized
 
+    sql_literals = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    for literal in sql_literals:
+        assert not re.search(
+            r"\b(?:CREATE|ALTER)\s+ROLE\b[^;]*\bBYPASSRLS\b",
+            literal,
+            re.IGNORECASE | re.DOTALL,
+        )
+
     for forbidden in (
-        "BYPASSRLS",
         "GRANT ALL",
         "GRANT DELETE",
         "GRANT UPDATE ON TABLE public.organizations TO app_runtime",
