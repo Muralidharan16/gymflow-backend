@@ -89,28 +89,23 @@ def test_00f_is_expand_only_for_predecessor_address_storage() -> None:
 
 def test_00f_installs_composite_fk_before_populated_backfill() -> None:
     source = _source()
+    upgrade = _upgrade_source(source)
 
-    branch_column = source.index(
+    # Keep this contract about migration semantics and operation ordering, not
+    # about black/formatter line wrapping. The FK anchor is intentionally the
+    # named composite constraint so a single-column branch FK cannot satisfy it.
+    branch_column = upgrade.index(
         'op.add_column("organization_addresses", sa.Column("branch_id", sa.UUID(), nullable=True))'
     )
-    composite_fk = source.index(
-        "op.create_foreign_key(\n"
-        "        _BRANCH_ORG_FK,\n"
-        '        "organization_addresses",\n'
-        '        "org_branches",\n'
-        '        ["branch_id", "org_id"],\n'
-        '        ["id", "org_id"],'
-    )
-    backfill = source.index("    _backfill_legacy_addresses()")
-    not_null = source.index(
-        "op.alter_column(\n"
-        '        "organization_addresses",\n'
-        '        "branch_id",\n'
-        "        existing_type=sa.UUID(),\n"
-        "        nullable=False,"
+    composite_fk = upgrade.index("op.create_foreign_key(_BRANCH_ORG_FK,")
+    backfill = upgrade.index("_backfill_legacy_addresses()")
+    not_null = upgrade.index(
+        'op.alter_column("organization_addresses", "branch_id"'
     )
 
     assert branch_column < composite_fk < backfill < not_null
+    assert '["branch_id", "org_id"], ["id", "org_id"]' in upgrade
+    assert 'ondelete="RESTRICT"' in upgrade
     assert "ForeignKey(\"org_branches.id\"" not in source
 
 
@@ -124,7 +119,11 @@ def test_00f_composite_fk_is_explicit_validated_and_reversible() -> None:
         "FOREIGN KEY (branch_id, org_id) REFERENCES org_branches(id, org_id) ON DELETE RESTRICT"
         in source
     )
-    assert "op.drop_constraint(\n        _BRANCH_ORG_FK," in source
+    assert (
+        'op.drop_constraint(_BRANCH_ORG_FK, "organization_addresses", '
+        'type_="foreignkey", schema="public")'
+        in source
+    )
 
 
 def test_00f_downgrade_fails_closed_on_unrepresentable_new_state() -> None:
