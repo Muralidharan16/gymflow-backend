@@ -10,7 +10,8 @@ from app.core.database import update_session_context
 
 _TEST_RUNNER = "test_runner"
 _RELATION = "public.org_branch_state"
-_POLICY = "pytest_org_branch_state_cleanup"
+_SELECT_POLICY = "pytest_org_branch_state_cleanup_select"
+_DELETE_POLICY = "pytest_org_branch_state_cleanup_delete"
 _FORBIDDEN_CAPABILITIES = (
     "app_runtime",
     "app_user",
@@ -28,17 +29,18 @@ async def delete_org_branch_state_fixture(
 ) -> None:
     """Delete one test tenant's branch state without weakening production RLS.
 
-    ``org_branch_state`` is FORCE RLS. Its production DELETE policy is scoped to
-    ``app_runtime``, while the ordinary runtime intentionally has no DELETE ACL.
-    The reduced migration owner therefore cannot use ownership as an RLS bypass
-    during teardown, and granting a production identity DELETE merely for tests
-    would invalidate the security boundary.
+    ``org_branch_state`` is FORCE RLS. Its production DELETE/SELECT policies are
+    scoped away from the reduced migration owner, while ordinary runtime also
+    intentionally has no DELETE ACL. Test teardown therefore cannot rely on
+    ownership, BYPASSRLS, or a widened production role.
 
-    ``test_runner`` is an external test-only role. This helper lends it the
-    minimum DELETE + ``org_id`` read surface and a tenant-bound DELETE policy
-    inside the current PostgreSQL transaction. PostgreSQL's transactional DDL
-    makes the capability private to this uncommitted teardown transaction; the
-    helper also explicitly drops/revokes it before the caller commits.
+    PostgreSQL applies SELECT RLS policies to DELETE statements that read table
+    columns in their WHERE clause, in addition to the DELETE policy. The helper
+    therefore lends the external test-only ``test_runner`` role the minimum
+    ``org_id`` read + DELETE surface and paired tenant-bound SELECT/DELETE
+    policies inside the current transaction. It verifies the target row count,
+    deletes exactly that visible tenant set, proves zero remain, then removes
+    every temporary policy and privilege before the caller can commit.
     """
 
     await session.execute(text("RESET ROLE"))
@@ -152,17 +154,22 @@ async def delete_org_branch_state_fixture(
         await session.execute(
             text(
                 """
-                SELECT 1
+                SELECT array_agg(polname ORDER BY polname)
                 FROM pg_catalog.pg_policy
                 WHERE polrelid = CAST(:relation AS regclass)
-                  AND polname = :policy_name
+                  AND polname = ANY(CAST(:policy_names AS text[]))
                 """
             ),
-            {"relation": _RELATION, "policy_name": _POLICY},
+            {
+                "relation": _RELATION,
+                "policy_names": [_SELECT_POLICY, _DELETE_POLICY],
+            },
         )
     ).scalar_one_or_none()
-    if policy_collision is not None:
-        raise RuntimeError(f"unexpected pre-existing pytest cleanup policy: {_POLICY}")
+    if policy_collision:
+        raise RuntimeError(
+            f"unexpected pre-existing pytest cleanup policies: {policy_collision!r}"
+        )
 
     await update_session_context(
         session,
@@ -182,7 +189,23 @@ async def delete_org_branch_state_fixture(
     await session.execute(
         text(
             """
-            CREATE POLICY pytest_org_branch_state_cleanup
+            CREATE POLICY pytest_org_branch_state_cleanup_select
+            ON public.org_branch_state
+            FOR SELECT TO test_runner
+            USING (
+                org_id = NULLIF(
+                    current_setting('app.current_org_id', true),
+                    ''
+                )::uuid
+                AND current_setting('app.current_role', true) = 'superadmin'
+            )
+            """
+        )
+    )
+    await session.execute(
+        text(
+            """
+            CREATE POLICY pytest_org_branch_state_cleanup_delete
             ON public.org_branch_state
             FOR DELETE TO test_runner
             USING (
@@ -220,10 +243,37 @@ async def delete_org_branch_state_fixture(
             f"pytest cleanup role/context drifted: {tuple(runner_context)!r}"
         )
 
-    await session.execute(
+    visible_before = (
+        await session.execute(
+            text("SELECT count(*) FROM public.org_branch_state WHERE org_id = :org_id"),
+            {"org_id": org_id},
+        )
+    ).scalar_one()
+    if visible_before <= 0:
+        raise RuntimeError(
+            "pytest cleanup could not see any tenant branch-state rows before DELETE"
+        )
+
+    delete_result = await session.execute(
         text("DELETE FROM public.org_branch_state WHERE org_id = :org_id"),
         {"org_id": org_id},
     )
+    if delete_result.rowcount != visible_before:
+        raise RuntimeError(
+            "pytest cleanup DELETE count drifted: "
+            f"visible_before={visible_before}, deleted={delete_result.rowcount}"
+        )
+
+    visible_after = (
+        await session.execute(
+            text("SELECT count(*) FROM public.org_branch_state WHERE org_id = :org_id"),
+            {"org_id": org_id},
+        )
+    ).scalar_one()
+    if visible_after != 0:
+        raise RuntimeError(
+            f"pytest cleanup left {visible_after} visible branch-state rows"
+        )
 
     await session.execute(text("RESET ROLE"))
     current_name = (
@@ -233,7 +283,16 @@ async def delete_org_branch_state_fixture(
         raise RuntimeError("pytest cleanup failed to restore migration_owner")
 
     await session.execute(
-        text("DROP POLICY pytest_org_branch_state_cleanup ON public.org_branch_state")
+        text(
+            "DROP POLICY pytest_org_branch_state_cleanup_delete "
+            "ON public.org_branch_state"
+        )
+    )
+    await session.execute(
+        text(
+            "DROP POLICY pytest_org_branch_state_cleanup_select "
+            "ON public.org_branch_state"
+        )
     )
     await session.execute(
         text("REVOKE SELECT (org_id) ON TABLE public.org_branch_state FROM test_runner")
@@ -262,14 +321,14 @@ async def delete_org_branch_state_fixture(
                         SELECT 1
                         FROM pg_catalog.pg_policy
                         WHERE polrelid = CAST(:relation AS regclass)
-                          AND polname = :policy_name
+                          AND polname = ANY(CAST(:policy_names AS text[]))
                     ) AS policy_exists
                 """
             ),
             {
                 "runner_role": _TEST_RUNNER,
                 "relation": _RELATION,
-                "policy_name": _POLICY,
+                "policy_names": [_SELECT_POLICY, _DELETE_POLICY],
             },
         )
     ).mappings().one()
