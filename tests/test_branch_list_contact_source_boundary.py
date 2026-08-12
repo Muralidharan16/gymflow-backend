@@ -43,5 +43,12 @@ def test_branch_list_uses_branch_contacts_as_canonical_contact_source() -> None:
     assert "select(Organization)" not in source
     assert "current_staff.email" not in source
 
-    assert 'contacts_dict.get("email") or f"hello@{branch.internal_slug}.com"' in source
-    assert 'contacts_dict.get("phone") or "Pending Setup"' in source
+    # Keep these assertions formatting-insensitive: the contract is canonical
+    # branch-contact lookup plus a branch-local fallback, not a particular
+    # line-wrapping choice made by the formatter.
+    assert '"contact_email"' in source
+    assert 'contacts_dict.get("email")' in source
+    assert 'f"hello@{branch.internal_slug}.com"' in source
+    assert '"contact_phone"' in source
+    assert 'contacts_dict.get("phone")' in source
+    assert '"Pending Setup"' in source
