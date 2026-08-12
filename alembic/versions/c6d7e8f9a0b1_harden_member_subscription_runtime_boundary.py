@@ -5,9 +5,9 @@ Revises: b5c6d7e8f9a0
 Create Date: 2026-08-12
 
 The ordinary API routes for member management, membership plans, and modern
-member subscriptions execute through ``app_runtime``.  Their tables predate the
+member subscriptions execute through ``app_runtime``. Their tables predate the
 current reduced-runtime role graph and never received an explicit runtime ACL /
-FORCE-RLS contract.  With the hardened CI identity this made legitimate API
+FORCE-RLS contract. With the hardened CI identity this made legitimate API
 writes impossible; granting DML without tenant RLS would instead reopen a much
 larger production security hole.
 
@@ -105,6 +105,7 @@ _POLICY_CONTRACT = {
     "subscription_members": ("SELECT", "INSERT"),
     "member_measurements": ("SELECT", "INSERT"),
 }
+_POLICY_COMMAND = {"SELECT": "r", "INSERT": "a", "UPDATE": "w"}
 
 
 def _bind():
@@ -170,6 +171,16 @@ def _require_migration_owner(bind) -> None:
             {"member": _MIGRATION_OWNER, "role": capability},
         ).scalar_one():
             raise RuntimeError(f"migration_owner must not SET ROLE to runtime capability {capability}")
+
+
+def _role_oid(bind, role_name: str) -> int:
+    oid = bind.execute(
+        sa.text("SELECT oid FROM pg_catalog.pg_roles WHERE rolname = :role_name"),
+        {"role_name": role_name},
+    ).scalar_one_or_none()
+    if oid is None:
+        raise RuntimeError(f"c6d7 required role is absent: {role_name}")
+    return int(oid)
 
 
 def _relation_state(bind, table_name: str):
@@ -243,22 +254,36 @@ def _column_privileges(bind, table_name: str, privilege: str) -> set[str]:
     )
 
 
+def _policy_rows(bind, table_name: str):
+    return bind.execute(
+        sa.text(
+            """
+            SELECT policy.polname::text AS name,
+                   policy.polcmd::text AS command,
+                   policy.polpermissive AS permissive,
+                   policy.polroles AS roles,
+                   pg_catalog.pg_get_expr(
+                       policy.polqual, policy.polrelid, true
+                   )::text AS using_expr,
+                   pg_catalog.pg_get_expr(
+                       policy.polwithcheck, policy.polrelid, true
+                   )::text AS check_expr
+            FROM pg_catalog.pg_policy AS policy
+            JOIN pg_catalog.pg_class AS relation
+              ON relation.oid = policy.polrelid
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = 'public'
+              AND relation.relname = :table_name
+            ORDER BY policy.polname
+            """
+        ),
+        {"table_name": table_name},
+    ).mappings().all()
+
+
 def _policy_names(bind, table_name: str) -> set[str]:
-    return set(
-        bind.execute(
-            sa.text(
-                """
-                SELECT policy.polname::text
-                FROM pg_catalog.pg_policy AS policy
-                WHERE policy.polrelid = CAST(
-                    ('public.' || :table_name)::text AS regclass
-                )
-                ORDER BY policy.polname
-                """
-            ),
-            {"table_name": table_name},
-        ).scalars().all()
-    )
+    return {row["name"] for row in _policy_rows(bind, table_name)}
 
 
 def _require_predecessor(bind) -> None:
@@ -275,21 +300,24 @@ def _require_predecessor(bind) -> None:
             raise RuntimeError(
                 f"c6d7 predecessor unexpectedly already has RLS on public.{table_name}"
             )
-        if _direct_table_privileges(bind, table_name):
+        observed_acl = _direct_table_privileges(bind, table_name)
+        if observed_acl:
             raise RuntimeError(
                 f"c6d7 predecessor app_runtime table ACL drift on public.{table_name}: "
-                f"{sorted(_direct_table_privileges(bind, table_name))!r}"
+                f"{sorted(observed_acl)!r}"
             )
         for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
-            if _column_privileges(bind, table_name, privilege):
+            observed_columns = _column_privileges(bind, table_name, privilege)
+            if observed_columns:
                 raise RuntimeError(
                     f"c6d7 predecessor app_runtime column ACL drift on public.{table_name} "
-                    f"for {privilege}"
+                    f"for {privilege}: {sorted(observed_columns)!r}"
                 )
-        if _policy_names(bind, table_name):
+        policies = _policy_names(bind, table_name)
+        if policies:
             raise RuntimeError(
                 f"c6d7 predecessor unexpectedly has policies on public.{table_name}: "
-                f"{sorted(_policy_names(bind, table_name))!r}"
+                f"{sorted(policies)!r}"
             )
 
 
@@ -350,18 +378,90 @@ def _grant_forward_acl() -> None:
 
 
 def _revoke_forward_acl() -> None:
+    op.execute(
+        "REVOKE UPDATE (" + ", ".join(sorted(_MEMBER_UPDATE_COLUMNS)) + ") "
+        "ON TABLE public.members FROM app_runtime"
+    )
+    op.execute("REVOKE SELECT, INSERT ON TABLE public.members FROM app_runtime")
+
+    op.execute(
+        "REVOKE UPDATE (" + ", ".join(sorted(_PLAN_UPDATE_COLUMNS)) + ") "
+        "ON TABLE public.membership_plans FROM app_runtime"
+    )
+    op.execute("REVOKE SELECT, INSERT ON TABLE public.membership_plans FROM app_runtime")
+
+    op.execute(
+        "REVOKE UPDATE (" + ", ".join(sorted(_COUNTER_UPDATE_COLUMNS)) + ") "
+        "ON TABLE public.organization_counters FROM app_runtime"
+    )
+    op.execute(
+        "REVOKE SELECT (" + ", ".join(sorted(_COUNTER_SELECT_COLUMNS)) + ") "
+        "ON TABLE public.organization_counters FROM app_runtime"
+    )
+    op.execute(
+        "REVOKE INSERT (" + ", ".join(sorted(_COUNTER_INSERT_COLUMNS)) + ") "
+        "ON TABLE public.organization_counters FROM app_runtime"
+    )
+
     for table_name in (
-        "members",
-        "membership_plans",
         "member_subscriptions_v2",
         "subscription_members",
         "member_measurements",
     ):
-        op.execute(f"REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.{table_name} FROM app_runtime")
-    op.execute(
-        "REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE "
-        "ON TABLE public.organization_counters FROM app_runtime"
-    )
+        op.execute(f"REVOKE SELECT, INSERT ON TABLE public.{table_name} FROM app_runtime")
+
+
+def _normalize_expression(value: object) -> str:
+    return " ".join(str(value or "").split()).lower()
+
+
+def _require_policy_contract(bind, table_name: str) -> None:
+    rows = {row["name"]: row for row in _policy_rows(bind, table_name)}
+    expected_names = {
+        _policy_name(table_name, command)
+        for command in _POLICY_CONTRACT[table_name]
+    }
+    if set(rows) != expected_names:
+        raise RuntimeError(
+            f"c6d7 policy inventory drift on public.{table_name}: "
+            f"{sorted(rows)!r}"
+        )
+
+    api_oid = _role_oid(bind, _API)
+    for command in _POLICY_CONTRACT[table_name]:
+        row = rows[_policy_name(table_name, command)]
+        if row["command"] != _POLICY_COMMAND[command]:
+            raise RuntimeError(
+                f"c6d7 policy command drift on public.{table_name}/{command}"
+            )
+        if not bool(row["permissive"]) or list(row["roles"]) != [api_oid]:
+            raise RuntimeError(
+                f"c6d7 policy role/permissive drift on public.{table_name}/{command}"
+            )
+
+        using_expr = _normalize_expression(row["using_expr"])
+        check_expr = _normalize_expression(row["check_expr"])
+        expected_tokens = ["app.current_org_id"]
+        if table_name == _MEASUREMENTS:
+            expected_tokens.extend(["members", "member_id", "gym_id"])
+
+        if command == "SELECT":
+            if check_expr or any(token not in using_expr for token in expected_tokens):
+                raise RuntimeError(
+                    f"c6d7 SELECT policy expression drift on public.{table_name}"
+                )
+        elif command == "INSERT":
+            if using_expr or any(token not in check_expr for token in expected_tokens):
+                raise RuntimeError(
+                    f"c6d7 INSERT policy expression drift on public.{table_name}"
+                )
+        elif command == "UPDATE":
+            if any(token not in using_expr for token in expected_tokens) or any(
+                token not in check_expr for token in expected_tokens
+            ):
+                raise RuntimeError(
+                    f"c6d7 UPDATE policy expression drift on public.{table_name}"
+                )
 
 
 def _require_forward(bind) -> None:
@@ -386,37 +486,35 @@ def _require_forward(bind) -> None:
         state = _relation_state(bind, table_name)
         if state is None or (bool(state["relrowsecurity"]), bool(state["relforcerowsecurity"])) != (True, True):
             raise RuntimeError(f"c6d7 forward FORCE-RLS drift on public.{table_name}")
-        if _direct_table_privileges(bind, table_name) != expected_table_acl[table_name]:
+
+        table_acl = _direct_table_privileges(bind, table_name)
+        if table_acl != expected_table_acl[table_name]:
             raise RuntimeError(
                 f"c6d7 forward table ACL drift on public.{table_name}: "
-                f"{sorted(_direct_table_privileges(bind, table_name))!r}"
+                f"{sorted(table_acl)!r}"
             )
-        if _column_privileges(bind, table_name, "UPDATE") != expected_update[table_name]:
+        update_columns = _column_privileges(bind, table_name, "UPDATE")
+        if update_columns != expected_update[table_name]:
             raise RuntimeError(
                 f"c6d7 forward UPDATE column drift on public.{table_name}: "
-                f"{sorted(_column_privileges(bind, table_name, 'UPDATE'))!r}"
+                f"{sorted(update_columns)!r}"
             )
+
         if table_name == "organization_counters":
             if _column_privileges(bind, table_name, "INSERT") != _COUNTER_INSERT_COLUMNS:
                 raise RuntimeError("c6d7 organization_counters INSERT column drift")
             if _column_privileges(bind, table_name, "SELECT") != _COUNTER_SELECT_COLUMNS:
                 raise RuntimeError("c6d7 organization_counters SELECT column drift")
 
-        forbidden = _direct_table_privileges(bind, table_name) & {"UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
+        forbidden = table_acl & {"UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"}
         if forbidden:
             raise RuntimeError(
                 f"c6d7 forbidden broad privilege on public.{table_name}: {sorted(forbidden)!r}"
             )
+        if _column_privileges(bind, table_name, "DELETE"):
+            raise RuntimeError(f"c6d7 unexpected DELETE column ACL on public.{table_name}")
 
-        expected_policies = {
-            _policy_name(table_name, command)
-            for command in _POLICY_CONTRACT[table_name]
-        }
-        if _policy_names(bind, table_name) != expected_policies:
-            raise RuntimeError(
-                f"c6d7 policy inventory drift on public.{table_name}: "
-                f"{sorted(_policy_names(bind, table_name))!r}"
-            )
+        _require_policy_contract(bind, table_name)
 
 
 def upgrade() -> None:
