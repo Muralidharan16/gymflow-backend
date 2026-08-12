@@ -152,6 +152,53 @@ def validate_test_auth_database_url(
     return auth_database_url
 
 
+def validate_test_maintenance_database_url(
+    maintenance_database_url: str | None,
+    runtime_database_url: str,
+    admin_database_url: str,
+    auth_database_url: str | None,
+) -> str | None:
+    """Validate the optional lifecycle-maintenance login used by integration tests.
+
+    A maintenance test identity is cross-tenant by design, so when configured it
+    must target the same disposable database while remaining a distinct login
+    from the ordinary runtime, auth/bootstrap, and administrative fixture roles.
+    This keeps maintenance behavior production-shaped without lending its ACLs
+    to the API test pool.
+    """
+    if not maintenance_database_url:
+        return None
+
+    maintenance_url = make_url(maintenance_database_url)
+    runtime_url = make_url(runtime_database_url)
+    admin_url = make_url(admin_database_url)
+    maintenance_db = maintenance_url.database or ""
+    runtime_db = runtime_url.database or ""
+
+    if "test" not in maintenance_db.lower():
+        raise RuntimeError(
+            "MAINTENANCE_DATABASE_URL database name must contain 'test' under pytest: "
+            f"{maintenance_db}"
+        )
+    if maintenance_db != runtime_db:
+        raise RuntimeError(
+            "MAINTENANCE_DATABASE_URL must target the same disposable database as "
+            f"TEST_DATABASE_URL under pytest: runtime={runtime_db!r}, "
+            f"maintenance={maintenance_db!r}"
+        )
+
+    reserved_users = {runtime_url.username, admin_url.username}
+    if auth_database_url:
+        reserved_users.add(make_url(auth_database_url).username)
+    if maintenance_url.username in reserved_users:
+        raise RuntimeError(
+            "MAINTENANCE_DATABASE_URL must use a distinct bounded maintenance "
+            "identity under pytest"
+        )
+
+    return maintenance_database_url
+
+
 APP_DATABASE_URL = os.environ.get("DATABASE_URL") or _read_dotenv_value("DATABASE_URL")
 PLATFORM_BILLING_TEST_DATABASE_URL = os.environ.get("PLATFORM_BILLING_TEST_DATABASE_URL")
 FINANCE_CORE_TEST_DATABASE_URL = os.environ.get("FINANCE_CORE_TEST_DATABASE_URL")
@@ -188,11 +235,22 @@ AUTH_TEST_DATABASE_URL = validate_test_auth_database_url(
     os.environ.get("AUTH_DATABASE_URL") or _read_dotenv_value("AUTH_DATABASE_URL"),
     TEST_DATABASE_URL,
 )
+MAINTENANCE_TEST_DATABASE_URL = validate_test_maintenance_database_url(
+    os.environ.get("MAINTENANCE_DATABASE_URL")
+    or _read_dotenv_value("MAINTENANCE_DATABASE_URL"),
+    TEST_DATABASE_URL,
+    TEST_ADMIN_DATABASE_URL,
+    AUTH_TEST_DATABASE_URL,
+)
 
 # Force this pytest process, including app.core.database import-time engine creation,
 # onto the guarded *runtime* test identity. Administrative fixture cleanup uses a
 # separate engine below and is never exposed to application dependencies.
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+if MAINTENANCE_TEST_DATABASE_URL:
+    # app.core.database creates the production maintenance NullPool at import
+    # time, so install the already-validated reduced test credential beforehand.
+    os.environ["MAINTENANCE_DATABASE_URL"] = MAINTENANCE_TEST_DATABASE_URL
 
 from app.core import database as app_database  # noqa: E402
 from app.core import auth_database as app_auth_database  # noqa: E402
@@ -248,6 +306,15 @@ AuthTestSessionLocal = (
         expire_on_commit=False,
     )
     if auth_test_async_engine is not None
+    else None
+)
+
+# app.core.database already creates the maintenance engine with NullPool, which
+# is the production event-loop-safety contract. Reuse that exact sessionmaker in
+# integration tests when a reduced maintenance test credential is configured.
+MaintenanceTestSessionLocal = (
+    app_database.MaintenanceAsyncSessionLocal
+    if MAINTENANCE_TEST_DATABASE_URL
     else None
 )
 
@@ -383,6 +450,18 @@ async def auth_db_session() -> AsyncGenerator[AsyncSession, None]:
             "AUTH_DATABASE_URL is required for auth/bootstrap integration fixtures"
         )
     async with AuthTestSessionLocal() as session:
+        await assert_test_database(session)
+        yield session
+
+
+@pytest_asyncio.fixture
+async def maintenance_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Lifecycle maintenance fixture using the dedicated reduced maintenance login."""
+    if MaintenanceTestSessionLocal is None:
+        raise RuntimeError(
+            "MAINTENANCE_DATABASE_URL is required for lifecycle maintenance integration fixtures"
+        )
+    async with MaintenanceTestSessionLocal() as session:
         await assert_test_database(session)
         yield session
 
