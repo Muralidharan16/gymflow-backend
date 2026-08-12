@@ -267,7 +267,10 @@ def upgrade() -> None:
 
     _run_as_security_owner(
         bind,
-        "REVOKE ALL ON FUNCTION public.current_organization_slug() FROM PUBLIC; "
+        "REVOKE ALL ON FUNCTION public.current_organization_slug() FROM PUBLIC",
+    )
+    _run_as_security_owner(
+        bind,
         "GRANT EXECUTE ON FUNCTION public.current_organization_slug() TO app_runtime",
     )
     _verify_forward(bind)
