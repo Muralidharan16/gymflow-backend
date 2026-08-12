@@ -87,14 +87,20 @@ def test_pytest_forced_rls_cleanup_is_transactional_and_test_runner_only() -> No
         'role="superadmin"',
         "GRANT DELETE ON TABLE public.org_branch_state TO test_runner",
         "GRANT SELECT (org_id) ON TABLE public.org_branch_state TO test_runner",
-        "CREATE POLICY pytest_org_branch_state_cleanup",
+        "CREATE POLICY pytest_org_branch_state_cleanup_select",
+        "FOR SELECT TO test_runner",
+        "CREATE POLICY pytest_org_branch_state_cleanup_delete",
         "FOR DELETE TO test_runner",
         "current_setting('app.current_org_id', true)",
         "current_setting('app.current_role', true) = 'superadmin'",
         "SET LOCAL ROLE test_runner",
+        "SELECT count(*) FROM public.org_branch_state WHERE org_id = :org_id",
         "DELETE FROM public.org_branch_state WHERE org_id = :org_id",
+        "delete_result.rowcount != visible_before",
+        "visible_after != 0",
         "RESET ROLE",
-        "DROP POLICY pytest_org_branch_state_cleanup ON public.org_branch_state",
+        "DROP POLICY pytest_org_branch_state_cleanup_delete",
+        "DROP POLICY pytest_org_branch_state_cleanup_select",
         "REVOKE SELECT (org_id) ON TABLE public.org_branch_state FROM test_runner",
         "REVOKE DELETE ON TABLE public.org_branch_state FROM test_runner",
         '"pytest cleanup capability was not fully removed before commit"',
@@ -105,19 +111,36 @@ def test_pytest_forced_rls_cleanup_is_transactional_and_test_runner_only() -> No
     grant_delete = source.index(
         "GRANT DELETE ON TABLE public.org_branch_state TO test_runner"
     )
-    create_policy = source.index("CREATE POLICY pytest_org_branch_state_cleanup")
+    create_select = source.index(
+        "CREATE POLICY pytest_org_branch_state_cleanup_select"
+    )
+    create_delete = source.index(
+        "CREATE POLICY pytest_org_branch_state_cleanup_delete"
+    )
     set_runner = source.index("SET LOCAL ROLE test_runner")
+    visible_before = source.index(
+        "SELECT count(*) FROM public.org_branch_state WHERE org_id = :org_id"
+    )
     delete_row = source.index("DELETE FROM public.org_branch_state WHERE org_id = :org_id")
+    rowcount_guard = source.index("delete_result.rowcount != visible_before")
+    visible_after = source.index(
+        "SELECT count(*) FROM public.org_branch_state WHERE org_id = :org_id",
+        visible_before + 1,
+    )
     reset_role = source.index("RESET ROLE", set_runner)
-    drop_policy = source.index(
-        "DROP POLICY pytest_org_branch_state_cleanup ON public.org_branch_state"
+    drop_delete = source.index(
+        "DROP POLICY pytest_org_branch_state_cleanup_delete"
+    )
+    drop_select = source.index(
+        "DROP POLICY pytest_org_branch_state_cleanup_select"
     )
     revoke_delete = source.index(
         "REVOKE DELETE ON TABLE public.org_branch_state FROM test_runner"
     )
 
-    assert grant_delete < create_policy < set_runner < delete_row
-    assert delete_row < reset_role < drop_policy < revoke_delete
+    assert grant_delete < create_select < create_delete < set_runner
+    assert set_runner < visible_before < delete_row < rowcount_guard < visible_after
+    assert visible_after < reset_role < drop_delete < drop_select < revoke_delete
 
     for forbidden in (
         "SET LOCAL ROLE app_runtime",
@@ -125,6 +148,7 @@ def test_pytest_forced_rls_cleanup_is_transactional_and_test_runner_only() -> No
         "SET ROLE app_rls_executor",
         "SET ROLE app_security_owner",
         "GRANT DELETE ON TABLE public.org_branch_state TO app_runtime",
+        "GRANT SELECT ON TABLE public.org_branch_state TO test_runner",
         "GRANT DELETE ON TABLE public.org_branches",
         "GRANT DELETE ON TABLE public.organizations",
         "GRANT DELETE ON TABLE public.gym_owners",
