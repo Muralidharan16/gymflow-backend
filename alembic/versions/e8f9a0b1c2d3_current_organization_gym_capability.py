@@ -208,7 +208,11 @@ def _verify_forward(bind) -> None:
         raise RuntimeError("current_organization_owns_gym missing after upgrade")
     if row["owner_name"] != _SECURITY_OWNER or not bool(row["prosecdef"]):
         raise RuntimeError("current_organization_owns_gym owner/security-definer drift")
-    if row["volatility"] != "s" or row["identity_arguments"] != "uuid" or row["result_type"] != "boolean":
+    if (
+        row["volatility"] != "s"
+        or row["identity_arguments"] != "target_gym_id uuid"
+        or row["result_type"] != "boolean"
+    ):
         raise RuntimeError("current_organization_owns_gym signature/volatility drift")
     configs = set(row["proconfig"] or [])
     if configs != {"search_path=pg_catalog", "row_security=on"}:
