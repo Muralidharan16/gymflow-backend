@@ -19,7 +19,10 @@ def _function_node(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         and item.name == name
     ]
-    assert len(matches) == 1, f"expected exactly one lifecycle test/function named {name}, found {len(matches)}"
+    assert len(matches) == 1, (
+        f"expected exactly one lifecycle test/function named {name}, "
+        f"found {len(matches)}"
+    )
     return matches[0]
 
 
@@ -99,15 +102,43 @@ def test_lifecycle_cleanup_does_not_invent_hard_delete_or_rls_bypass() -> None:
         assert all(fragment not in literal for fragment in forbidden_fragments)
 
 
-def test_lifecycle_behavior_still_executes_on_reduced_runtime() -> None:
+def test_tenant_lifecycle_behavior_still_executes_on_reduced_api_runtime() -> None:
     for test_name in (
         "test_initiate_transition_unauthorized_role",
         "test_initiate_transition_missing_reason_on_terminal",
         "test_initiate_transition_last_active_branch_guard",
         "test_saga_happy_path_and_transaction_b_failure_is_retry_safe",
-        "test_watchdog_alerts_without_compensating_retryable_saga",
-        "test_reconciliation_sweep_releases_claim_and_advances_projection",
     ):
         test_source = _function_source(test_name)
         assert "AsyncSessionLocal()" in test_source
+        assert "maintenance_db_session" not in test_source
         assert "AdminTestSessionLocal()" not in test_source
+        assert "run_watchdog_sweep" not in test_source
+        assert "run_reconciliation_sweep" not in test_source
+
+
+def test_watchdog_behavior_splits_tenant_transaction_from_maintenance_sweep() -> None:
+    test_source = _function_source(
+        "test_watchdog_alerts_without_compensating_retryable_saga"
+    )
+
+    # Transaction A is a tenant/API operation; the cross-tenant sweep is not.
+    assert "AsyncSessionLocal()" in test_source
+    assert "maintenance_db_session" in test_source
+    assert "await set_maintenance_session_context(maintenance_db_session)" in test_source
+    assert "maintenance_service = BranchLifecycleService(maintenance_db_session)" in test_source
+    assert "await maintenance_service.run_watchdog_sweep()" in test_source
+    assert "AdminTestSessionLocal()" not in test_source
+
+
+def test_reconciliation_behavior_executes_only_on_maintenance_identity() -> None:
+    test_source = _function_source(
+        "test_reconciliation_sweep_releases_claim_and_advances_projection"
+    )
+
+    assert "maintenance_db_session" in test_source
+    assert "await set_maintenance_session_context(maintenance_db_session)" in test_source
+    assert "service = BranchLifecycleService(maintenance_db_session)" in test_source
+    assert "await service.run_reconciliation_sweep()" in test_source
+    assert "AsyncSessionLocal()" not in test_source
+    assert "AdminTestSessionLocal()" not in test_source
