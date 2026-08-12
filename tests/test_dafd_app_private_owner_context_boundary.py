@@ -267,7 +267,8 @@ def _canonical_0029_prosrc() -> str:
 
 
 def _app_private_ddl_categories(path: Path) -> set[str]:
-    text = _literal_text(path)
+    literals = _string_constants(_tree(path))
+    text = _normalized("\n".join(literals))
     patterns = {
         "create_schema": (
             r"\bCREATE\s+SCHEMA(?:\s+IF\s+NOT\s+EXISTS)?\s+app_private\b"
@@ -311,15 +312,19 @@ def _app_private_ddl_categories(path: Path) -> set[str]:
         "executor_revoke": (
             r"\bREVOKE\b[^;]*\bFROM\s+app_rls_executor\b"
         ),
-        "executor_policy": (
-            r"(?=.*\bCREATE\s+POLICY\b)(?=.*\bapp_rls_executor\b)"
-        ),
     }
-    return {
+    categories = {
         category
         for category, pattern in patterns.items()
         if re.search(pattern, text, re.IGNORECASE)
     }
+    if any(
+        re.search(r"\bCREATE\s+POLICY\b", literal, re.IGNORECASE)
+        and re.search(r"\bapp_rls_executor\b", literal, re.IGNORECASE)
+        for literal in literals
+    ):
+        categories.add("executor_policy")
+    return categories
 
 
 def test_complete_91_revision_private_and_executor_inventories_are_closed() -> None:
