@@ -35,6 +35,11 @@ def _source_segment(path: Path, node: ast.AST) -> str:
     return segment
 
 
+def _normalized_source(source: str) -> str:
+    """Normalize formatter-only whitespace while preserving source tokens."""
+    return " ".join(source.split())
+
+
 def _load_test_url_validator():
     node = _sync_function(CONFTEST, "validate_test_database_url")
     namespace = {"make_url": make_url}
@@ -53,12 +58,18 @@ def test_pytest_db_override_requires_fastapi_request_injection() -> None:
 
 
 def test_production_context_initializer_is_the_single_request_state_contract() -> None:
-    initializer = _source_segment(
-        PRODUCTION_DB,
-        _function(PRODUCTION_DB, "initialize_request_session"),
+    initializer = _normalized_source(
+        _source_segment(
+            PRODUCTION_DB,
+            _function(PRODUCTION_DB, "initialize_request_session"),
+        )
     )
-    ordinary = _source_segment(PRODUCTION_DB, _function(PRODUCTION_DB, "get_db"))
-    auth = _source_segment(AUTH_DB, _function(AUTH_DB, "get_auth_db"))
+    ordinary = _normalized_source(
+        _source_segment(PRODUCTION_DB, _function(PRODUCTION_DB, "get_db"))
+    )
+    auth = _normalized_source(
+        _source_segment(AUTH_DB, _function(AUTH_DB, "get_auth_db"))
+    )
 
     for token in (
         'getattr(state, "staff_id", principal_id)',
@@ -66,7 +77,7 @@ def test_production_context_initializer_is_the_single_request_state_contract() -
         'getattr(state, "gym_id", None)',
         'getattr(state, "role", "unknown")',
         'getattr(state, "otel_trace_id", None)',
-        'getattr(state, "correlation_id",',
+        'getattr( state, "correlation_id", "unknown" )',
         "SessionContextInitializer.initialize",
         "org_id=str(org_id) if org_id else None",
         "gym_id=str(gym_id) if gym_id else None",
@@ -78,11 +89,15 @@ def test_production_context_initializer_is_the_single_request_state_contract() -
 
 
 def test_pytest_override_preserves_same_typed_context_fields() -> None:
-    production = _source_segment(
-        PRODUCTION_DB,
-        _function(PRODUCTION_DB, "initialize_request_session"),
+    production = _normalized_source(
+        _source_segment(
+            PRODUCTION_DB,
+            _function(PRODUCTION_DB, "initialize_request_session"),
+        )
     )
-    override = _source_segment(CONFTEST, _function(CONFTEST, "override_get_db"))
+    override = _normalized_source(
+        _source_segment(CONFTEST, _function(CONFTEST, "override_get_db"))
+    )
 
     for token in (
         'getattr(state, "org_id", None)',
