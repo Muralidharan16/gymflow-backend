@@ -340,27 +340,94 @@ async def assert_test_database(session: AsyncSession) -> str:
     return db_name
 
 
+def _validate_cleanup_table_names(table_names: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for table_name in table_names:
+        if (
+            not isinstance(table_name, str)
+            or not table_name.isidentifier()
+            or table_name.lower() != table_name
+        ):
+            raise RuntimeError(f"Unsafe test cleanup table identifier: {table_name!r}")
+        if table_name not in seen:
+            ordered.append(table_name)
+            seen.add(table_name)
+    return ordered
+
+
 async def truncate_test_tables(session: AsyncSession, table_names: list[str]) -> None:
+    """Truncate only an explicitly declared FK-closed set of public test tables.
+
+    Hidden ``CASCADE`` teardown can silently erase unrelated fixtures and can
+    require destructive privileges on security-sensitive tables the caller did
+    not name.  Treat the live PostgreSQL FK graph as the authority instead: if
+    any public table outside the requested set references a requested table,
+    fail closed and report the missing dependency.
+    """
     await assert_test_database(session)
-    if not table_names:
+    requested_tables = _validate_cleanup_table_names(table_names)
+    if not requested_tables:
         return
+
     result = await session.execute(
         text(
             """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-              AND table_name = ANY(:table_names)
+            SELECT relation.relname::text AS table_name
+            FROM pg_catalog.pg_class AS relation
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = 'public'
+              AND relation.relkind IN ('r', 'p')
+              AND relation.relname = ANY(:table_names)
             """
         ),
-        {"table_names": table_names},
+        {"table_names": requested_tables},
     )
     existing_tables = {row[0] for row in result}
-    ordered_tables = [table for table in table_names if table in existing_tables]
+    ordered_tables = [table for table in requested_tables if table in existing_tables]
     if not ordered_tables:
         return
+
+    dependency_result = await session.execute(
+        text(
+            """
+            SELECT
+                child.relname::text AS child_table,
+                constraint_data.conname::text AS constraint_name,
+                parent.relname::text AS parent_table
+            FROM pg_catalog.pg_constraint AS constraint_data
+            JOIN pg_catalog.pg_class AS child
+              ON child.oid = constraint_data.conrelid
+            JOIN pg_catalog.pg_namespace AS child_namespace
+              ON child_namespace.oid = child.relnamespace
+            JOIN pg_catalog.pg_class AS parent
+              ON parent.oid = constraint_data.confrelid
+            JOIN pg_catalog.pg_namespace AS parent_namespace
+              ON parent_namespace.oid = parent.relnamespace
+            WHERE constraint_data.contype = 'f'
+              AND child_namespace.nspname = 'public'
+              AND parent_namespace.nspname = 'public'
+              AND parent.relname = ANY(:table_names)
+              AND NOT (child.relname = ANY(:table_names))
+            ORDER BY child.relname, constraint_data.conname, parent.relname
+            """
+        ),
+        {"table_names": ordered_tables},
+    )
+    external_dependencies = list(dependency_result)
+    if external_dependencies:
+        dependency_summary = ", ".join(
+            f"{row.child_table}.{row.constraint_name}->{row.parent_table}"
+            for row in external_dependencies
+        )
+        raise RuntimeError(
+            "Test cleanup table set is not FK-closed; refusing hidden cascade. "
+            f"Add or separately clean dependent tables: {dependency_summary}"
+        )
+
     quoted_tables = ", ".join(f'"{table}"' for table in ordered_tables)
-    await session.execute(text(f"TRUNCATE TABLE {quoted_tables} RESTART IDENTITY CASCADE"))
+    await session.execute(text(f"TRUNCATE TABLE {quoted_tables} RESTART IDENTITY"))
 
 
 async def cleanup_test_database_tables(table_names: list[str]) -> None:
