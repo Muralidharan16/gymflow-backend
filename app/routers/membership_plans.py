@@ -10,7 +10,6 @@ from sqlalchemy import select, func, or_, text
 from app.core.database import get_db
 from app.core.deps import get_current_active_staff, require_org_admin, Staff
 from app.models.membership_plan import MembershipPlan, PlanStatus
-from app.models.organization import Organization
 from app.models.org_branch import OrgBranch
 from app.schemas.membership_plan import (
     MembershipPlanCreate,
@@ -50,17 +49,32 @@ async def create_membership_plan(
         if not branch_result.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Branch not found or does not belong to organization")
 
-    # get org to find slug and currency
-    org_query = select(Organization).where(Organization.id == staff.org_id)
-    org_result = await db.execute(org_query)
-    org = org_result.scalar_one_or_none()
-    if not org:
+    # Tenant metadata is deliberately exposed through narrow SECURITY DEFINER
+    # capabilities bound to the transaction-local app.current_org_id. Ordinary
+    # API runtime must never need SELECT on the organizations base table.
+    org_metadata = (
+        await db.execute(
+            select(
+                func.public.current_organization_slug().label("slug"),
+                func.public.current_organization_default_currency_code().label(
+                    "default_currency_code"
+                ),
+            )
+        )
+    ).one()
+    org_slug = org_metadata.slug
+    org_currency = org_metadata.default_currency_code
+
+    # default_currency_code is NOT NULL for a persisted organization. A NULL
+    # capability result therefore means the trusted tenant context did not map
+    # to an organization; fail closed rather than falling back to table access.
+    if org_currency is None:
         raise HTTPException(status_code=404, detail="Organization not found")
 
-    prefix = clean_slug(org.slug) if getattr(org, 'slug', None) else "PLAN"
+    prefix = clean_slug(org_slug) if org_slug else "PLAN"
     if not prefix:
         prefix = "PLAN"
-        
+
     seq = await get_next_sequence_for_org(db, staff.org_id)
     plan_code = f"{prefix}-{seq:03d}"
 
@@ -71,7 +85,7 @@ async def create_membership_plan(
         name=data.name,
         description=data.description,
         price=data.price,
-        currency=org.default_currency_code,
+        currency=org_currency,
         duration_value=data.duration_value,
         duration_unit=data.duration_unit,
         max_members=data.max_members,
@@ -93,12 +107,12 @@ async def list_membership_plans(
     staff: Staff = Depends(require_org_admin)
 ):
     query = select(MembershipPlan).where(MembershipPlan.org_id == staff.org_id)
-    
+
     if plan_status:
         query = query.where(MembershipPlan.status == plan_status)
     if branch_id:
         query = query.where(MembershipPlan.branch_id == branch_id)
-        
+
     query = query.order_by(MembershipPlan.created_at.desc())
     result = await db.execute(query)
     return list(result.scalars().all())
@@ -132,16 +146,16 @@ async def update_membership_plan(
     plan = result.scalar_one_or_none()
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
-        
+
     if plan.status == PlanStatus.archived:
         # only allow updates if specifically allowed, but generally not normal fields
         raise HTTPException(status_code=400, detail="Cannot update archived plans")
-        
+
     if data.valid_until and data.valid_from:
         if data.valid_until <= data.valid_from:
             raise HTTPException(status_code=400, detail="valid_until must be after valid_from")
     elif data.valid_until and plan.valid_from:
-        # Pydantic strips timezone sometimes, let's just do naive comparison if we have to, 
+        # Pydantic strips timezone sometimes, let's just do naive comparison if we have to,
         # or SQLAlchemy handles it. Let's assume standard behavior.
         if data.valid_until <= plan.valid_from:
             raise HTTPException(status_code=400, detail="valid_until must be after valid_from")
@@ -151,7 +165,7 @@ async def update_membership_plan(
 
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(plan, field, value)
-        
+
     await db.commit()
     await db.refresh(plan)
     return plan
@@ -169,7 +183,7 @@ async def archive_membership_plan(
     plan = result.scalar_one_or_none()
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
-        
+
     plan.status = PlanStatus.archived
     plan.archived_at = func.now()
     await db.commit()
@@ -189,10 +203,10 @@ async def activate_membership_plan(
     plan = result.scalar_one_or_none()
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
-        
+
     if plan.status == PlanStatus.archived:
         raise HTTPException(status_code=400, detail="Cannot reactivate archived plan")
-        
+
     plan.status = PlanStatus.active
     await db.commit()
     await db.refresh(plan)
@@ -211,10 +225,10 @@ async def deactivate_membership_plan(
     plan = result.scalar_one_or_none()
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
-        
+
     if plan.status == PlanStatus.archived:
         raise HTTPException(status_code=400, detail="Plan is already archived")
-        
+
     plan.status = PlanStatus.inactive
     await db.commit()
     await db.refresh(plan)
