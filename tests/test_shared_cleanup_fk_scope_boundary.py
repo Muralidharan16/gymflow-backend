@@ -67,10 +67,15 @@ def test_shared_cleanup_uses_only_admin_test_identity() -> None:
     node = _function_node("cleanup_test_database_tables")
     source = ast.get_source_segment(CONFTST_PATH.read_text(), node)
     assert source is not None
+    referenced_names = {
+        child.id
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name)
+    }
 
-    assert "AdminTestSessionLocal" in source
+    assert "AdminTestSessionLocal" in referenced_names
     assert "RESET ROLE" in source
-    assert "truncate_test_tables" in source
-    assert "TestSessionLocal" not in source
-    assert "AuthTestSessionLocal" not in source
-    assert "MaintenanceTestSessionLocal" not in source
+    assert "truncate_test_tables" in referenced_names
+    assert "TestSessionLocal" not in referenced_names
+    assert "AuthTestSessionLocal" not in referenced_names
+    assert "MaintenanceTestSessionLocal" not in referenced_names
