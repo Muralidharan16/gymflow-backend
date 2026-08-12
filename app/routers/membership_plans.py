@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -17,6 +18,13 @@ from app.schemas.membership_plan import (
 )
 
 router = APIRouter(prefix="/membership-plans", tags=["Membership Plans"])
+
+_BRANCH_REFERENCE_CONSTRAINTS = frozenset(
+    {
+        "membership_plans_branch_id_fkey",
+        "fk_membership_plans_branch_tenant",
+    }
+)
 
 
 def clean_slug(slug: str) -> str:
@@ -56,6 +64,40 @@ def _validate_effective_validity_window(valid_from, valid_until) -> None:
         )
 
 
+def _postgres_constraint_name(exc: IntegrityError) -> str | None:
+    """Extract a PostgreSQL constraint name through SQLAlchemy/asyncpg layers."""
+    current: BaseException | None = exc.orig
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        constraint_name = getattr(current, "constraint_name", None)
+        if constraint_name:
+            return str(constraint_name)
+        cause = getattr(current, "__cause__", None)
+        current = cause if cause is not None else getattr(current, "__context__", None)
+    return None
+
+
+def _is_branch_reference_violation(exc: IntegrityError) -> bool:
+    """Recognize only the two membership-plan branch FK violations."""
+    sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(
+        exc.orig, "pgcode", None
+    )
+    if sqlstate != "23503":
+        return False
+
+    constraint_name = _postgres_constraint_name(exc)
+    if constraint_name is not None:
+        return constraint_name in _BRANCH_REFERENCE_CONSTRAINTS
+
+    # SQLAlchemy's asyncpg adapter normally preserves the original asyncpg
+    # exception as the cause. Keep a bounded fallback for adapter/version drift:
+    # only SQLSTATE 23503 is eligible and only the two known constraint names
+    # may be translated.
+    message = str(exc.orig)
+    return any(name in message for name in _BRANCH_REFERENCE_CONSTRAINTS)
+
+
 @router.post(
     "",
     response_model=MembershipPlanResponse,
@@ -66,18 +108,16 @@ async def create_membership_plan(
     db: AsyncSession = Depends(get_db),
     staff: Staff = Depends(require_org_admin),
 ):
-    # Lock a branch key-share row through the same transaction as plan
-    # creation. A concurrent branch DELETE must then wait until the plan write
-    # commits/rolls back, closing the validation-to-insert race without
-    # broadening privileges or using an application-wide lock.
+    # This SELECT gives a deterministic client error for an already-missing or
+    # cross-tenant branch. It deliberately does not use SELECT ... FOR UPDATE /
+    # KEY SHARE because that would require UPDATE privilege on org_branches and
+    # violate the reduced app_runtime boundary. The composite database FK is
+    # authoritative for a concurrent branch-delete race and acquires the
+    # reference lock internally when the plan INSERT executes.
     if data.branch_id:
-        branch_query = (
-            select(OrgBranch.id)
-            .where(
-                OrgBranch.id == data.branch_id,
-                OrgBranch.org_id == staff.org_id,
-            )
-            .with_for_update(read=True, key_share=True)
+        branch_query = select(OrgBranch.id).where(
+            OrgBranch.id == data.branch_id,
+            OrgBranch.org_id == staff.org_id,
         )
         branch_result = await db.execute(branch_query)
         if branch_result.scalar_one_or_none() is None:
@@ -135,7 +175,20 @@ async def create_membership_plan(
         created_by=staff.id,
     )
     db.add(plan)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # A failed commit leaves the transaction unusable. Roll back before
+        # translating the bounded branch-reference race; every other integrity
+        # failure is re-raised so programming/data defects are never hidden.
+        await db.rollback()
+        if data.branch_id is not None and _is_branch_reference_violation(exc):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Branch not found or does not belong to organization",
+            ) from exc
+        raise
+
     await db.refresh(plan)
     return plan
 

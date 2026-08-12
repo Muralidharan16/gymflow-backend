@@ -8,9 +8,13 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint
+from sqlalchemy.exc import IntegrityError
 
 from app.models.membership_plan import MembershipPlan
-from app.routers.membership_plans import _validate_effective_validity_window
+from app.routers.membership_plans import (
+    _is_branch_reference_violation,
+    _validate_effective_validity_window,
+)
 from app.schemas.membership_plan import MembershipPlanCreate, MembershipPlanUpdate
 
 
@@ -21,6 +25,35 @@ MIGRATION = (
     / "versions"
     / "7c2f91e4ab63_harden_membership_plan_invariants.py"
 )
+ROUTER = ROOT / "app" / "routers" / "membership_plans.py"
+
+
+class _DriverError(Exception):
+    def __init__(self, *, sqlstate: str, constraint_name: str | None = None):
+        super().__init__(
+            f'database error on constraint "{constraint_name}"'
+            if constraint_name
+            else "database error"
+        )
+        self.sqlstate = sqlstate
+        self.constraint_name = constraint_name
+
+
+class _AdapterError(Exception):
+    def __init__(self, *, sqlstate: str, cause: BaseException | None = None):
+        super().__init__("adapter error")
+        self.sqlstate = sqlstate
+        if cause is not None:
+            self.__cause__ = cause
+
+
+def _integrity_error(*, sqlstate: str, constraint_name: str | None) -> IntegrityError:
+    driver = _DriverError(
+        sqlstate=sqlstate,
+        constraint_name=constraint_name,
+    )
+    adapter = _AdapterError(sqlstate=sqlstate, cause=driver)
+    return IntegrityError("INSERT", {}, adapter)
 
 
 def _create_payload(**overrides):
@@ -103,6 +136,44 @@ def test_partial_update_validity_uses_persisted_counterpart() -> None:
             datetime(2026, 8, 12, 13, 0, tzinfo=timezone.utc),
             persisted_until,
         )
+
+
+def test_branch_integrity_translation_is_sqlstate_and_constraint_bounded() -> None:
+    assert _is_branch_reference_violation(
+        _integrity_error(
+            sqlstate="23503",
+            constraint_name="membership_plans_branch_id_fkey",
+        )
+    )
+    assert _is_branch_reference_violation(
+        _integrity_error(
+            sqlstate="23503",
+            constraint_name="fk_membership_plans_branch_tenant",
+        )
+    )
+    assert not _is_branch_reference_violation(
+        _integrity_error(
+            sqlstate="23503",
+            constraint_name="membership_plans_org_id_fkey",
+        )
+    )
+    assert not _is_branch_reference_violation(
+        _integrity_error(
+            sqlstate="23505",
+            constraint_name="fk_membership_plans_branch_tenant",
+        )
+    )
+
+
+def test_branch_race_relies_on_database_fk_without_privilege_broadening() -> None:
+    source = ROUTER.read_text(encoding="utf-8")
+
+    assert ".with_for_update(" not in source
+    assert "23503" in source
+    assert "membership_plans_branch_id_fkey" in source
+    assert "fk_membership_plans_branch_tenant" in source
+    assert "await db.rollback()" in source
+    assert "UPDATE privilege" in source
 
 
 def test_membership_plan_orm_declares_database_authority_constraints() -> None:
