@@ -83,7 +83,7 @@ def test_current_org_slug_capability_does_not_open_organizations_table_to_runtim
     assert "set search_path = pg_catalog" in normalized
     assert "set row_security = on" in normalized
     assert "app.current_org_id" in normalized
-    assert "revoke execute on function public.current_organization_slug() from public" in normalized
+    assert "revoke all on function public.current_organization_slug() from public" in normalized
     assert "grant execute on function public.current_organization_slug() to app_runtime" in normalized
     assert "grant select (id, slug) on table public.organizations to app_security_owner" in normalized
 
