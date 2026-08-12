@@ -12,6 +12,7 @@ from app.models.organization import Organization
 from app.models.org_branch import OrgBranch, OrgBranchState
 from app.models.staff import GymOwner
 from conftest import AdminTestSessionLocal, AuthTestSessionLocal, assert_test_database
+from db_cleanup import delete_org_branch_state_fixture
 
 
 STATUSES = (
@@ -108,9 +109,10 @@ async def branch_read_matrix_fixture():
         await session.execute(text("RESET ROLE"))
         await assert_test_database(session)
         await _set_context(session, org_id, owner_id, "superadmin")
-        await session.execute(
-            text("DELETE FROM public.org_branch_state WHERE org_id = :org_id"),
-            {"org_id": org_id},
+        await delete_org_branch_state_fixture(
+            session,
+            org_id=org_id,
+            actor_id=owner_id,
         )
         await session.execute(
             text("DELETE FROM public.org_branches WHERE org_id = :org_id"),
