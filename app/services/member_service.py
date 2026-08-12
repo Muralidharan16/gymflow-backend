@@ -6,12 +6,11 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.exceptions import NotFoundError, ValidationError, MemberLimitExceeded
 from app.models.gym import Gym
 from app.models.member import Member, MemberStatus, MemberMeasurement
-from app.models.organization import Organization
 from app.repositories.member_repo import MemberRepository
 from app.schemas.member import MemberCreate, MemberUpdate, MeasurementCreate
 from app.utils.phone import normalize_phone
@@ -55,6 +54,15 @@ class MemberService:
     def __init__(self, session: AsyncSession):
         self.session = session
         self.member_repo = MemberRepository(session)
+
+    async def _current_organization_slug(self) -> str:
+        """Return only the current tenant slug through the bounded DB capability."""
+        org_slug = await self.session.scalar(
+            select(func.public.current_organization_slug())
+        )
+        if org_slug is None:
+            raise NotFoundError("Organization not found", error_code="NOT_FOUND")
+        return str(org_slug)
 
     async def list_members(
         self,
@@ -169,8 +177,8 @@ class MemberService:
         )
         
         created = await self.member_repo.create(member)
-        org = await self.session.get(Organization, org_id)
-        created.member_display_code = _member_display_code(getattr(org, "slug", None), created.member_number)
+        org_slug = await self._current_organization_slug()
+        created.member_display_code = _member_display_code(org_slug, created.member_number)
         await self.session.commit()
         logger.info(f"Created member {created.id} in gym {gym_id}")
         return created
@@ -291,17 +299,17 @@ class MemberService:
             page,
             size,
         )
-        org = await self.session.get(Organization, org_id)
+        org_slug = await self._current_organization_slug()
         for member in members:
-            member.member_display_code = _member_display_code(getattr(org, "slug", None), member.member_number)
+            member.member_display_code = _member_display_code(org_slug, member.member_number)
         return members, total
 
     async def get_member_org(self, member_id: UUID, org_id: UUID) -> Member:
         member = await self.member_repo.get_by_id_org(member_id, org_id)
         if not member:
             raise NotFoundError(f"Member {member_id} not found", error_code="NOT_FOUND")
-        org = await self.session.get(Organization, org_id)
-        member.member_display_code = _member_display_code(getattr(org, "slug", None), member.member_number)
+        org_slug = await self._current_organization_slug()
+        member.member_display_code = _member_display_code(org_slug, member.member_number)
         return member
 
     async def create_member_org(
@@ -367,8 +375,8 @@ class MemberService:
         )
         
         created = await self.member_repo.create(member)
-        org = await self.session.get(Organization, org_id)
-        created.member_display_code = _member_display_code(getattr(org, "slug", None), created.member_number)
+        org_slug = await self._current_organization_slug()
+        created.member_display_code = _member_display_code(org_slug, created.member_number)
         await self.session.commit()
         return created
 
@@ -518,6 +526,7 @@ class MemberService:
             notes=data.notes,
             created_by=created_by
         )
+        
         created = await self.member_repo.create_measurement(measurement)
         await self.session.commit()
         return created
