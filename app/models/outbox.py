@@ -1,10 +1,18 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, Any
+from typing import Any, Optional
 
-from sqlalchemy import String, SmallInteger, TIMESTAMP, text, CheckConstraint, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    SmallInteger,
+    String,
+    TIMESTAMP,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
 
@@ -81,6 +89,11 @@ class TransactionalOutbox(Base):
     )
 
     __table_args__ = (
+        UniqueConstraint(
+            "event_type",
+            "dedupe_key",
+            name="uq_outbox_dedupe",
+        ),
         CheckConstraint(
             "delivery_attempts BETWEEN 0 AND 15",
             name="chk_transactional_outbox_attempts_range",

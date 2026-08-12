@@ -1,8 +1,5 @@
-import uuid
-
 import pytest
-from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import UniqueConstraint, text
 
 from app.models.outbox import TransactionalOutbox
 
@@ -63,48 +60,71 @@ async def test_audit_key_registry_bootstrap(db_session):
 
 
 @pytest.mark.asyncio
-async def test_transactional_outbox_model(admin_db_session):
-    """Verify the legacy outbox model and dedupe constraint in isolation.
+async def test_transactional_outbox_model(db_session):
+    """Verify ORM/database parity without bypassing the outbox write boundary.
 
-    The table has no ordinary app-runtime write contract, so this schema/model
-    regression deliberately uses the explicit privileged test-harness session
-    rather than widening production ACLs. A unique key removes destructive
-    shared-state cleanup.
+    API runtime is intentionally unable to INSERT directly into the FORCE-RLS
+    outbox. Producers must use the database-owned enqueue capabilities. This
+    test therefore checks the catalog contract and ORM metadata instead of
+    manufacturing a privileged write path solely for a model test.
     """
-    dedupe_key = f"rbac-phase19-{uuid.uuid4()}"
-    event_type = "test.rbac.phase19"
+    constraints = {
+        constraint.name: constraint
+        for constraint in TransactionalOutbox.__table__.constraints
+        if constraint.name is not None
+    }
+    dedupe = constraints["uq_outbox_dedupe"]
+    assert isinstance(dedupe, UniqueConstraint)
+    assert [column.name for column in dedupe.columns] == [
+        "event_type",
+        "dedupe_key",
+    ]
+    assert TransactionalOutbox.__table__.c.tenant_id.nullable is False
+    assert TransactionalOutbox.__table__.c.correlation_id.nullable is False
 
-    outbox_event = TransactionalOutbox(
-        event_type=event_type,
-        payload={"foo": "bar"},
-        dedupe_key=dedupe_key,
-    )
-    admin_db_session.add(outbox_event)
-    await admin_db_session.commit()
-
-    result = await admin_db_session.execute(
-        text(
-            """
-            SELECT delivery_attempts
-            FROM public.transactional_outbox
-            WHERE event_type = :event_type
-              AND dedupe_key = :dedupe_key
-            """
-        ),
-        {"event_type": event_type, "dedupe_key": dedupe_key},
-    )
-    assert result.scalar_one() == 0
-
-    admin_db_session.add(
-        TransactionalOutbox(
-            event_type=event_type,
-            payload={"duplicate": True},
-            dedupe_key=dedupe_key,
+    posture = (
+        await db_session.execute(
+            text(
+                """
+                SELECT
+                    relation.relrowsecurity AS rls_enabled,
+                    relation.relforcerowsecurity AS rls_forced,
+                    pg_catalog.has_table_privilege(
+                        current_user,
+                        relation.oid,
+                        'INSERT'
+                    ) AS runtime_can_insert,
+                    constraint_data.contype AS constraint_type,
+                    constraint_data.convalidated AS constraint_validated,
+                    ARRAY(
+                        SELECT attribute_data.attname::text
+                        FROM pg_catalog.unnest(
+                            constraint_data.conkey
+                        ) WITH ORDINALITY AS key_column(attnum, position)
+                        JOIN pg_catalog.pg_attribute AS attribute_data
+                          ON attribute_data.attrelid = constraint_data.conrelid
+                         AND attribute_data.attnum = key_column.attnum
+                        ORDER BY key_column.position
+                    ) AS constraint_columns
+                FROM pg_catalog.pg_class AS relation
+                JOIN pg_catalog.pg_namespace AS namespace
+                  ON namespace.oid = relation.relnamespace
+                JOIN pg_catalog.pg_constraint AS constraint_data
+                  ON constraint_data.conrelid = relation.oid
+                 AND constraint_data.conname = 'uq_outbox_dedupe'
+                WHERE namespace.nspname = 'public'
+                  AND relation.relname = 'transactional_outbox'
+                """
+            )
         )
-    )
-    with pytest.raises(IntegrityError):
-        await admin_db_session.commit()
-    await admin_db_session.rollback()
+    ).one()
+
+    assert posture.rls_enabled is True
+    assert posture.rls_forced is True
+    assert posture.runtime_can_insert is False
+    assert posture.constraint_type == "u"
+    assert posture.constraint_validated is True
+    assert tuple(posture.constraint_columns) == ("event_type", "dedupe_key")
 
 
 @pytest.mark.asyncio
@@ -121,7 +141,7 @@ async def test_rls_policies_staff_roles(db_session):
                         current_user,
                         relation.oid,
                         'SELECT'
-                    ),
+                    ) AS runtime_can_select,
                     (
                         SELECT count(*)
                         FROM pg_catalog.pg_policy AS policy
@@ -139,7 +159,7 @@ async def test_rls_policies_staff_roles(db_session):
 
     assert posture.relrowsecurity is True
     assert posture.relforcerowsecurity is True
-    assert posture.has_table_privilege is True
+    assert posture.runtime_can_select is True
     assert posture.policy_count >= 1
 
 
