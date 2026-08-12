@@ -83,7 +83,7 @@ _PLAN_UPDATE_COLUMNS = {
 }
 
 _COUNTER_INSERT_COLUMNS = {"id", "org_id", "counter_key", "current_value"}
-_COUNTER_SELECT_COLUMNS = {"current_value"}
+_COUNTER_SELECT_COLUMNS = {"counter_key", "current_value", "org_id"}
 _COUNTER_UPDATE_COLUMNS = {"current_value", "updated_at"}
 
 _TENANT_EXPR = (
