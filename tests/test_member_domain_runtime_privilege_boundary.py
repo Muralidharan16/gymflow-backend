@@ -130,7 +130,7 @@ def test_member_and_plan_updates_are_column_scoped() -> None:
     )
 
     assert values["_COUNTER_INSERT_COLUMNS"] == {"id", "org_id", "counter_key", "current_value"}
-    assert values["_COUNTER_SELECT_COLUMNS"] == {"current_value"}
+    assert values["_COUNTER_SELECT_COLUMNS"] == {"org_id", "counter_key", "current_value"}
     assert values["_COUNTER_UPDATE_COLUMNS"] == {"current_value", "updated_at"}
 
 
