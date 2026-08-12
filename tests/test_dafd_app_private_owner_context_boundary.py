@@ -318,11 +318,23 @@ def _app_private_ddl_categories(path: Path) -> set[str]:
         for category, pattern in patterns.items()
         if re.search(pattern, text, re.IGNORECASE)
     }
-    if any(
-        re.search(r"\bCREATE\s+POLICY\b", literal, re.IGNORECASE)
-        and re.search(r"\bapp_rls_executor\b", literal, re.IGNORECASE)
+    policy_literals = [
+        literal
         for literal in literals
-    ):
+        if re.search(r"\bCREATE\s+POLICY\b", literal, re.IGNORECASE)
+    ]
+    direct_executor_policy = any(
+        re.search(r"\bapp_rls_executor\b", literal, re.IGNORECASE)
+        for literal in policy_literals
+    )
+    executor_policy_context = bool(policy_literals) and bool(
+        re.search(
+            r"\bSET(?:\s+LOCAL)?\s+ROLE\s+app_rls_executor\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if direct_executor_policy or executor_policy_context:
         categories.add("executor_policy")
     return categories
 
