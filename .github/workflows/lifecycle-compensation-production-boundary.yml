@@ -164,6 +164,9 @@ jobs:
             TO app_test_runtime, auth_test_runtime, worker_test_runtime;
           SQL
 
+      - name: Provision external lifecycle maintenance capability
+        run: bash scripts/ci/provision_lifecycle_maintenance_role.sh
+
       - name: Provision infrastructure-owned extensions
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
