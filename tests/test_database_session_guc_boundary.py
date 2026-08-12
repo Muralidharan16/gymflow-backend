@@ -76,8 +76,8 @@ def test_pytest_forced_rls_cleanup_is_transactional_and_test_runner_only() -> No
     required = (
         '"test" not in str(identity["database_name"]).lower()',
         'identity["session_name"] != "migration_owner"',
-        'identity["migration_bypassrls"]',
-        'identity["runner_bypassrls"]',
+        "migration_role.rolbypassrls AS migration_bypassrls",
+        "runner_role.rolbypassrls AS runner_bypassrls",
         "pg_catalog.pg_has_role(",
         '"app_runtime"',
         '"auth_runtime"',
