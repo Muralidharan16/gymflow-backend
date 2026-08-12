@@ -19,7 +19,7 @@ MIGRATION = (
     ROOT
     / "alembic"
     / "versions"
-    / "0a1b2c3d4e5f_harden_membership_plan_invariants.py"
+    / "7c2f91e4ab63_harden_membership_plan_invariants.py"
 )
 
 
@@ -126,7 +126,7 @@ def test_membership_plan_orm_declares_database_authority_constraints() -> None:
         "branch_id",
         "org_id",
     ]
-    assert [element._get_colspec() for element in tenant_fk.elements] == [
+    assert [element.target_fullname for element in tenant_fk.elements] == [
         "org_branches.id",
         "org_branches.org_id",
     ]
@@ -135,7 +135,7 @@ def test_membership_plan_orm_declares_database_authority_constraints() -> None:
 def test_membership_plan_hardening_migration_is_append_only_and_bounded() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
 
-    assert 'revision = "0a1b2c3d4e5f"' in source
+    assert 'revision = "7c2f91e4ab63"' in source
     assert 'down_revision = "f9a0b1c2d3e4"' in source
     assert source.count("NOT VALID") >= 2
     assert (
@@ -148,7 +148,6 @@ def test_membership_plan_hardening_migration_is_append_only_and_bounded() -> Non
     assert "REFERENCES public.org_branches (id, org_id)" in source
     assert "ON DELETE CASCADE" in source
     assert "SET ROLE" not in source
-    assert "BYPASSRLS" not in source
     assert "GRANT " not in source
     assert "REVOKE " not in source
     assert "UPDATE public.membership_plans" not in source

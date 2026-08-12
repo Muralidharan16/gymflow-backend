@@ -1,6 +1,6 @@
 """Harden membership-plan monetary and tenant validity invariants.
 
-Revision ID: 0a1b2c3d4e5f
+Revision ID: 7c2f91e4ab63
 Revises: f9a0b1c2d3e4
 Create Date: 2026-08-12
 
@@ -16,7 +16,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0a1b2c3d4e5f"
+revision = "7c2f91e4ab63"
 down_revision = "f9a0b1c2d3e4"
 branch_labels = None
 depends_on = None
@@ -31,7 +31,7 @@ def _bind():
     context = op.get_context()
     if getattr(context, "as_sql", False):
         raise RuntimeError(
-            "0a1b membership-plan hardening requires online catalog access"
+            "7c2f membership-plan hardening requires online catalog access"
         )
     bind = op.get_bind()
     if bind is None:
@@ -61,7 +61,7 @@ def _identity(bind) -> None:
         or row["current_name"] != _MIGRATION_OWNER
     ):
         raise RuntimeError(
-            "0a1b requires session_user=current_user=migration_owner"
+            "7c2f requires session_user=current_user=migration_owner"
         )
     if any(
         bool(row[key])
