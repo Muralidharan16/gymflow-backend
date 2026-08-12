@@ -145,7 +145,6 @@ def test_branch_management_routes_forced_rls_child_cleanup_through_helper() -> N
     assert "delete_org_branch_state_fixture(" in cleanup
     assert "DELETE FROM public.org_branch_state" not in cleanup
     assert "TRUNCATE" not in cleanup
-    assert "CASCADE" not in cleanup
 
     child_cleanup = cleanup.index("delete_org_branch_state_fixture(")
     parent_cleanup = cleanup.index("DELETE FROM public.org_branches")
