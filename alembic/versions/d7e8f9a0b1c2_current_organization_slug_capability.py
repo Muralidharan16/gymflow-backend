@@ -228,8 +228,25 @@ def _verify_forward(bind) -> None:
         raise RuntimeError("app_runtime lacks current_organization_slug EXECUTE")
     if _scalar(
         bind,
-        "SELECT pg_catalog.has_function_privilege('PUBLIC', :function_name, 'EXECUTE')",
-        {"function_name": _FUNCTION},
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_proc AS procedure_data
+            JOIN pg_catalog.pg_namespace AS namespace_data
+              ON namespace_data.oid = procedure_data.pronamespace
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                    procedure_data.proacl,
+                    pg_catalog.acldefault('f', procedure_data.proowner)
+                )
+            ) AS function_acl
+            WHERE namespace_data.nspname = 'public'
+              AND procedure_data.proname = 'current_organization_slug'
+              AND procedure_data.pronargs = 0
+              AND function_acl.grantee = 0
+              AND function_acl.privilege_type = 'EXECUTE'
+        )
+        """,
     ):
         raise RuntimeError("PUBLIC must not execute current_organization_slug")
     if _scalar(
