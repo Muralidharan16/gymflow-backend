@@ -5,11 +5,16 @@ from pathlib import Path
 
 
 SOURCE = Path("app/services/branch_lifecycle_service.py")
+WORKER_SOURCE = Path("app/tasks/branch_outbox_poller.py")
 SERVICE_CLASS = "BranchLifecycleService"
 
 
 def _source() -> str:
     return SOURCE.read_text(encoding="utf-8")
+
+
+def _worker_source() -> str:
+    return WORKER_SOURCE.read_text(encoding="utf-8")
 
 
 def _method_node(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
@@ -38,6 +43,24 @@ def _method_source(name: str) -> str:
     """Return one concrete BranchLifecycleService method from source."""
     source = _source()
     node = _method_node(name)
+    assert node.end_lineno is not None
+    lines = source.splitlines(keepends=True)
+    return "".join(lines[node.lineno - 1 : node.end_lineno])
+
+
+def _worker_function_source(name: str) -> str:
+    source = _worker_source()
+    module = ast.parse(source, filename=str(WORKER_SOURCE))
+    matches = [
+        item
+        for item in module.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and item.name == name
+    ]
+    assert len(matches) == 1, (
+        f"expected exactly one worker function named {name}, found {len(matches)}"
+    )
+    node = matches[0]
     assert node.end_lineno is not None
     lines = source.splitlines(keepends=True)
     return "".join(lines[node.lineno - 1 : node.end_lineno])
@@ -132,22 +155,34 @@ def test_transition_authorizes_from_plain_read_before_write_locking() -> None:
 
 
 def test_optional_booking_surface_is_checked_before_update_without_swallowing_errors() -> None:
-    relation_exists = _method_source("_relation_exists")
-    cancel = _method_source("_cancel_future_bookings_if_present")
     saga = _method_source("execute_saga_cascade")
+    worker = _worker_function_source("_process_saga_event")
 
-    assert "pg_catalog.to_regclass(:qualified_name) IS NOT NULL" in relation_exists
-    assert 'if not await self._relation_exists("public.bookings")' in cancel
-    assert "UPDATE public.bookings" in cancel
+    existence_probe = "SELECT pg_catalog.to_regclass('public.bookings') IS NOT NULL"
+    update_sql = "UPDATE public.bookings"
+
+    assert existence_probe in saga
+    assert "relation_exists = await self.db.scalar" in saga
+    assert "if relation_exists:" in saga
+    assert update_sql in saga
+    assert saga.index(existence_probe) < saga.index("if relation_exists:") < saga.index(update_sql)
 
     # Missing optional infrastructure is handled before DML. Once the table is
-    # present, SQL/ACL/data failures are real saga failures and must reach the
-    # outer rollback+compensation path instead of being hidden inside a nested
-    # broad catch that leaves PostgreSQL in failed-transaction state.
-    assert "except Exception" not in cancel
-    assert "_cancel_future_bookings_if_present" in saga
-    assert "await self.db.rollback()" in saga
-    assert "await self._compensate_saga" in saga
+    # present, SQL/ACL/data failures are real Transaction-B failures. The service
+    # therefore must not catch and suppress them or perform synchronous in-method
+    # compensation; the leased worker owns retry/dead-letter behavior.
+    assert "except Exception" not in saga
+    assert "await self.db.rollback()" not in saga
+    assert "_compensate_saga" not in saga
+
+    assert "await service.execute_saga_cascade(" in worker
+    assert "await _mark_delivered(" in worker
+    assert "await session.commit()" in worker
+    assert worker.index("await service.execute_saga_cascade(") < worker.index(
+        "await _mark_delivered("
+    ) < worker.index("await session.commit()")
+    assert "except Exception as exc:" in worker
+    assert "return await _fail_event(event, worker_id, exc, permanent=False)" in worker
 
 
 def test_reconciliation_isolates_per_branch_failures_with_savepoints() -> None:
