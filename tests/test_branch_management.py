@@ -16,6 +16,7 @@ from conftest import (
     AuthTestSessionLocal,
     assert_test_database,
 )
+from db_cleanup import delete_org_branch_state_fixture
 
 
 async def set_tenant_context(
@@ -69,12 +70,15 @@ async def cleanup_branch_management_fixture(
         await assert_test_database(session)
         await set_tenant_context(session, str(org_id), str(actor_id), "superadmin")
 
-        # Delete in explicit FK order. Do not use the shared TRUNCATE ... CASCADE
-        # helper: branch_contacts and other protected relations intentionally do
-        # not grant broad destructive privileges to the migration/test identity.
-        await session.execute(
-            text("DELETE FROM public.org_branch_state WHERE org_id = :org_id"),
-            {"org_id": org_id},
+        # org_branch_state is FORCE RLS and its production DELETE policy is
+        # intentionally unavailable to migration_owner. Use the transactional,
+        # test-only test_runner cleanup boundary, then continue in explicit FK
+        # order as the reduced migration identity. Do not use CASCADE or widen
+        # a production runtime role merely to make teardown convenient.
+        await delete_org_branch_state_fixture(
+            session,
+            org_id=org_id,
+            actor_id=actor_id,
         )
         await session.execute(
             text("DELETE FROM public.org_branches WHERE org_id = :org_id"),
