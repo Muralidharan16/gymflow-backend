@@ -197,8 +197,43 @@ def test_reconciliation_isolates_per_branch_failures_with_savepoints() -> None:
 
 
 def test_watchdog_refuses_missing_transition_timestamp_instead_of_crashing_math() -> None:
-    watchdog = _method_source("run_watchdog_sweep")
+    node = _method_node("run_watchdog_sweep")
 
-    assert "if changed_at is None:" in watchdog
-    assert "manual review required" in watchdog
-    assert "continue" in watchdog
+    guards = [
+        child
+        for child in ast.walk(node)
+        if isinstance(child, ast.If)
+        and isinstance(child.test, ast.Compare)
+        and ast.unparse(child.test).replace(" ", "") == "changed_atisNone"
+    ]
+    assert len(guards) == 1
+    guard = guards[0]
+
+    assert any(isinstance(child, ast.Continue) for child in ast.walk(guard))
+    assert any(
+        isinstance(child, ast.Call)
+        and isinstance(child.func, ast.Attribute)
+        and isinstance(child.func.value, ast.Name)
+        and child.func.value.id == "logger"
+        and child.func.attr in {"warning", "error", "critical"}
+        for child in ast.walk(guard)
+    )
+
+    duration_assignments = [
+        child
+        for child in ast.walk(node)
+        if isinstance(child, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "duration" for target in child.targets)
+        and "now - changed_at" in ast.unparse(child.value)
+    ]
+    assert len(duration_assignments) == 1
+    assert guard.lineno < duration_assignments[0].lineno
+
+    # A missing timestamp is an observability condition, not a mutation path.
+    # The guard must exit this loop iteration before alert creation, commits, or
+    # state/outbox work can be reached.
+    assert not any(
+        isinstance(child, ast.Call)
+        and _call_name(child) in {"add", "commit", "execute", "flush"}
+        for child in ast.walk(guard)
+    )
