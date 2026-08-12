@@ -4,6 +4,7 @@ from fastapi import Request, HTTPException, Depends, status
 from pydantic import BaseModel
 from app.core.database import get_db
 from app.services.trial_service import TrialService
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 class Staff(BaseModel):
@@ -37,11 +38,19 @@ def require_org_admin(staff: Staff = Depends(get_current_active_staff)) -> Staff
     return staff
 
 async def require_gym_access(
-    gym_id: uuid.UUID, 
-    staff: Staff = Depends(get_current_active_staff)
+    gym_id: uuid.UUID,
+    staff: Staff = Depends(get_current_active_staff),
+    db: AsyncSession = Depends(get_db),
 ) -> Staff:
     if staff.gym_id is not None and staff.gym_id != gym_id:
         raise HTTPException(status_code=403, detail="Access denied to this branch")
+
+    owns_gym = await db.scalar(
+        select(func.public.current_organization_owns_gym(gym_id))
+    )
+    if not owns_gym:
+        raise HTTPException(status_code=404, detail="Gym not found")
+
     return staff
 
 async def require_trial_active(
