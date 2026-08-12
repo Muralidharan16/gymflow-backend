@@ -94,7 +94,7 @@ async def test_transactional_outbox_model(db_session):
                         relation.oid,
                         'INSERT'
                     ) AS runtime_can_insert,
-                    constraint_data.contype AS constraint_type,
+                    constraint_data.contype::text AS constraint_type,
                     constraint_data.convalidated AS constraint_validated,
                     ARRAY(
                         SELECT attribute_data.attname::text
