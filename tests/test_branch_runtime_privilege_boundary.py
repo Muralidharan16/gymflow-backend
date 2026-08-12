@@ -13,14 +13,46 @@ def _source() -> str:
     return MIGRATION.read_text(encoding="utf-8")
 
 
-def _function_source(name: str) -> str:
+def _function_node(name: str) -> ast.FunctionDef:
     module = ast.parse(_source(), filename=str(MIGRATION))
-    node = next(
+    return next(
         item
         for item in module.body
         if isinstance(item, ast.FunctionDef) and item.name == name
     )
-    return ast.unparse(node)
+
+
+def _function_source(name: str) -> str:
+    return ast.unparse(_function_node(name))
+
+
+def _has_row_compare(
+    function_name: str,
+    *,
+    key: str,
+    operator: type[ast.cmpop],
+    expected: object,
+) -> bool:
+    """Match ``row[key] <op> expected`` without depending on quote rendering."""
+
+    for node in ast.walk(_function_node(function_name)):
+        if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+            continue
+        if not isinstance(node.ops[0], operator) or len(node.comparators) != 1:
+            continue
+        left = node.left
+        if not (
+            isinstance(left, ast.Subscript)
+            and isinstance(left.value, ast.Name)
+            and left.value.id == "row"
+            and isinstance(left.slice, ast.Constant)
+            and left.slice.value == key
+        ):
+            continue
+        comparator = node.comparators[0]
+        if isinstance(comparator, ast.Constant) and comparator.value == expected:
+            return True
+    return False
 
 
 def test_branch_runtime_acl_is_operation_scoped() -> None:
@@ -119,7 +151,12 @@ def test_branch_geolocation_read_requires_existing_tenant_policy() -> None:
     assert '"geolocation_state_tenant_isolation"' in source
     assert "policy_data.polqual" in policy
     assert "policy_data.polwithcheck" in policy
-    assert 'row["command"] != "*"' in policy
+    assert _has_row_compare(
+        "_require_geolocation_policy",
+        key="command",
+        operator=ast.NotEq,
+        expected="*",
+    )
     assert "_TENANT_EXPR" in source
     assert "branch geolocation tenant policy drifted" in policy
 
@@ -137,8 +174,18 @@ def test_permissive_state_tenant_policy_is_removed_forward_and_exactly_restored(
     assert '"tenant_isolation_state"' in source
     assert "policy_data.polpermissive" in preflight
     assert "policy_data.polroles = ARRAY[0::oid]" in preflight
-    assert 'row["command"] != "*"' in preflight
-    assert "row[\"check_expr\"] is not None" in preflight
+    assert _has_row_compare(
+        "_require_predecessor_state_tenant_policy",
+        key="command",
+        operator=ast.NotEq,
+        expected="*",
+    )
+    assert _has_row_compare(
+        "_require_predecessor_state_tenant_policy",
+        key="check_expr",
+        operator=ast.IsNot,
+        expected=None,
+    )
     assert "_TENANT_EXPR" in source
 
     assert (
