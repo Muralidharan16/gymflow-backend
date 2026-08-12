@@ -12,6 +12,7 @@ DAFD = VERSIONS / "dafd2b02005e_add_branch_staff_roles_deactivation_.py"
 M0021 = VERSIONS / "0021_staff_roles.py"
 M0029 = VERSIONS / "0029_rbac_p8_contract.py"
 AUTH_RUNTIME_ACL = "5e6f708192a3_auth_runtime_privilege_boundary.py"
+LIFECYCLE_MAINTENANCE_ACL = "b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py"
 
 CANONICAL_FUNCTION = "app_private.handle_user_deactivation_cascade()"
 CANONICAL_TRIGGER = "trg_user_deactivation_cascade"
@@ -43,11 +44,15 @@ APP_RLS_EXECUTOR_FILES = {
     "0025_rbac_p4_bsr_expand.py",
     "0029_rbac_p8_contract.py",
     AUTH_RUNTIME_ACL,
+    LIFECYCLE_MAINTENANCE_ACL,
     DAFD.name,
     "f71f231fb001_rbac_hardening_phase_10_partitioned_.py",
 }
 
-APPROVED_NON_PRIVATE_EXECUTOR_FILES = {AUTH_RUNTIME_ACL}
+APPROVED_NON_PRIVATE_EXECUTOR_FILES = {
+    AUTH_RUNTIME_ACL,
+    LIFECYCLE_MAINTENANCE_ACL,
+}
 
 
 def _source(path: Path) -> str:
@@ -336,7 +341,8 @@ def test_complete_91_revision_private_and_executor_inventories_are_closed() -> N
     assert (
         app_rls_executor - APPROVED_NON_PRIVATE_EXECUTOR_FILES
     ) <= app_private
-    assert _app_private_ddl_categories(VERSIONS / AUTH_RUNTIME_ACL) == set()
+    for name in APPROVED_NON_PRIVATE_EXECUTOR_FILES:
+        assert _app_private_ddl_categories(VERSIONS / name) == set()
 
 
 def test_complete_app_private_ddl_category_allowlist_is_exact() -> None:
