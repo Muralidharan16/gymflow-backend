@@ -314,9 +314,36 @@ def test_live_identity_graph_sql_is_select_only() -> None:
 
 
 def test_alembic_head_runs_p2c_after_p2a_and_before_configure() -> None:
-    source = ALEMBIC_ENV.read_text(encoding="utf-8")
-    function = source[source.index("def do_run_migrations"):source.index("async def run_async_migrations")]
-    p2a = function.index("assert_external_role_preflight(connection)")
-    p2c = function.index("assert_identity_graph_preflight(connection)")
-    configure = function.index("context.configure(")
-    assert p2a < p2c < configure
+    tree = ast.parse(ALEMBIC_ENV.read_text(encoding="utf-8"))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "do_run_migrations"
+    )
+    calls: dict[str, int] = {}
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id in {
+            "assert_external_role_preflight",
+            "assert_identity_graph_preflight",
+        }:
+            calls[node.func.id] = node.lineno
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "configure"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "context"
+        ):
+            calls["context.configure"] = node.lineno
+
+    assert calls.keys() >= {
+        "assert_external_role_preflight",
+        "assert_identity_graph_preflight",
+        "context.configure",
+    }
+    assert (
+        calls["assert_external_role_preflight"]
+        < calls["assert_identity_graph_preflight"]
+        < calls["context.configure"]
+    )
