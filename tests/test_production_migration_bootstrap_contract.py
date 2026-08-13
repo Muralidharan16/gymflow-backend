@@ -9,6 +9,7 @@ from scripts.verify_head_workflow_bootstrap import scan_repository
 ROOT = Path(__file__).resolve().parents[1]
 CI_BOOTSTRAP = ROOT / "scripts/ci/bootstrap_cluster_roles.sh"
 RELEASE_BOOTSTRAP = ROOT / "scripts/release/bootstrap_cluster_roles.sh"
+NEGATIVE_BOOTSTRAP = ROOT / "scripts/ci/certify_fresh_cluster_bootstrap_fail_closed.sh"
 RENDERER = "scripts/render_cluster_role_bootstrap.py"
 VERIFIER = "scripts/verify_cluster_role_bootstrap.py"
 WORKFLOW_GUARD = "scripts/verify_head_workflow_bootstrap.py"
@@ -57,13 +58,14 @@ def test_manifest_renderer_is_the_only_canonical_cluster_role_producer() -> None
     assert "app_test_runtime" not in sql
 
 
-def test_ci_bootstrap_is_fresh_only_and_delegates_to_manifest_renderer() -> None:
+def test_ci_bootstrap_streams_across_postgres_privilege_boundary() -> None:
     assert CI_BOOTSTRAP.is_file()
     executable = _executable_source(CI_BOOTSTRAP.read_text(encoding="utf-8"))
 
     assert RENDERER in executable
-    assert "sudo -u postgres psql" in executable
-    assert "-f \"$SQL_FILE\"" in executable
+    assert "| sudo -u postgres psql" in executable
+    assert "mktemp" not in executable
+    assert "-f \"$SQL_FILE\"" not in executable
     assert "CREATE ROLE" not in executable
     assert "ALTER ROLE" not in executable
     assert "GRANT app_" not in executable
@@ -75,13 +77,30 @@ def test_release_bootstrap_uses_ambient_postgres_admin_and_no_embedded_secret() 
     executable = _executable_source(RELEASE_BOOTSTRAP.read_text(encoding="utf-8"))
 
     assert RENDERER in executable
+    assert '| "$PSQL_BIN"' in executable
     assert '--dbname="$ADMIN_DATABASE"' in executable
+    assert "mktemp" not in executable
     assert "sudo" not in executable
     assert "PGPASSWORD=" not in executable
     assert "PASSWORD '" not in executable
     assert "ci-" not in executable
     assert "CREATE ROLE" not in executable
     assert "ALTER ROLE" not in executable
+
+
+def test_fresh_negative_certification_requires_exact_rejection_reasons() -> None:
+    source = NEGATIVE_BOOTSTRAP.read_text(encoding="utf-8")
+    assert "assert_expected_failure" in source
+    assert (
+        "fresh cluster bootstrap requires current_user=session_user=postgres with SUPERUSER"
+        in source
+    )
+    assert (
+        "fresh cluster bootstrap refuses existing managed/retired roles: app_runtime"
+        in source
+    )
+    assert "failed for an unrelated reason" in source
+    assert "mktemp" not in _executable_source(source)
 
 
 def test_repository_head_jobs_are_converged_on_canonical_bootstrap() -> None:

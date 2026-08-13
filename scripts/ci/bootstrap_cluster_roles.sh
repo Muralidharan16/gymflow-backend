@@ -2,9 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SQL_FILE="$(mktemp)"
-trap 'rm -f "$SQL_FILE"' EXIT
-
 cd "$ROOT"
-python -s scripts/render_cluster_role_bootstrap.py > "$SQL_FILE"
-sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -f "$SQL_FILE"
+
+# Stream the manifest-rendered SQL across the privilege boundary. A runner-owned
+# mktemp file is intentionally avoided because sudo -u postgres must never rely
+# on broader filesystem permissions just to consume the canonical bootstrap.
+python -s scripts/render_cluster_role_bootstrap.py \
+  | sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres

@@ -2,20 +2,21 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SQL_FILE="$(mktemp)"
-trap 'rm -f "$SQL_FILE"' EXIT
 cd "$ROOT"
-python -s scripts/render_cluster_role_bootstrap.py > "$SQL_FILE"
 
-expect_bootstrap_failure() {
+assert_expected_failure() {
   local label="$1"
-  shift
-  set +e
-  "$@"
-  local status=$?
-  set -e
+  local expected="$2"
+  local status="$3"
+  local output="$4"
+
+  printf '%s\n' "$output"
   if [[ "$status" -eq 0 ]]; then
     echo "P2B BLOCK: bootstrap unexpectedly succeeded for $label" >&2
+    exit 1
+  fi
+  if ! grep -Fq -- "$expected" <<<"$output"; then
+    echo "P2B BLOCK: $label failed for an unrelated reason; expected: $expected" >&2
     exit 1
   fi
 }
@@ -25,17 +26,19 @@ CREATE ROLE p2b_wrong_bootstrap_admin SUPERUSER NOLOGIN;
 SQL
 
 set +e
-{
+wrong_admin_output="$({
   printf '%s\n' 'SET ROLE p2b_wrong_bootstrap_admin;'
-  cat "$SQL_FILE"
-} | sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres
+  python -s scripts/render_cluster_role_bootstrap.py
+} | sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres 2>&1)"
 wrong_admin_status=$?
 set -e
-if [[ "$wrong_admin_status" -eq 0 ]]; then
-  echo 'P2B BLOCK: bootstrap accepted a non-canonical administrative identity' >&2
-  exit 1
-fi
-sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'DROP ROLE p2b_wrong_bootstrap_admin;'
+assert_expected_failure \
+  'non-canonical administrative identity' \
+  'fresh cluster bootstrap requires current_user=session_user=postgres with SUPERUSER' \
+  "$wrong_admin_status" \
+  "$wrong_admin_output"
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c \
+  'DROP ROLE p2b_wrong_bootstrap_admin;'
 
 sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
 CREATE ROLE app_runtime
@@ -43,8 +46,18 @@ CREATE ROLE app_runtime
   NOREPLICATION BYPASSRLS;
 SQL
 
-expect_bootstrap_failure "pre-existing unsafe managed role" \
-  sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -f "$SQL_FILE"
+set +e
+existing_role_output="$(
+  python -s scripts/render_cluster_role_bootstrap.py \
+    | sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres 2>&1
+)"
+existing_role_status=$?
+set -e
+assert_expected_failure \
+  'pre-existing unsafe managed role' \
+  'fresh cluster bootstrap refuses existing managed/retired roles: app_runtime' \
+  "$existing_role_status" \
+  "$existing_role_output"
 
 sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
 DO $$
@@ -63,4 +76,4 @@ $$;
 DROP ROLE app_runtime;
 SQL
 
-echo 'Fresh bootstrap negative paths proved fail-closed without drift repair'
+echo 'Fresh bootstrap negative paths proved exact fail-closed behavior without drift repair'
