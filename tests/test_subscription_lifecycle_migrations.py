@@ -8,8 +8,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
-from app.core.database import AsyncSessionLocal
-from conftest import cleanup_test_database_tables
+from conftest import AdminTestSessionLocal, cleanup_test_database_tables
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -55,15 +54,27 @@ ALL_TABLES = [
 
 def run_alembic(*args: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env["DATABASE_URL"] = env["TEST_DATABASE_URL"]
-    return subprocess.run(
+    admin_url = env.get("TEST_ADMIN_DATABASE_URL")
+    if not admin_url:
+        raise RuntimeError(
+            "TEST_ADMIN_DATABASE_URL is required for lifecycle migration tests; "
+            "refusing to run Alembic through the reduced application runtime identity."
+        )
+    env["DATABASE_URL"] = admin_url
+    result = subprocess.run(
         [sys.executable, "-m", "alembic", *args],
         cwd=PROJECT_ROOT,
         env=env,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Alembic lifecycle test command failed: "
+            f"{' '.join(args)}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    return result
 
 
 async def clean_seed_tables() -> None:
@@ -71,8 +82,7 @@ async def clean_seed_tables() -> None:
 
 
 async def seed_v2_source_data() -> None:
-    async with AsyncSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
+    async with AdminTestSessionLocal() as session:
         seed_sql = """
                 INSERT INTO organizations (id, name, slug, tier, is_active, max_branches, default_currency_code)
                 VALUES
@@ -158,7 +168,7 @@ async def seed_v2_source_data() -> None:
 
 
 async def scalar_int(sql: str, params: dict[str, object] | None = None) -> int:
-    async with AsyncSessionLocal() as session:
+    async with AdminTestSessionLocal() as session:
         result = await session.execute(text(sql), params or {})
         return int(result.scalar_one())
 
@@ -177,7 +187,7 @@ async def assert_table_absent(table_name: str) -> None:
 
 
 async def expect_db_error(sql: str, params: dict[str, object]) -> None:
-    async with AsyncSessionLocal() as session:
+    async with AdminTestSessionLocal() as session:
         with pytest.raises(Exception):
             await session.execute(text(sql), params)
             await session.commit()
@@ -213,7 +223,7 @@ async def test_lifecycle_migration_round_trip_preserves_v2_and_backfills_conserv
     )
     assert adjacent_series_count == 2
 
-    async with AsyncSessionLocal() as session:
+    async with AdminTestSessionLocal() as session:
         row = (
             await session.execute(
                 text(
@@ -275,7 +285,7 @@ async def test_lifecycle_migration_round_trip_preserves_v2_and_backfills_conserv
 async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignment_integrity():
     await prepare_migrated_lifecycle()
 
-    async with AsyncSessionLocal() as session:
+    async with AdminTestSessionLocal() as session:
         term = (
             await session.execute(
                 text(
@@ -425,7 +435,7 @@ async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignme
         base_params,
     )
 
-    async with AsyncSessionLocal() as session:
+    async with AdminTestSessionLocal() as session:
         await session.execute(
             text(
                 """
@@ -450,6 +460,6 @@ async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignme
 
     assert await scalar_int("SELECT count(*) FROM subscription_terms WHERE term_code = 'ADJACENT-OK'") == 1
 
-    async with AsyncSessionLocal() as session:
+    async with AdminTestSessionLocal() as session:
         await session.execute(text("DELETE FROM subscription_terms WHERE term_code = 'ADJACENT-OK'"))
         await session.commit()
