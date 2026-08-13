@@ -102,11 +102,12 @@ jobs:
             echo "FAILED JOB: ${job_name} (${job_id})"
             echo '============================================================'
 
-            python - "$log_file" <<'PY'
+            python - "$log_file" "$job_name" <<'PY'
           from pathlib import Path
           import sys
 
           path = Path(sys.argv[1])
+          job_name = sys.argv[2]
           text = path.read_text(encoding="utf-8", errors="replace")
           lines = text.splitlines()
 
@@ -132,8 +133,23 @@ jobs:
               start = max(0, len(lines) - 180)
               end = len(lines)
 
-          for line in lines[start:end]:
+          excerpt_lines = lines[start:end]
+          for line in excerpt_lines:
               print(line)
+
+          # Runner-log downloads are not always exposed by every API client.
+          # Mirror a bounded diagnostic excerpt into the check annotation so the
+          # failure remains queryable through the standard Checks API as well.
+          excerpt = "\n".join(excerpt_lines)
+          if len(excerpt) > 3500:
+              excerpt = excerpt[-3500:]
+          encoded = (
+              excerpt.replace("%", "%25")
+              .replace("\r", "%0D")
+              .replace("\n", "%0A")
+          )
+          safe_title = job_name.replace("%", "%25").replace("\r", " ").replace("\n", " ")
+          print(f"::error title=Hardening failure: {safe_title}::{encoded}")
           PY
           done
 
