@@ -19,7 +19,8 @@ def test_production_requires_distinct_auth_database_identity() -> None:
     assert "AUTH_DATABASE_URL: str" in CONFIG
     assert 'if self.ENVIRONMENT == "production"' in CONFIG
     assert "AUTH_DATABASE_URL is required in production" in CONFIG
-    assert "AUTH_DATABASE_URL must use a distinct production database identity" in CONFIG
+    assert "validate_runtime_url_configuration" in CONFIG
+    assert '"auth": self.AUTH_DATABASE_URL' in CONFIG
 
     assert "make_url(settings.DATABASE_URL)" in AUTH_DB
     assert "make_url(raw)" in AUTH_DB

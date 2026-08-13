@@ -93,10 +93,11 @@ def test_production_requires_four_distinct_database_identities() -> None:
 
     assert 'MAINTENANCE_DATABASE_URL: str = ""' in source
     assert "if not self.MAINTENANCE_DATABASE_URL:" in source
-    assert "self.MAINTENANCE_DATABASE_URL in" in source
-    assert "self.WORKER_DATABASE_URL" in source
-    assert "self.AUTH_DATABASE_URL" in source
-    assert "self.DATABASE_URL" in source
+    assert "validate_runtime_url_configuration" in source
+    assert '"maintenance": self.MAINTENANCE_DATABASE_URL' in source
+    assert '"worker": self.WORKER_DATABASE_URL' in source
+    assert '"auth": self.AUTH_DATABASE_URL' in source
+    assert '"api": self.DATABASE_URL' in source
     assert "def maintenance_database_url" in source
 
 
