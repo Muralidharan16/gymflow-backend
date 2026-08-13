@@ -104,6 +104,7 @@ def test_obsolete_forced_rls_cleanup_privilege_bridge_is_absent() -> None:
 
 def test_branch_management_uses_isolated_disposable_fixture_roots() -> None:
     source = BRANCH_MANAGEMENT.read_text(encoding="utf-8")
+    normalized = " ".join(source.split())
 
     assert "async def cleanup_branch_management_fixture" not in source
     assert "delete_org_branch_state_fixture" not in source
@@ -115,7 +116,8 @@ def test_branch_management_uses_isolated_disposable_fixture_roots() -> None:
     assert "CASCADE" not in source
 
     # The fixture must document the production-shaped isolation decision rather
-    # than silently omitting teardown.
+    # than silently omitting teardown. Normalize formatting so this contract is
+    # semantic rather than dependent on comment/docstring line wrapping.
     for token in (
         "fresh UUID-scoped tenant data",
         "disposable CI database",
@@ -123,4 +125,4 @@ def test_branch_management_uses_isolated_disposable_fixture_roots() -> None:
         "temporary RLS policies",
         "hidden cascades",
     ):
-        assert token in source
+        assert token in normalized
