@@ -60,9 +60,10 @@ jobs:
             alembic/versions/8192a3b4c5d6_harden_legacy_branch_trigger_runtime_boundary.py \
             alembic/versions/92a3b4c5d6e7_align_branch_read_contract.py \
             alembic/versions/a3b4c5d6e7f8_allow_legacy_branch_transition_reference_read.py \
-            alembic/versions/b4c5d6e7f809_harden_branch_hours_runtime_boundary.py \
+            alembic/versions/b4c5d6e7f8091a_harden_branch_hours_runtime_boundary.py \
             alembic/versions/c5d6e7f8091a_adopt_branch_hours_audit_partitions.py \
             alembic/versions/b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py \
+            app/core/cluster_role_preflight.py \
             app/core/database.py \
             app/core/celery_app.py \
             app/main.py \
@@ -91,6 +92,7 @@ jobs:
             tests/test_platform_billing_cleanup_boundary.py \
             tests/test_address_audit_rls_context_boundary.py \
             tests/test_cluster_role_contract_manifests.py \
+            tests/test_external_cluster_role_preflight.py \
             tests/test_rbac_expand_contract_root_cause.py \
             tests/test_legacy_branch_trigger_runtime_boundary.py \
             tests/test_legacy_branch_transition_reference_acl.py \
@@ -206,7 +208,6 @@ jobs:
 
           GRANT app_rls_executor TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
           GRANT app_security_owner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT test_runner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
           GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
@@ -260,7 +261,6 @@ jobs:
             IF worker_record.rolcanlogin OR worker_record.rolsuper OR worker_record.rolcreatedb OR worker_record.rolcreaterole OR worker_record.rolinherit OR worker_record.rolreplication OR worker_record.rolbypassrls THEN RAISE EXCEPTION 'worker_runtime is over-privileged'; END IF;
             IF maintenance_record.rolcanlogin OR maintenance_record.rolsuper OR maintenance_record.rolcreatedb OR maintenance_record.rolcreaterole OR maintenance_record.rolinherit OR maintenance_record.rolreplication OR maintenance_record.rolbypassrls THEN RAISE EXCEPTION 'lifecycle_maintenance_runtime is over-privileged'; END IF;
             IF NOT maintenance_login_record.rolcanlogin OR maintenance_login_record.rolsuper OR maintenance_login_record.rolcreatedb OR maintenance_login_record.rolcreaterole OR maintenance_login_record.rolinherit OR maintenance_login_record.rolreplication OR maintenance_login_record.rolbypassrls THEN RAISE EXCEPTION 'lifecycle maintenance test login posture is unsafe'; END IF;
-            IF NOT pg_catalog.pg_has_role('migration_owner', 'test_runner', 'SET') THEN RAISE EXCEPTION 'missing bounded SET test_runner edge'; END IF;
             IF pg_catalog.pg_has_role('migration_owner', 'app_user', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'app_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') OR pg_catalog.pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'SET') THEN
               RAISE EXCEPTION 'migration_owner must not access application/auth/worker/maintenance runtime capabilities';
             END IF;
