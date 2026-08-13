@@ -16,7 +16,6 @@ from conftest import (
     AuthTestSessionLocal,
     assert_test_database,
 )
-from db_cleanup import delete_org_branch_state_fixture
 
 
 async def set_tenant_context(
@@ -60,44 +59,16 @@ async def create_branch_via_bounded_bootstrap(
         await session.commit()
 
 
-async def cleanup_branch_management_fixture(
-    org_id: uuid.UUID,
-    actor_id: uuid.UUID,
-) -> None:
-    """Remove only this fixture's rows without CASCADE or runtime privilege drift."""
-    async with AdminTestSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
-        await assert_test_database(session)
-        await set_tenant_context(session, str(org_id), str(actor_id), "superadmin")
-
-        # org_branch_state is FORCE RLS and its production DELETE policy is
-        # intentionally unavailable to migration_owner. Use the transactional,
-        # test-only test_runner cleanup boundary, then continue in explicit FK
-        # order as the reduced migration identity. Do not use CASCADE or widen
-        # a production runtime role merely to make teardown convenient.
-        await delete_org_branch_state_fixture(
-            session,
-            org_id=org_id,
-            actor_id=actor_id,
-        )
-        await session.execute(
-            text("DELETE FROM public.org_branches WHERE org_id = :org_id"),
-            {"org_id": org_id},
-        )
-        await session.execute(
-            text("DELETE FROM public.gym_owners WHERE org_id = :org_id"),
-            {"org_id": org_id},
-        )
-        await session.execute(
-            text("DELETE FROM public.organizations WHERE id = :org_id"),
-            {"org_id": org_id},
-        )
-        await session.commit()
-
-
 @pytest_asyncio.fixture
 async def test_setup():
-    """Seed tenant/staff prerequisites administratively, then test as runtime."""
+    """Seed isolated tenant/staff prerequisites, then test as runtime.
+
+    Branch/state roots deliberately have no production hard-delete capability.
+    Each test therefore gets fresh UUID-scoped tenant data and leaves those roots
+    in the disposable CI database until the database itself is destroyed. This
+    avoids test-only grants, temporary RLS policies, role escalation, hidden
+    cascades, and any mismatch with the production authorization boundary.
+    """
     org_id = uuid.uuid4()
     owner_id = uuid.uuid4()
     admin_id = uuid.uuid4()
@@ -155,8 +126,6 @@ async def test_setup():
         "admin_id": admin_id,
         "trainer_id": trainer_id,
     }
-
-    await cleanup_branch_management_fixture(org_id, owner_id)
 
 
 @pytest.mark.asyncio
