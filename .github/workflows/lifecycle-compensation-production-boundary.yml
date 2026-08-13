@@ -143,8 +143,6 @@ jobs:
             WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
           GRANT app_security_owner TO migration_owner
             WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT test_runner TO migration_owner
-            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
 
           GRANT app_runtime TO app_test_runtime
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
