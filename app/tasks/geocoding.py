@@ -1,206 +1,406 @@
-from app.core.celery_app import celery_app
-import logging
+from __future__ import annotations
+
 import asyncio
+import logging
 import random
-import json
-from datetime import datetime, timezone, timedelta
-from celery.exceptions import MaxRetriesExceededError
+import uuid
+from datetime import datetime, timedelta, timezone
+
 import sqlalchemy as sa
-from sqlalchemy.future import select
+from celery.exceptions import MaxRetriesExceededError
+
+from app.core.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
 
 class GeocodingAPIError(Exception):
     pass
 
 
-async def _geocode_address_task_async(address_id: str) -> None:
-    from app.core.database import worker_async_session_maker
-    from app.models.address import OrganizationAddress
-    from app.models.notification import Notification
-    from app.services.maps_service import (
-        get_coordinates_from_cache_or_api,
-        transition_maps_state,
-        MapsVerificationStatus,
-        MapsVerificationSource,
-        MapsVerificationError,
-        _deterministic_lineage_id
+def _uuid(value: str, *, field: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError(f"invalid {field}") from exc
+
+
+def _set_sync_tenant_context(db, org_id: uuid.UUID) -> None:
+    db.execute(
+        sa.text("SELECT pg_catalog.set_config('app.current_org_id', :org_id, true)"),
+        {"org_id": str(org_id)},
     )
 
+
+async def _set_async_tenant_context(db, org_id: uuid.UUID) -> None:
+    await db.execute(
+        sa.text("SELECT pg_catalog.set_config('app.current_org_id', :org_id, true)"),
+        {"org_id": str(org_id)},
+    )
+
+
+_GEOCODING_INPUT_SQL = sa.text(
+    """
+    SELECT
+        address_data.id,
+        address_data.org_id,
+        address_data.address_line1,
+        address_data.city,
+        address_data.state_province,
+        address_data.postal_code,
+        address_data.country_code,
+        address_data.formatted_address,
+        address_data.google_place_id,
+        COALESCE(geo.validation_status, 'pending') AS validation_status,
+        COALESCE(geo.geocode_attempts, 0) AS geocode_attempts,
+        geo.next_retry_at
+    FROM public.organization_addresses AS address_data
+    LEFT JOIN public.branch_geolocation_state AS geo
+      ON geo.address_id = address_data.id
+     AND geo.org_id = address_data.org_id
+    WHERE address_data.id = :address_id
+      AND address_data.org_id = :org_id
+      AND address_data.deleted_at IS NULL
+    """
+)
+
+
+def _load_geocoding_input_sync(db, address_id: uuid.UUID, org_id: uuid.UUID):
+    _set_sync_tenant_context(db, org_id)
+    return db.execute(
+        _GEOCODING_INPUT_SQL,
+        {"address_id": address_id, "org_id": org_id},
+    ).mappings().one_or_none()
+
+
+async def _load_geocoding_input_async(db, address_id: uuid.UUID, org_id: uuid.UUID):
+    await _set_async_tenant_context(db, org_id)
+    result = await db.execute(
+        _GEOCODING_INPUT_SQL,
+        {"address_id": address_id, "org_id": org_id},
+    )
+    return result.mappings().one_or_none()
+
+
+_SUCCESS_ADDRESS_SQL = sa.text(
+    """
+    UPDATE public.organization_addresses
+       SET formatted_address = :formatted_address
+     WHERE id = :address_id
+       AND org_id = :org_id
+    """
+)
+
+_SUCCESS_GEO_SQL = sa.text(
+    """
+    INSERT INTO public.branch_geolocation_state (
+        address_id, org_id, coordinates, validation_status, geocode_attempts,
+        last_geocode_attempt_at, next_retry_at, geocoded_at, geocode_provider
+    ) VALUES (
+        :address_id,
+        :org_id,
+        CASE
+            WHEN :latitude IS NULL OR :longitude IS NULL THEN NULL
+            ELSE 'POINT(' || CAST(:longitude AS text) || ' ' || CAST(:latitude AS text) || ')'
+        END,
+        'success', 0, pg_catalog.clock_timestamp(), NULL,
+        pg_catalog.clock_timestamp(), :provider
+    )
+    ON CONFLICT (address_id) DO UPDATE
+       SET coordinates = CASE
+               WHEN EXCLUDED.coordinates IS NULL
+               THEN public.branch_geolocation_state.coordinates
+               ELSE EXCLUDED.coordinates
+           END,
+           validation_status = 'success',
+           geocode_attempts = 0,
+           last_geocode_attempt_at = pg_catalog.clock_timestamp(),
+           next_retry_at = NULL,
+           geocoded_at = pg_catalog.clock_timestamp(),
+           geocode_provider = EXCLUDED.geocode_provider
+     WHERE public.branch_geolocation_state.org_id = EXCLUDED.org_id
+    """
+)
+
+
+def _mark_success_sync(
+    db,
+    *,
+    address_id: uuid.UUID,
+    org_id: uuid.UUID,
+    formatted_address: str | None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    provider: str = "legacy",
+) -> None:
+    _set_sync_tenant_context(db, org_id)
+    db.execute(_SUCCESS_ADDRESS_SQL, {
+        "address_id": address_id,
+        "org_id": org_id,
+        "formatted_address": formatted_address,
+    })
+    db.execute(_SUCCESS_GEO_SQL, {
+        "address_id": address_id,
+        "org_id": org_id,
+        "latitude": latitude,
+        "longitude": longitude,
+        "provider": provider,
+    })
+
+
+async def _mark_success_async(
+    db,
+    *,
+    address_id: uuid.UUID,
+    org_id: uuid.UUID,
+    formatted_address: str | None,
+    latitude: float | None,
+    longitude: float | None,
+    provider: str,
+) -> None:
+    await _set_async_tenant_context(db, org_id)
+    await db.execute(_SUCCESS_ADDRESS_SQL, {
+        "address_id": address_id,
+        "org_id": org_id,
+        "formatted_address": formatted_address,
+    })
+    await db.execute(_SUCCESS_GEO_SQL, {
+        "address_id": address_id,
+        "org_id": org_id,
+        "latitude": latitude,
+        "longitude": longitude,
+        "provider": provider,
+    })
+
+
+_FAILURE_GEO_SQL = sa.text(
+    """
+    INSERT INTO public.branch_geolocation_state (
+        address_id, org_id, validation_status, geocode_attempts,
+        last_geocode_attempt_at, next_retry_at, geocode_provider
+    ) VALUES (
+        :address_id, :org_id, :status, :retry_count,
+        pg_catalog.clock_timestamp(), :next_retry_at, :provider
+    )
+    ON CONFLICT (address_id) DO UPDATE
+       SET validation_status = EXCLUDED.validation_status,
+           geocode_attempts = EXCLUDED.geocode_attempts,
+           last_geocode_attempt_at = pg_catalog.clock_timestamp(),
+           next_retry_at = EXCLUDED.next_retry_at,
+           geocode_provider = EXCLUDED.geocode_provider
+     WHERE public.branch_geolocation_state.org_id = EXCLUDED.org_id
+    """
+)
+
+
+def _mark_failure_sync(
+    db,
+    *,
+    address_id: uuid.UUID,
+    org_id: uuid.UUID,
+    retry_count: int,
+    permanent: bool,
+    next_retry_at: datetime | None,
+    error: str,
+    notification_message: str,
+) -> None:
+    _set_sync_tenant_context(db, org_id)
+    db.execute(_FAILURE_GEO_SQL, {
+        "address_id": address_id,
+        "org_id": org_id,
+        "status": "failed" if permanent else "pending",
+        "retry_count": retry_count,
+        "next_retry_at": next_retry_at,
+        "provider": "google_places_api",
+    })
+    if permanent:
+        lineage_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"maps:fail:{address_id}:{retry_count}")
+        db.execute(sa.text(
+            "SELECT app_secure.record_org_geocoding_failure("
+            ":address_id, :org_id, :error, :retry_count, :message, :lineage_id)"
+        ), {
+            "address_id": address_id,
+            "org_id": org_id,
+            "error": error,
+            "retry_count": retry_count,
+            "message": notification_message,
+            "lineage_id": lineage_id,
+        })
+
+
+async def _mark_failure_async(
+    db,
+    *,
+    address_id: uuid.UUID,
+    org_id: uuid.UUID,
+    retry_count: int,
+    permanent: bool,
+    next_retry_at: datetime | None,
+    error: str,
+) -> None:
+    await _set_async_tenant_context(db, org_id)
+    await db.execute(_FAILURE_GEO_SQL, {
+        "address_id": address_id,
+        "org_id": org_id,
+        "status": "failed" if permanent else "pending",
+        "retry_count": retry_count,
+        "next_retry_at": next_retry_at,
+        "provider": "google_places_api",
+    })
+    if permanent:
+        lineage_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"maps:fail:{address_id}:{retry_count}")
+        await db.execute(sa.text(
+            "SELECT app_secure.record_org_geocoding_failure("
+            ":address_id, :org_id, :error, :retry_count, :message, :lineage_id)"
+        ), {
+            "address_id": address_id,
+            "org_id": org_id,
+            "error": error,
+            "retry_count": retry_count,
+            "message": f"Address verification failed permanently with error: {error}",
+            "lineage_id": lineage_id,
+        })
+
+
+async def _geocode_address_task_async(address_id: str, org_id: str) -> None:
+    from app.core.database import worker_async_session_maker
+    from app.services.maps_service import MapsVerificationError, get_coordinates_from_cache_or_api
+
+    address_uuid = _uuid(address_id, field="address_id")
+    org_uuid = _uuid(org_id, field="org_id")
+
     async with worker_async_session_maker() as db:
-        try:
-            stmt = select(OrganizationAddress).where(OrganizationAddress.id == address_id)
-            res = await db.execute(stmt)
-            addr = res.scalar_one_or_none()
-
-            if not addr:
-                logger.error(f"Address with ID {address_id} not found in DB.")
-                return
-
-            if addr.google_place_id:
-                if addr.maps_next_retry_at and addr.maps_next_retry_at > datetime.now(timezone.utc):
-                    logger.info("Address %s is currently in retry cooldown. Skipping.", address_id)
-                    return
-
-                try:
-                    if addr.maps_verification_status != "pending":
-                        transition_maps_state(
-                            addr,
-                            new_status=MapsVerificationStatus.pending,
-                            source=MapsVerificationSource.GOOGLE_PLACES_API
-                        )
-                        await db.commit()
-
-                    data = await get_coordinates_from_cache_or_api(db, addr.google_place_id)
-                    if data:
-                        addr.latitude = data["latitude"]
-                        addr.longitude = data["longitude"]
-                        addr.formatted_address = data["formatted_address"]
-                        addr.is_verified = True
-                        addr.geocoding_failed = False
-                        transition_maps_state(
-                            addr,
-                            new_status=MapsVerificationStatus.verified,
-                            source=MapsVerificationSource.GOOGLE_PLACES_API
-                        )
-                        await db.commit()
-                        logger.info("Successfully verified Google Place ID coordinates for %s", address_id)
-                    else:
-                        raise ValueError(MapsVerificationError.NETWORK_ERROR)
-
-                except Exception as exc:
-                    await db.rollback()
-                    err_msg = str(exc)
-                    if err_msg not in MapsVerificationError.ALL:
-                        err_msg = MapsVerificationError.NETWORK_ERROR
-
-                    addr.maps_retry_count += 1
-                    is_permanent = err_msg in (
-                        MapsVerificationError.PLACE_NOT_FOUND,
-                        MapsVerificationError.INVALID_PLACE_ID,
-                        MapsVerificationError.API_DISABLED,
-                    )
-
-                    if addr.maps_retry_count >= 10 or is_permanent:
-                        transition_maps_state(
-                            addr,
-                            new_status=MapsVerificationStatus.failed,
-                            error=err_msg,
-                            source=MapsVerificationSource.GOOGLE_PLACES_API
-                        )
-                        addr.geocoding_failed = True
-                        addr.is_verified = False
-                        addr.maps_next_retry_at = None
-
-                        notification = Notification(
-                            org_id=addr.org_id,
-                            message=f"Address verification failed permanently with error: {err_msg}"
-                        )
-                        db.add(notification)
-
-                        lineage = _deterministic_lineage_id(addr.id, addr.maps_retry_count)
-                        payload_data = {
-                            "address_id": str(addr.id),
-                            "org_id": str(addr.org_id),
-                            "error": err_msg,
-                            "retry_count": addr.maps_retry_count,
-                        }
-                        await db.execute(sa.text("""
-                            INSERT INTO public.event_outbox (event_id, event_type, payload, tenant_id, lineage_id)
-                            VALUES (gen_random_uuid(), 'maps.verification.failed', :payload, :tid, :lid)
-                            ON CONFLICT (lineage_id) DO NOTHING
-                        """), {
-                            "payload": json.dumps(payload_data),
-                            "tid": str(addr.org_id),
-                            "lid": lineage,
-                        })
-                    else:
-                        base_backoff = 300 * (2 ** (addr.maps_retry_count - 1))
-                        jitter = random.randint(-30, 30)
-                        next_retry = datetime.now(timezone.utc) + timedelta(seconds=max(30, base_backoff + jitter))
-                        addr.maps_next_retry_at = next_retry
-                        addr.maps_verification_error = err_msg
-
-                    await db.commit()
-                    logger.warning("Google Place ID verification failed for %s (error: %s, retry: %d)", address_id, err_msg, addr.maps_retry_count)
-        except Exception as exc:
-            logger.warning(f"Geocoding API attempt failed: {str(exc)}")
+        row = await _load_geocoding_input_async(db, address_uuid, org_uuid)
+        if row is None:
+            logger.warning("Tenant-bound geocoding input not visible: address=%s org=%s", address_id, org_id)
             await db.rollback()
-            raise exc
+            return
+
+        place_id = row["google_place_id"]
+        if not place_id:
+            await db.rollback()
+            return
+        if row["next_retry_at"] and row["next_retry_at"] > datetime.now(timezone.utc):
+            await db.rollback()
+            return
+
+        try:
+            data = await get_coordinates_from_cache_or_api(db, place_id)
+            if not data:
+                raise ValueError(MapsVerificationError.NETWORK_ERROR)
+            await _mark_success_async(
+                db,
+                address_id=address_uuid,
+                org_id=org_uuid,
+                formatted_address=data.get("formatted_address"),
+                latitude=data.get("latitude"),
+                longitude=data.get("longitude"),
+                provider="google_places_api",
+            )
+            await db.commit()
+            logger.info("Google Place verification succeeded for address=%s", address_id)
+        except Exception as exc:
+            await db.rollback()
+            error = str(exc)
+            if error not in MapsVerificationError.ALL:
+                error = MapsVerificationError.NETWORK_ERROR
+            retry_count = int(row["geocode_attempts"] or 0) + 1
+            permanent = retry_count >= 10 or error in {
+                MapsVerificationError.PLACE_NOT_FOUND,
+                MapsVerificationError.INVALID_PLACE_ID,
+                MapsVerificationError.API_DISABLED,
+            }
+            next_retry_at = None
+            if not permanent:
+                backoff = 300 * (2 ** (retry_count - 1))
+                next_retry_at = datetime.now(timezone.utc) + timedelta(
+                    seconds=max(30, backoff + random.randint(-30, 30))
+                )
+            await _mark_failure_async(
+                db,
+                address_id=address_uuid,
+                org_id=org_uuid,
+                retry_count=retry_count,
+                permanent=permanent,
+                next_retry_at=next_retry_at,
+                error=error,
+            )
+            await db.commit()
+            logger.warning(
+                "Google Place verification failed for address=%s error=%s retry=%d",
+                address_id, error, retry_count,
+            )
 
 
 @celery_app.task(
     name="app.tasks.geocoding.geocode_address_task",
     bind=True,
     max_retries=3,
-    default_retry_delay=60
+    default_retry_delay=60,
 )
-def geocode_address_task(self, address_id: str) -> None:
-    logger.info(f"Geocoding address with ID: {address_id}")
-
+def geocode_address_task(self, address_id: str, org_id: str) -> None:
+    """Tenant-bound organization-address geocoding under worker_runtime."""
     from app.core.database import WorkerSyncSessionLocal
-    from app.models.address import OrganizationAddress, MemberAddress
-    from app.models.notification import Notification
 
+    address_uuid = _uuid(address_id, field="address_id")
+    org_uuid = _uuid(org_id, field="org_id")
     if not WorkerSyncSessionLocal:
         raise RuntimeError("Worker sync database session is unavailable")
 
     has_place_id = False
     with WorkerSyncSessionLocal() as db:
         try:
-            addr = db.query(OrganizationAddress).filter(OrganizationAddress.id == address_id).first()
-            is_org = True
-            if not addr:
-                addr = db.query(MemberAddress).filter(MemberAddress.id == address_id).first()
-                is_org = False
-
-            if not addr:
-                logger.error(f"Address with ID {address_id} not found in DB.")
+            row = _load_geocoding_input_sync(db, address_uuid, org_uuid)
+            if row is None:
+                logger.warning("Tenant-bound geocoding input not visible: address=%s org=%s", address_id, org_id)
+                db.rollback()
                 return
 
-            if is_org and getattr(addr, "google_place_id", None):
-                has_place_id = True
-
+            has_place_id = bool(row["google_place_id"])
             if not has_place_id:
-                if getattr(addr, "address_line1", "") == "FAIL" or "FAIL" in getattr(addr, "address_line1", ""):
+                address_line1 = row["address_line1"] or ""
+                if "FAIL" in address_line1:
                     raise GeocodingAPIError("Simulated external Maps API connection failure")
-
-                addr.is_verified = True
-                addr.geocoding_failed = False
-                addr.formatted_address = f"{addr.address_line1}, {addr.city}, {addr.state_province}, {addr.postal_code}, {addr.country_code}"
+                formatted = ", ".join(
+                    str(value)
+                    for value in (
+                        row["address_line1"], row["city"], row["state_province"],
+                        row["postal_code"], row["country_code"],
+                    )
+                    if value
+                )
+                _mark_success_sync(
+                    db,
+                    address_id=address_uuid,
+                    org_id=org_uuid,
+                    formatted_address=formatted,
+                )
                 db.commit()
-
         except Exception as exc:
-            if not has_place_id:
-                logger.warning(f"Geocoding API attempt failed: {str(exc)}")
-                db.rollback()
-                try:
-                    self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
-                except MaxRetriesExceededError as max_exc:
-                    logger.error(f"Max retries exhausted for address {address_id}")
-
-                    addr = db.query(OrganizationAddress).filter(OrganizationAddress.id == address_id).first()
-                    is_org = True
-                    if not addr:
-                        addr = db.query(MemberAddress).filter(MemberAddress.id == address_id).first()
-                        is_org = False
-
-                    if addr:
-                        addr.is_verified = False
-                        addr.geocoding_failed = True
-                        if is_org:
-                            notification = Notification(
-                                org_id=addr.org_id,
-                                message="Your address could not be verified. Please review and re-save."
-                            )
-                            db.add(notification)
-                        db.commit()
-                    raise max_exc
-            else:
+            if has_place_id:
                 raise
+            logger.warning("Geocoding attempt failed: %s", exc)
+            db.rollback()
+            try:
+                self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+            except MaxRetriesExceededError as max_exc:
+                logger.error("Max retries exhausted for address %s", address_id)
+                _mark_failure_sync(
+                    db,
+                    address_id=address_uuid,
+                    org_id=org_uuid,
+                    retry_count=int(self.request.retries) + 1,
+                    permanent=True,
+                    next_retry_at=None,
+                    error="MAX_RETRIES_EXCEEDED",
+                    notification_message="Your address could not be verified. Please review and re-save.",
+                )
+                db.commit()
+                raise max_exc
 
     if has_place_id:
         try:
-            asyncio.run(_geocode_address_task_async(address_id))
-        except Exception as exc:
-            logger.error("Async maps geocoding failed: %s", exc)
+            asyncio.run(_geocode_address_task_async(address_id, org_id))
+        except Exception:
+            logger.exception("Async maps geocoding failed for address=%s", address_id)
+            raise
