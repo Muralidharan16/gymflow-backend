@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 from app.core.cluster_role_bootstrap import render_fresh_cluster_bootstrap
+from app.core.runtime_principal_attestation import load_runtime_binding_contract
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / "app/core/config.py"
 DATABASE = ROOT / "app/core/database.py"
 TASKS = ROOT / "app/tasks/branch_lifecycle_sweeps.py"
 ROUTER = ROOT / "app/routers/branch_lifecycle.py"
 MIGRATION = ROOT / "alembic/versions/b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py"
+PROCESS_PROFILES = ROOT / "security/runtime_identity/process_profiles.v1.json"
 
 API_STATE_COLUMNS = {
     "branch_status",
@@ -75,7 +77,6 @@ def _function(path: Path, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
 
 
 def _executed_sql_fragments(path: Path) -> list[str]:
-    """Return string fragments that are actual arguments to SQL execute calls."""
     fragments: list[str] = []
     for node in ast.walk(_tree(path)):
         if not isinstance(node, ast.Call) or not node.args:
@@ -89,16 +90,21 @@ def _executed_sql_fragments(path: Path) -> list[str]:
 
 
 def test_production_requires_four_distinct_database_identities() -> None:
-    source = _source(CONFIG)
+    runtime = load_runtime_binding_contract()
+    profiles = json.loads(_source(PROCESS_PROFILES))["profiles"]
 
-    assert 'MAINTENANCE_DATABASE_URL: str = ""' in source
-    assert "if not self.MAINTENANCE_DATABASE_URL:" in source
-    assert "validate_runtime_url_configuration" in source
-    assert '"maintenance": self.MAINTENANCE_DATABASE_URL' in source
-    assert '"worker": self.WORKER_DATABASE_URL' in source
-    assert '"auth": self.AUTH_DATABASE_URL' in source
-    assert '"api": self.DATABASE_URL' in source
-    assert "def maintenance_database_url" in source
+    maintenance = profiles["maintenance"]
+    assert tuple(maintenance["runtime_components"]) == ("maintenance",)
+    assert set(maintenance["required_database_variables"]) == {
+        runtime.bindings["maintenance"].environment_variable
+    }
+    assert set(maintenance["forbidden_database_variables"]) == {
+        runtime.bindings["api"].environment_variable,
+        runtime.bindings["auth"].environment_variable,
+        runtime.bindings["worker"].environment_variable,
+    }
+    assert maintenance["celery_worker_profile"] == "maintenance"
+    assert len({binding.environment_variable for binding in runtime.bindings.values()}) == 4
 
 
 def test_maintenance_pool_is_nullpooled_and_separate_from_api_worker_pools() -> None:
@@ -171,15 +177,10 @@ def test_revision_91_is_single_head_and_never_manages_cluster_roles() -> None:
 
     source = _source(MIGRATION)
     executed_sql = "\n".join(_executed_sql_fragments(MIGRATION)).upper()
-    for forbidden_role_ddl in (
-        "CREATE ROLE ",
-        "ALTER ROLE ",
-        "DROP ROLE ",
-    ):
+    for forbidden_role_ddl in ("CREATE ROLE ", "ALTER ROLE ", "DROP ROLE "):
         assert forbidden_role_ddl not in executed_sql
     assert "CASCADE" not in executed_sql
     assert "lifecycle_maintenance_runtime" in source
-
     assert "ROLBYPASSRLS" in executed_sql
     assert "ALTER ROLE" not in executed_sql
 

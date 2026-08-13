@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+from app.core.runtime_principal_attestation import load_runtime_binding_contract
 
-CONFIG = Path("app/core/config.py").read_text(encoding="utf-8")
+
 AUTH_DB = Path("app/core/auth_database.py").read_text(encoding="utf-8")
 AUTH_ROUTER = Path("app/routers/auth.py").read_text(encoding="utf-8")
 ONBOARDING = Path("app/routers/onboarding.py").read_text(encoding="utf-8")
@@ -13,14 +15,27 @@ MIGRATION = Path(
 ROLES = Path("security/cluster_role_bootstrap/roles.v1.json").read_text(
     encoding="utf-8"
 )
+PROCESS_PROFILES = json.loads(
+    Path("security/runtime_identity/process_profiles.v1.json").read_text(
+        encoding="utf-8"
+    )
+)
 
 
 def test_production_requires_distinct_auth_database_identity() -> None:
-    assert "AUTH_DATABASE_URL: str" in CONFIG
-    assert 'if self.ENVIRONMENT == "production"' in CONFIG
-    assert "AUTH_DATABASE_URL is required in production" in CONFIG
-    assert "validate_runtime_url_configuration" in CONFIG
-    assert '"auth": self.AUTH_DATABASE_URL' in CONFIG
+    runtime = load_runtime_binding_contract()
+    api_profile = PROCESS_PROFILES["profiles"]["api"]
+
+    assert tuple(api_profile["runtime_components"]) == ("api", "auth")
+    assert set(api_profile["required_database_variables"]) == {
+        runtime.bindings["api"].environment_variable,
+        runtime.bindings["auth"].environment_variable,
+    }
+    assert set(api_profile["forbidden_database_variables"]) == {
+        runtime.bindings["worker"].environment_variable,
+        runtime.bindings["maintenance"].environment_variable,
+    }
+    assert runtime.bindings["api"].environment_variable != runtime.bindings["auth"].environment_variable
 
     assert "make_url(settings.DATABASE_URL)" in AUTH_DB
     assert "make_url(raw)" in AUTH_DB

@@ -12,17 +12,19 @@ PRODUCTION_DB = Path("app/core/database.py")
 AUTH_DB = Path("app/core/auth_database.py")
 
 
-def _function(path: Path, name: str) -> ast.AsyncFunctionDef:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for node in tree.body:
+def _module(path: Path) -> ast.Module:
+    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+
+def _async_function(path: Path, name: str) -> ast.AsyncFunctionDef:
+    for node in _module(path).body:
         if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
             return node
     raise AssertionError(f"missing async function {name} in {path}")
 
 
 def _sync_function(path: Path, name: str) -> ast.FunctionDef:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for node in tree.body:
+    for node in _module(path).body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
     raise AssertionError(f"missing function {name} in {path}")
@@ -35,11 +37,6 @@ def _source_segment(path: Path, node: ast.AST) -> str:
     return segment
 
 
-def _normalized_source(source: str) -> str:
-    """Normalize formatter-only whitespace while preserving source tokens."""
-    return " ".join(source.split())
-
-
 def _load_test_url_validator():
     node = _sync_function(CONFTEST, "validate_test_database_url")
     namespace = {"make_url": make_url}
@@ -47,8 +44,51 @@ def _load_test_url_validator():
     return namespace["validate_test_database_url"]
 
 
+def _state_getattr_calls(function: ast.AsyncFunctionDef) -> dict[str, list[ast.Call]]:
+    result: dict[str, list[ast.Call]] = {}
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "getattr":
+            continue
+        if len(node.args) < 2:
+            continue
+        if not isinstance(node.args[0], ast.Name) or node.args[0].id != "state":
+            continue
+        field = node.args[1]
+        if not isinstance(field, ast.Constant) or not isinstance(field.value, str):
+            continue
+        result.setdefault(field.value, []).append(node)
+    return result
+
+
+def _constant(node: ast.AST, expected) -> bool:
+    return isinstance(node, ast.Constant) and node.value == expected
+
+
+def _calls_named(function: ast.AST, name: str) -> list[ast.Call]:
+    return [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == name
+    ]
+
+
+def _calls_initializer(function: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "initialize"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "SessionContextInitializer"
+        for node in ast.walk(function)
+    )
+
+
 def test_pytest_db_override_requires_fastapi_request_injection() -> None:
-    override = _function(CONFTEST, "override_get_db")
+    override = _async_function(CONFTEST, "override_get_db")
     assert len(override.args.args) == 1
     request_arg = override.args.args[0]
     assert request_arg.arg == "request"
@@ -58,61 +98,67 @@ def test_pytest_db_override_requires_fastapi_request_injection() -> None:
 
 
 def test_production_context_initializer_is_the_single_request_state_contract() -> None:
-    initializer = _normalized_source(
-        _source_segment(
-            PRODUCTION_DB,
-            _function(PRODUCTION_DB, "initialize_request_session"),
-        )
-    )
-    ordinary = _normalized_source(
-        _source_segment(PRODUCTION_DB, _function(PRODUCTION_DB, "get_db"))
-    )
-    auth = _normalized_source(
-        _source_segment(AUTH_DB, _function(AUTH_DB, "get_auth_db"))
-    )
+    initializer = _async_function(PRODUCTION_DB, "initialize_request_session")
+    getattrs = _state_getattr_calls(initializer)
 
-    for token in (
-        'getattr(state, "staff_id", principal_id)',
-        'getattr(state, "org_id", None)',
-        'getattr(state, "gym_id", None)',
-        'getattr(state, "role", "unknown")',
-        'getattr(state, "otel_trace_id", None)',
-        'getattr( state, "correlation_id", "unknown" )',
-        "SessionContextInitializer.initialize",
-        "org_id=str(org_id) if org_id else None",
-        "gym_id=str(gym_id) if gym_id else None",
-    ):
-        assert token in initializer
+    assert {
+        "principal_id",
+        "staff_id",
+        "principal_type",
+        "org_id",
+        "gym_id",
+        "role",
+        "otel_trace_id",
+        "correlation_id",
+    } <= set(getattrs)
 
-    assert "await initialize_request_session(session, request)" in ordinary
-    assert "await initialize_request_session(session, request)" in auth
+    staff = getattrs["staff_id"][0]
+    assert len(staff.args) == 3
+    assert isinstance(staff.args[2], ast.Name)
+    assert staff.args[2].id == "principal_id"
+
+    principal = getattrs["principal_id"][0]
+    assert len(principal.args) == 3
+    assert isinstance(principal.args[2], ast.Call)
+    assert principal.args[2] is staff
+
+    for field in ("principal_type", "org_id", "gym_id", "otel_trace_id"):
+        assert any(len(call.args) == 3 and _constant(call.args[2], None) for call in getattrs[field])
+    assert any(len(call.args) == 3 and _constant(call.args[2], "unknown") for call in getattrs["role"])
+    assert any(
+        len(call.args) == 3 and _constant(call.args[2], "unknown")
+        for call in getattrs["correlation_id"]
+    )
+    assert _calls_initializer(initializer)
+
+    for path, name in ((PRODUCTION_DB, "get_db"), (AUTH_DB, "get_auth_db")):
+        function = _async_function(path, name)
+        calls = _calls_named(function, "initialize_request_session")
+        assert len(calls) == 1
+        assert len(calls[0].args) == 2
+        assert all(isinstance(arg, ast.Name) for arg in calls[0].args)
+        assert [arg.id for arg in calls[0].args] == ["session", "request"]
 
 
 def test_pytest_override_preserves_same_typed_context_fields() -> None:
-    production = _normalized_source(
-        _source_segment(
-            PRODUCTION_DB,
-            _function(PRODUCTION_DB, "initialize_request_session"),
-        )
-    )
-    override = _normalized_source(
-        _source_segment(CONFTEST, _function(CONFTEST, "override_get_db"))
-    )
+    production = _async_function(PRODUCTION_DB, "initialize_request_session")
+    override = _async_function(CONFTEST, "override_get_db")
 
-    for token in (
-        'getattr(state, "org_id", None)',
-        'getattr(state, "gym_id", None)',
-        'getattr(state, "role", "unknown")',
-        'getattr(state, "otel_trace_id", None)',
-        "principal_type",
-        "SessionContextInitializer.initialize",
-    ):
-        assert token in production
-        assert token in override
+    production_fields = set(_state_getattr_calls(production))
+    override_fields = set(_state_getattr_calls(override))
+    for field in ("org_id", "gym_id", "role", "otel_trace_id", "principal_type"):
+        assert field in production_fields
+        assert field in override_fields
+
+    assert _calls_initializer(production)
+    assert _calls_initializer(override)
 
 
 def test_pytest_db_override_does_not_bypass_rls_or_impersonate_privileged_roles() -> None:
-    override = _source_segment(CONFTEST, _function(CONFTEST, "override_get_db")).upper()
+    override = _source_segment(
+        CONFTEST,
+        _async_function(CONFTEST, "override_get_db"),
+    ).upper()
     forbidden = (
         "BYPASSRLS",
         "DISABLE ROW LEVEL SECURITY",
