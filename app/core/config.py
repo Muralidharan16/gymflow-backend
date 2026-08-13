@@ -1,6 +1,6 @@
 import os
 from typing import List
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +9,9 @@ class Settings(BaseSettings):
 
     # ── Database ───────────────────────────────────
     DATABASE_URL: str
+    AUTH_DATABASE_URL: str = ""
+    WORKER_DATABASE_URL: str = ""
+    MAINTENANCE_DATABASE_URL: str = ""
     TEST_DATABASE_URL: str = ""
     REDIS_URL: str
     CELERY_BROKER_URL: str
@@ -27,16 +30,13 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:5174"
 
     # ── Email ──────────────────────────────────────
-    MAIL_PROVIDER: str = "smtp"          # "smtp" | "resend"
+    MAIL_PROVIDER: str = "smtp"
     MAIL_FROM: str = "noreply@doers.io"
 
-    # SMTP (Mailtrap for dev)
     MAIL_SERVER: str = "sandbox.smtp.mailtrap.io"
     MAIL_PORT: int = 587
     MAIL_USERNAME: str = ""
     MAIL_PASSWORD: str = ""
-
-    # Resend (production)
     RESEND_API_KEY: str = ""
 
     # ── WhatsApp ───────────────────────────────────
@@ -53,7 +53,6 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "info"
 
     # ── Platform Billing Feature Flags ─────────────
-    # All disabled during Phase 0; enable progressively per phase.
     PLATFORM_BILLING_READ_API: bool = False
     PLATFORM_BILLING_SHADOW_RESOLVER: bool = False
     PLATFORM_BILLING_ENFORCEMENT: bool = False
@@ -76,11 +75,69 @@ class Settings(BaseSettings):
     S3_BUCKET_NAME: str = "gymflow-local-bucket"
     CDN_BASE_URL: str = "https://cdn.gymflow.local"
 
-    # ── Properties ─────────────────────────────────
+    @model_validator(mode="after")
+    def validate_database_identity_boundaries(self):
+        if self.ENVIRONMENT == "production":
+            if not self.AUTH_DATABASE_URL:
+                raise ValueError(
+                    "AUTH_DATABASE_URL is required in production so auth/bootstrap "
+                    "does not share the ordinary application database identity"
+                )
+            if self.AUTH_DATABASE_URL == self.DATABASE_URL:
+                raise ValueError(
+                    "AUTH_DATABASE_URL must use a distinct production database identity"
+                )
+            if not self.WORKER_DATABASE_URL:
+                raise ValueError(
+                    "WORKER_DATABASE_URL is required in production so asynchronous "
+                    "workers do not reuse API or auth credentials"
+                )
+            if self.WORKER_DATABASE_URL in {
+                self.DATABASE_URL,
+                self.AUTH_DATABASE_URL,
+            }:
+                raise ValueError(
+                    "WORKER_DATABASE_URL must use a distinct production database identity"
+                )
+            if not self.MAINTENANCE_DATABASE_URL:
+                raise ValueError(
+                    "MAINTENANCE_DATABASE_URL is required in production so lifecycle "
+                    "watchdog/reconciliation sweeps do not reuse API, auth, or worker credentials"
+                )
+            if self.MAINTENANCE_DATABASE_URL in {
+                self.DATABASE_URL,
+                self.AUTH_DATABASE_URL,
+                self.WORKER_DATABASE_URL,
+            }:
+                raise ValueError(
+                    "MAINTENANCE_DATABASE_URL must use a distinct production database identity"
+                )
+        return self
+
     @property
     def cors_origins_list(self) -> list[str]:
-        """Convert comma-separated string to a list of origins."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def worker_database_url(self) -> str:
+        """Return the bounded worker URL.
+
+        Production is fail-closed by the model validator above. Development and
+        test environments may intentionally share the application URL so the
+        repository remains easy to run locally before a dedicated worker login
+        is provisioned.
+        """
+        return self.WORKER_DATABASE_URL or self.DATABASE_URL
+
+    @property
+    def maintenance_database_url(self) -> str:
+        """Return the bounded lifecycle-maintenance URL.
+
+        Production must use a fourth database identity. Development and tests
+        may share the application URL until the dedicated maintenance login is
+        provisioned, matching the worker-local-development behavior above.
+        """
+        return self.MAINTENANCE_DATABASE_URL or self.DATABASE_URL
 
     @property
     def is_production(self) -> bool:

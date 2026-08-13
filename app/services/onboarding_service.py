@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from app.core.database import update_session_context
 from app.models.auth import Owner
 from app.models.organization import Organization
 from app.models.trial import TrialSubscription
@@ -14,16 +15,17 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
+
 class OnboardingService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
     async def complete_onboarding(
-        self, 
-        owner_id: str, 
+        self,
+        owner_id: str,
         data: OnboardingCompleteRequest,
         ip_address: str,
-        user_agent: str
+        user_agent: str,
     ) -> dict:
         """
         Finalizes the onboarding process:
@@ -36,14 +38,14 @@ class OnboardingService:
         q = select(Owner).where(Owner.id == owner_id)
         result = await self.session.execute(q)
         owner = result.scalar_one_or_none()
-        
+
         if not owner:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         if owner.onboarding_completed:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Onboarding already completed"
+                detail="Onboarding already completed",
             )
 
         q_org = select(Organization).where(Organization.id == owner.org_id)
@@ -52,6 +54,22 @@ class OnboardingService:
 
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
+
+        # Onboarding is intentionally exempt from TenantMiddleware because it is
+        # the transition that finishes creating the tenant topology. Once the
+        # verified owner/org are loaded, attach the canonical principal context
+        # to the Session before *any* tenant-scoped write. The database layer
+        # installs this context transaction-locally now and on every subsequent
+        # transaction for this Session.
+        await update_session_context(
+            self.session,
+            principal_id=str(owner.id),
+            principal_type="owner",
+            org_id=str(org.id),
+            role="owner",
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
 
         # 2. Atomic Transaction
         try:
@@ -64,7 +82,7 @@ class OnboardingService:
                 org.state = data.state
                 org.pincode = data.pincode
                 org.profile_completed = True
-                
+
                 # Update Branding
                 if data.tagline:
                     org.tagline = data.tagline
@@ -94,7 +112,7 @@ class OnboardingService:
                     trial_end=trial_end,
                     grace_end=grace_end,
                     hard_lock_at=hard_lock_at,
-                    status="active"
+                    status="active",
                 )
                 self.session.add(trial)
 
@@ -103,10 +121,9 @@ class OnboardingService:
                 from app.models.address import OrganizationAddress
                 from app.models.gym import Gym
                 import uuid
-                import time
-                
+
                 branch_id = uuid.uuid4()
-                
+
                 branch = OrgBranch(
                     id=branch_id,
                     org_id=org.id,
@@ -117,10 +134,10 @@ class OnboardingService:
                     currency_code="INR",
                     country_code="IN",
                     address_id=None,
-                    created_by=owner.id
+                    created_by=owner.id,
                 )
                 self.session.add(branch)
-                await self.session.flush() # Persist branch to satisfy FK check on address
+                await self.session.flush()  # Persist branch to satisfy FK check on address
 
                 # Create the OrganizationAddress record referencing branch_id
                 org_address = OrganizationAddress(
@@ -134,32 +151,33 @@ class OnboardingService:
                     postal_code=data.pincode,
                     country_code="IN",
                     is_primary=True,
-                    effective_from=datetime.now(timezone.utc)
+                    effective_from=datetime.now(timezone.utc),
                 )
                 self.session.add(org_address)
-                await self.session.flush() # Persist address to get org_address.id
+                await self.session.flush()  # Persist address to get org_address.id
 
                 # Link address_id back to branch
                 branch.address_id = org_address.id
 
-                # Set transaction-local GUCs consumed by RLS and audit triggers
-                from sqlalchemy import text
-                await self.session.execute(
-                    text("SELECT pg_catalog.set_config('app.current_org_id', :org_id, true)"),
-                    {"org_id": str(org.id)}
-                )
-                await self.session.execute(
-                    text("SELECT pg_catalog.set_config('app.current_user_id', :user_id, true)"),
-                    {"user_id": str(owner.id)}
-                )
-
                 # Create real contacts in branch_contacts table
-                from app.schemas.branch_contacts import BranchContactORM, ContactKind, VisibilityScope, normalize_phone, normalize_email
+                from app.schemas.branch_contacts import (
+                    BranchContactORM,
+                    ContactKind,
+                    VisibilityScope,
+                    normalize_phone,
+                    normalize_email,
+                )
 
                 try:
-                    phone_e164, normalized_digits, display_format = normalize_phone(data.phone, "IN")
+                    phone_e164, normalized_digits, display_format = normalize_phone(
+                        data.phone, "IN"
+                    )
                 except Exception:
-                    phone_e164, normalized_digits, display_format = f"+91{data.phone}", data.phone, data.phone
+                    phone_e164, normalized_digits, display_format = (
+                        f"+91{data.phone}",
+                        data.phone,
+                        data.phone,
+                    )
 
                 phone_contact = BranchContactORM(
                     id=uuid.uuid4(),
@@ -172,12 +190,17 @@ class OnboardingService:
                     country_code="IN",
                     contact_label="Main",
                     visibility_scope=VisibilityScope.PUBLIC,
-                    channel_capabilities={"whatsapp": True, "sms": True, "voice": True, "fax": False},
+                    channel_capabilities={
+                        "whatsapp": True,
+                        "sms": True,
+                        "voice": True,
+                        "fax": False,
+                    },
                     is_primary=True,
                     is_active=True,
                     created_at=datetime.now(timezone.utc),
                     created_by=owner.id,
-                    updated_at=datetime.now(timezone.utc)
+                    updated_at=datetime.now(timezone.utc),
                 )
 
                 try:
@@ -194,12 +217,17 @@ class OnboardingService:
                     email_normalized=email_normalized,
                     contact_label="Main",
                     visibility_scope=VisibilityScope.PUBLIC,
-                    channel_capabilities={"whatsapp": False, "sms": False, "voice": False, "fax": False},
+                    channel_capabilities={
+                        "whatsapp": False,
+                        "sms": False,
+                        "voice": False,
+                        "fax": False,
+                    },
                     is_primary=True,
                     is_active=True,
                     created_at=datetime.now(timezone.utc),
                     created_by=owner.id,
-                    updated_at=datetime.now(timezone.utc)
+                    updated_at=datetime.now(timezone.utc),
                 )
 
                 self.session.add(phone_contact)
@@ -207,7 +235,7 @@ class OnboardingService:
 
                 # Mock ULID for search_epoch_ulid (26 chars)
                 mock_ulid = str(uuid.uuid4()).replace("-", "").upper()[:26]
-                
+
                 branch_state = OrgBranchState(
                     branch_id=branch_id,
                     org_id=org.id,
@@ -217,9 +245,9 @@ class OnboardingService:
                     is_public=True,
                     status="active",
                     is_operational=True,
-                    search_epoch_ulid=mock_ulid
+                    search_epoch_ulid=mock_ulid,
                 )
-                
+
                 self.session.add(branch_state)
 
                 # Sync with the legacy Gym record so the UI branch selector can list it with address
@@ -227,7 +255,11 @@ class OnboardingService:
                 gym_res = await self.session.execute(gym_q)
                 gym = gym_res.scalar_one_or_none()
                 if gym:
-                    gym.address = f"{data.address_line1}, {data.address_line2}" if data.address_line2 else data.address_line1
+                    gym.address = (
+                        f"{data.address_line1}, {data.address_line2}"
+                        if data.address_line2
+                        else data.address_line1
+                    )
                     gym.city = data.city
                     gym.phone = data.phone
 
@@ -240,18 +272,18 @@ class OnboardingService:
                     user_agent=user_agent,
                     metadata_json={
                         "pincode": data.pincode,
-                        "trial_end": trial_end.isoformat()
-                    }
+                        "trial_end": trial_end.isoformat(),
+                    },
                 )
                 self.session.add(audit)
 
             await self.session.commit()
-            
+
             return {
                 "status": "success",
                 "trial_start": trial_start.isoformat(),
                 "trial_end": trial_end.isoformat(),
-                "days_remaining": 7
+                "days_remaining": 7,
             }
 
         except Exception:
@@ -259,7 +291,7 @@ class OnboardingService:
             await self.session.rollback()
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to finalize onboarding. Please try again."
+                detail="Failed to finalize onboarding. Please try again.",
             )
 
     async def get_status(self, owner_id: str) -> dict:
@@ -269,11 +301,13 @@ class OnboardingService:
         q = select(Owner).where(Owner.id == owner_id)
         result = await self.session.execute(q)
         owner = result.scalar_one_or_none()
-        
+
         if not owner:
             raise HTTPException(status_code=404, detail="User not found")
 
-        trial_q = select(TrialSubscription).where(TrialSubscription.organization_id == owner.org_id)
+        trial_q = select(TrialSubscription).where(
+            TrialSubscription.organization_id == owner.org_id
+        )
         trial_result = await self.session.execute(trial_q)
         trial = trial_result.scalar_one_or_none()
 
@@ -281,12 +315,15 @@ class OnboardingService:
         now_ist = now_utc.astimezone(IST)  # display-only conversion — not a canonical write
         days_remaining = 0
         if trial:
-            days_remaining = max(0, (trial.trial_end.astimezone(IST).date() - now_ist.date()).days)
+            days_remaining = max(
+                0,
+                (trial.trial_end.astimezone(IST).date() - now_ist.date()).days,
+            )
 
         return {
             "onboarding_completed": owner.onboarding_completed,
             "trial_status": trial.status if trial else "none",
             "days_remaining": days_remaining,
             "soft_lock_at": trial.trial_end.isoformat() if trial else None,
-            "hard_lock_at": trial.hard_lock_at.isoformat() if trial else None
+            "hard_lock_at": trial.hard_lock_at.isoformat() if trial else None,
         }

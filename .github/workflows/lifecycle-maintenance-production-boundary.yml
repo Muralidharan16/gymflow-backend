@@ -1,0 +1,278 @@
+name: Lifecycle Maintenance Production Boundary
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lifecycle-maintenance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  maintenance-boundary:
+    name: Fresh PG16 lifecycle maintenance identity boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      API_PASSWORD: ci-app-runtime
+      AUTH_PASSWORD: ci-auth-runtime
+      WORKER_PASSWORD: ci-worker-runtime
+      MAINTENANCE_PASSWORD: ci-maintenance-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_maintenance_test
+      API_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-runtime@127.0.0.1:5432/gymflow_maintenance_test
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-runtime@127.0.0.1:5432/gymflow_maintenance_test
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-runtime@127.0.0.1:5432/gymflow_maintenance_test
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://maintenance_test_runtime:ci-maintenance-runtime@127.0.0.1:5432/gymflow_maintenance_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+          python -m py_compile \
+            alembic/versions/b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py \
+            app/core/config.py \
+            app/core/database.py \
+            app/tasks/branch_lifecycle_sweeps.py \
+            app/routers/branch_lifecycle.py \
+            scripts/verify_lifecycle_maintenance_runtime.py \
+            tests/test_lifecycle_maintenance_runtime_boundary.py
+
+      - name: Run static lifecycle maintenance boundary
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          python -m pytest --noconftest -q \
+            tests/test_lifecycle_maintenance_runtime_boundary.py \
+            tests/test_cluster_role_contract_manifests.py
+
+      - name: Install PostgreSQL 16 extension packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+          test -f /usr/share/postgresql/16/extension/pg_partman.control
+
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision lifecycle maintenance CI login and database overlay
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime
+            LOGIN PASSWORD 'ci-app-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime
+            LOGIN PASSWORD 'ci-auth-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime
+            LOGIN PASSWORD 'ci-worker-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE maintenance_test_runtime
+            LOGIN PASSWORD 'ci-maintenance-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO maintenance_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_maintenance_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_maintenance_test
+            TO app_test_runtime, auth_test_runtime, worker_test_runtime, maintenance_test_runtime;
+          SQL
+
+      - name: Verify canonical external role contract
+        run: bash scripts/ci/verify_cluster_roles.sh
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_maintenance_test <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Prove cluster role separation before Alembic
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_maintenance_test <<'SQL'
+          DO $$
+          BEGIN
+            IF pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET')
+               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET')
+               OR pg_catalog.pg_has_role(current_user, 'app_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER') THEN
+              RAISE EXCEPTION 'migration_owner leaked into a runtime capability';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Fresh migration to HEAD
+        run: |
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Seed disposable lifecycle state through test harness superuser
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_maintenance_test <<'SQL'
+          INSERT INTO public.organizations (
+            id, name, tier, is_active, max_branches
+          ) VALUES (
+            '10000000-0000-0000-0000-000000000091',
+            'Maintenance Boundary Org',
+            'basic',
+            TRUE,
+            5
+          );
+
+          INSERT INTO public.org_branches (
+            id, org_id, branch_name, branch_code, internal_slug,
+            timezone, currency_code
+          ) VALUES (
+            '20000000-0000-0000-0000-000000000091',
+            '10000000-0000-0000-0000-000000000091',
+            'Maintenance Boundary Branch',
+            'MAINT-91',
+            'maintenance-boundary-91',
+            'UTC',
+            'USD'
+          );
+
+          INSERT INTO public.org_branch_state (
+            branch_id, org_id, status, is_operational, transition_source,
+            search_epoch_ulid, search_visibility_version
+          ) VALUES (
+            '20000000-0000-0000-0000-000000000091',
+            '10000000-0000-0000-0000-000000000091',
+            'active',
+            TRUE,
+            'api',
+            '01AN4V07BY79KA1307SR1XF31A',
+            1
+          );
+          SQL
+
+      - name: Execute production-shaped maintenance boundary
+        run: |
+          python scripts/verify_lifecycle_maintenance_runtime.py
+
+      - name: Downgrade revision 91 and prove exact predecessor restoration
+        run: |
+          python -s -m alembic -c alembic.ini downgrade a4b5c6d7e8f9
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_maintenance_test <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT pg_catalog.has_table_privilege(
+              'app_runtime', 'public.org_branch_state', 'UPDATE'
+            ) THEN
+              RAISE EXCEPTION 'downgrade did not restore app_runtime state UPDATE';
+            END IF;
+            IF NOT pg_catalog.has_table_privilege(
+              'app_runtime', 'public.branch_watchdog_alerts', 'SELECT'
+            ) OR NOT pg_catalog.has_table_privilege(
+              'app_runtime', 'public.branch_watchdog_alerts', 'INSERT'
+            ) THEN
+              RAISE EXCEPTION 'downgrade did not restore app_runtime watchdog ACL';
+            END IF;
+            IF pg_catalog.has_table_privilege(
+              'lifecycle_maintenance_runtime', 'public.org_branch_state', 'SELECT'
+            ) OR pg_catalog.has_any_column_privilege(
+              'lifecycle_maintenance_runtime', 'public.org_branch_state', 'UPDATE'
+            ) OR pg_catalog.has_table_privilege(
+              'lifecycle_maintenance_runtime', 'public.branch_watchdog_alerts', 'SELECT'
+            ) OR pg_catalog.has_table_privilege(
+              'lifecycle_maintenance_runtime', 'public.branch_watchdog_alerts', 'INSERT'
+            ) THEN
+              RAISE EXCEPTION 'downgrade retained maintenance database capability';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_catalog.pg_roles
+              WHERE rolname = 'lifecycle_maintenance_runtime'
+                AND NOT rolcanlogin
+                AND NOT rolsuper
+                AND NOT rolcreatedb
+                AND NOT rolcreaterole
+                AND NOT rolinherit
+                AND NOT rolreplication
+                AND NOT rolbypassrls
+            ) THEN
+              RAISE EXCEPTION 'database downgrade mutated cluster maintenance role';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Re-upgrade revision 91 and re-prove runtime boundary
+        run: |
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          python scripts/verify_lifecycle_maintenance_runtime.py

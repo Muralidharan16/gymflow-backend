@@ -1,0 +1,493 @@
+name: Migration Hardening CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-hardening-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-hardening-contracts:
+    name: Static hardening contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+
+      - name: Compile hardened migration/runtime surface
+        run: |
+          python -m py_compile \
+            alembic/env.py \
+            alembic/versions/0020_contacts_hardened.py \
+            alembic/versions/0021_staff_roles.py \
+            alembic/versions/0022_rbac_phase1_roles_extensions.py \
+            alembic/versions/0024_rbac_p3_org_members.py \
+            alembic/versions/0025_rbac_p4_bsr_expand.py \
+            alembic/versions/0026_rbac_p5_audit_log.py \
+            alembic/versions/0027_rbac_p6_perm_snapshots.py \
+            alembic/versions/0028_rbac_p7_role_events.py \
+            alembic/versions/0029_rbac_p8_contract.py \
+            alembic/versions/a1b2c3d4e5f6_rbac_hardening_phase_15_to_18.py \
+            alembic/versions/dafd2b02005e_add_branch_staff_roles_deactivation_.py \
+            alembic/versions/66a95af89112_init_partman_for_branch_lifecycle_events.py \
+            alembic/versions/371b1a44a333_add_spatial_and_filtering_indexes.py \
+            alembic/versions/361c32e72e93_add_geo_fields_to_branches.py \
+            alembic/versions/4d5e6f708192_establish_audit_principal_registry.py \
+            alembic/versions/5e6f708192a3_auth_runtime_privilege_boundary.py \
+            alembic/versions/6f708192a3b4_address_runtime_privilege_boundary.py \
+            alembic/versions/708192a3b4c5_branch_runtime_privilege_boundary.py \
+            alembic/versions/8192a3b4c5d6_harden_legacy_branch_trigger_runtime_boundary.py \
+            alembic/versions/92a3b4c5d6e7_align_branch_read_contract.py \
+            alembic/versions/a3b4c5d6e7f8_allow_legacy_branch_transition_reference_read.py \
+            alembic/versions/b4c5d6e7f809_harden_branch_hours_runtime_boundary.py \
+            alembic/versions/c5d6e7f8091a_adopt_branch_hours_audit_partitions.py \
+            alembic/versions/b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py \
+            app/core/cluster_role_bootstrap.py \
+            app/core/cluster_role_preflight.py \
+            app/core/database.py \
+            app/core/celery_app.py \
+            app/main.py \
+            app/tasks/branch_hours_partition.py \
+            app/tasks/branch_lifecycle_sweeps.py \
+            scripts/render_cluster_role_bootstrap.py \
+            scripts/verify_cluster_role_bootstrap.py \
+            scripts/verify_head_workflow_bootstrap.py \
+            tests/test_branch_hours_runtime_partition_boundary.py \
+            tests/test_lifecycle_maintenance_runtime_boundary.py \
+            tests/test_p2b_cluster_role_bootstrap.py \
+            tests/test_production_migration_bootstrap_contract.py
+          bash -n \
+            scripts/ci/bootstrap_cluster_roles.sh \
+            scripts/ci/verify_cluster_roles.sh \
+            scripts/release/bootstrap_cluster_roles.sh
+
+      - name: Run migration hardening static regressions
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          python -m pytest --noconftest -q \
+            tests/test_0027_complete_owner_context_boundary.py \
+            tests/test_66a_pg_partman_boundary.py \
+            tests/test_371b333_spatial_index_lineage.py \
+            tests/test_database_sync_driver_boundary.py \
+            tests/test_database_session_guc_boundary.py \
+            tests/test_alembic_env_config_boundary.py \
+            tests/test_alembic_model_import_boundary.py \
+            tests/test_dafd_app_private_owner_context_boundary.py \
+            tests/test_migration_app_private_owner_context_boundary.py \
+            tests/test_migration_app_secure_owner_context_boundary.py \
+            tests/test_migration_managed_role_boundary.py \
+            tests/test_migration_shared_infrastructure_boundary.py \
+            tests/test_platform_billing_cleanup_boundary.py \
+            tests/test_address_audit_rls_context_boundary.py \
+            tests/test_cluster_role_contract_manifests.py \
+            tests/test_external_cluster_role_preflight.py \
+            tests/test_p2b_cluster_role_bootstrap.py \
+            tests/test_production_migration_bootstrap_contract.py \
+            tests/test_rbac_expand_contract_root_cause.py \
+            tests/test_legacy_branch_trigger_runtime_boundary.py \
+            tests/test_legacy_branch_transition_reference_acl.py \
+            tests/test_branch_hours_runtime_partition_boundary.py \
+            tests/test_lifecycle_maintenance_runtime_boundary.py
+          python -s scripts/verify_head_workflow_bootstrap.py
+
+  fresh-lineage-and-regressions:
+    name: Fresh PG16 lineage and general regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+
+      - name: Install PostgreSQL 16 extension packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+          test -f /usr/share/postgresql/16/extension/pg_partman.control
+
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision general CI login and database overlay
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE test_runner LOGIN PASSWORD 'ci-test-runner' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-test-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime LOGIN PASSWORD 'ci-auth-test-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-lifecycle-maintenance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_test_runtime SET row_security = 'on';
+          ALTER ROLE app_test_runtime SET statement_timeout = '5s';
+          ALTER ROLE app_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE app_test_runtime SET idle_in_transaction_session_timeout = '15s';
+          ALTER ROLE auth_test_runtime SET row_security = 'on';
+          ALTER ROLE auth_test_runtime SET statement_timeout = '5s';
+          ALTER ROLE auth_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE auth_test_runtime SET idle_in_transaction_session_timeout = '15s';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET row_security = 'on';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET statement_timeout = '15s';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET idle_in_transaction_session_timeout = '30s';
+
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_migration_test OWNER migration_owner;
+          CREATE DATABASE gymflow_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_test TO app_test_runtime, auth_test_runtime, lifecycle_maintenance_test_runtime;
+          SQL
+
+      - name: Verify canonical external role contract
+        run: bash scripts/ci/verify_cluster_roles.sh
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          for database in gymflow_migration_test gymflow_test; do
+            sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$database" <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+          done
+
+      - name: Prove reduced migration roles and bounded edges
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_migration_test <<'SQL'
+          DO $$
+          DECLARE migration_record record; test_record record; worker_record record; maintenance_record record; maintenance_login_record record;
+          BEGIN
+            SELECT * INTO migration_record FROM pg_catalog.pg_roles WHERE rolname = 'migration_owner';
+            SELECT * INTO test_record FROM pg_catalog.pg_roles WHERE rolname = 'test_runner';
+            SELECT * INTO worker_record FROM pg_catalog.pg_roles WHERE rolname = 'worker_runtime';
+            SELECT * INTO maintenance_record FROM pg_catalog.pg_roles WHERE rolname = 'lifecycle_maintenance_runtime';
+            SELECT * INTO maintenance_login_record FROM pg_catalog.pg_roles WHERE rolname = 'lifecycle_maintenance_test_runtime';
+            IF migration_record.rolsuper OR migration_record.rolcreatedb OR migration_record.rolcreaterole OR migration_record.rolinherit OR migration_record.rolreplication OR migration_record.rolbypassrls THEN RAISE EXCEPTION 'migration_owner is over-privileged'; END IF;
+            IF test_record.rolsuper OR test_record.rolcreatedb OR test_record.rolcreaterole OR test_record.rolinherit OR test_record.rolreplication OR test_record.rolbypassrls THEN RAISE EXCEPTION 'test_runner is over-privileged'; END IF;
+            IF worker_record.rolcanlogin OR worker_record.rolsuper OR worker_record.rolcreatedb OR worker_record.rolcreaterole OR worker_record.rolinherit OR worker_record.rolreplication OR worker_record.rolbypassrls THEN RAISE EXCEPTION 'worker_runtime is over-privileged'; END IF;
+            IF maintenance_record.rolcanlogin OR maintenance_record.rolsuper OR maintenance_record.rolcreatedb OR maintenance_record.rolcreaterole OR maintenance_record.rolinherit OR maintenance_record.rolreplication OR maintenance_record.rolbypassrls THEN RAISE EXCEPTION 'lifecycle_maintenance_runtime is over-privileged'; END IF;
+            IF NOT maintenance_login_record.rolcanlogin OR maintenance_login_record.rolsuper OR maintenance_login_record.rolcreatedb OR maintenance_login_record.rolcreaterole OR maintenance_login_record.rolinherit OR maintenance_login_record.rolreplication OR maintenance_login_record.rolbypassrls THEN RAISE EXCEPTION 'lifecycle maintenance test login posture is unsafe'; END IF;
+            IF pg_catalog.pg_has_role('migration_owner', 'app_user', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'app_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') OR pg_catalog.pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'SET') THEN
+              RAISE EXCEPTION 'migration_owner must not access application/auth/worker/maintenance runtime capabilities';
+            END IF;
+            IF NOT pg_catalog.pg_has_role('lifecycle_maintenance_test_runtime', 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role('lifecycle_maintenance_test_runtime', 'lifecycle_maintenance_runtime', 'SET') THEN
+              RAISE EXCEPTION 'maintenance login must inherit, but must not SET ROLE to, maintenance capability';
+            END IF;
+            IF pg_catalog.pg_has_role('lifecycle_maintenance_test_runtime', 'app_runtime', 'MEMBER') OR pg_catalog.pg_has_role('lifecycle_maintenance_test_runtime', 'app_runtime', 'SET') OR pg_catalog.pg_has_role('lifecycle_maintenance_test_runtime', 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role('lifecycle_maintenance_test_runtime', 'auth_runtime', 'SET') OR pg_catalog.pg_has_role('lifecycle_maintenance_test_runtime', 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role('lifecycle_maintenance_test_runtime', 'worker_runtime', 'SET') THEN
+              RAISE EXCEPTION 'maintenance login leaked into app/auth/worker capabilities';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Fresh Alembic lineage on migration database
+        run: python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Fresh Alembic lineage on test database
+        env:
+          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+        run: python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Prove general and auth runtime separation
+        run: |
+          PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
+          DO $$
+          DECLARE runtime_record record;
+          BEGIN
+            SELECT * INTO runtime_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
+            IF current_user <> 'app_test_runtime' OR current_database() <> 'gymflow_test' THEN RAISE EXCEPTION 'unexpected general runtime identity/database'; END IF;
+            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb OR runtime_record.rolcreaterole OR runtime_record.rolinherit OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN RAISE EXCEPTION 'general runtime role attributes are unsafe'; END IF;
+            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE') OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN RAISE EXCEPTION 'general runtime has object-creation capability'; END IF;
+            IF pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET') THEN RAISE EXCEPTION 'general runtime may access auth/worker/maintenance runtime'; END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT') THEN RAISE EXCEPTION 'general runtime may create tenant roots'; END IF;
+            IF NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'SELECT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'INSERT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'UPDATE') THEN RAISE EXCEPTION 'general runtime lacks branch_contacts DML'; END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.branch_contacts', 'TRUNCATE') THEN RAISE EXCEPTION 'general runtime has forbidden branch_contacts privileges'; END IF;
+            IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'app_user', 'SET') THEN RAISE EXCEPTION 'general runtime may SET ROLE to a privilege group'; END IF;
+            IF EXISTS (
+              SELECT 1 FROM pg_catalog.pg_class AS relation_data
+              JOIN pg_catalog.pg_namespace AS namespace_data ON namespace_data.oid = relation_data.relnamespace
+              CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(relation_data.relacl, pg_catalog.acldefault('r', relation_data.relowner))) AS acl_data
+              JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = acl_data.grantee
+              WHERE namespace_data.nspname = 'public' AND grantee.rolname = current_user
+            ) THEN RAISE EXCEPTION 'general runtime has unexpected direct table ACLs'; END IF;
+          END
+          $$;
+          SQL
+
+          PGPASSWORD="$AUTH_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U auth_test_runtime -d gymflow_test <<'SQL'
+          DO $$
+          DECLARE runtime_record record;
+          BEGIN
+            SELECT * INTO runtime_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
+            IF current_user <> 'auth_test_runtime' OR current_database() <> 'gymflow_test' THEN RAISE EXCEPTION 'unexpected auth runtime identity/database'; END IF;
+            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb OR runtime_record.rolcreaterole OR runtime_record.rolinherit OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN RAISE EXCEPTION 'auth runtime login attributes are unsafe'; END IF;
+            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE') OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN RAISE EXCEPTION 'auth runtime has object-creation capability'; END IF;
+            IF NOT pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET') THEN RAISE EXCEPTION 'auth runtime inheritance edge is invalid'; END IF;
+            IF NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.owners', 'INSERT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.auth_sessions', 'UPDATE') THEN RAISE EXCEPTION 'auth runtime lacks required bootstrap/session privileges'; END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'TRUNCATE') OR pg_catalog.has_table_privilege(current_user, 'public.auth_sessions', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.auth_sessions', 'TRUNCATE') THEN RAISE EXCEPTION 'auth runtime has forbidden destructive privileges'; END IF;
+          END
+          $$;
+          SQL
+
+          PGPASSWORD="$MAINTENANCE_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U lifecycle_maintenance_test_runtime -d gymflow_test <<'SQL'
+          DO $$
+          DECLARE runtime_record record;
+          BEGIN
+            SELECT * INTO runtime_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
+            IF current_user <> 'lifecycle_maintenance_test_runtime' OR current_database() <> 'gymflow_test' THEN RAISE EXCEPTION 'unexpected maintenance runtime identity/database'; END IF;
+            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb OR runtime_record.rolcreaterole OR runtime_record.rolinherit OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN RAISE EXCEPTION 'maintenance runtime login attributes are unsafe'; END IF;
+            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE') OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN RAISE EXCEPTION 'maintenance runtime has object-creation capability'; END IF;
+            IF NOT pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'app_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER') THEN RAISE EXCEPTION 'maintenance runtime inheritance edge is invalid'; END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT') OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'INSERT') THEN RAISE EXCEPTION 'maintenance runtime has out-of-bound tenant-root/outbox capability'; END IF;
+            IF EXISTS (
+              SELECT 1 FROM information_schema.table_privileges
+              WHERE grantee = current_user AND table_schema = 'public'
+            ) THEN RAISE EXCEPTION 'maintenance login has unexpected direct table ACLs'; END IF;
+          END
+          $$;
+          SQL
+
+      - name: Run general regression suite fail-fast
+        run: python -m pytest -q --maxfail=1 --ignore=tests/platform_billing
+
+  platform-billing-regressions:
+    name: Isolated Platform Billing regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      PLATFORM_BILLING_RUNTIME_PASSWORD: ci-platform-billing-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+      TEST_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+      PLATFORM_BILLING_TEST_DATABASE_URL: postgresql+asyncpg://platform_billing_test_runtime:ci-platform-billing-runtime@127.0.0.1:5432/gymflow_platform_billing_test_ci
+      PLATFORM_BILLING_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_platform_billing_test_ci
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+      - name: Install PostgreSQL 16 extension packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16 postgresql-client-16 postgresql-contrib postgresql-16-partman postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+          test -f /usr/share/postgresql/16/extension/pg_partman.control
+
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision Platform Billing CI login and database overlay
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE platform_billing_test_runtime LOGIN PASSWORD 'ci-platform-billing-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE platform_billing_test_runtime SET row_security = 'on';
+          ALTER ROLE platform_billing_test_runtime SET statement_timeout = '30s';
+          ALTER ROLE platform_billing_test_runtime SET lock_timeout = '5s';
+          CREATE DATABASE gymflow_test OWNER migration_owner;
+          CREATE DATABASE gymflow_platform_billing_test_ci OWNER migration_owner;
+          SQL
+
+      - name: Verify canonical external role contract
+        run: bash scripts/ci/verify_cluster_roles.sh
+
+      - name: Provision Platform Billing infrastructure-owned extensions
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_platform_billing_test_ci <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Prove isolated worker and maintenance role contracts
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d postgres <<'SQL'
+          DO $$
+          DECLARE worker_record record; maintenance_record record;
+          BEGIN
+            SELECT * INTO worker_record FROM pg_catalog.pg_roles WHERE rolname = 'worker_runtime';
+            SELECT * INTO maintenance_record FROM pg_catalog.pg_roles WHERE rolname = 'lifecycle_maintenance_runtime';
+            IF NOT FOUND OR worker_record.rolcanlogin OR worker_record.rolsuper OR worker_record.rolcreatedb OR worker_record.rolcreaterole OR worker_record.rolinherit OR worker_record.rolreplication OR worker_record.rolbypassrls THEN RAISE EXCEPTION 'worker_runtime posture is unsafe'; END IF;
+            IF maintenance_record.rolcanlogin OR maintenance_record.rolsuper OR maintenance_record.rolcreatedb OR maintenance_record.rolcreaterole OR maintenance_record.rolinherit OR maintenance_record.rolreplication OR maintenance_record.rolbypassrls THEN RAISE EXCEPTION 'maintenance runtime posture is unsafe'; END IF;
+            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') OR pg_catalog.pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'lifecycle_maintenance_runtime', 'SET') OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'worker_runtime', 'SET') OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role('platform_billing_test_runtime', 'lifecycle_maintenance_runtime', 'SET') THEN
+              RAISE EXCEPTION 'worker/maintenance capability leaked into migration/Platform Billing identities';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Fresh Alembic lineage on isolated Platform Billing database
+        env:
+          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_platform_billing_test_ci
+        run: python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Grant test-only Platform Billing DML surface
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_platform_billing_test_ci <<'SQL'
+          DO $$
+          DECLARE target record;
+          BEGIN
+            FOR target IN
+              SELECT n.nspname AS schema_name, c.relname AS relation_name
+              FROM pg_catalog.pg_class AS c
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+                AND (c.relname = 'organizations' OR c.relname LIKE 'platform\_%' ESCAPE '\')
+            LOOP
+              EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE %I.%I TO platform_billing_test_runtime', target.schema_name, target.relation_name);
+            END LOOP;
+          END
+          $$;
+          SQL
+
+      - name: Prove isolated Platform Billing runtime posture
+        run: |
+          PGPASSWORD="$PLATFORM_BILLING_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U platform_billing_test_runtime -d gymflow_platform_billing_test_ci <<'SQL'
+          DO $$
+          DECLARE runtime_record record;
+          BEGIN
+            SELECT * INTO runtime_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
+            IF current_user <> 'platform_billing_test_runtime' OR current_database() <> 'gymflow_platform_billing_test_ci' THEN RAISE EXCEPTION 'unexpected Platform Billing runtime identity/database'; END IF;
+            IF runtime_record.rolsuper OR runtime_record.rolcreatedb OR runtime_record.rolcreaterole OR runtime_record.rolinherit OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN RAISE EXCEPTION 'Platform Billing runtime is over-privileged'; END IF;
+            IF EXISTS (SELECT 1 FROM pg_catalog.pg_database WHERE datname = current_database() AND pg_catalog.pg_get_userbyid(datdba) = current_user) THEN RAISE EXCEPTION 'Platform Billing runtime owns its database'; END IF;
+            IF pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN RAISE EXCEPTION 'Platform Billing runtime may create in public schema'; END IF;
+            IF pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET') THEN RAISE EXCEPTION 'Platform Billing runtime may access worker/maintenance capability'; END IF;
+            IF EXISTS (
+              SELECT 1 FROM information_schema.table_privileges
+              WHERE grantee = current_user AND table_schema = 'public'
+                AND ((table_name <> 'organizations' AND table_name NOT LIKE 'platform\_%' ESCAPE '\') OR privilege_type NOT IN ('SELECT','INSERT','UPDATE','DELETE'))
+            ) THEN RAISE EXCEPTION 'Platform Billing runtime has out-of-bound table privileges'; END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'TRUNCATE') THEN RAISE EXCEPTION 'Platform Billing runtime may truncate organizations'; END IF;
+          END
+          $$;
+          SQL
+
+      - name: Run isolated Platform Billing regressions fail-fast
+        run: python -m pytest -q --maxfail=1 tests/platform_billing

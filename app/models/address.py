@@ -1,84 +1,140 @@
-import uuid
 import enum
-import os
-from typing import Optional, Any, Dict
-from datetime import datetime, timezone
-import sqlalchemy as sa
-from sqlalchemy import String, Boolean, ForeignKey, text, Text, Integer, event, update, inspect, insert, BigInteger, CheckConstraint
-from sqlalchemy.orm import Mapped, mapped_column, Mapper, relationship
-from sqlalchemy.engine import Connection
 import re
-from sqlalchemy.dialects.postgresql import UUID, TIMESTAMP, JSONB, DOUBLE_PRECISION, INET
-from sqlalchemy import Enum as SAEnum
-from sqlalchemy.orm.attributes import get_history
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
 import geoalchemy2
+import sqlalchemy as sa
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    Text,
+    event,
+    insert,
+    inspect,
+    text,
+    update,
+)
+from sqlalchemy.dialects.postgresql import (
+    DOUBLE_PRECISION,
+    INET,
+    JSONB,
+    TIMESTAMP,
+    UUID,
+)
+from sqlalchemy.engine import Connection
+from sqlalchemy.orm import Mapped, Mapper, mapped_column, relationship
+from sqlalchemy.orm.attributes import get_history
+from sqlalchemy import Enum as SAEnum
 
 from app.models.base import Base, TimestampMixin, new_uuid
-from app.tasks.geocoding import geocode_address_task
+
 
 class AddressType(str, enum.Enum):
     registered = "registered"
     operational = "operational"
     billing = "billing"
 
-def check_postgis_available() -> bool:
-    """
-    Resilient check to see if the active PostgreSQL server actually has PostGIS loaded.
-    """
-    if os.environ.get("DISABLE_POSTGIS") == "true":
-        return False
-    db_url = os.environ.get("DATABASE_URL")
-    if not db_url:
-        return False
-    db_url = db_url.replace("+asyncpg", "")
-    try:
-        engine = sa.create_engine(db_url, connect_args={"connect_timeout": 2})
-        with engine.connect() as conn:
-            res = conn.execute(sa.text("SELECT COUNT(*) FROM pg_extension WHERE extname = 'postgis'")).scalar()
-            return res > 0
-    except Exception:
-        return False
 
-if check_postgis_available():
-    coordinate_type = geoalchemy2.Geography(geometry_type="POINT", srid=4326)
-else:
-    coordinate_type = sa.String(255)
+# PostGIS is an explicit database-infrastructure dependency and is provisioned
+# before Alembic in every supported environment. ORM metadata must therefore be
+# deterministic: model import never opens a database connection and never
+# changes a column's type based on transient extension/network availability.
+coordinate_type = geoalchemy2.Geography(geometry_type="POINT", srid=4326)
+
+
+class AuditPrincipal(Base):
+    """Non-PII registry used as the referential target for typed audit actors."""
+
+    __tablename__ = "audit_principals"
+
+    principal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    principal_type: Mapped[str] = mapped_column(String(32), primary_key=True)
+    registered_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=text("clock_timestamp()"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "principal_type IN ('owner', 'organization_user', 'legacy_gym_owner')",
+            name="ck_audit_principals_type",
+        ),
+    )
 
 
 class OrganizationAddress(Base, TimestampMixin):
     __tablename__ = "organization_addresses"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
-    org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
-    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("org_branches.id", ondelete="RESTRICT"), nullable=False)
-    
-    address_type: Mapped[str] = mapped_column(String(20), default="physical", server_default=text("'physical'"), nullable=False)
-    
-    dek_version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"), nullable=False)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("org_branches.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    address_type: Mapped[str] = mapped_column(
+        String(20),
+        default="physical",
+        server_default=text("'physical'"),
+        nullable=False,
+    )
+
+    dek_version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default=text("1"), nullable=False
+    )
     address_line1: Mapped[str] = mapped_column(Text, nullable=False)
     address_line2: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     formatted_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    
+
     city: Mapped[str] = mapped_column(String(100), nullable=False)
     state_province: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     country_code: Mapped[str] = mapped_column(String(2), nullable=False)
     postal_code: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    
+
     google_place_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    is_exact_location_visible: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("FALSE"), nullable=False)
-    allow_search_indexing: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("TRUE"), nullable=False)
-    
-    _reencryption_in_progress: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("FALSE"), nullable=False)
-    
-    deleted_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
-    deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("gym_owners.id", ondelete="SET NULL"), nullable=True)
+    is_exact_location_visible: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("FALSE"), nullable=False
+    )
+    allow_search_indexing: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("TRUE"), nullable=False
+    )
+
+    _reencryption_in_progress: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("FALSE"), nullable=False
+    )
+
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    deleted_by_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     geolocation_state: Mapped[Optional["BranchGeolocationState"]] = relationship(
         "BranchGeolocationState",
         back_populates="address",
         uselist=False,
         cascade="all, delete-orphan",
-        lazy="joined"
+        lazy="joined",
     )
 
     @property
@@ -119,7 +175,7 @@ class OrganizationAddress(Base, TimestampMixin):
                 address_id=self.id,
                 org_id=self.org_id,
                 validation_status="pending",
-                geocode_attempts=0
+                geocode_attempts=0,
             )
         return self.geolocation_state
 
@@ -129,7 +185,9 @@ class OrganizationAddress(Base, TimestampMixin):
 
     @is_verified.setter
     def is_verified(self, value: bool) -> None:
-        self._get_or_create_geo_state().validation_status = "success" if value else "pending"
+        self._get_or_create_geo_state().validation_status = (
+            "success" if value else "pending"
+        )
 
     @property
     def geocoding_failed(self) -> bool:
@@ -137,7 +195,9 @@ class OrganizationAddress(Base, TimestampMixin):
 
     @geocoding_failed.setter
     def geocoding_failed(self, value: bool) -> None:
-        self._get_or_create_geo_state().validation_status = "failed" if value else "pending"
+        self._get_or_create_geo_state().validation_status = (
+            "failed" if value else "pending"
+        )
 
     @property
     def maps_verification_status(self) -> str:
@@ -200,9 +260,9 @@ class OrganizationAddress(Base, TimestampMixin):
         geo = self._get_or_create_geo_state().coordinates
         if geo is not None:
             if isinstance(geo, str):
-                m = re.match(r"POINT\(([-\d\.]+) ([\d\.-]+)\)", geo)
-                if m:
-                    return float(m.group(2))
+                match = re.match(r"POINT\(([-\d\.]+) ([\d\.-]+)\)", geo)
+                if match:
+                    return float(match.group(2))
             return getattr(self, "_latitude", None)
         return getattr(self, "_latitude", None)
 
@@ -216,9 +276,9 @@ class OrganizationAddress(Base, TimestampMixin):
         geo = self._get_or_create_geo_state().coordinates
         if geo is not None:
             if isinstance(geo, str):
-                m = re.match(r"POINT\(([-\d\.]+) ([\d\.-]+)\)", geo)
-                if m:
-                    return float(m.group(1))
+                match = re.match(r"POINT\(([-\d\.]+) ([\d\.-]+)\)", geo)
+                if match:
+                    return float(match.group(1))
             return getattr(self, "_longitude", None)
         return getattr(self, "_longitude", None)
 
@@ -236,37 +296,79 @@ class OrganizationAddress(Base, TimestampMixin):
             geo_state.coordinates = point_str
 
     __table_args__ = (
-        CheckConstraint("address_type IN ('physical', 'mailing', 'billing', 'registered')", name="chk_address_type"),
-        CheckConstraint("address_line1 LIKE 'enc:%'", name="chk_address_line1_encrypted"),
+        CheckConstraint(
+            "address_type IN ('physical', 'mailing', 'billing', 'registered')",
+            name="chk_address_type",
+        ),
+        CheckConstraint(
+            "address_line1 LIKE 'enc:%'", name="chk_address_line1_encrypted"
+        ),
+        ForeignKeyConstraint(
+            ["deleted_by", "org_id", "deleted_by_type"],
+            [
+                "audit_principals.principal_id",
+                "audit_principals.org_id",
+                "audit_principals.principal_type",
+            ],
+            name="fk_organization_addresses_deleted_audit_principal",
+            ondelete="RESTRICT",
+        ),
     )
 
 
 class BranchGeolocationState(Base):
     __tablename__ = "branch_geolocation_state"
 
-    address_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organization_addresses.id", ondelete="CASCADE"), primary_key=True)
-    org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    address_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_addresses.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
 
     address: Mapped["OrganizationAddress"] = relationship(
-        "OrganizationAddress",
-        back_populates="geolocation_state"
+        "OrganizationAddress", back_populates="geolocation_state"
     )
-    
-    coordinates: Mapped[Optional[Any]] = mapped_column(coordinate_type, nullable=True)
-    last_known_good_coordinates: Mapped[Optional[Any]] = mapped_column(coordinate_type, nullable=True)
+
+    # Revision 00f defines branch geolocation state as a WKT projection. Keep
+    # these columns textual so ORM reads/writes match VARCHAR(255) exactly;
+    # PostGIS Geography remains canonical on the legacy/member spatial surfaces.
+    coordinates: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    last_known_good_coordinates: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
     timezone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    
-    validation_status: Mapped[str] = mapped_column(String(20), default="pending", server_default=text("'pending'"), nullable=False)
-    geocode_version: Mapped[int] = mapped_column(BigInteger, default=1, server_default=text("1"), nullable=False)
-    geocode_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
-    last_geocode_attempt_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
-    next_retry_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
-    geocoded_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
-    
+
+    validation_status: Mapped[str] = mapped_column(
+        String(20), default="pending", server_default=text("'pending'"), nullable=False
+    )
+    geocode_version: Mapped[int] = mapped_column(
+        BigInteger, default=1, server_default=text("1"), nullable=False
+    )
+    geocode_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
+    last_geocode_attempt_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    geocoded_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
     geocode_provider: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     __table_args__ = (
-        CheckConstraint("validation_status IN ('pending', 'queued', 'success', 'failed', 'skipped')", name="chk_geocode_status"),
+        CheckConstraint(
+            "validation_status IN ('pending', 'queued', 'success', 'failed', 'skipped')",
+            name="chk_geocode_status",
+        ),
     )
 
 
@@ -274,13 +376,24 @@ class BranchGeocodeAttempt(Base):
     __tablename__ = "branch_geocode_attempts"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    address_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organization_addresses.id", ondelete="CASCADE"), nullable=False)
+    address_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_addresses.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
     geocode_provider: Mapped[str] = mapped_column(String(20), nullable=False)
     raw_response: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    attempted_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=text("clock_timestamp()"), server_default=text("clock_timestamp()"), nullable=False)
-    succeeded: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("FALSE"), nullable=False)
+    attempted_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        default=text("clock_timestamp()"),
+        server_default=text("clock_timestamp()"),
+        nullable=False,
+    )
+    succeeded: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("FALSE"), nullable=False
+    )
 
 
 class BranchAddressHistory(Base):
@@ -289,8 +402,10 @@ class BranchAddressHistory(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     address_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    
-    dek_version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"), nullable=False)
+
+    dek_version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default=text("1"), nullable=False
+    )
     address_line1: Mapped[str] = mapped_column(Text, nullable=False)
     address_line2: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     city: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -300,19 +415,47 @@ class BranchAddressHistory(Base):
     formatted_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     change_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    valid_from: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
-    valid_to: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
-    changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("gym_owners.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=text("now()"), server_default=text("now()"), nullable=False)
+    valid_from: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    valid_to: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    changed_by_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        default=text("now()"),
+        server_default=text("now()"),
+        nullable=False,
+    )
 
     __table_args__ = (
-        CheckConstraint("address_line1 LIKE 'enc:%'", name="chk_hist_address_line1_encrypted"),
-        CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="chk_valid_range_nonempty"),
+        CheckConstraint(
+            "address_line1 LIKE 'enc:%'", name="chk_hist_address_line1_encrypted"
+        ),
+        CheckConstraint(
+            "valid_to IS NULL OR valid_to > valid_from",
+            name="chk_valid_range_nonempty",
+        ),
+        ForeignKeyConstraint(
+            ["changed_by", "org_id", "changed_by_type"],
+            [
+                "audit_principals.principal_id",
+                "audit_principals.org_id",
+                "audit_principals.principal_type",
+            ],
+            name="fk_branch_address_history_audit_principal",
+            ondelete="RESTRICT",
+        ),
     )
 
 
 def receive_after_update(mapper, connection, target) -> None:
     from app.tasks.geocoding import geocode_address_task
+
     connection.execute(None)
     connection.execute(None)
     geocode_address_task.delay(str(target.id))
@@ -321,20 +464,46 @@ def receive_after_update(mapper, connection, target) -> None:
 class BranchAddressAuditLog(Base):
     __tablename__ = "branch_address_audit_log"
 
-    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid
+    )
     address_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    dek_version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"), nullable=False)
+    dek_version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default=text("1"), nullable=False
+    )
     old_address: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     new_address: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    changed_by_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(INET, nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    request_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
-    changed_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=text("now()"), server_default=text("now()"), nullable=False)
+    request_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    changed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        default=text("now()"),
+        server_default=text("now()"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["changed_by", "org_id", "changed_by_type"],
+            [
+                "audit_principals.principal_id",
+                "audit_principals.org_id",
+                "audit_principals.principal_type",
+            ],
+            name="fk_branch_address_audit_audit_principal",
+            ondelete="RESTRICT",
+        ),
+    )
 
 
-# Alias for backward compatibility / tests
 AddressAuditLog = BranchAddressAuditLog
 
 
@@ -346,8 +515,15 @@ class AddressChangeOutbox(Base):
     org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     event_type: Mapped[str] = mapped_column(String(50), nullable=False)
     payload: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=text("clock_timestamp()"), server_default=text("clock_timestamp()"), nullable=False)
-    processed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        default=text("clock_timestamp()"),
+        server_default=text("clock_timestamp()"),
+        nullable=False,
+    )
+    processed_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
 
 class MemberAddress(Base, TimestampMixin):
@@ -376,13 +552,16 @@ class MemberAddress(Base, TimestampMixin):
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     geocoding_failed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    verified_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
-
-    coordinates: Mapped[Optional[Any]] = mapped_column(
-        coordinate_type, nullable=True
+    verified_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
     )
+
+    coordinates: Mapped[Optional[Any]] = mapped_column(coordinate_type, nullable=True)
     formatted_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    deleted_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
 
 class GooglePlacesCache(Base):
     __tablename__ = "google_places_cache"
@@ -393,8 +572,15 @@ class GooglePlacesCache(Base):
     formatted_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     place_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     place_types: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    verified_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=text("now()"), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=text("now()"), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=text("now()"), nullable=False)
-
+    verified_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), default=text("now()"), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), default=text("now()"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), default=text("now()"), nullable=False
+    )

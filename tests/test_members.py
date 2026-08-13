@@ -4,10 +4,9 @@ import uuid
 import asyncio
 from datetime import date
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from app.main import app
-from app.core.database import AsyncSessionLocal
+from app.core.database import update_session_context
 from app.core.security import create_access_token
 from app.models.organization import Organization
 from app.models.auth import Owner
@@ -16,81 +15,162 @@ from app.models.org_branch import OrgBranch
 from app.models.member import Member, MemberStatus
 from app.models.member_subscription_v2 import MemberSubscriptionV2, ModernSubscriptionStatus
 from app.models.membership_plan import MembershipPlan, DurationUnit, PlanStatus
-from conftest import cleanup_test_database_tables
 
-async def clear_members_test_data():
-    await cleanup_test_database_tables([
-        "members",
-        "subscription_members",
-        "member_subscriptions_v2",
-        "membership_plans",
-        "organization_counters",
-        "gyms",
-        "org_branch_state",
-        "org_branches",
-        "owners",
-        "organizations",
-    ])
 
-@pytest_asyncio.fixture(autouse=True)
-async def cleanup_database():
-    await clear_members_test_data()
-    yield
-    await clear_members_test_data()
+async def _set_owner_context(session, *, owner_id, org_id, request_suffix: str) -> None:
+    await update_session_context(
+        session,
+        principal_id=str(owner_id),
+        principal_type="owner",
+        org_id=str(org_id),
+        role="owner",
+        ip_address="127.0.0.1",
+        user_agent="pytest-members",
+        request_id=f"members-{request_suffix}-{uuid.uuid4()}",
+    )
+
 
 @pytest_asyncio.fixture
 async def client():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
 
+
 @pytest_asyncio.fixture
-async def test_data():
-    async with AsyncSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
-        org1_id = uuid.uuid4()
-        org2_id = uuid.uuid4()
-        org1 = Organization(id=org1_id, name="Test Org 1", slug="TEST-ORG-1", max_branches=5)
-        org2 = Organization(id=org2_id, name="Test Org 2", slug="TEST-ORG-2", max_branches=5)
-        session.add_all([org1, org2])
-        await session.flush()
+async def test_data(auth_db_session, admin_db_session):
+    """Create isolated two-tenant member data without cross-domain teardown."""
+    suffix = uuid.uuid4().hex[:10]
+    org1_id = uuid.uuid4()
+    org2_id = uuid.uuid4()
+    owner1_id = uuid.uuid4()
+    owner2_id = uuid.uuid4()
+    owner1_email = f"owner1+{suffix}@test.com"
+    owner2_email = f"owner2+{suffix}@test.com"
 
-        owner1_id = uuid.uuid4()
-        owner2_id = uuid.uuid4()
-        owner1 = Owner(id=owner1_id, org_id=org1_id, owner_name="Owner 1", email="owner1@test.com", hashed_password="hash", email_verified=True)
-        owner2 = Owner(id=owner2_id, org_id=org2_id, owner_name="Owner 2", email="owner2@test.com", hashed_password="hash", email_verified=True)
-        session.add_all([owner1, owner2])
-        await session.flush()
+    auth_db_session.add_all(
+        [
+            Organization(
+                id=org1_id,
+                name=f"Test Org 1 {suffix}",
+                slug=f"TEST-ORG-1-{suffix}",
+                max_branches=5,
+            ),
+            Organization(
+                id=org2_id,
+                name=f"Test Org 2 {suffix}",
+                slug=f"TEST-ORG-2-{suffix}",
+                max_branches=5,
+            ),
+        ]
+    )
+    # Organization/Owner ORM mappings do not encode their insert dependency.
+    # Let PostgreSQL remain the FK authority while ordering the unit of work.
+    await auth_db_session.flush()
+    auth_db_session.add_all(
+        [
+            Owner(
+                id=owner1_id,
+                org_id=org1_id,
+                owner_name="Owner 1",
+                email=owner1_email,
+                hashed_password="hash",
+                email_verified=True,
+            ),
+            Owner(
+                id=owner2_id,
+                org_id=org2_id,
+                owner_name="Owner 2",
+                email=owner2_email,
+                hashed_password="hash",
+                email_verified=True,
+            ),
+        ]
+    )
+    await auth_db_session.commit()
 
-        branch1_id = uuid.uuid4()
-        branch2_id = uuid.uuid4()
-        branch_other_id = uuid.uuid4()
-        branch1 = OrgBranch(id=branch1_id, org_id=org1_id, branch_name="Branch 1", branch_code="BR1", internal_slug="branch-1", created_by=owner1_id)
-        branch2 = OrgBranch(id=branch2_id, org_id=org1_id, branch_name="Branch 2", branch_code="BR2", internal_slug="branch-2", created_by=owner1_id)
-        branch_other = OrgBranch(id=branch_other_id, org_id=org2_id, branch_name="Other Branch", branch_code="OB1", internal_slug="other-branch", created_by=owner2_id)
-        session.add_all([branch1, branch2, branch_other])
-        await session.flush()
+    branch1_id = uuid.uuid4()
+    branch2_id = uuid.uuid4()
+    branch_other_id = uuid.uuid4()
 
-        gym1_id = uuid.uuid4()
-        gym1 = Gym(id=gym1_id, org_id=org1_id, name="Legacy Gym", gymu_id="LEGACY-001")
-        session.add(gym1)
-        await session.flush()
+    await _set_owner_context(
+        auth_db_session,
+        owner_id=owner1_id,
+        org_id=org1_id,
+        request_suffix=suffix,
+    )
+    auth_db_session.add_all(
+        [
+            OrgBranch(
+                id=branch1_id,
+                org_id=org1_id,
+                branch_name="Branch 1",
+                branch_code="BR1",
+                internal_slug=f"branch-1-{suffix}",
+                created_by=owner1_id,
+            ),
+            OrgBranch(
+                id=branch2_id,
+                org_id=org1_id,
+                branch_name="Branch 2",
+                branch_code="BR2",
+                internal_slug=f"branch-2-{suffix}",
+                created_by=owner1_id,
+            ),
+        ]
+    )
+    await auth_db_session.commit()
 
-        await session.commit()
+    await _set_owner_context(
+        auth_db_session,
+        owner_id=owner2_id,
+        org_id=org2_id,
+        request_suffix=suffix,
+    )
+    auth_db_session.add(
+        OrgBranch(
+            id=branch_other_id,
+            org_id=org2_id,
+            branch_name="Other Branch",
+            branch_code="OB1",
+            internal_slug=f"other-branch-{suffix}",
+            created_by=owner2_id,
+        )
+    )
+    await auth_db_session.commit()
 
-        return {
-            "org_id": org1_id,
-            "owner_id": owner1_id,
-            "branch_id": branch1_id,
-            "branch2_id": branch2_id,
-            "gym_id": gym1_id,
-            "org2_id": org2_id,
-            "owner2_id": owner2_id,
-            "branch_other_id": branch_other_id,
-        }
+    # Legacy Gym has no tenant-bootstrap API in this fixture. Seed only that
+    # legacy reference row through the administrative test identity; the
+    # endpoint itself still executes through the reduced application runtime.
+    gym1_id = uuid.uuid4()
+    admin_db_session.add(
+        Gym(
+            id=gym1_id,
+            org_id=org1_id,
+            name=f"Legacy Gym {suffix}",
+            gymu_id=f"LEGACY-{suffix}",
+        )
+    )
+    await admin_db_session.commit()
+
+    return {
+        "suffix": suffix,
+        "org_id": org1_id,
+        "owner_id": owner1_id,
+        "owner_email": owner1_email,
+        "branch_id": branch1_id,
+        "branch2_id": branch2_id,
+        "gym_id": gym1_id,
+        "org2_id": org2_id,
+        "owner2_id": owner2_id,
+        "owner2_email": owner2_email,
+        "branch_other_id": branch_other_id,
+    }
+
 
 def get_headers(owner_id, org_id, email="owner@test.com"):
     token = create_access_token(str(owner_id), str(org_id), email, role="owner")
     return {"Authorization": f"Bearer {token}", "X-Request-ID": str(uuid.uuid4()), "X-Forwarded-For": "127.0.0.1"}
+
 
 def valid_member_payload(test_data, **overrides):
     payload = {
@@ -103,6 +183,7 @@ def valid_member_payload(test_data, **overrides):
     }
     payload.update(overrides)
     return payload
+
 
 @pytest.mark.asyncio
 async def test_create_member_required_profile_data(client, test_data):
@@ -128,6 +209,7 @@ async def test_create_member_required_profile_data(client, test_data):
     assert data["member_display_code"] == "TESTOR-100"
     assert data["org_id"] == str(test_data["org_id"])
     assert data["gym_id"] is None
+
 
 @pytest.mark.asyncio
 async def test_member_numbers_are_org_scoped_and_sequential(client, test_data):
@@ -162,6 +244,7 @@ async def test_member_numbers_are_org_scoped_and_sequential(client, test_data):
     assert second.json()["data"]["member_number"] == 101
     assert other_org.json()["data"]["member_number"] == 100
 
+
 @pytest.mark.asyncio
 async def test_concurrent_member_number_generation_is_unique_and_sequential(client, test_data):
     headers = get_headers(test_data["owner_id"], test_data["org_id"])
@@ -181,6 +264,7 @@ async def test_concurrent_member_number_generation_is_unique_and_sequential(clie
     assert all(response.status_code == 200 for response in responses), [response.text for response in responses]
     numbers = sorted(response.json()["data"]["member_number"] for response in responses)
     assert numbers == list(range(100, 108))
+
 
 @pytest.mark.asyncio
 async def test_client_supplied_member_number_is_ignored_and_update_cannot_change_it(client, test_data):
@@ -202,35 +286,42 @@ async def test_client_supplied_member_number_is_ignored_and_update_cannot_change
     assert update_resp.status_code == 200, update_resp.text
     assert update_resp.json()["data"]["member_number"] == 100
 
+
 @pytest.mark.asyncio
-async def test_duplicate_member_number_same_org_is_rejected(test_data):
-    async with AsyncSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
-        member_a = Member(
-            id=uuid.uuid4(),
-            org_id=test_data["org_id"],
-            home_branch_id=test_data["branch_id"],
-            member_uid="DUP-A",
-            member_number=100,
-            name="Duplicate A",
-            phone="9876543420",
-            status=MemberStatus.active,
-            is_active=True,
-        )
-        member_b = Member(
-            id=uuid.uuid4(),
-            org_id=test_data["org_id"],
-            home_branch_id=test_data["branch_id"],
-            member_uid="DUP-B",
-            member_number=100,
-            name="Duplicate B",
-            phone="9876543421",
-            status=MemberStatus.active,
-            is_active=True,
-        )
-        session.add_all([member_a, member_b])
-        with pytest.raises(IntegrityError):
-            await session.commit()
+async def test_duplicate_member_number_same_org_is_rejected(test_data, db_session):
+    await _set_owner_context(
+        db_session,
+        owner_id=test_data["owner_id"],
+        org_id=test_data["org_id"],
+        request_suffix=test_data["suffix"],
+    )
+    member_a = Member(
+        id=uuid.uuid4(),
+        org_id=test_data["org_id"],
+        home_branch_id=test_data["branch_id"],
+        member_uid=f"DUP-A-{test_data['suffix']}",
+        member_number=100,
+        name="Duplicate A",
+        phone="9876543420",
+        status=MemberStatus.active,
+        is_active=True,
+    )
+    member_b = Member(
+        id=uuid.uuid4(),
+        org_id=test_data["org_id"],
+        home_branch_id=test_data["branch_id"],
+        member_uid=f"DUP-B-{test_data['suffix']}",
+        member_number=100,
+        name="Duplicate B",
+        phone="9876543421",
+        status=MemberStatus.active,
+        is_active=True,
+    )
+    db_session.add_all([member_a, member_b])
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -254,6 +345,7 @@ async def test_reject_missing_required_modern_create_fields(client, test_data, f
     )
     assert response.status_code == expected_status, response.text
 
+
 @pytest.mark.asyncio
 async def test_create_member_allows_missing_emergency_contact_no_2(client, test_data):
     headers = get_headers(test_data["owner_id"], test_data["org_id"])
@@ -268,6 +360,7 @@ async def test_create_member_allows_missing_emergency_contact_no_2(client, test_
     data = response.json()["data"]
     assert data["emergency_contact_name"] == "9876543211"
     assert data["emergency_contact_phone"] is None
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -293,6 +386,7 @@ async def test_reject_invalid_member_profile_values(client, test_data, field, va
     )
     assert response.status_code == expected_status, response.text
 
+
 @pytest.mark.asyncio
 async def test_accept_valid_blood_groups(client, test_data):
     headers = get_headers(test_data["owner_id"], test_data["org_id"])
@@ -312,15 +406,17 @@ async def test_accept_valid_blood_groups(client, test_data):
         assert response.status_code == 200, response.text
         assert response.json()["data"]["blood_group"] == blood_group
 
+
 @pytest.mark.asyncio
 async def test_reject_duplicate_active_phone(client, test_data):
     headers = get_headers(test_data["owner_id"], test_data["org_id"])
     payload = valid_member_payload(test_data, name="First", phone="9876543212")
     await client.post(f"/organizations/{test_data['org_id']}/members", json=payload, headers=headers)
-    
+
     payload_dup = valid_member_payload(test_data, name="Duplicate", phone="9876543212")
     response = await client.post(f"/organizations/{test_data['org_id']}/members", json=payload_dup, headers=headers)
     assert response.status_code == 400
+
 
 @pytest.mark.asyncio
 async def test_reject_cross_org_home_branch(client, test_data):
@@ -333,6 +429,7 @@ async def test_reject_cross_org_home_branch(client, test_data):
     )
     response = await client.post(f"/organizations/{test_data['org_id']}/members", json=payload, headers=headers)
     assert response.status_code == 400
+
 
 @pytest.mark.asyncio
 async def test_allow_same_phone_in_different_org(client, test_data):
@@ -354,6 +451,7 @@ async def test_allow_same_phone_in_different_org(client, test_data):
     assert response1.status_code == 200, response1.text
     assert response2.status_code == 200, response2.text
     assert response1.json()["data"]["org_id"] != response2.json()["data"]["org_id"]
+
 
 @pytest.mark.asyncio
 async def test_list_members_org_isolation_and_branch_filter(client, test_data):
@@ -384,7 +482,7 @@ async def test_list_members_org_isolation_and_branch_filter(client, test_data):
         ),
         headers=headers2,
     )
-    
+
     response = await client.get(f"/organizations/{test_data['org_id']}/members", headers=headers)
     assert response.status_code == 200
     assert len(response.json()["data"]) == 2
@@ -398,6 +496,7 @@ async def test_list_members_org_isolation_and_branch_filter(client, test_data):
     assert branch_response.status_code == 200
     assert len(branch_response.json()["data"]) == 1
     assert branch_response.json()["data"][0]["home_branch_id"] == str(test_data["branch_id"])
+
 
 @pytest.mark.asyncio
 async def test_member_search_by_number_name_phone_and_branch(client, test_data):
@@ -450,8 +549,9 @@ async def test_member_search_by_number_name_phone_and_branch(client, test_data):
     assert by_branch.status_code == 200
     assert [member["name"] for member in by_branch.json()["data"]] == ["Beta Lookup"]
 
+
 @pytest.mark.asyncio
-async def test_member_search_active_subscription_projection(client, test_data):
+async def test_member_search_active_subscription_projection(client, test_data, db_session):
     headers = get_headers(test_data["owner_id"], test_data["org_id"])
     create_resp = await client.post(
         f"/organizations/{test_data['org_id']}/members",
@@ -468,43 +568,47 @@ async def test_member_search_active_subscription_projection(client, test_data):
     assert unsubscribed_resp.status_code == 200, unsubscribed_resp.text
     unsubscribed_member = unsubscribed_resp.json()["data"]
 
-    async with AsyncSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
-        plan_id = uuid.uuid4()
-        subscription_id = uuid.uuid4()
-        plan = MembershipPlan(
-            id=plan_id,
+    await _set_owner_context(
+        db_session,
+        owner_id=test_data["owner_id"],
+        org_id=test_data["org_id"],
+        request_suffix=test_data["suffix"],
+    )
+    plan_id = uuid.uuid4()
+    subscription_id = uuid.uuid4()
+    plan = MembershipPlan(
+        id=plan_id,
+        org_id=test_data["org_id"],
+        plan_code=f"SEARCH-001-{test_data['suffix']}",
+        name="Search Plan",
+        price=1500,
+        currency="INR",
+        duration_value=1,
+        duration_unit=DurationUnit.months,
+        max_members=1,
+        status=PlanStatus.active,
+    )
+    db_session.add(plan)
+    await db_session.flush()
+    db_session.add(
+        MemberSubscriptionV2(
+            id=subscription_id,
             org_id=test_data["org_id"],
-            plan_code="SEARCH-001",
-            name="Search Plan",
-            price=1500,
-            currency="INR",
-            duration_value=1,
-            duration_unit=DurationUnit.months,
-            max_members=1,
-            status=PlanStatus.active,
+            branch_id=test_data["branch_id"],
+            membership_plan_id=plan_id,
+            primary_member_id=uuid.UUID(member["id"]),
+            subscription_code=f"SUB-SEARCH-001-{test_data['suffix']}",
+            start_date=date(2026, 6, 13),
+            end_date=date(2026, 7, 13),
+            status=ModernSubscriptionStatus.active,
+            price_snapshot=1500,
+            currency_code="INR",
+            duration_value_snapshot=1,
+            duration_unit_snapshot=DurationUnit.months,
+            max_members_snapshot=1,
         )
-        session.add(plan)
-        await session.flush()
-        session.add(
-            MemberSubscriptionV2(
-                id=subscription_id,
-                org_id=test_data["org_id"],
-                branch_id=test_data["branch_id"],
-                membership_plan_id=plan_id,
-                primary_member_id=uuid.UUID(member["id"]),
-                subscription_code="SUB-SEARCH-001",
-                start_date=date(2026, 6, 13),
-                end_date=date(2026, 7, 13),
-                status=ModernSubscriptionStatus.active,
-                price_snapshot=1500,
-                currency_code="INR",
-                duration_value_snapshot=1,
-                duration_unit_snapshot=DurationUnit.months,
-                max_members_snapshot=1,
-            )
-        )
-        await session.commit()
+    )
+    await db_session.commit()
 
     response = await client.get(
         f"/organizations/{test_data['org_id']}/members",
@@ -537,6 +641,7 @@ async def test_member_search_active_subscription_projection(client, test_data):
     assert available.status_code == 200
     assert all(member["id"] != result["id"] for member in available.json()["data"])
 
+
 @pytest.mark.asyncio
 async def test_get_member_by_id_enforces_org_isolation(client, test_data):
     headers1 = get_headers(test_data["owner_id"], test_data["org_id"], "owner1@test.com")
@@ -554,6 +659,7 @@ async def test_get_member_by_id_enforces_org_isolation(client, test_data):
     wrong_org_lookup = await client.get(f"/organizations/{test_data['org2_id']}/members/{member_id}", headers=headers2)
     assert wrong_org_lookup.status_code == 404
 
+
 @pytest.mark.asyncio
 async def test_update_member_allowed_fields_and_immutable_generated_fields(client, test_data):
     headers = get_headers(test_data["owner_id"], test_data["org_id"])
@@ -564,7 +670,7 @@ async def test_update_member_allowed_fields_and_immutable_generated_fields(clien
     )
     created = create_resp.json()["data"]
     member_id = created["id"]
-    
+
     response = await client.patch(
         f"/organizations/{test_data['org_id']}/members/{member_id}",
         json={"name": "New Name", "member_uid": "SHOULD-NOT-CHANGE", "qr_token": "SHOULD-NOT-CHANGE"},
@@ -575,6 +681,7 @@ async def test_update_member_allowed_fields_and_immutable_generated_fields(clien
     assert data["name"] == "New Name"
     assert data["member_uid"] == created["member_uid"]
     assert data["qr_token"] == created["qr_token"]
+
 
 @pytest.mark.asyncio
 async def test_update_member_validates_required_profile_fields(client, test_data):
@@ -600,6 +707,7 @@ async def test_update_member_validates_required_profile_fields(client, test_data
     )
     assert invalid_phone.status_code == 400
 
+
 @pytest.mark.asyncio
 async def test_soft_delete_member(client, test_data):
     headers = get_headers(test_data["owner_id"], test_data["org_id"])
@@ -609,12 +717,13 @@ async def test_soft_delete_member(client, test_data):
         headers=headers,
     )
     member_id = create_resp.json()["data"]["id"]
-    
+
     del_resp = await client.delete(f"/organizations/{test_data['org_id']}/members/{member_id}", headers=headers)
     assert del_resp.status_code == 200
-    
+
     list_resp = await client.get(f"/organizations/{test_data['org_id']}/members", headers=headers)
     assert len(list_resp.json()["data"]) == 0
+
 
 @pytest.mark.asyncio
 async def test_legacy_gym_member_create_still_sets_org(client, test_data):

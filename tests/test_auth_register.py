@@ -14,67 +14,88 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.main import app
-from app.models.auth import Owner
+from app.models.auth import Owner, RefreshToken
 from app.models.auth_session import AuthSession, AuthSessionFamily
 from app.models.gym import Gym
 from app.models.organization import Organization
-from app.core.database import AsyncSessionLocal, get_db
+from conftest import AdminTestSessionLocal
 from app.core.redis import init_redis, get_redis_utils
+
+_AUTH_TEST_EMAILS = {
+    "arjun@example.com",
+    "arjun2@example.com",
+    "duplicate@example.com",
+    "fail@example.com",
+    *(f"rate{i}@example.com" for i in range(6)),
+}
+_AUTH_TEST_ORG_NAMES = {
+    "Fit Core",
+    "Fail Gym",
+    "Gym A",
+    "Gym B",
+    *(f"Gym Rate Limit {i}" for i in range(6)),
+}
+
+
+async def _clear_auth_test_data() -> None:
+    """Delete only rows owned by this auth-test module, in explicit FK order."""
+    async with AdminTestSessionLocal() as session:
+        owner_rows = (
+            await session.execute(
+                select(Owner.id, Owner.org_id).where(Owner.email.in_(_AUTH_TEST_EMAILS))
+            )
+        ).all()
+        owner_ids = {row[0] for row in owner_rows}
+        org_ids = {row[1] for row in owner_rows}
+
+        # Also capture a transactionally orphaned tenant root if a failure occurred
+        # after organization creation but before owner creation. Normal auth failures
+        # roll back atomically; this is a defensive cleanup boundary for tests only.
+        org_ids.update(
+            (
+                await session.execute(
+                    select(Organization.id).where(
+                        Organization.name.in_(_AUTH_TEST_ORG_NAMES)
+                    )
+                )
+            ).scalars().all()
+        )
+
+        if owner_ids:
+            await session.execute(
+                delete(AuthSession).where(AuthSession.user_id.in_(owner_ids))
+            )
+            await session.execute(
+                delete(AuthSessionFamily).where(AuthSessionFamily.user_id.in_(owner_ids))
+            )
+            await session.execute(
+                delete(RefreshToken).where(RefreshToken.owner_id.in_(owner_ids))
+            )
+
+        if org_ids:
+            await session.execute(delete(Gym).where(Gym.org_id.in_(org_ids)))
+        if owner_ids:
+            await session.execute(delete(Owner).where(Owner.id.in_(owner_ids)))
+        if org_ids:
+            await session.execute(delete(Organization).where(Organization.id.in_(org_ids)))
+
+        await session.commit()
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def cleanup_database_and_redis():
-    """Flush Redis and clean up Postgres test data before and after each test."""
+    """Reset disposable auth state without borrowing application privileges."""
     from app.core.redis import init_redis, get_redis_utils, close_redis
+
     await close_redis()
     await init_redis()
     redis_utils = get_redis_utils()
     await redis_utils.client.flushdb()
-
-    async with AsyncSessionLocal() as session:
-        test_emails = [
-            "arjun@example.com",
-            "arjun2@example.com",
-            "duplicate@example.com",
-            "weak@example.com",
-            "rate@example.com",
-            "fail@example.com",
-            "login@example.com",
-            "locked@example.com"
-        ]
-        
-        # Get org_ids of owners we are about to delete
-        stmt = select(Owner.org_id).where(Owner.email.in_(test_emails))
-        res = await session.execute(stmt)
-        org_ids = res.scalars().all()
-        
-        # Delete auth sessions and families
-        await session.execute(delete(AuthSession).where(AuthSession.user_id.in_(
-            select(Owner.id).where(Owner.email.in_(test_emails))
-        )))
-        
-        await session.execute(delete(AuthSessionFamily).where(AuthSessionFamily.user_id.in_(
-            select(Owner.id).where(Owner.email.in_(test_emails))
-        )))
-        
-        # Delete owners
-        await session.execute(delete(Owner).where(Owner.email.in_(test_emails)))
-        
-        # Delete gyms
-        if org_ids:
-            await session.execute(delete(Gym).where(Gym.org_id.in_(org_ids)))
-            await session.execute(delete(Organization).where(Organization.id.in_(org_ids)))
-            
-        # Delete any dangling test organizations by name
-        stmt_orgs = select(Organization.id).where(Organization.name.in_(["Fit Core", "Gym A", "Gym B", "Gym C", "Gym Rate Limit", "Fail Gym"]))
-        res_orgs = await session.execute(stmt_orgs)
-        dangling_org_ids = res_orgs.scalars().all()
-        if dangling_org_ids:
-            await session.execute(delete(Gym).where(Gym.org_id.in_(dangling_org_ids)))
-            await session.execute(delete(Organization).where(Organization.id.in_(dangling_org_ids)))
-
-        await session.commit()
+    await _clear_auth_test_data()
 
     yield
+
+    await _clear_auth_test_data()
     await close_redis()
 
 @pytest_asyncio.fixture
@@ -241,7 +262,8 @@ async def test_verify_happy_path(client):
         assert "verify-success" in verify_resp.headers["location"]
         
         # Verify Postgres DB contains the newly created organization and owner
-        async with AsyncSessionLocal() as session:
+        # through the guarded administrative evidence identity, never app_runtime.
+        async with AdminTestSessionLocal() as session:
             stmt_owner = select(Owner).where(Owner.email == "arjun@example.com")
             res_owner = await session.execute(stmt_owner)
             owner = res_owner.scalar_one_or_none()
@@ -291,7 +313,7 @@ async def test_verify_db_failure_preserves_pending_signup_and_allows_retry(clien
     assert "verify-failed?reason=server_error" in failed_verify.headers["location"]
     assert await redis_utils.client.get(f"signup:pending:{token_hash}") is not None
 
-    async with AsyncSessionLocal() as session:
+    async with AdminTestSessionLocal() as session:
         owner_res = await session.execute(select(Owner).where(Owner.email == "fail@example.com"))
         assert owner_res.scalar_one_or_none() is None
         org_res = await session.execute(select(Organization).where(Organization.name == "Fail Gym"))

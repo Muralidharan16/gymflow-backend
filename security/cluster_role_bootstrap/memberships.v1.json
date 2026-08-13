@@ -1,0 +1,79 @@
+{
+  "contract_id": "doers-postgresql-cluster-memberships-v1",
+  "downgrade_policy": {
+    "bootstrap_memberships_survive_database_downgrade": true
+  },
+  "exact_rows": [
+    {
+      "admin_option": false,
+      "approved_grantor": "postgres",
+      "exact_row_count": 1,
+      "granted_role": "app_rls_executor",
+      "inherit_option": false,
+      "member_role": "migration_owner",
+      "reason": "Bounded owner context for approved RLS-table and partition operations.",
+      "set_option": true
+    },
+    {
+      "admin_option": false,
+      "approved_grantor": "postgres",
+      "exact_row_count": 1,
+      "granted_role": "app_security_owner",
+      "inherit_option": false,
+      "member_role": "migration_owner",
+      "reason": "Bounded owner context for approved security functions and app_secure views.",
+      "set_option": true
+    }
+  ],
+  "forbidden_migration_owner_memberships": [
+    "app_runtime",
+    "app_user",
+    "audit_writer",
+    "branch_admin",
+    "branch_viewer",
+    "lifecycle_maintenance_runtime",
+    "ops_support",
+    "readonly_analytics",
+    "worker_runtime"
+  ],
+  "schema_version": 1,
+  "source_evidence": {
+    "contract": {
+      "path": "v2-bootstrap-contract.md",
+      "sha256": "edcf8caa32a7ba85ec69adadb998f98695b3189fd96b8752799cedd49764f3a5"
+    },
+    "downgrade": {
+      "path": "v2-downgrade-dependencies.json",
+      "sha256": "6b960eafd9ec25a340cb825887c4ec17ad3b2c4f64b80460bf1ab1f55c046f0a"
+    },
+    "memberships": {
+      "path": "v2-membership-manifest.json",
+      "sha256": "aee8b7a99a78caee804fab49cb868f81a098daa5edd8d4622d8470055909d974"
+    },
+    "ownership": {
+      "path": "v2-ownership-manifest.json",
+      "sha256": "546e20cd0859c80e6f4a7a15d5a425ed86ad5d7333c39d1dddbef646d2d01327"
+    },
+    "roles": {
+      "path": "v2-role-matrices.json",
+      "sha256": "8cdd16d1a191a5601ab7124dd50c7c87d07cf018669fe38deebb7dbabcbf191d"
+    },
+    "semantic": {
+      "path": "v2-semantic-validation.json",
+      "sha256": "74ead098ea615c13916a5bd555ee4dd2d401e4ad54a77210245b8a24e4bdc065"
+    },
+    "settings": {
+      "path": "v2-role-setting-manifest.json",
+      "sha256": "38007e7b50e29feec729afa7b09f4f690d4996a5f83c2a88e77f94e42cfd0abb"
+    }
+  },
+  "validation": {
+    "admin_option_forbidden": true,
+    "all_other_migration_owner_memberships_forbidden": true,
+    "exact_cardinality_required": true,
+    "inherit_option_forbidden": true,
+    "parallel_rows_forbidden": true,
+    "set_option_required": true,
+    "wrong_grantor_forbidden": true
+  }
+}

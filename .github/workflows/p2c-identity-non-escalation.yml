@@ -1,0 +1,120 @@
+name: P2C Identity Non-Escalation Certification
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2c-identity-graph-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p2c-identity-graph:
+    name: PG16 complete role graph and adversarial non-escalation matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      P2C_DATABASE: gymflow_p2c_identity_graph
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p2c_identity_graph
+      DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:ci-migration-owner@127.0.0.1:5432/postgres
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+
+      - name: Compile and prove P2C static contracts
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          python -m py_compile \
+            app/core/cluster_identity_graph.py \
+            alembic/env.py \
+            scripts/verify_cluster_identity_graph.py \
+            tests/test_cluster_identity_graph.py
+          bash -n scripts/ci/certify_cluster_identity_graph_negative_paths.sh
+          python -m pytest --noconftest -q \
+            tests/test_cluster_role_contract_manifests.py \
+            tests/test_external_cluster_role_preflight.py \
+            tests/test_p2b_cluster_role_bootstrap.py \
+            tests/test_cluster_identity_graph.py
+          python -s scripts/verify_head_workflow_bootstrap.py
+
+      - name: Install PostgreSQL 16 extension packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+          test -f /usr/share/postgresql/16/extension/pg_partman.control
+
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision migration secret and disposable P2C database
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE DATABASE gymflow_p2c_identity_graph OWNER migration_owner;
+          SQL
+
+      - name: Prove P2B exact contract then P2C semantic graph
+        run: |
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py
+
+      - name: Exercise exact adversarial graph rejection and restoration
+        run: bash scripts/ci/certify_cluster_identity_graph_negative_paths.sh
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_p2c_identity_graph <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Re-prove identity graph immediately before Alembic HEAD
+        run: python -s scripts/verify_cluster_identity_graph.py
+
+      - name: Fresh Alembic lineage to HEAD through P2A plus P2C hard gates
+        run: |
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Prove Alembic preserved exact role and semantic identity contracts
+        run: |
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py

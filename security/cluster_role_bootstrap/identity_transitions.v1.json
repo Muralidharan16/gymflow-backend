@@ -1,0 +1,31 @@
+{
+  "contract_id": "doers-postgresql-identity-transitions-v1",
+  "schema_version": 1,
+  "migration_principal": "migration_owner",
+  "peer_isolation_principals": [
+    "app_runtime",
+    "auth_runtime",
+    "worker_runtime",
+    "lifecycle_maintenance_runtime",
+    "migration_owner"
+  ],
+  "migration_helpers": [
+    "app_rls_executor",
+    "app_security_owner"
+  ],
+  "ordinary_capabilities": [
+    "app_user",
+    "audit_writer",
+    "branch_admin",
+    "branch_viewer",
+    "ops_support",
+    "readonly_analytics"
+  ],
+  "rules": {
+    "classify_every_managed_role": true,
+    "forbid_unapproved_outgoing_membership_from_protected_roles": true,
+    "forbid_admin_option_on_protected_capability_grants": true,
+    "migration_helpers_are_non_delegable": true,
+    "prove_member_set_usage_semantics": true
+  }
+}
