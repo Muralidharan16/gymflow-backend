@@ -80,51 +80,13 @@ jobs:
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
           test -f /usr/share/postgresql/16/extension/pg_partman.control
 
-      - name: Bootstrap reduced cluster and deployment identities
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision branch-hours CI login and database overlay
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          CREATE ROLE migration_owner
-            LOGIN PASSWORD 'ci-migration-owner'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-
-          CREATE ROLE app_rls_executor
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_security_owner
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_runtime
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE auth_runtime
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE worker_runtime
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_user
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE audit_writer
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_admin
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_viewer
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE internal_billing_worker
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE ops_support
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE readonly_analytics
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
           CREATE ROLE test_runner
             LOGIN PASSWORD 'ci-test-runner'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
@@ -142,14 +104,6 @@ jobs:
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
             NOREPLICATION NOBYPASSRLS;
 
-          ALTER ROLE app_runtime SET statement_timeout = '5s';
-          ALTER ROLE app_runtime SET lock_timeout = '2s';
-          ALTER ROLE app_runtime SET row_security = 'on';
-          ALTER ROLE worker_runtime SET statement_timeout = '15s';
-          ALTER ROLE worker_runtime SET lock_timeout = '2s';
-          ALTER ROLE worker_runtime SET idle_in_transaction_session_timeout = '30s';
-          ALTER ROLE worker_runtime SET row_security = 'on';
-
           ALTER ROLE app_test_runtime SET row_security = 'on';
           ALTER ROLE app_test_runtime SET statement_timeout = '5s';
           ALTER ROLE app_test_runtime SET lock_timeout = '2s';
@@ -163,34 +117,20 @@ jobs:
           ALTER ROLE worker_test_runtime SET lock_timeout = '2s';
           ALTER ROLE worker_test_runtime SET idle_in_transaction_session_timeout = '30s';
 
-          GRANT app_rls_executor TO migration_owner
-            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT app_security_owner TO migration_owner
-            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-
-          GRANT app_runtime TO app_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO app_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-
-          GRANT auth_runtime TO auth_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_runtime TO auth_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO auth_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-
-          GRANT worker_runtime TO worker_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 
           CREATE DATABASE gymflow_migration_test OWNER migration_owner;
           CREATE DATABASE gymflow_test OWNER migration_owner;
-          GRANT CONNECT ON DATABASE gymflow_test
-            TO app_test_runtime, auth_test_runtime, worker_test_runtime;
+          GRANT CONNECT ON DATABASE gymflow_test TO app_test_runtime, auth_test_runtime, worker_test_runtime;
           SQL
 
-      - name: Provision external lifecycle maintenance capability
-        run: bash scripts/ci/provision_lifecycle_maintenance_role.sh
+      - name: Verify canonical external role contract
+        run: bash scripts/ci/verify_cluster_roles.sh
 
       - name: Provision infrastructure-owned extensions
         run: |
@@ -212,26 +152,18 @@ jobs:
 
       - name: Prove cluster-role separation before migration
         run: |
-          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U migration_owner -d gymflow_migration_test <<'SQL'
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_migration_test <<'SQL'
           DO $$
           DECLARE worker_record record;
           BEGIN
-            SELECT * INTO worker_record
-            FROM pg_catalog.pg_roles WHERE rolname = 'worker_runtime';
-            IF worker_record.rolcanlogin OR worker_record.rolsuper
-               OR worker_record.rolinherit OR worker_record.rolcreatedb
-               OR worker_record.rolcreaterole OR worker_record.rolreplication
-               OR worker_record.rolbypassrls THEN
+            SELECT * INTO worker_record FROM pg_catalog.pg_roles WHERE rolname = 'worker_runtime';
+            IF worker_record.rolcanlogin OR worker_record.rolsuper OR worker_record.rolinherit OR worker_record.rolcreatedb OR worker_record.rolcreaterole OR worker_record.rolreplication OR worker_record.rolbypassrls THEN
               RAISE EXCEPTION 'worker_runtime attributes violate the production contract';
             END IF;
-            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') THEN
+            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') THEN
               RAISE EXCEPTION 'migration_owner may access worker_runtime';
             END IF;
-            IF pg_catalog.pg_has_role('worker_test_runtime', 'app_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role('worker_test_runtime', 'auth_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role('worker_test_runtime', 'app_user', 'MEMBER') THEN
+            IF pg_catalog.pg_has_role('worker_test_runtime', 'app_runtime', 'MEMBER') OR pg_catalog.pg_has_role('worker_test_runtime', 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role('worker_test_runtime', 'app_user', 'MEMBER') THEN
               RAISE EXCEPTION 'worker login inherited API/auth privileges';
             END IF;
           END
@@ -248,22 +180,13 @@ jobs:
 
       - name: Prove final API and worker privilege posture
         run: |
-          PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
+          PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
           DO $$
           BEGIN
-            IF pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'SELECT')
-               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'INSERT')
-               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'UPDATE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'DELETE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'TRUNCATE') THEN
+            IF pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'SELECT') OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'INSERT') OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'UPDATE') OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'TRUNCATE') THEN
               RAISE EXCEPTION 'API runtime has direct outbox table capability';
             END IF;
-            IF NOT pg_catalog.has_function_privilege(
-                current_user,
-                'public.enqueue_branch_hours_rebuild(uuid,uuid)',
-                'EXECUTE'
-            ) THEN
+            IF NOT pg_catalog.has_function_privilege(current_user, 'public.enqueue_branch_hours_rebuild(uuid,uuid)', 'EXECUTE') THEN
               RAISE EXCEPTION 'API runtime lacks bounded branch-hours enqueue function';
             END IF;
             IF pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN
@@ -273,49 +196,30 @@ jobs:
           $$;
           SQL
 
-          PGPASSWORD="$WORKER_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U worker_test_runtime -d gymflow_test <<'SQL'
+          PGPASSWORD="$WORKER_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U worker_test_runtime -d gymflow_test <<'SQL'
           DO $$
           BEGIN
-            IF pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT')
-               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'UPDATE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'DELETE') THEN
+            IF pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT') OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'UPDATE') OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'DELETE') THEN
               RAISE EXCEPTION 'worker has tenant-root or DDL capability';
             END IF;
             IF NOT pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'SELECT') THEN
               RAISE EXCEPTION 'worker lacks queue SELECT';
             END IF;
-            IF pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'INSERT')
-               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'DELETE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'TRUNCATE') THEN
+            IF pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'INSERT') OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'TRUNCATE') THEN
               RAISE EXCEPTION 'worker has direct/destructive queue capability';
             END IF;
-            IF NOT pg_catalog.has_column_privilege(
-                current_user, 'public.transactional_outbox', 'leased_by', 'UPDATE'
-            ) OR NOT pg_catalog.has_column_privilege(
-                current_user, 'public.transactional_outbox', 'processed_at', 'UPDATE'
-            ) THEN
+            IF NOT pg_catalog.has_column_privilege(current_user, 'public.transactional_outbox', 'leased_by', 'UPDATE') OR NOT pg_catalog.has_column_privilege(current_user, 'public.transactional_outbox', 'processed_at', 'UPDATE') THEN
               RAISE EXCEPTION 'worker lacks bounded lease/completion columns';
             END IF;
-            IF pg_catalog.has_column_privilege(
-                current_user, 'public.transactional_outbox', 'tenant_id', 'UPDATE'
-            ) OR pg_catalog.has_column_privilege(
-                current_user, 'public.transactional_outbox', 'payload', 'UPDATE'
-            ) THEN
+            IF pg_catalog.has_column_privilege(current_user, 'public.transactional_outbox', 'tenant_id', 'UPDATE') OR pg_catalog.has_column_privilege(current_user, 'public.transactional_outbox', 'payload', 'UPDATE') THEN
               RAISE EXCEPTION 'worker may mutate immutable queue identity/payload';
             END IF;
-            IF NOT pg_catalog.has_function_privilege(
-                current_user,
-                'public.enqueue_branch_hours_child(uuid,uuid,uuid,timestamptz,text)',
-                'EXECUTE'
-            ) THEN
+            IF NOT pg_catalog.has_function_privilege(current_user, 'public.enqueue_branch_hours_child(uuid,uuid,uuid,timestamptz,text)', 'EXECUTE') THEN
               RAISE EXCEPTION 'worker lacks bounded child enqueue function';
             END IF;
           END
           $$;
 
-          -- Source RLS must fail closed before a live lease context exists.
           SELECT pg_catalog.set_config('app.current_org_id', gen_random_uuid()::text, true);
           SELECT pg_catalog.set_config('app.internal_maintenance', 'branch_hours_projection', true);
           SELECT pg_catalog.set_config('app.worker_id', gen_random_uuid()::text, true);
@@ -332,31 +236,13 @@ jobs:
 
       - name: Compile branch-hours production surfaces
         run: |
-          python -m py_compile \
-            app/core/config.py \
-            app/core/database.py \
-            app/core/celery_app.py \
-            app/models/outbox.py \
-            app/models/branch_operating_hours.py \
-            app/routers/branch_operating_hours.py \
-            app/tasks/outbox_poller.py \
-            app/tasks/branch_hours_projection.py \
-            alembic/versions/e7f8091a2b3c_harden_branch_hours_outbox_worker.py \
-            alembic/versions/f8091a2b3c4d_bound_branch_hours_enqueue_source_read.py \
-            alembic/versions/091a2b3c4d5e_authorize_branch_hours_enqueue_callers.py \
-            alembic/versions/0a1b2c3d4e5f_bind_branch_hours_worker_to_leases.py \
-            alembic/versions/1b2c3d4e5f60_enforce_branch_hours_outbox_state.py
+          python -m py_compile app/core/config.py app/core/database.py app/core/celery_app.py app/models/outbox.py app/models/branch_operating_hours.py app/routers/branch_operating_hours.py app/tasks/outbox_poller.py app/tasks/branch_hours_projection.py alembic/versions/e7f8091a2b3c_harden_branch_hours_outbox_worker.py alembic/versions/f8091a2b3c4d_bound_branch_hours_enqueue_source_read.py alembic/versions/091a2b3c4d5e_authorize_branch_hours_enqueue_callers.py alembic/versions/0a1b2c3d4e5f_bind_branch_hours_worker_to_leases.py alembic/versions/1b2c3d4e5f60_enforce_branch_hours_outbox_state.py
 
       - name: Run architecture boundary contracts
         env:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
         run: |
-          python -m pytest --noconftest -q \
-            tests/test_celery_single_app_boundary.py \
-            tests/test_branch_hours_durable_worker_boundary.py \
-            tests/test_worker_database_identity_boundary.py \
-            tests/test_cluster_role_contract_manifests.py
+          python -m pytest --noconftest -q tests/test_celery_single_app_boundary.py tests/test_branch_hours_durable_worker_boundary.py tests/test_worker_database_identity_boundary.py tests/test_cluster_role_contract_manifests.py
 
       - name: Run branch-hours API regression against reduced identities
-        run: |
-          python -m pytest -q --maxfail=1 tests/test_branch_operating_hours_api.py
+        run: python -m pytest -q --maxfail=1 tests/test_branch_operating_hours_api.py

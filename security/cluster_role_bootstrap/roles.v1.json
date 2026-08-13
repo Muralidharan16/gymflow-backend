@@ -182,6 +182,14 @@
       "role": "worker_runtime"
     }
   },
+  "retired_roles": {
+    "internal_billing_worker": {
+      "decision": "Retired in P2B after repository-wide usage tracing found no active application, migration, grant, ownership, or deployment binding. Historical inventory remains evidence only; current clusters must remove the role through the audited infrastructure change process before HEAD verification can pass.",
+      "expected_presence": false,
+      "reason": "Obsolete Platform Billing capability from historical inventory; superseded by current isolated billing/runtime boundaries.",
+      "role": "internal_billing_worker"
+    }
+  },
   "schema_version": 1,
   "source_evidence": {
     "contract": {

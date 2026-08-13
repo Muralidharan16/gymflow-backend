@@ -67,50 +67,13 @@ jobs:
           pg_config --version
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
 
-      - name: Bootstrap production-shaped identities
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision compensation CI login and database overlay
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          CREATE ROLE migration_owner
-            LOGIN PASSWORD 'ci-migration-owner'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_rls_executor
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_security_owner
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_runtime
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE auth_runtime
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE worker_runtime
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_user
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE audit_writer
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_admin
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_viewer
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE internal_billing_worker
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE ops_support
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE readonly_analytics
-            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
           CREATE ROLE test_runner
             LOGIN PASSWORD 'ci-test-runner'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
@@ -128,21 +91,9 @@ jobs:
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
             NOREPLICATION NOBYPASSRLS;
 
-          ALTER ROLE app_runtime SET statement_timeout = '5s';
-          ALTER ROLE app_runtime SET lock_timeout = '2s';
-          ALTER ROLE app_runtime SET row_security = 'on';
-          ALTER ROLE worker_runtime SET statement_timeout = '15s';
-          ALTER ROLE worker_runtime SET lock_timeout = '2s';
-          ALTER ROLE worker_runtime SET idle_in_transaction_session_timeout = '30s';
-          ALTER ROLE worker_runtime SET row_security = 'on';
           ALTER ROLE app_test_runtime SET row_security = 'on';
           ALTER ROLE auth_test_runtime SET row_security = 'on';
           ALTER ROLE worker_test_runtime SET row_security = 'on';
-
-          GRANT app_rls_executor TO migration_owner
-            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT app_security_owner TO migration_owner
-            WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
 
           GRANT app_runtime TO app_test_runtime
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
@@ -162,8 +113,8 @@ jobs:
             TO app_test_runtime, auth_test_runtime, worker_test_runtime;
           SQL
 
-      - name: Provision external lifecycle maintenance capability
-        run: bash scripts/ci/provision_lifecycle_maintenance_role.sh
+      - name: Verify canonical external role contract
+        run: bash scripts/ci/verify_cluster_roles.sh
 
       - name: Provision infrastructure-owned extensions
         run: |

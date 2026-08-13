@@ -28,7 +28,7 @@ from app.core.cluster_role_contract import (
 
 @dataclass(frozen=True)
 class ExternalRoleCatalog:
-    """Normalized live catalog evidence consumed by the preflight evaluator."""
+    """Normalized live catalog evidence consumed by the contract evaluators."""
 
     current_user: str
     session_user: str
@@ -54,14 +54,22 @@ def _setting_pair(raw_setting: object) -> tuple[str, str]:
     return key, value
 
 
+def _retired_role_names(contract: ContractBundle) -> set[str]:
+    retired = contract.roles.get("retired_roles", {})
+    if not isinstance(retired, Mapping):
+        raise RuntimeError("roles.retired_roles must be an object")
+    return {str(role) for role in retired}
+
+
 def capture_external_role_catalog(
     connection: Connection,
     bundle: ContractBundle | None = None,
 ) -> ExternalRoleCatalog:
-    """Capture the managed role surface without mutating cluster or database state."""
+    """Capture the governed role surface without mutating cluster/database state."""
 
     contract = bundle or load_contract_bundle()
     managed_roles = set(contract.roles["managed_roles"])
+    governed_roles = managed_roles | _retired_role_names(contract)
 
     identity = connection.execute(
         text(
@@ -88,7 +96,7 @@ def capture_external_role_catalog(
         ORDER BY rolname
         """,
     )
-    role_rows = [row for row in role_rows if row.get("role") in managed_roles]
+    role_rows = [row for row in role_rows if row.get("role") in governed_roles]
 
     membership_rows = _mapping_rows(
         connection,
@@ -177,11 +185,11 @@ def capture_external_role_catalog(
     )
 
 
-def evaluate_external_role_catalog(
+def evaluate_cluster_role_catalog(
     catalog: ExternalRoleCatalog,
     bundle: ContractBundle | None = None,
 ) -> tuple[ContractViolation, ...]:
-    """Evaluate live pre-Alembic evidence against the canonical manifests."""
+    """Evaluate governed cluster roles without imposing an Alembic login identity."""
 
     contract = bundle or load_contract_bundle()
     violations = list(
@@ -191,6 +199,51 @@ def evaluate_external_role_catalog(
             require_complete_ownership=False,
         )
     )
+
+    retired = _retired_role_names(contract)
+    for row in catalog.snapshot.get("roles", []):
+        if isinstance(row, Mapping) and row.get("role") in retired:
+            role = str(row["role"])
+            violations.append(
+                ContractViolation(
+                    code="role.retired_present",
+                    subject=role,
+                    message="Retired PostgreSQL role must be absent from the governed cluster.",
+                )
+            )
+
+    for row in catalog.database_setting_overrides:
+        violations.append(
+            ContractViolation(
+                code="preflight.database_role_setting",
+                subject=f"{row['role']}@{row['database']}",
+                message=(
+                    "Database-specific managed-role settings are forbidden; "
+                    f"found {row['setting']!r}."
+                ),
+            )
+        )
+
+    for row in catalog.duplicate_global_settings:
+        violations.append(
+            ContractViolation(
+                code="preflight.duplicate_role_setting",
+                subject=f"{row['role']}.{row['setting']}",
+                message="Managed role setting appears more than once.",
+            )
+        )
+
+    return tuple(sorted(violations))
+
+
+def evaluate_external_role_catalog(
+    catalog: ExternalRoleCatalog,
+    bundle: ContractBundle | None = None,
+) -> tuple[ContractViolation, ...]:
+    """Evaluate the governed contract plus Alembic's exact reduced login identity."""
+
+    contract = bundle or load_contract_bundle()
+    violations = list(evaluate_cluster_role_catalog(catalog, contract))
 
     if catalog.current_user != "migration_owner":
         violations.append(
@@ -213,27 +266,6 @@ def evaluate_external_role_catalog(
                     "Alembic HEAD session_user must be migration_owner; "
                     f"found {catalog.session_user!r}."
                 ),
-            )
-        )
-
-    for row in catalog.database_setting_overrides:
-        violations.append(
-            ContractViolation(
-                code="preflight.database_role_setting",
-                subject=f"{row['role']}@{row['database']}",
-                message=(
-                    "Database-specific managed-role settings are forbidden; "
-                    f"found {row['setting']!r}."
-                ),
-            )
-        )
-
-    for row in catalog.duplicate_global_settings:
-        violations.append(
-            ContractViolation(
-                code="preflight.duplicate_role_setting",
-                subject=f"{row['role']}.{row['setting']}",
-                message="Managed role setting appears more than once.",
             )
         )
 
@@ -265,8 +297,6 @@ def assert_external_role_preflight(
         catalog = capture_external_role_catalog(connection, contract)
         violations = evaluate_external_role_catalog(catalog, contract)
     finally:
-        # Catalog SELECTs trigger SQLAlchemy autobegin. Rollback is mandatory so
-        # the guard is transaction-neutral and cannot leak state into Alembic.
         if connection.in_transaction():
             connection.rollback()
 

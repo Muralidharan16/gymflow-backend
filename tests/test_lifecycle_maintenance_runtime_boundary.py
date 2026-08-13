@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.core.cluster_role_bootstrap import render_fresh_cluster_bootstrap
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "app/core/config.py"
@@ -10,7 +12,6 @@ DATABASE = ROOT / "app/core/database.py"
 TASKS = ROOT / "app/tasks/branch_lifecycle_sweeps.py"
 ROUTER = ROOT / "app/routers/branch_lifecycle.py"
 MIGRATION = ROOT / "alembic/versions/b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py"
-BOOTSTRAP = ROOT / "scripts/ci/provision_lifecycle_maintenance_role.sh"
 
 API_STATE_COLUMNS = {
     "branch_status",
@@ -74,13 +75,7 @@ def _function(path: Path, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
 
 
 def _executed_sql_fragments(path: Path) -> list[str]:
-    """Return string fragments that are actual arguments to SQL execute calls.
-
-    Module/function docstrings, comments and error messages are intentionally
-    excluded. ``bind.execute(sa.text(...))``, ``op.execute(...)`` and f-string
-    execute arguments are all covered by walking only the execute-call argument
-    subtree.
-    """
+    """Return string fragments that are actual arguments to SQL execute calls."""
     fragments: list[str] = []
     for node in ast.walk(_tree(path)):
         if not isinstance(node, ast.Call) or not node.args:
@@ -184,9 +179,6 @@ def test_revision_91_is_single_head_and_never_manages_cluster_roles() -> None:
     assert "CASCADE" not in executed_sql
     assert "lifecycle_maintenance_runtime" in source
 
-    # Reading rolbypassrls from pg_catalog is a required fail-closed preflight;
-    # role mutation is what is forbidden. Alembic must never manufacture a
-    # BYPASSRLS capability to make maintenance work.
     assert "ROLBYPASSRLS" in executed_sql
     assert "ALTER ROLE" not in executed_sql
 
@@ -221,14 +213,25 @@ def test_maintenance_rls_is_context_gated_and_force_rls_is_preconditioned() -> N
     assert "must retain ENABLE + FORCE RLS" in source
 
 
-def test_ci_bootstrap_defines_only_safe_maintenance_capability() -> None:
-    source = _source(BOOTSTRAP)
+def test_canonical_bootstrap_defines_only_safe_maintenance_capability() -> None:
+    sql = render_fresh_cluster_bootstrap()
 
-    assert "CREATE ROLE lifecycle_maintenance_runtime" in source
-    assert "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT" in source
-    assert "NOREPLICATION NOBYPASSRLS" in source
-    assert "statement_timeout = '15s'" in source
-    assert "lock_timeout = '2s'" in source
-    assert "idle_in_transaction_session_timeout = '30s'" in source
-    assert "row_security = 'on'" in source
-    assert "migration_owner may access lifecycle maintenance capability" in source
+    create_line = next(
+        line for line in sql.splitlines()
+        if line.startswith("CREATE ROLE lifecycle_maintenance_runtime ")
+    )
+    assert "NOLOGIN" in create_line
+    assert "NOSUPERUSER" in create_line
+    assert "NOCREATEDB" in create_line
+    assert "NOCREATEROLE" in create_line
+    assert "NOINHERIT" in create_line
+    assert "NOREPLICATION" in create_line
+    assert "NOBYPASSRLS" in create_line
+    assert "ALTER ROLE lifecycle_maintenance_runtime SET statement_timeout = '15s';" in sql
+    assert "ALTER ROLE lifecycle_maintenance_runtime SET lock_timeout = '2s';" in sql
+    assert (
+        "ALTER ROLE lifecycle_maintenance_runtime SET "
+        "idle_in_transaction_session_timeout = '30s';"
+    ) in sql
+    assert "ALTER ROLE lifecycle_maintenance_runtime SET row_security = 'on';" in sql
+    assert "GRANT lifecycle_maintenance_runtime TO migration_owner" not in sql

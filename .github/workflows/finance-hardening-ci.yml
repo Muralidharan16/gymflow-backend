@@ -55,71 +55,32 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
-
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-test.txt
-
       - name: Install PostgreSQL 16 extension packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            postgresql-16 \
-            postgresql-client-16 \
-            postgresql-contrib \
-            postgresql-16-partman \
-            postgresql-16-postgis-3
+          sudo apt-get install -y postgresql-16 postgresql-client-16 postgresql-contrib postgresql-16-partman postgresql-16-postgis-3
           sudo systemctl start postgresql
           pg_config --version
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
           test -f /usr/share/postgresql/16/extension/pg_partman.control
-
-      - name: Bootstrap migration and isolated runtime identities
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+      - name: Provision Finance CI login and database overlay
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          CREATE ROLE migration_owner
-            LOGIN PASSWORD 'ci-migration-owner'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-
-          CREATE ROLE app_rls_executor NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_security_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE auth_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE worker_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_user NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE audit_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_viewer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE internal_billing_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE ops_support NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE readonly_analytics NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
           CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-
-          CREATE ROLE finance_test_runtime
-            LOGIN PASSWORD 'ci-finance-runtime'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-
-          CREATE ROLE synthetic_test_runtime
-            LOGIN PASSWORD 'ci-synthetic-runtime'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-
-          ALTER ROLE app_runtime SET statement_timeout = '5s';
-          ALTER ROLE app_runtime SET lock_timeout = '2s';
-          ALTER ROLE app_runtime SET row_security = 'on';
-          ALTER ROLE worker_runtime SET statement_timeout = '15s';
-          ALTER ROLE worker_runtime SET lock_timeout = '2s';
-          ALTER ROLE worker_runtime SET idle_in_transaction_session_timeout = '30s';
-          ALTER ROLE worker_runtime SET row_security = 'on';
+          CREATE ROLE finance_test_runtime LOGIN PASSWORD 'ci-finance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE synthetic_test_runtime LOGIN PASSWORD 'ci-synthetic-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           ALTER ROLE finance_test_runtime SET row_security = 'on';
           ALTER ROLE finance_test_runtime SET statement_timeout = '10s';
           ALTER ROLE finance_test_runtime SET lock_timeout = '3s';
@@ -128,21 +89,15 @@ jobs:
           ALTER ROLE synthetic_test_runtime SET statement_timeout = '10s';
           ALTER ROLE synthetic_test_runtime SET lock_timeout = '3s';
           ALTER ROLE synthetic_test_runtime SET idle_in_transaction_session_timeout = '15s';
-
-          GRANT app_rls_executor TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT app_security_owner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
           GRANT app_runtime TO finance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO finance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT test_runner TO synthetic_test_runtime WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-
           CREATE DATABASE gymflow_finance_test_ci OWNER migration_owner;
           GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO finance_test_runtime;
           GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO synthetic_test_runtime;
           SQL
-
-      - name: Provision external lifecycle maintenance capability
-        run: bash scripts/ci/provision_lifecycle_maintenance_role.sh
-
+      - name: Verify canonical external role contract
+        run: bash scripts/ci/verify_cluster_roles.sh
       - name: Prove worker role is isolated from Finance identities
         run: |
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d postgres <<'SQL'
@@ -150,22 +105,11 @@ jobs:
           DECLARE worker_record record;
           BEGIN
             SELECT * INTO worker_record FROM pg_catalog.pg_roles WHERE rolname = 'worker_runtime';
-            IF NOT FOUND OR worker_record.rolcanlogin OR worker_record.rolsuper
-               OR worker_record.rolcreatedb OR worker_record.rolcreaterole
-               OR worker_record.rolinherit OR worker_record.rolreplication
-               OR worker_record.rolbypassrls THEN
-              RAISE EXCEPTION 'worker_runtime posture is unsafe';
-            END IF;
-            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET')
-               OR pg_catalog.pg_has_role('finance_test_runtime', 'worker_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role('synthetic_test_runtime', 'worker_runtime', 'MEMBER') THEN
-              RAISE EXCEPTION 'worker_runtime leaked into migration/Finance test identities';
-            END IF;
+            IF NOT FOUND OR worker_record.rolcanlogin OR worker_record.rolsuper OR worker_record.rolcreatedb OR worker_record.rolcreaterole OR worker_record.rolinherit OR worker_record.rolreplication OR worker_record.rolbypassrls THEN RAISE EXCEPTION 'worker_runtime posture is unsafe'; END IF;
+            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') OR pg_catalog.pg_has_role('finance_test_runtime', 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role('synthetic_test_runtime', 'worker_runtime', 'MEMBER') THEN RAISE EXCEPTION 'worker_runtime leaked into migration/Finance test identities'; END IF;
           END
           $$;
           SQL
-
       - name: Provision infrastructure-owned extensions
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_finance_test_ci <<'SQL'
@@ -181,37 +125,22 @@ jobs:
           GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
           GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
           SQL
-
       - name: Fresh Alembic lineage on isolated Finance Core database
         env:
           DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_finance_test_ci
-        run: |
-          python -s -m alembic -c alembic.ini upgrade head
-
+        run: python -s -m alembic -c alembic.ini upgrade head
       - name: Grant bounded test-only runtime surfaces
         run: |
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_finance_test_ci <<'SQL'
           GRANT USAGE ON SCHEMA finance TO finance_test_runtime;
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA finance TO finance_test_runtime;
           GRANT SELECT ON TABLE public.organizations TO finance_test_runtime;
-
           GRANT SELECT, INSERT, UPDATE ON TABLE public.organizations TO synthetic_test_runtime;
           GRANT SELECT, INSERT ON TABLE public.organization_creation_idempotency TO synthetic_test_runtime;
-          GRANT SELECT ON TABLE
-            public.owners,
-            public.gyms,
-            public.organization_users,
-            public.organization_members,
-            public.org_branches
-          TO synthetic_test_runtime;
+          GRANT SELECT ON TABLE public.owners, public.gyms, public.organization_users, public.organization_members, public.org_branches TO synthetic_test_runtime;
           GRANT USAGE ON SCHEMA finance TO synthetic_test_runtime;
-          GRANT SELECT ON TABLE
-            finance.billing_parties,
-            finance.invoices,
-            finance.payments
-          TO synthetic_test_runtime;
+          GRANT SELECT ON TABLE finance.billing_parties, finance.invoices, finance.payments TO synthetic_test_runtime;
           SQL
-
       - name: Prove isolated Finance Core runtime posture
         run: |
           PGPASSWORD="$FINANCE_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U finance_test_runtime -d gymflow_finance_test_ci <<'SQL'
@@ -219,131 +148,35 @@ jobs:
           DECLARE runtime_record record;
           BEGIN
             SELECT * INTO runtime_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
-            IF current_user <> 'finance_test_runtime' OR current_database() <> 'gymflow_finance_test_ci' THEN
-              RAISE EXCEPTION 'unexpected Finance Core runtime identity/database';
-            END IF;
-            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb
-               OR runtime_record.rolcreaterole OR runtime_record.rolinherit
-               OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN
-              RAISE EXCEPTION 'Finance Core runtime role attributes are unsafe';
-            END IF;
-            IF EXISTS (
-              SELECT 1 FROM pg_catalog.pg_database
-              WHERE datname = current_database() AND pg_catalog.pg_get_userbyid(datdba) = current_user
-            ) THEN
-              RAISE EXCEPTION 'Finance Core runtime owns its database';
-            END IF;
-            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE')
-               OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE')
-               OR pg_catalog.has_schema_privilege(current_user, 'finance', 'CREATE') THEN
-              RAISE EXCEPTION 'Finance Core runtime has object-creation capability';
-            END IF;
-            IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'SET')
-               OR pg_catalog.pg_has_role(current_user, 'app_user', 'SET')
-               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'test_runner', 'MEMBER') THEN
-              RAISE EXCEPTION 'Finance Core runtime has an invalid application/auth/worker/test role edge';
-            END IF;
-            IF NOT pg_catalog.has_schema_privilege(current_user, 'finance', 'USAGE') THEN
-              RAISE EXCEPTION 'Finance Core runtime lacks finance schema USAGE';
-            END IF;
-            IF EXISTS (
-              SELECT 1
-              FROM pg_catalog.pg_class AS relation_data
-              JOIN pg_catalog.pg_namespace AS namespace_data ON namespace_data.oid = relation_data.relnamespace
-              WHERE namespace_data.nspname = 'finance'
-                AND relation_data.relkind IN ('r', 'p')
-                AND (
-                  NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'SELECT')
-                  OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'INSERT')
-                  OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'UPDATE')
-                  OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'DELETE')
-                )
-            ) THEN
-              RAISE EXCEPTION 'Finance Core runtime DML surface is incomplete';
-            END IF;
-            IF EXISTS (
-              SELECT 1
-              FROM pg_catalog.pg_class AS relation_data
-              JOIN pg_catalog.pg_namespace AS namespace_data ON namespace_data.oid = relation_data.relnamespace
-              WHERE namespace_data.nspname = 'finance'
-                AND relation_data.relkind IN ('r', 'p')
-                AND pg_catalog.has_table_privilege(current_user, relation_data.oid, 'TRUNCATE')
-            ) THEN
-              RAISE EXCEPTION 'Finance Core runtime may TRUNCATE finance tables';
-            END IF;
+            IF current_user <> 'finance_test_runtime' OR current_database() <> 'gymflow_finance_test_ci' THEN RAISE EXCEPTION 'unexpected Finance Core runtime identity/database'; END IF;
+            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb OR runtime_record.rolcreaterole OR runtime_record.rolinherit OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN RAISE EXCEPTION 'Finance Core runtime role attributes are unsafe'; END IF;
+            IF EXISTS (SELECT 1 FROM pg_catalog.pg_database WHERE datname = current_database() AND pg_catalog.pg_get_userbyid(datdba) = current_user) THEN RAISE EXCEPTION 'Finance Core runtime owns its database'; END IF;
+            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE') OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') OR pg_catalog.has_schema_privilege(current_user, 'finance', 'CREATE') THEN RAISE EXCEPTION 'Finance Core runtime has object-creation capability'; END IF;
+            IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'app_user', 'SET') OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'test_runner', 'MEMBER') THEN RAISE EXCEPTION 'Finance Core runtime has an invalid application/auth/worker/test role edge'; END IF;
+            IF NOT pg_catalog.has_schema_privilege(current_user, 'finance', 'USAGE') THEN RAISE EXCEPTION 'Finance Core runtime lacks finance schema USAGE'; END IF;
+            IF EXISTS (SELECT 1 FROM pg_catalog.pg_class AS relation_data JOIN pg_catalog.pg_namespace AS namespace_data ON namespace_data.oid = relation_data.relnamespace WHERE namespace_data.nspname = 'finance' AND relation_data.relkind IN ('r', 'p') AND (NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'SELECT') OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'INSERT') OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'UPDATE') OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'DELETE'))) THEN RAISE EXCEPTION 'Finance Core runtime DML surface is incomplete'; END IF;
+            IF EXISTS (SELECT 1 FROM pg_catalog.pg_class AS relation_data JOIN pg_catalog.pg_namespace AS namespace_data ON namespace_data.oid = relation_data.relnamespace WHERE namespace_data.nspname = 'finance' AND relation_data.relkind IN ('r', 'p') AND pg_catalog.has_table_privilege(current_user, relation_data.oid, 'TRUNCATE')) THEN RAISE EXCEPTION 'Finance Core runtime may TRUNCATE finance tables'; END IF;
           END
           $$;
           SQL
-
       - name: Prove synthetic bootstrap runtime posture
         run: |
           PGPASSWORD="$SYNTHETIC_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U synthetic_test_runtime -d gymflow_finance_test_ci <<'SQL'
           DO $$
-          DECLARE
-            runtime_record record;
-            membership_record record;
+          DECLARE runtime_record record; membership_record record;
           BEGIN
             SELECT * INTO runtime_record FROM pg_catalog.pg_roles WHERE rolname = current_user;
-            IF current_user <> 'synthetic_test_runtime' OR current_database() <> 'gymflow_finance_test_ci' THEN
-              RAISE EXCEPTION 'unexpected synthetic bootstrap identity/database';
-            END IF;
-            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb
-               OR runtime_record.rolcreaterole OR runtime_record.rolinherit
-               OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN
-              RAISE EXCEPTION 'synthetic bootstrap role attributes are unsafe';
-            END IF;
-            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE')
-               OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE')
-               OR pg_catalog.has_schema_privilege(current_user, 'finance', 'CREATE') THEN
-              RAISE EXCEPTION 'synthetic bootstrap runtime has object-creation capability';
-            END IF;
-            IF pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'app_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER') THEN
-              RAISE EXCEPTION 'synthetic bootstrap runtime has unrelated application/worker membership';
-            END IF;
-
-            SELECT member_edge.* INTO membership_record
-            FROM pg_catalog.pg_auth_members AS member_edge
-            JOIN pg_catalog.pg_roles AS granted_role ON granted_role.oid = member_edge.roleid
-            JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = member_edge.member
-            WHERE granted_role.rolname = 'test_runner'
-              AND member_role.rolname = current_user;
-            IF NOT FOUND
-               OR membership_record.admin_option
-               OR membership_record.inherit_option
-               OR NOT membership_record.set_option THEN
-              RAISE EXCEPTION 'synthetic bootstrap test_runner edge must be SET-only';
-            END IF;
-
-            IF NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'SELECT')
-               OR NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT')
-               OR NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'UPDATE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'DELETE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'TRUNCATE') THEN
-              RAISE EXCEPTION 'synthetic bootstrap organizations ACL is not exact';
-            END IF;
-            IF NOT pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'SELECT')
-               OR NOT pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'INSERT')
-               OR pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'UPDATE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'DELETE')
-               OR pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'TRUNCATE') THEN
-              RAISE EXCEPTION 'synthetic bootstrap evidence ACL is not append/read-only';
-            END IF;
-            IF NOT pg_catalog.has_table_privilege(current_user, 'finance.billing_parties', 'SELECT')
-               OR pg_catalog.has_table_privilege(current_user, 'finance.billing_parties', 'INSERT')
-               OR pg_catalog.has_table_privilege(current_user, 'finance.invoices', 'UPDATE')
-               OR pg_catalog.has_table_privilege(current_user, 'finance.payments', 'DELETE')
-               OR pg_catalog.has_table_privilege(current_user, 'finance.payments', 'TRUNCATE') THEN
-              RAISE EXCEPTION 'synthetic bootstrap Finance evidence access is not read-only';
-            END IF;
+            IF current_user <> 'synthetic_test_runtime' OR current_database() <> 'gymflow_finance_test_ci' THEN RAISE EXCEPTION 'unexpected synthetic bootstrap identity/database'; END IF;
+            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper OR runtime_record.rolcreatedb OR runtime_record.rolcreaterole OR runtime_record.rolinherit OR runtime_record.rolreplication OR runtime_record.rolbypassrls THEN RAISE EXCEPTION 'synthetic bootstrap role attributes are unsafe'; END IF;
+            IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE') OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') OR pg_catalog.has_schema_privilege(current_user, 'finance', 'CREATE') THEN RAISE EXCEPTION 'synthetic bootstrap runtime has object-creation capability'; END IF;
+            IF pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'app_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER') THEN RAISE EXCEPTION 'synthetic bootstrap runtime has unrelated application/worker membership'; END IF;
+            SELECT member_edge.* INTO membership_record FROM pg_catalog.pg_auth_members AS member_edge JOIN pg_catalog.pg_roles AS granted_role ON granted_role.oid = member_edge.roleid JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = member_edge.member WHERE granted_role.rolname = 'test_runner' AND member_role.rolname = current_user;
+            IF NOT FOUND OR membership_record.admin_option OR membership_record.inherit_option OR NOT membership_record.set_option THEN RAISE EXCEPTION 'synthetic bootstrap test_runner edge must be SET-only'; END IF;
+            IF NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'SELECT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'UPDATE') OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'TRUNCATE') THEN RAISE EXCEPTION 'synthetic bootstrap organizations ACL is not exact'; END IF;
+            IF NOT pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'SELECT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'INSERT') OR pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'UPDATE') OR pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'TRUNCATE') THEN RAISE EXCEPTION 'synthetic bootstrap evidence ACL is not append/read-only'; END IF;
+            IF NOT pg_catalog.has_table_privilege(current_user, 'finance.billing_parties', 'SELECT') OR pg_catalog.has_table_privilege(current_user, 'finance.billing_parties', 'INSERT') OR pg_catalog.has_table_privilege(current_user, 'finance.invoices', 'UPDATE') OR pg_catalog.has_table_privilege(current_user, 'finance.payments', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'finance.payments', 'TRUNCATE') THEN RAISE EXCEPTION 'synthetic bootstrap Finance evidence access is not read-only'; END IF;
           END
           $$;
           SQL
-
       - name: Run isolated Finance Core regressions fail-fast
-        run: |
-          python -m pytest -q --maxfail=1 tests/finance_core
+        run: python -m pytest -q --maxfail=1 tests/finance_core

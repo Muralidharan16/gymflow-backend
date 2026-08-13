@@ -63,14 +63,24 @@ jobs:
             alembic/versions/b4c5d6e7f809_harden_branch_hours_runtime_boundary.py \
             alembic/versions/c5d6e7f8091a_adopt_branch_hours_audit_partitions.py \
             alembic/versions/b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py \
+            app/core/cluster_role_bootstrap.py \
             app/core/cluster_role_preflight.py \
             app/core/database.py \
             app/core/celery_app.py \
             app/main.py \
             app/tasks/branch_hours_partition.py \
             app/tasks/branch_lifecycle_sweeps.py \
+            scripts/render_cluster_role_bootstrap.py \
+            scripts/verify_cluster_role_bootstrap.py \
+            scripts/verify_head_workflow_bootstrap.py \
             tests/test_branch_hours_runtime_partition_boundary.py \
-            tests/test_lifecycle_maintenance_runtime_boundary.py
+            tests/test_lifecycle_maintenance_runtime_boundary.py \
+            tests/test_p2b_cluster_role_bootstrap.py \
+            tests/test_production_migration_bootstrap_contract.py
+          bash -n \
+            scripts/ci/bootstrap_cluster_roles.sh \
+            scripts/ci/verify_cluster_roles.sh \
+            scripts/release/bootstrap_cluster_roles.sh
 
       - name: Run migration hardening static regressions
         env:
@@ -93,11 +103,14 @@ jobs:
             tests/test_address_audit_rls_context_boundary.py \
             tests/test_cluster_role_contract_manifests.py \
             tests/test_external_cluster_role_preflight.py \
+            tests/test_p2b_cluster_role_bootstrap.py \
+            tests/test_production_migration_bootstrap_contract.py \
             tests/test_rbac_expand_contract_root_cause.py \
             tests/test_legacy_branch_trigger_runtime_boundary.py \
             tests/test_legacy_branch_transition_reference_acl.py \
             tests/test_branch_hours_runtime_partition_boundary.py \
             tests/test_lifecycle_maintenance_runtime_boundary.py
+          python -s scripts/verify_head_workflow_bootstrap.py
 
   fresh-lineage-and-regressions:
     name: Fresh PG16 lineage and general regressions
@@ -165,34 +178,18 @@ jobs:
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
           test -f /usr/share/postgresql/16/extension/pg_partman.control
 
-      - name: Bootstrap migration, runtime and test roles and databases
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision general CI login and database overlay
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          CREATE ROLE migration_owner LOGIN PASSWORD 'ci-migration-owner' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_rls_executor NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_security_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE auth_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE worker_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_user NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE audit_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_viewer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE internal_billing_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE ops_support NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE readonly_analytics NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
           CREATE ROLE test_runner LOGIN PASSWORD 'ci-test-runner' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-test-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE auth_test_runtime LOGIN PASSWORD 'ci-auth-test-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-lifecycle-maintenance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
 
-          ALTER ROLE app_runtime SET statement_timeout = '5s';
-          ALTER ROLE app_runtime SET lock_timeout = '2s';
-          ALTER ROLE app_runtime SET row_security = 'on';
-          ALTER ROLE worker_runtime SET statement_timeout = '15s';
-          ALTER ROLE worker_runtime SET lock_timeout = '2s';
-          ALTER ROLE worker_runtime SET idle_in_transaction_session_timeout = '30s';
-          ALTER ROLE worker_runtime SET row_security = 'on';
           ALTER ROLE app_test_runtime SET row_security = 'on';
           ALTER ROLE app_test_runtime SET statement_timeout = '5s';
           ALTER ROLE app_test_runtime SET lock_timeout = '2s';
@@ -206,26 +203,21 @@ jobs:
           ALTER ROLE lifecycle_maintenance_test_runtime SET lock_timeout = '2s';
           ALTER ROLE lifecycle_maintenance_test_runtime SET idle_in_transaction_session_timeout = '30s';
 
-          GRANT app_rls_executor TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT app_security_owner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
           GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 
           CREATE DATABASE gymflow_migration_test OWNER migration_owner;
           CREATE DATABASE gymflow_test OWNER migration_owner;
           GRANT CONNECT ON DATABASE gymflow_test TO app_test_runtime, auth_test_runtime, lifecycle_maintenance_test_runtime;
           SQL
 
-      - name: Provision lifecycle maintenance capability role and bounded test login edge
-        run: |
-          bash scripts/ci/provision_lifecycle_maintenance_role.sh
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          SQL
+      - name: Verify canonical external role contract
+        run: bash scripts/ci/verify_cluster_roles.sh
 
       - name: Provision infrastructure-owned extensions
         run: |
@@ -352,7 +344,8 @@ jobs:
     services:
       redis:
         image: redis:7-alpine
-        ports: ["6379:6379"]
+        ports:
+          - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
@@ -397,42 +390,25 @@ jobs:
           pg_config --version
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
           test -f /usr/share/postgresql/16/extension/pg_partman.control
-      - name: Bootstrap isolated Platform Billing identities and databases
+
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision Platform Billing CI login and database overlay
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          CREATE ROLE migration_owner LOGIN PASSWORD 'ci-migration-owner' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_rls_executor NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_security_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE auth_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE worker_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_user NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE audit_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_viewer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE internal_billing_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE ops_support NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE readonly_analytics NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
           CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE platform_billing_test_runtime LOGIN PASSWORD 'ci-platform-billing-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          ALTER ROLE app_runtime SET statement_timeout = '5s';
-          ALTER ROLE app_runtime SET lock_timeout = '2s';
-          ALTER ROLE app_runtime SET row_security = 'on';
-          ALTER ROLE worker_runtime SET statement_timeout = '15s';
-          ALTER ROLE worker_runtime SET lock_timeout = '2s';
-          ALTER ROLE worker_runtime SET idle_in_transaction_session_timeout = '30s';
-          ALTER ROLE worker_runtime SET row_security = 'on';
           ALTER ROLE platform_billing_test_runtime SET row_security = 'on';
           ALTER ROLE platform_billing_test_runtime SET statement_timeout = '30s';
           ALTER ROLE platform_billing_test_runtime SET lock_timeout = '5s';
-          GRANT app_rls_executor TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT app_security_owner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
           CREATE DATABASE gymflow_test OWNER migration_owner;
           CREATE DATABASE gymflow_platform_billing_test_ci OWNER migration_owner;
           SQL
 
-      - name: Provision lifecycle maintenance capability role
-        run: bash scripts/ci/provision_lifecycle_maintenance_role.sh
+      - name: Verify canonical external role contract
+        run: bash scripts/ci/verify_cluster_roles.sh
 
       - name: Provision Platform Billing infrastructure-owned extensions
         run: |

@@ -56,44 +56,18 @@ jobs:
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
           test -f /usr/share/postgresql/16/extension/pg_partman.control
 
-      - name: Bootstrap reduced migration and managed roles
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision lifecycle migration login secret and database overlay
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          CREATE ROLE migration_owner
-            LOGIN PASSWORD 'ci-migration-owner'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-            NOREPLICATION NOBYPASSRLS;
-
-          CREATE ROLE app_rls_executor NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_security_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE auth_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE worker_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_user NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE audit_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE branch_viewer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE internal_billing_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE ops_support NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE readonly_analytics NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-
-          ALTER ROLE app_runtime SET statement_timeout = '5s';
-          ALTER ROLE app_runtime SET lock_timeout = '2s';
-          ALTER ROLE app_runtime SET row_security = 'on';
-          ALTER ROLE worker_runtime SET statement_timeout = '15s';
-          ALTER ROLE worker_runtime SET lock_timeout = '2s';
-          ALTER ROLE worker_runtime SET idle_in_transaction_session_timeout = '30s';
-          ALTER ROLE worker_runtime SET row_security = 'on';
-
-          GRANT app_rls_executor TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT app_security_owner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
           CREATE DATABASE gymflow_lifecycle_test OWNER migration_owner;
           SQL
 
-      - name: Provision external lifecycle maintenance capability
-        run: bash scripts/ci/provision_lifecycle_maintenance_role.sh
+      - name: Verify canonical external role contract
+        run: bash scripts/ci/verify_cluster_roles.sh
 
       - name: Provision infrastructure-owned extensions
         run: |
@@ -170,8 +144,7 @@ jobs:
                OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET')
                OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET')
-               OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'internal_billing_worker', 'MEMBER') THEN
+               OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER') THEN
               RAISE EXCEPTION 'migration_owner leaked into a runtime capability';
             END IF;
 
@@ -405,8 +378,7 @@ jobs:
                OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'SET')
                OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'MEMBER')
                OR pg_catalog.pg_has_role(current_user, 'lifecycle_maintenance_runtime', 'SET')
-               OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER')
-               OR pg_catalog.pg_has_role(current_user, 'internal_billing_worker', 'MEMBER') THEN
+               OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER') THEN
               RAISE EXCEPTION 'final migration_owner leaked into a runtime capability';
             END IF;
           END
