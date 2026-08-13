@@ -65,6 +65,98 @@ def _require_no_direct_sensitive_worker_access(bind) -> None:
                 )
 
 
+def _require_geocoding_failure_function(bind) -> None:
+    rows = bind.execute(sa.text("""
+        SELECT
+            owner.rolname::text AS owner_name,
+            p.prosecdef,
+            p.proconfig,
+            pg_catalog.pg_get_function_identity_arguments(p.oid)::text AS identity_args,
+            p.prosrc,
+            EXISTS (
+                SELECT 1
+                FROM pg_catalog.aclexplode(
+                    COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+                ) AS acl
+                JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = acl.grantee
+                WHERE grantee.rolname = 'worker_runtime'
+                  AND acl.privilege_type = 'EXECUTE'
+            ) AS worker_execute,
+            EXISTS (
+                SELECT 1
+                FROM pg_catalog.aclexplode(
+                    COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+                ) AS acl
+                WHERE acl.grantee = 0
+                  AND acl.privilege_type = 'EXECUTE'
+            ) AS public_execute,
+            EXISTS (
+                SELECT 1
+                FROM pg_catalog.aclexplode(
+                    COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+                ) AS acl
+                JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = acl.grantee
+                WHERE grantee.rolname = 'migration_owner'
+                  AND acl.privilege_type = 'EXECUTE'
+            ) AS migration_execute
+        FROM pg_catalog.pg_proc AS p
+        JOIN pg_catalog.pg_namespace AS ns ON ns.oid = p.pronamespace
+        JOIN pg_catalog.pg_roles AS owner ON owner.oid = p.proowner
+        WHERE ns.nspname = 'app_secure'
+          AND p.proname = 'record_org_geocoding_failure'
+          AND p.prokind = 'f'
+    """)).mappings().all()
+    if len(rows) != 1:
+        raise RuntimeError("bounded geocoding failure function identity is ambiguous")
+    row = rows[0]
+    if row["identity_args"] != "uuid, uuid, text, integer, text, uuid":
+        raise RuntimeError("bounded geocoding failure function signature drifted")
+    if row["owner_name"] != "app_security_owner" or not row["prosecdef"]:
+        raise RuntimeError("bounded geocoding failure function owner/security drifted")
+    if set(row["proconfig"] or []) != {"search_path=pg_catalog", "row_security=on"}:
+        raise RuntimeError("bounded geocoding failure function settings drifted")
+    if not row["worker_execute"] or row["public_execute"] or row["migration_execute"]:
+        raise RuntimeError("bounded geocoding failure function EXECUTE ACL drifted")
+    for token in (
+        "app.current_org_id",
+        "public.organization_addresses",
+        "public.notifications",
+        "public.event_outbox",
+    ):
+        if token not in (row["prosrc"] or ""):
+            raise RuntimeError("bounded geocoding failure function body drifted")
+
+    schema_acl = bind.execute(sa.text("""
+        SELECT
+            owner.rolname::text AS owner_name,
+            EXISTS (
+                SELECT 1
+                FROM pg_catalog.aclexplode(
+                    COALESCE(ns.nspacl, pg_catalog.acldefault('n', ns.nspowner))
+                ) AS acl
+                JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = acl.grantee
+                WHERE grantee.rolname = 'worker_runtime'
+                  AND acl.privilege_type = 'USAGE'
+            ) AS worker_usage,
+            EXISTS (
+                SELECT 1
+                FROM pg_catalog.aclexplode(
+                    COALESCE(ns.nspacl, pg_catalog.acldefault('n', ns.nspowner))
+                ) AS acl
+                JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = acl.grantee
+                WHERE grantee.rolname = 'migration_owner'
+                  AND acl.privilege_type = 'USAGE'
+            ) AS migration_usage
+        FROM pg_catalog.pg_namespace AS ns
+        JOIN pg_catalog.pg_roles AS owner ON owner.oid = ns.nspowner
+        WHERE ns.nspname = 'app_secure'
+    """)).mappings().one_or_none()
+    if schema_acl is None or schema_acl["owner_name"] != "app_security_owner":
+        raise RuntimeError("app_secure ownership drifted")
+    if not schema_acl["worker_usage"] or schema_acl["migration_usage"]:
+        raise RuntimeError("app_secure geocoding schema ACL drifted")
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     _require_migration_owner(bind)
@@ -182,14 +274,7 @@ def upgrade() -> None:
     op.execute("RESET ROLE")
 
     _require_no_direct_sensitive_worker_access(bind)
-    if not bind.execute(sa.text("""
-        SELECT pg_catalog.has_function_privilege(
-            'worker_runtime',
-            'app_secure.record_org_geocoding_failure(uuid,uuid,text,integer,text,uuid)',
-            'EXECUTE'
-        )
-    """)).scalar_one():
-        raise RuntimeError("worker lacks bounded geocoding failure function")
+    _require_geocoding_failure_function(bind)
 
 
 def downgrade() -> None:

@@ -11,10 +11,12 @@ import importlib.util
 import pathlib
 import sys
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from celery.exceptions import MaxRetriesExceededError
+from sqlalchemy import select, text
 
 _BASELINE_PATH = pathlib.Path(__file__).with_name("address_regression_baseline.py")
 _SPEC = importlib.util.spec_from_file_location("_doers_address_regression_baseline", _BASELINE_PATH)
@@ -28,7 +30,7 @@ for _name, _value in vars(_BASELINE).items():
     if _name.startswith("test_"):
         globals()[_name] = _value
 
-from app.models.address import OrganizationAddress
+from app.models.address import AddressAuditLog, OrganizationAddress
 from app.tasks.geocoding import geocode_address_task
 
 
@@ -174,3 +176,148 @@ def test_geocoding_creates_notification_after_max_retries() -> None:
     assert "review and re-save" in mark_failure.call_args.kwargs[
         "notification_message"
     ].lower()
+
+
+@pytest.mark.asyncio
+async def test_audit_log_captured_on_update(admin_db_session, auth_db_session) -> None:
+    """
+    Validates that typed actor provenance and tenant context survive transaction
+    boundaries while address triggers record immutable audit snapshots.
+
+    Organization and actor creation are administrative root-fixture setup.
+    Branch/state creation uses the dedicated bounded auth/bootstrap identity,
+    matching production onboarding rather than borrowing migration-owner power.
+    Address mutation remains on the reduced application runtime identity. Direct
+    audit-table reads remain forbidden to app_runtime; immutable audit evidence is
+    verified through the reduced migration/admin session under the same tenant RLS
+    context.
+    """
+    from app.core.database import AsyncSessionLocal, update_session_context
+    from app.models.organization import Organization
+    from app.models.org_branch import OrgBranch, OrgBranchState
+    from app.models.staff import GymOwner
+
+    org_id = uuid.uuid4()
+    branch_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+
+    admin_db_session.add(Organization(id=org_id, name="Test Gym Org"))
+    owner = GymOwner(
+        id=owner_id,
+        org_id=org_id,
+        name="Test Owner",
+        email="owner@test.com",
+        password_hash="hash",
+        role="owner",
+        is_active=True,
+        is_verified=True
+    )
+    admin_db_session.add(owner)
+    await admin_db_session.commit()
+
+    await update_session_context(
+        auth_db_session,
+        principal_id=str(owner_id),
+        principal_type="legacy_gym_owner",
+        org_id=str(org_id),
+        role="owner",
+        ip_address="127.0.0.1",
+        user_agent="pytest-auth-bootstrap-fixture",
+        request_id=str(uuid.uuid4()),
+    )
+
+    branch = OrgBranch(
+        id=branch_id,
+        org_id=org_id,
+        branch_name="Anna Nagar Main",
+        branch_code="AN01",
+        internal_slug="anna-nagar-main",
+        timezone="UTC",
+        currency_code="USD"
+    )
+    auth_db_session.add(branch)
+    branch_state = OrgBranchState(
+        branch_id=branch_id,
+        org_id=org_id,
+        branch_status="active",
+        is_primary=True,
+        is_active=True,
+        is_public=True,
+        version=1,
+        search_epoch_ulid="01AN4V07BY79KA1307SR9XFMAT"
+    )
+    auth_db_session.add(branch_state)
+    await auth_db_session.commit()
+
+    async with AsyncSessionLocal() as db:
+        await update_session_context(
+            db,
+            principal_id=str(owner_id),
+            principal_type="legacy_gym_owner",
+            org_id=str(org_id),
+            role="owner",
+            ip_address="192.168.1.50",
+            user_agent="pytest-agent",
+            request_id=str(uuid.uuid4()),
+        )
+
+        addr = OrganizationAddress(
+            org_id=org_id,
+            branch_id=branch_id,
+            address_type="physical",
+            address_line1="enc:12 Anna Salai",
+            city="Chennai",
+            state_province="TN",
+            postal_code="600002",
+            country_code="IN",
+            is_primary=True,
+            effective_from=datetime.now(timezone.utc)
+        )
+        db.add(addr)
+        await db.commit()
+
+        addr.address_line1 = "enc:New Address Road"
+        await db.commit()
+
+        runtime_can_read_audit = (
+            await db.execute(
+                text(
+                    "SELECT pg_catalog.has_table_privilege("
+                    "current_user, 'public.branch_address_audit_log', 'SELECT')"
+                )
+            )
+        ).scalar_one()
+        assert runtime_can_read_audit is False
+
+    await update_session_context(
+        admin_db_session,
+        principal_id=str(owner_id),
+        principal_type="legacy_gym_owner",
+        org_id=str(org_id),
+        role="owner",
+        ip_address="127.0.0.1",
+        user_agent="pytest-admin-audit-verifier",
+        request_id=str(uuid.uuid4()),
+    )
+    stmt = select(AddressAuditLog).where(AddressAuditLog.org_id == org_id)
+    res = await admin_db_session.execute(stmt)
+    logs = res.scalars().all()
+
+    assert len(logs) > 0
+
+    import json
+    old_snap = logs[0].old_address
+    if isinstance(old_snap, str):
+        old_snap = json.loads(old_snap)
+    new_snap = logs[0].new_address
+    if isinstance(new_snap, str):
+        new_snap = json.loads(new_snap)
+
+    import hashlib
+    expected_old_hash = hashlib.sha256(b"enc:12 Anna Salai").hexdigest()
+    expected_new_hash = hashlib.sha256(b"enc:New Address Road").hexdigest()
+    assert old_snap["address_line1_hash"] == expected_old_hash
+    assert new_snap["address_line1_hash"] == expected_new_hash
+    assert str(logs[0].changed_by) == str(owner_id)
+    assert logs[0].changed_by_type == "legacy_gym_owner"
+    assert str(logs[0].ip_address) == "192.168.1.50"
