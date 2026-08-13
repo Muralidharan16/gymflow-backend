@@ -60,7 +60,7 @@ jobs:
             alembic/versions/8192a3b4c5d6_harden_legacy_branch_trigger_runtime_boundary.py \
             alembic/versions/92a3b4c5d6e7_align_branch_read_contract.py \
             alembic/versions/a3b4c5d6e7f8_allow_legacy_branch_transition_reference_read.py \
-            alembic/versions/b4c5d6e7f8091a_harden_branch_hours_runtime_boundary.py \
+            alembic/versions/b4c5d6e7f809_harden_branch_hours_runtime_boundary.py \
             alembic/versions/c5d6e7f8091a_adopt_branch_hours_audit_partitions.py \
             alembic/versions/b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py \
             app/core/cluster_role_preflight.py \
