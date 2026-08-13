@@ -11,6 +11,7 @@ from alembic import context
 from app.models import Base  # noqa: F401
 import app.finance_core.models  # noqa: F401
 import app.platform_billing.models  # noqa: F401
+from app.core.cluster_identity_graph import assert_identity_graph_preflight
 from app.core.cluster_role_preflight import assert_external_role_preflight
 
 
@@ -136,6 +137,10 @@ def do_run_migrations(connection) -> None:
         # HEAD may not mutate database state until the externally managed
         # PostgreSQL role/settings/membership contract has been proven live.
         assert_external_role_preflight(connection)
+        # P2C is a second independent read-only hard gate. It proves that the
+        # exact roles accepted above cannot reach peer capabilities through
+        # MEMBER, SET, USAGE, helper, or ADMIN-option escalation paths.
+        assert_identity_graph_preflight(connection)
 
     context.configure(
         connection=connection, 
