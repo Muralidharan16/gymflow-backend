@@ -53,6 +53,24 @@ MigrationTestSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
+# Current-head lifecycle reads must use the same reduced application capability
+# as production, not the migration owner.  Repoint only the validated runtime
+# credential to the dedicated migration-rehearsal database.
+_runtime_url = make_url(TEST_DATABASE_URL).set(
+    database=make_url(MIGRATION_TEST_DATABASE_URL).database
+)
+lifecycle_runtime_engine = create_async_engine(
+    _runtime_url,
+    poolclass=NullPool,
+    pool_pre_ping=True,
+    echo=False,
+)
+LifecycleRuntimeSessionLocal = async_sessionmaker(
+    lifecycle_runtime_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
 
 @dataclass(frozen=True)
 class LifecycleSeed:
@@ -103,7 +121,6 @@ def run_alembic(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 async def _set_tenant_context(session: AsyncSession, org_id: str, owner_id: str) -> None:
-    """Seed through the same fail-closed tenant boundary enforced by baseline RLS."""
     settings = {
         "app.current_org_id": org_id,
         "app.current_user_id": owner_id,
@@ -116,6 +133,14 @@ async def _set_tenant_context(session: AsyncSession, org_id: str, owner_id: str)
             text("SELECT pg_catalog.set_config(:key, :value, true)"),
             {"key": key, "value": value},
         )
+
+
+async def set_runtime_tenant_context(
+    session: AsyncSession,
+    org_id: str,
+    owner_id: str,
+) -> None:
+    await _set_tenant_context(session, org_id, owner_id)
 
 
 async def seed_v2_source_data(seed: LifecycleSeed) -> None:
@@ -264,6 +289,20 @@ async def scalar_int(sql: str, params: dict[str, object] | None = None) -> int:
         return int(result.scalar_one())
 
 
+async def runtime_scalar_int(
+    seed: LifecycleSeed,
+    *,
+    org_id: str,
+    owner_id: str,
+    sql: str,
+    params: dict[str, object] | None = None,
+) -> int:
+    async with LifecycleRuntimeSessionLocal() as session:
+        await set_runtime_tenant_context(session, org_id, owner_id)
+        result = await session.execute(text(sql), params or {})
+        return int(result.scalar_one())
+
+
 async def assert_table_absent(table_name: str) -> None:
     assert await scalar_int(
         "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name=:table_name",
@@ -297,14 +336,6 @@ def _subscription_params(seed: LifecycleSeed) -> dict[str, object]:
 
 
 async def assert_baseline_source_preserved(seed: LifecycleSeed) -> None:
-    """Verify exact source rows while the schema is at the pre-lifecycle baseline.
-
-    Current head deliberately FORCE-enables tenant RLS on the legacy member
-    subscription tables and scopes those policies to app_runtime. The reduced
-    migration_owner therefore must not be used as a backdoor to read those
-    source rows after head. Preservation is proved at the predecessor, after
-    downgrade, and by the lifecycle rows produced at head.
-    """
     params = _subscription_params(seed)
     id_filter = "(:sub_a, :sub_b, :sub_family, :sub_expired)"
     assert await scalar_int(
@@ -327,6 +358,28 @@ async def prepare_migrated_lifecycle(target_revision: str = "head") -> Lifecycle
     return seed
 
 
+async def _runtime_count_for_seed(
+    seed: LifecycleSeed,
+    sql: str,
+    params: dict[str, object],
+) -> int:
+    org1 = await runtime_scalar_int(
+        seed,
+        org_id=seed.org_1,
+        owner_id=seed.owner_1,
+        sql=sql,
+        params=params,
+    )
+    org2 = await runtime_scalar_int(
+        seed,
+        org_id=seed.org_2,
+        owner_id=seed.owner_2,
+        sql=sql,
+        params=params,
+    )
+    return org1 + org2
+
+
 async def test_lifecycle_migration_round_trip_preserves_v2_and_backfills_conservatively():
     seed = await prepare_migrated_lifecycle()
     params = _subscription_params(seed)
@@ -338,32 +391,40 @@ async def test_lifecycle_migration_round_trip_preserves_v2_and_backfills_conserv
         WHERE t.legacy_member_subscription_v2_id IN {id_filter}
     """
 
-    # At current head member_subscriptions_v2 is FORCE-RLS and its policies are
-    # scoped to app_runtime. Migration-owner verification therefore starts with
-    # the lifecycle rows produced from the already-proven baseline source set.
-    assert await scalar_int(series_count_sql, params) == 4
-    assert await scalar_int(
+    # Current HEAD FORCE-RLS isolates lifecycle rows.  Verify the complete seed
+    # by summing two production-shaped tenant reads rather than using the
+    # migration owner as a runtime data reader.
+    assert await _runtime_count_for_seed(seed, series_count_sql, params) == 4
+    assert await _runtime_count_for_seed(
+        seed,
         f"SELECT count(*) FROM subscription_terms WHERE legacy_member_subscription_v2_id IN {id_filter}",
         params,
     ) == 4
-    assert await scalar_int(
+    assert await _runtime_count_for_seed(
+        seed,
         f"SELECT count(*) FROM subscription_term_slots s JOIN subscription_terms t ON t.id=s.term_id WHERE t.legacy_member_subscription_v2_id IN {id_filter}",
         params,
     ) == 6
-    assert await scalar_int(
+    assert await _runtime_count_for_seed(
+        seed,
         f"SELECT count(*) FROM subscription_slot_assignments a JOIN subscription_terms t ON t.id=a.term_id WHERE t.legacy_member_subscription_v2_id IN {id_filter}",
         params,
     ) == 5
-    assert await scalar_int(
+    assert await _runtime_count_for_seed(
+        seed,
         f"SELECT count(*) FROM subscription_terms WHERE legacy_member_subscription_v2_id IN {id_filter} AND renewed_from_term_id IS NOT NULL",
         params,
     ) == 0
-    assert await scalar_int(
-        "SELECT count(DISTINCT series_id) FROM subscription_terms WHERE legacy_member_subscription_v2_id IN (:sub_a,:sub_b)",
-        params,
+    assert await runtime_scalar_int(
+        seed,
+        org_id=seed.org_1,
+        owner_id=seed.owner_1,
+        sql="SELECT count(DISTINCT series_id) FROM subscription_terms WHERE legacy_member_subscription_v2_id IN (:sub_a,:sub_b)",
+        params=params,
     ) == 2
 
-    async with MigrationTestSessionLocal() as session:
+    async with LifecycleRuntimeSessionLocal() as session:
+        await set_runtime_tenant_context(session, seed.org_1, seed.owner_1)
         row = (
             await session.execute(
                 text(
@@ -384,19 +445,27 @@ async def test_lifecycle_migration_round_trip_preserves_v2_and_backfills_conserv
     assert str(row.list_price_amount) == "4000.00"
     assert str(row.final_amount) == "4000.00"
 
-    assert await scalar_int(
-        """
-        SELECT count(*) FROM subscription_term_slots s JOIN subscription_terms t ON t.id=s.term_id
-        WHERE t.legacy_member_subscription_v2_id=:sub_family
+    assert await runtime_scalar_int(
+        seed,
+        org_id=seed.org_1,
+        owner_id=seed.owner_1,
+        sql="""
+            SELECT count(*) FROM subscription_term_slots s
+            JOIN subscription_terms t ON t.id=s.term_id
+            WHERE t.legacy_member_subscription_v2_id=:sub_family
         """,
-        {"sub_family": seed.sub_family},
+        params={"sub_family": seed.sub_family},
     ) == 3
-    assert await scalar_int(
-        """
-        SELECT count(*) FROM subscription_slot_assignments a JOIN subscription_terms t ON t.id=a.term_id
-        WHERE t.legacy_member_subscription_v2_id=:sub_family
+    assert await runtime_scalar_int(
+        seed,
+        org_id=seed.org_1,
+        owner_id=seed.owner_1,
+        sql="""
+            SELECT count(*) FROM subscription_slot_assignments a
+            JOIN subscription_terms t ON t.id=a.term_id
+            WHERE t.legacy_member_subscription_v2_id=:sub_family
         """,
-        {"sub_family": seed.sub_family},
+        params={"sub_family": seed.sub_family},
     ) == 2
 
     run_alembic("downgrade", BASELINE_REVISION)
@@ -404,8 +473,9 @@ async def test_lifecycle_migration_round_trip_preserves_v2_and_backfills_conserv
     await assert_baseline_source_preserved(seed)
 
     run_alembic("upgrade", "head")
-    assert await scalar_int(series_count_sql, params) == 4
-    assert await scalar_int(
+    assert await _runtime_count_for_seed(seed, series_count_sql, params) == 4
+    assert await _runtime_count_for_seed(
+        seed,
         f"SELECT count(*) FROM subscription_terms WHERE legacy_member_subscription_v2_id IN {id_filter}",
         params,
     ) == 4
@@ -559,8 +629,4 @@ async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignme
     try:
         await _assert_lifecycle_constraints(seed)
     finally:
-        # Later revisions intentionally FORCE-RLS the legacy member/plan tables
-        # and scope those policies to app_runtime. Restore the dedicated
-        # migration database to current head without granting migration_owner a
-        # runtime visibility path just to execute this historical contract test.
         run_alembic("upgrade", "head")
