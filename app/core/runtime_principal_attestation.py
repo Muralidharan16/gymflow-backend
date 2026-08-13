@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -30,6 +31,12 @@ RUNTIME_CONTRACT_DIRECTORY = (
 )
 RUNTIME_BINDING_MANIFEST = "runtime_bindings.v1.json"
 SEMANTICS = ("MEMBER", "USAGE", "SET")
+GOVERNED_RUNTIME_SETTINGS = (
+    "row_security",
+    "statement_timeout",
+    "lock_timeout",
+    "idle_in_transaction_session_timeout",
+)
 DANGEROUS_LOGIN_ATTRIBUTES = (
     "superuser",
     "create_role",
@@ -37,6 +44,8 @@ DANGEROUS_LOGIN_ATTRIBUTES = (
     "replication",
     "bypass_rls",
 )
+_TIMEOUT_PATTERN = re.compile(r"^([0-9]+(?:\.[0-9]+)?)\s*(ms|s|min|h)$", re.IGNORECASE)
+_TIMEOUT_MULTIPLIERS = {"ms": 1, "s": 1000, "min": 60_000, "h": 3_600_000}
 
 
 class RuntimePrincipalAttestationError(RuntimeError):
@@ -49,6 +58,7 @@ class RuntimeBinding:
     environment_variable: str
     runtime_capability: str
     direct_capabilities: tuple[str, ...]
+    session_settings: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -76,6 +86,9 @@ class RuntimePrincipalObservation:
     bypass_rls: bool
     memberships: tuple[Mapping[str, Any], ...]
     semantic_checks: tuple[Mapping[str, Any], ...]
+    current_settings: Mapping[str, str]
+    role_settings: Mapping[str, str]
+    database_specific_settings: tuple[Mapping[str, str], ...]
 
 
 def _violation(code: str, subject: str, message: str) -> ContractViolation:
@@ -91,6 +104,64 @@ def _string_tuple(value: Any, field: str) -> tuple[str, ...]:
     ):
         raise ValueError(f"{field} must be a non-empty list of unique strings")
     return tuple(value)
+
+
+def _session_settings(value: Any, field: str) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field} must be an object")
+    if set(value) != set(GOVERNED_RUNTIME_SETTINGS):
+        raise ValueError(
+            f"{field} must define exactly {', '.join(GOVERNED_RUNTIME_SETTINGS)}"
+        )
+    settings: dict[str, str] = {}
+    for name in GOVERNED_RUNTIME_SETTINGS:
+        raw = value.get(name)
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(f"{field}.{name} must be a non-empty string")
+        settings[name] = raw.strip()
+    return settings
+
+
+def _normalize_setting(name: str, value: str) -> str:
+    normalized = str(value).strip().lower()
+    if name == "row_security":
+        return normalized
+    if name in {
+        "statement_timeout",
+        "lock_timeout",
+        "idle_in_transaction_session_timeout",
+    }:
+        if normalized == "0":
+            return "0ms"
+        match = _TIMEOUT_PATTERN.fullmatch(normalized)
+        if not match:
+            return normalized
+        magnitude = float(match.group(1))
+        multiplier = _TIMEOUT_MULTIPLIERS[match.group(2).lower()]
+        milliseconds = magnitude * multiplier
+        if milliseconds.is_integer():
+            return f"{int(milliseconds)}ms"
+        return f"{milliseconds:g}ms"
+    return normalized
+
+
+def _normalized_settings(values: Mapping[str, str]) -> dict[str, str]:
+    return {
+        name: _normalize_setting(name, values[name])
+        for name in GOVERNED_RUNTIME_SETTINGS
+        if name in values
+    }
+
+
+def _parse_rolconfig(values: Sequence[str] | None) -> dict[str, str]:
+    settings: dict[str, str] = {}
+    for item in values or ():
+        if "=" not in item:
+            continue
+        name, value = item.split("=", 1)
+        if name in GOVERNED_RUNTIME_SETTINGS:
+            settings[name] = value
+    return settings
 
 
 def load_runtime_binding_contract(
@@ -137,6 +208,10 @@ def load_runtime_binding_contract(
                 record.get("direct_capabilities"),
                 f"{component}.direct_capabilities",
             ),
+            session_settings=_session_settings(
+                record.get("session_settings"),
+                f"{component}.session_settings",
+            ),
         )
 
     rules = raw.get("rules")
@@ -169,7 +244,9 @@ def validate_runtime_binding_contract(
             "P2D must define exactly api/auth/worker/maintenance bindings.",
         ))
 
-    runtime_capabilities = {binding.runtime_capability for binding in contract.bindings.values()}
+    runtime_capabilities = {
+        binding.runtime_capability for binding in contract.bindings.values()
+    }
     if runtime_capabilities != peer_runtimes:
         violations.append(_violation(
             "runtime.contract.p2c_runtime_coverage",
@@ -178,7 +255,9 @@ def validate_runtime_binding_contract(
             f"expected={sorted(peer_runtimes)!r}, found={sorted(runtime_capabilities)!r}.",
         ))
 
-    env_names = [binding.environment_variable for binding in contract.bindings.values()]
+    env_names = [
+        binding.environment_variable for binding in contract.bindings.values()
+    ]
     if len(env_names) != len(set(env_names)):
         violations.append(_violation(
             "runtime.contract.environment_overlap",
@@ -200,6 +279,20 @@ def validate_runtime_binding_contract(
                 binding.component,
                 f"Direct capabilities are not P2B managed roles: {unknown!r}.",
             ))
+        if set(binding.session_settings) != set(GOVERNED_RUNTIME_SETTINGS):
+            violations.append(_violation(
+                "runtime.contract.session_settings",
+                binding.component,
+                "Every runtime login must define the exact governed session-setting surface.",
+            ))
+        if _normalize_setting(
+            "row_security", binding.session_settings.get("row_security", "")
+        ) != "on":
+            violations.append(_violation(
+                "runtime.contract.row_security",
+                binding.component,
+                "Every runtime login contract must require row_security=on.",
+            ))
 
     required_rules = {
         "runtime_logins_are_distinct",
@@ -208,8 +301,11 @@ def validate_runtime_binding_contract(
         "require_row_security",
         "require_baseline_current_user",
         "forbid_set_role_to_managed_roles",
+        "reject_database_specific_settings",
     }
-    disabled = sorted(rule for rule in required_rules if contract.rules.get(rule) is not True)
+    disabled = sorted(
+        rule for rule in required_rules if contract.rules.get(rule) is not True
+    )
     if disabled:
         violations.append(_violation(
             "runtime.contract.required_rule",
@@ -297,6 +393,34 @@ def evaluate_runtime_principal_observation(
             "P2B managed capability roles are NOLOGIN; deployment credentials must use a separate bounded login overlay.",
         ))
 
+    expected_settings = _normalized_settings(binding.session_settings)
+    observed_current = _normalized_settings(observation.current_settings)
+    observed_role = _normalized_settings(observation.role_settings)
+    for name in GOVERNED_RUNTIME_SETTINGS:
+        expected = expected_settings[name]
+        current = observed_current.get(name)
+        role_default = observed_role.get(name)
+        if current != expected:
+            violations.append(_violation(
+                "runtime.session_setting",
+                f"{observation.component}.{name}",
+                f"Expected live setting {expected!r}; found {current!r}.",
+            ))
+        if role_default != expected:
+            violations.append(_violation(
+                "runtime.role_setting",
+                f"{observation.session_user}.{name}",
+                f"Deployment login must persist the governed default {expected!r}; found {role_default!r}.",
+            ))
+
+    if observation.database_specific_settings:
+        violations.append(_violation(
+            "runtime.database_specific_setting",
+            observation.session_user,
+            "Database-specific ALTER ROLE ... IN DATABASE settings are forbidden for runtime logins; "
+            f"found={list(observation.database_specific_settings)!r}.",
+        ))
+
     expected_roles = set(binding.direct_capabilities)
     direct_rows = [
         row for row in observation.memberships
@@ -376,7 +500,10 @@ def evaluate_runtime_binding_set(
     violations: list[ContractViolation] = []
 
     by_component = {item.component: item for item in observations}
-    if set(by_component) != set(runtime_contract.bindings) or len(by_component) != len(observations):
+    if (
+        set(by_component) != set(runtime_contract.bindings)
+        or len(by_component) != len(observations)
+    ):
         violations.append(_violation(
             "runtime.binding_set.component_coverage",
             "observations",
@@ -410,7 +537,9 @@ def _psycopg_url(raw_url: str) -> str:
         raise ValueError("runtime database URL must include a database name")
     if not parsed.drivername.startswith("postgresql"):
         raise ValueError("runtime database URL must use PostgreSQL")
-    return parsed.set(drivername="postgresql+psycopg").render_as_string(hide_password=False)
+    return parsed.set(
+        drivername="postgresql+psycopg"
+    ).render_as_string(hide_password=False)
 
 
 def _capture_runtime_principal(
@@ -424,7 +553,11 @@ def _capture_runtime_principal(
         SELECT session_user::text AS session_user,
                current_user::text AS current_user,
                current_database()::text AS current_database,
-               current_setting('row_security')::text AS row_security
+               current_setting('row_security')::text AS row_security,
+               current_setting('statement_timeout')::text AS statement_timeout,
+               current_setting('lock_timeout')::text AS lock_timeout,
+               current_setting('idle_in_transaction_session_timeout')::text
+                   AS idle_in_transaction_session_timeout
     """)).mappings().one()
 
     role = connection.execute(text("""
@@ -433,7 +566,8 @@ def _capture_runtime_principal(
                rolcreaterole AS create_role,
                rolcreatedb AS create_db,
                rolreplication AS replication,
-               rolbypassrls AS bypass_rls
+               rolbypassrls AS bypass_rls,
+               rolconfig
         FROM pg_catalog.pg_roles
         WHERE rolname = session_user
     """)).mappings().one()
@@ -453,6 +587,26 @@ def _capture_runtime_principal(
         ORDER BY granted.rolname, grantor.rolname
     """)).mappings().all())
 
+    database_specific_settings = tuple(
+        {
+            "database": str(row["database_name"]),
+            "setting": str(row["setting"]),
+        }
+        for row in connection.execute(text("""
+            SELECT database_name.datname::text AS database_name,
+                   setting::text AS setting
+            FROM pg_catalog.pg_db_role_setting AS scoped
+            JOIN pg_catalog.pg_roles AS runtime_role
+              ON runtime_role.oid = scoped.setrole
+            JOIN pg_catalog.pg_database AS database_name
+              ON database_name.oid = scoped.setdatabase
+            CROSS JOIN LATERAL unnest(scoped.setconfig) AS setting
+            WHERE runtime_role.rolname = session_user
+              AND scoped.setdatabase <> 0
+            ORDER BY database_name.datname, setting
+        """)).mappings().all()
+    )
+
     semantic_checks: list[Mapping[str, Any]] = []
     for target in sorted(bundle.roles.get("managed_roles", {})):
         for semantic in SEMANTICS:
@@ -467,6 +621,10 @@ def _capture_runtime_principal(
                 "allowed": bool(allowed),
             })
 
+    current_settings = {
+        name: str(identity[name])
+        for name in GOVERNED_RUNTIME_SETTINGS
+    }
     return RuntimePrincipalObservation(
         component=component,
         configured_username=configured_username,
@@ -483,6 +641,9 @@ def _capture_runtime_principal(
         bypass_rls=bool(role["bypass_rls"]),
         memberships=memberships,
         semantic_checks=tuple(semantic_checks),
+        current_settings=current_settings,
+        role_settings=_parse_rolconfig(role["rolconfig"]),
+        database_specific_settings=database_specific_settings,
     )
 
 
@@ -495,7 +656,11 @@ def capture_runtime_url_observation(
     parsed = make_url(raw_url)
     configured_username = parsed.username or ""
     configured_database = parsed.database or ""
-    engine = create_engine(_psycopg_url(raw_url), poolclass=NullPool, pool_pre_ping=True)
+    engine = create_engine(
+        _psycopg_url(raw_url),
+        poolclass=NullPool,
+        pool_pre_ping=True,
+    )
     try:
         with engine.connect() as connection:
             return _capture_runtime_principal(
@@ -525,20 +690,26 @@ def attest_runtime_url_binding(
     runtime_contract = contract or load_runtime_binding_contract()
     cluster = bundle or load_contract_bundle()
     observation = capture_runtime_url_observation(component, raw_url, cluster)
-    violations = evaluate_runtime_principal_observation(observation, runtime_contract, cluster)
+    violations = evaluate_runtime_principal_observation(
+        observation, runtime_contract, cluster
+    )
     if violations:
         raise RuntimePrincipalAttestationError(_format_violations(violations))
     return observation
 
 
-def configured_runtime_urls(components: Sequence[str] | None = None) -> dict[str, str]:
+def configured_runtime_urls(
+    components: Sequence[str] | None = None,
+) -> dict[str, str]:
     contract = load_runtime_binding_contract()
     selected = tuple(components or contract.bindings)
     urls: dict[str, str] = {}
     for component in selected:
         binding = contract.bindings.get(component)
         if binding is None:
-            raise RuntimePrincipalAttestationError(f"Unknown P2D runtime component: {component!r}")
+            raise RuntimePrincipalAttestationError(
+                f"Unknown P2D runtime component: {component!r}"
+            )
         value = os.environ.get(binding.environment_variable, "").strip()
         if not value:
             raise RuntimePrincipalAttestationError(
@@ -554,7 +725,9 @@ def attest_configured_runtime_bindings(
     contract = load_runtime_binding_contract()
     contract_violations = validate_runtime_binding_contract(contract)
     if contract_violations:
-        raise RuntimePrincipalAttestationError(_format_violations(contract_violations))
+        raise RuntimePrincipalAttestationError(
+            _format_violations(contract_violations)
+        )
 
     urls = configured_runtime_urls(components)
     observations = tuple(
@@ -564,7 +737,9 @@ def attest_configured_runtime_bindings(
     if components is None:
         set_violations = evaluate_runtime_binding_set(observations, contract)
         if set_violations:
-            raise RuntimePrincipalAttestationError(_format_violations(set_violations))
+            raise RuntimePrincipalAttestationError(
+                _format_violations(set_violations)
+            )
     return observations
 
 
@@ -624,45 +799,92 @@ def validate_runtime_url_configuration(
     return tuple(sorted(set(violations)))
 
 
-def _cheap_identity_query(dbapi_connection) -> tuple[str, str, str, str]:
+def _cheap_identity_query(
+    dbapi_connection,
+) -> tuple[str, str, str, Mapping[str, str]]:
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute(
             "SELECT session_user::text, current_user::text, current_database()::text, "
-            "current_setting('row_security')::text"
+            "current_setting('row_security')::text, "
+            "current_setting('statement_timeout')::text, "
+            "current_setting('lock_timeout')::text, "
+            "current_setting('idle_in_transaction_session_timeout')::text"
         )
         row = cursor.fetchone()
         if row is None:
             raise RuntimePrincipalAttestationError(
                 "runtime identity guard returned no PostgreSQL identity row"
             )
-        return str(row[0]), str(row[1]), str(row[2]), str(row[3])
+        return (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            {
+                "row_security": str(row[3]),
+                "statement_timeout": str(row[4]),
+                "lock_timeout": str(row[5]),
+                "idle_in_transaction_session_timeout": str(row[6]),
+            },
+        )
     finally:
         cursor.close()
 
 
-def install_connection_identity_guard(engine: Engine, component: str, raw_url: str) -> None:
+def install_connection_identity_guard(
+    engine: Engine,
+    component: str,
+    raw_url: str,
+) -> None:
     """Install a cheap physical-connection and pool-checkout identity guard."""
 
     parsed = make_url(raw_url)
     expected_user = parsed.username or ""
     expected_database = parsed.database or ""
+    contract = load_runtime_binding_contract()
+    binding = contract.bindings.get(component)
+    if binding is None:
+        raise RuntimePrincipalAttestationError(
+            f"Unknown P2D runtime component for connection guard: {component!r}"
+        )
+    expected_settings = _normalized_settings(binding.session_settings)
 
     def _assert_identity(dbapi_connection) -> None:
-        session_user, current_user, database, row_security = _cheap_identity_query(dbapi_connection)
-        if session_user != expected_user:
-            raise RuntimePrincipalAttestationError(f"{component}: PostgreSQL session_user mismatch")
-        if current_user != session_user:
-            raise RuntimePrincipalAttestationError(f"{component}: pooled current_user is contaminated")
-        if database != expected_database:
-            raise RuntimePrincipalAttestationError(f"{component}: PostgreSQL database mismatch")
-        if row_security.lower() != "on":
-            raise RuntimePrincipalAttestationError(f"{component}: pooled row_security is disabled")
+        try:
+            session_user, current_user, database, settings = _cheap_identity_query(
+                dbapi_connection
+            )
+            normalized_settings = _normalized_settings(settings)
+            if session_user != expected_user:
+                raise RuntimePrincipalAttestationError(
+                    f"{component}: PostgreSQL session_user mismatch"
+                )
+            if current_user != session_user:
+                raise RuntimePrincipalAttestationError(
+                    f"{component}: pooled current_user is contaminated"
+                )
+            if database != expected_database:
+                raise RuntimePrincipalAttestationError(
+                    f"{component}: PostgreSQL database mismatch"
+                )
+            for name, expected in expected_settings.items():
+                if normalized_settings.get(name) != expected:
+                    raise RuntimePrincipalAttestationError(
+                        f"{component}: pooled {name} violates runtime identity contract"
+                    )
+        finally:
+            # Guard SELECTs must not leak an implicit DBAPI transaction into the
+            # SQLAlchemy connection handed to application code.
+            dbapi_connection.rollback()
 
     @event.listens_for(engine, "connect")
     def _on_connect(dbapi_connection, _connection_record) -> None:
         _assert_identity(dbapi_connection)
 
     @event.listens_for(engine, "checkout")
-    def _on_checkout(dbapi_connection, _connection_record, _connection_proxy) -> None:
+    def _on_checkout(
+        dbapi_connection,
+        _connection_record,
+        _connection_proxy,
+    ) -> None:
         _assert_identity(dbapi_connection)

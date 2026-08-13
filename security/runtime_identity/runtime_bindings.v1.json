@@ -16,7 +16,13 @@
       "direct_capabilities": [
         "app_runtime",
         "app_user"
-      ]
+      ],
+      "session_settings": {
+        "row_security": "on",
+        "statement_timeout": "5s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "15s"
+      }
     },
     "auth": {
       "environment_variable": "AUTH_DATABASE_URL",
@@ -25,21 +31,39 @@
         "auth_runtime",
         "app_runtime",
         "app_user"
-      ]
+      ],
+      "session_settings": {
+        "row_security": "on",
+        "statement_timeout": "5s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "15s"
+      }
     },
     "worker": {
       "environment_variable": "WORKER_DATABASE_URL",
       "runtime_capability": "worker_runtime",
       "direct_capabilities": [
         "worker_runtime"
-      ]
+      ],
+      "session_settings": {
+        "row_security": "on",
+        "statement_timeout": "15s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "30s"
+      }
     },
     "maintenance": {
       "environment_variable": "MAINTENANCE_DATABASE_URL",
       "runtime_capability": "lifecycle_maintenance_runtime",
       "direct_capabilities": [
         "lifecycle_maintenance_runtime"
-      ]
+      ],
+      "session_settings": {
+        "row_security": "on",
+        "statement_timeout": "15s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "30s"
+      }
     }
   },
   "rules": {
@@ -48,6 +72,7 @@
     "reject_unknown_direct_memberships": true,
     "require_row_security": true,
     "require_baseline_current_user": true,
-    "forbid_set_role_to_managed_roles": true
+    "forbid_set_role_to_managed_roles": true,
+    "reject_database_specific_settings": true
   }
 }
