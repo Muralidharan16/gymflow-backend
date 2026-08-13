@@ -312,11 +312,14 @@ async def test_access_control_via_dependency(client, test_data):
     ):
         return {"status": "ok", "user_id": str(staff.id)}
 
+    scoped_branches = [str(branch_id)]
     user1_token = create_access_token(
         str(user1_id),
         str(org_id),
         user1_email,
         role="trainer",
+        branch_ids=scoped_branches,
+        principal_type="organization_user",
     )
     response_user1 = await client.get(
         f"/branches/{branch_id}/test-trainer-endpoint",
@@ -330,6 +333,8 @@ async def test_access_control_via_dependency(client, test_data):
         str(org_id),
         user2_email,
         role="trainer",
+        branch_ids=scoped_branches,
+        principal_type="organization_user",
     )
     response_user2 = await client.get(
         f"/branches/{branch_id}/test-trainer-endpoint",
