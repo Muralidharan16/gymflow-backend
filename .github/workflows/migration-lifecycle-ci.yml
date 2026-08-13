@@ -88,7 +88,6 @@ jobs:
 
           GRANT app_rls_executor TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
           GRANT app_security_owner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
-          GRANT test_runner TO migration_owner WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
 
           CREATE DATABASE gymflow_lifecycle_test OWNER migration_owner;
           SQL
@@ -177,8 +176,7 @@ jobs:
             END IF;
 
             IF NOT pg_catalog.pg_has_role(current_user, 'app_security_owner', 'SET')
-               OR NOT pg_catalog.pg_has_role(current_user, 'app_rls_executor', 'SET')
-               OR NOT pg_catalog.pg_has_role(current_user, 'test_runner', 'SET') THEN
+               OR NOT pg_catalog.pg_has_role(current_user, 'app_rls_executor', 'SET') THEN
               RAISE EXCEPTION 'required bounded SET-only migration edges are missing';
             END IF;
           END
