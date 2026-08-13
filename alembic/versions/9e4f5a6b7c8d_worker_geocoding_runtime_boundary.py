@@ -71,7 +71,12 @@ def _require_geocoding_failure_function(bind) -> None:
             owner.rolname::text AS owner_name,
             p.prosecdef,
             p.proconfig,
-            p.proargtypes::oid[] = ARRAY[
+            ARRAY(
+                SELECT arg_oid
+                FROM pg_catalog.unnest(p.proargtypes::oid[])
+                    WITH ORDINALITY AS args(arg_oid, ord)
+                ORDER BY ord
+            ) = ARRAY[
                 'pg_catalog.uuid'::pg_catalog.regtype::oid,
                 'pg_catalog.uuid'::pg_catalog.regtype::oid,
                 'pg_catalog.text'::pg_catalog.regtype::oid,
