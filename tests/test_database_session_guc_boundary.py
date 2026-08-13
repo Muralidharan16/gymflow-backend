@@ -72,124 +72,55 @@ def test_initializer_does_not_end_context_before_request_work_begins() -> None:
     assert "rollback(" not in initializer
 
 
-def test_pytest_forced_rls_cleanup_is_transactional_and_test_runner_only() -> None:
-    source = TEST_DB_CLEANUP.read_text(encoding="utf-8")
+def test_obsolete_forced_rls_cleanup_privilege_bridge_is_absent() -> None:
+    """Fixture cleanup must not manufacture a database capability production lacks."""
+    assert not TEST_DB_CLEANUP.exists(), (
+        "tests/db_cleanup.py must not reintroduce the obsolete branch-state "
+        "hard-delete privilege bridge"
+    )
 
-    required = (
-        '"test" not in str(identity["database_name"]).lower()',
-        'identity["session_name"] != "migration_owner"',
-        "migration_role.rolbypassrls AS migration_bypassrls",
-        "runner_role.rolbypassrls AS runner_bypassrls",
-        "pg_catalog.pg_has_role(",
-        '"app_runtime"',
-        '"auth_runtime"',
-        '"worker_runtime"',
-        '"lifecycle_maintenance_runtime"',
-        'trace_id="pytest-forced-rls-cleanup"',
-        'role="superadmin"',
+    forbidden_tokens = (
         "GRANT DELETE ON TABLE public.org_branch_state TO test_runner",
         "GRANT SELECT (org_id) ON TABLE public.org_branch_state TO test_runner",
         "CREATE POLICY pytest_org_branch_state_cleanup_select",
-        "FOR SELECT TO test_runner",
         "CREATE POLICY pytest_org_branch_state_cleanup_delete",
-        "FOR DELETE TO test_runner",
-        "current_setting('app.current_org_id', true)",
-        "current_setting('app.current_role', true) = 'superadmin'",
         "SET LOCAL ROLE test_runner",
-        "SELECT count(*) FROM public.org_branch_state WHERE org_id = :org_id",
-        "DELETE FROM public.org_branch_state WHERE org_id = :org_id",
-        "delete_result.rowcount != visible_before",
-        "visible_after != 0",
-        "RESET ROLE",
-        "DROP POLICY pytest_org_branch_state_cleanup_delete",
-        "DROP POLICY pytest_org_branch_state_cleanup_select",
-        "REVOKE SELECT (org_id) ON TABLE public.org_branch_state FROM test_runner",
-        "REVOKE DELETE ON TABLE public.org_branch_state FROM test_runner",
-        '"pytest cleanup capability was not fully removed before commit"',
+        "DELETE FROM public.org_branch_state",
     )
-    for token in required:
-        assert token in source
+    offenders: list[str] = []
 
-    grant_delete = source.index(
-        "GRANT DELETE ON TABLE public.org_branch_state TO test_runner"
-    )
-    create_select = source.index(
-        "CREATE POLICY pytest_org_branch_state_cleanup_select"
-    )
-    create_delete = source.index(
-        "CREATE POLICY pytest_org_branch_state_cleanup_delete"
-    )
-    set_runner = source.index("SET LOCAL ROLE test_runner")
-    visible_before = source.index(
-        "SELECT count(*) FROM public.org_branch_state WHERE org_id = :org_id"
-    )
-    delete_row = source.index("DELETE FROM public.org_branch_state WHERE org_id = :org_id")
-    rowcount_guard = source.index("delete_result.rowcount != visible_before")
-    visible_after = source.index(
-        "SELECT count(*) FROM public.org_branch_state WHERE org_id = :org_id",
-        visible_before + 1,
-    )
-    reset_role = source.index("RESET ROLE", set_runner)
-    drop_delete = source.index(
-        "DROP POLICY pytest_org_branch_state_cleanup_delete"
-    )
-    drop_select = source.index(
-        "DROP POLICY pytest_org_branch_state_cleanup_select"
-    )
-    revoke_delete = source.index(
-        "REVOKE DELETE ON TABLE public.org_branch_state FROM test_runner"
-    )
-
-    assert grant_delete < create_select < create_delete < set_runner
-    assert set_runner < visible_before < delete_row < rowcount_guard < visible_after
-    assert visible_after < reset_role < drop_delete < drop_select < revoke_delete
-
-    for forbidden in (
-        "SET LOCAL ROLE app_runtime",
-        "SET ROLE app_runtime",
-        "SET ROLE app_rls_executor",
-        "SET ROLE app_security_owner",
-        "GRANT DELETE ON TABLE public.org_branch_state TO app_runtime",
-        "GRANT SELECT ON TABLE public.org_branch_state TO test_runner",
-        "GRANT DELETE ON TABLE public.org_branches",
-        "GRANT DELETE ON TABLE public.organizations",
-        "GRANT DELETE ON TABLE public.gym_owners",
-        "DISABLE ROW LEVEL SECURITY",
-        "row_security = off",
-        "TRUNCATE",
-        "CASCADE",
-    ):
-        assert forbidden not in source
-
-
-def test_no_test_module_bypasses_forced_rls_branch_state_cleanup_helper() -> None:
-    direct_delete = "DELETE FROM public.org_branch_state"
-    offenders = []
-
-    for path in sorted(TESTS.glob("test_*.py")):
+    for path in sorted(TESTS.glob("*.py")):
         if path.resolve() == THIS_TEST:
             continue
-        if direct_delete in path.read_text(encoding="utf-8"):
+        source = path.read_text(encoding="utf-8")
+        if any(token in source for token in forbidden_tokens):
             offenders.append(path.name)
 
     assert offenders == [], (
-        "forced-RLS org_branch_state teardown must route through "
-        f"tests/db_cleanup.py; direct cleanup remains in: {offenders}"
+        "branch-state fixture teardown must use isolated disposable test data, "
+        f"not a test-only privilege/RLS bridge; offenders={offenders}"
     )
 
 
-def test_branch_management_routes_forced_rls_child_cleanup_through_helper() -> None:
+def test_branch_management_uses_isolated_disposable_fixture_roots() -> None:
     source = BRANCH_MANAGEMENT.read_text(encoding="utf-8")
-    cleanup_start = source.index("async def cleanup_branch_management_fixture")
-    cleanup_end = source.index("@pytest_asyncio.fixture", cleanup_start)
-    cleanup = source[cleanup_start:cleanup_end]
 
-    assert "delete_org_branch_state_fixture(" in cleanup
-    assert "DELETE FROM public.org_branch_state" not in cleanup
-    assert "TRUNCATE" not in cleanup
+    assert "async def cleanup_branch_management_fixture" not in source
+    assert "delete_org_branch_state_fixture" not in source
+    assert "DELETE FROM public.org_branch_state" not in source
+    assert "DELETE FROM public.org_branches" not in source
+    assert "DELETE FROM public.gym_owners" not in source
+    assert "DELETE FROM public.organizations" not in source
+    assert "TRUNCATE" not in source
+    assert "CASCADE" not in source
 
-    child_cleanup = cleanup.index("delete_org_branch_state_fixture(")
-    parent_cleanup = cleanup.index("DELETE FROM public.org_branches")
-    owner_cleanup = cleanup.index("DELETE FROM public.gym_owners")
-    tenant_cleanup = cleanup.index("DELETE FROM public.organizations")
-    assert child_cleanup < parent_cleanup < owner_cleanup < tenant_cleanup
+    # The fixture must document the production-shaped isolation decision rather
+    # than silently omitting teardown.
+    for token in (
+        "fresh UUID-scoped tenant data",
+        "disposable CI database",
+        "test-only grants",
+        "temporary RLS policies",
+        "hidden cascades",
+    ):
+        assert token in source
