@@ -12,7 +12,6 @@ from app.models.organization import Organization
 from app.models.org_branch import OrgBranch, OrgBranchState
 from app.models.staff import GymOwner
 from conftest import AdminTestSessionLocal, AuthTestSessionLocal, assert_test_database
-from db_cleanup import delete_org_branch_state_fixture
 
 
 STATUSES = (
@@ -46,6 +45,13 @@ async def _set_context(session, org_id: uuid.UUID, actor_id: uuid.UUID, role: st
 
 @pytest_asyncio.fixture
 async def branch_read_matrix_fixture():
+    """Seed one UUID-isolated tenant matrix in the disposable CI database.
+
+    Branch roots intentionally have no production hard-delete capability. The
+    fixture therefore leaves its UUID-scoped rows for database teardown instead
+    of manufacturing test-only grants, temporary RLS policies, SET ROLE edges,
+    or hidden cascades that do not exist in production.
+    """
     assert AuthTestSessionLocal is not None
 
     org_id = uuid.uuid4()
@@ -55,7 +61,13 @@ async def branch_read_matrix_fixture():
     async with AdminTestSessionLocal() as session:
         await session.execute(text("RESET ROLE"))
         await assert_test_database(session)
-        session.add(Organization(id=org_id, name="Branch Read Matrix", max_branches=10))
+        session.add(
+            Organization(
+                id=org_id,
+                name=f"Branch Read Matrix {org_id.hex[:12]}",
+                max_branches=10,
+            )
+        )
         await session.flush()
         await _set_context(session, org_id, owner_id, "owner")
         session.add(
@@ -104,29 +116,6 @@ async def branch_read_matrix_fixture():
         await session.commit()
 
     yield {"org_id": org_id, "owner_id": owner_id, "branch_ids": branch_ids}
-
-    async with AdminTestSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
-        await assert_test_database(session)
-        await _set_context(session, org_id, owner_id, "superadmin")
-        await delete_org_branch_state_fixture(
-            session,
-            org_id=org_id,
-            actor_id=owner_id,
-        )
-        await session.execute(
-            text("DELETE FROM public.org_branches WHERE org_id = :org_id"),
-            {"org_id": org_id},
-        )
-        await session.execute(
-            text("DELETE FROM public.gym_owners WHERE org_id = :org_id"),
-            {"org_id": org_id},
-        )
-        await session.execute(
-            text("DELETE FROM public.organizations WHERE id = :org_id"),
-            {"org_id": org_id},
-        )
-        await session.commit()
 
 
 @pytest.mark.asyncio
