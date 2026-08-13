@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import ast
 from pathlib import Path
 
 
@@ -6,6 +9,7 @@ DATABASE = ROOT / "app/core/database.py"
 TESTS = ROOT / "tests"
 TEST_DB_CLEANUP = TESTS / "db_cleanup.py"
 BRANCH_MANAGEMENT = TESTS / "test_branch_management.py"
+BRANCH_READ_MATRIX = TESTS / "test_branch_read_rls_matrix.py"
 THIS_TEST = Path(__file__).resolve()
 
 
@@ -102,11 +106,39 @@ def test_obsolete_forced_rls_cleanup_privilege_bridge_is_absent() -> None:
     )
 
 
-def test_branch_management_uses_isolated_disposable_fixture_roots() -> None:
-    source = BRANCH_MANAGEMENT.read_text(encoding="utf-8")
+def test_no_test_imports_or_calls_obsolete_branch_state_cleanup_helper() -> None:
+    offenders: list[str] = []
+
+    for path in sorted(TESTS.glob("*.py")):
+        if path.resolve() == THIS_TEST:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "db_cleanup":
+                offenders.append(path.name)
+                break
+            if isinstance(node, ast.Import) and any(
+                alias.name == "db_cleanup" for alias in node.names
+            ):
+                offenders.append(path.name)
+                break
+            if (
+                isinstance(node, ast.Name)
+                and node.id == "delete_org_branch_state_fixture"
+            ):
+                offenders.append(path.name)
+                break
+
+    assert offenders == [], (
+        "tests must not depend on the removed branch-state privilege bridge; "
+        f"offenders={offenders}"
+    )
+
+
+def _assert_disposable_branch_fixture(path: Path) -> None:
+    source = path.read_text(encoding="utf-8")
     normalized = " ".join(source.split())
 
-    assert "async def cleanup_branch_management_fixture" not in source
     assert "delete_org_branch_state_fixture" not in source
     assert "DELETE FROM public.org_branch_state" not in source
     assert "DELETE FROM public.org_branches" not in source
@@ -115,14 +147,21 @@ def test_branch_management_uses_isolated_disposable_fixture_roots() -> None:
     assert "TRUNCATE" not in source
     assert "CASCADE" not in source
 
-    # The fixture must document the production-shaped isolation decision rather
-    # than silently omitting teardown. Normalize formatting so this contract is
-    # semantic rather than dependent on comment/docstring line wrapping.
     for token in (
-        "fresh UUID-scoped tenant data",
+        "UUID-scoped",
         "disposable CI database",
         "test-only grants",
         "temporary RLS policies",
         "hidden cascades",
     ):
         assert token in normalized
+
+
+def test_branch_management_uses_isolated_disposable_fixture_roots() -> None:
+    source = BRANCH_MANAGEMENT.read_text(encoding="utf-8")
+    assert "async def cleanup_branch_management_fixture" not in source
+    _assert_disposable_branch_fixture(BRANCH_MANAGEMENT)
+
+
+def test_branch_read_matrix_uses_isolated_disposable_fixture_roots() -> None:
+    _assert_disposable_branch_fixture(BRANCH_READ_MATRIX)
