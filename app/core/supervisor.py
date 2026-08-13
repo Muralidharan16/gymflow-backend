@@ -3,33 +3,25 @@ app/core/supervisor.py
 =======================
 Structured background task supervision tree for the Doers SaaS platform.
 
-Implements:
-  • BackgroundWorkerSupervisor — supervisor with restart budget, exponential backoff,
-    graceful shutdown via asyncio.Event (.set(), NOT .is_set()).
-  • OTel context-carrying task creation (create_traced_task).
-  • Registration of all platform background workers.
+The FastAPI process owns only API-bound background coroutines. PostgreSQL
+partition DDL is infrastructure-owned and is intentionally absent from this
+supervisor. P2D attests the API/auth database bindings before any supervised
+database work starts.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger("doers.supervisor")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# OTel context-carrying task factory
-# ─────────────────────────────────────────────────────────────────────────────
-
 try:
     import contextvars
     from opentelemetry import context as otel_context
     from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-
     _PROPAGATOR = TraceContextTextMapPropagator()
     _OTEL_AVAILABLE = True
 except ImportError:
@@ -37,65 +29,38 @@ except ImportError:
 
 
 def create_traced_task(coro, *, name: Optional[str] = None) -> asyncio.Task:
-    """
-    Creates an asyncio.Task that inherits the current OTel trace context.
-    Use instead of asyncio.create_task() for background fan-out so spans
-    remain stitched to the parent trace.
-    """
     if not _OTEL_AVAILABLE:
         return asyncio.create_task(coro, name=name)
-
-    carrier  = {}
+    carrier = {}
     _PROPAGATOR.inject(carrier)
     ctx_copy = contextvars.copy_context()
 
     async def traced_wrapper():
         extracted = _PROPAGATOR.extract(carrier)
-        token     = otel_context.attach(extracted)
+        token = otel_context.attach(extracted)
         try:
             return await coro
         finally:
             otel_context.detach(token)
-
     return asyncio.create_task(ctx_copy.run(traced_wrapper), name=name)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Supervisor
-# ─────────────────────────────────────────────────────────────────────────────
-
 class BackgroundWorkerSupervisor:
-    """
-    Structured concurrency supervisor for background workers.
-
-    Features:
-      • Restart budget (MAX_RESTARTS per worker) — prevents immortal crash loops.
-      • Exponential restart backoff up to 120s ceiling.
-      • Cooperative shutdown via asyncio.Event.set() — NOT .is_set().
-      • Respects asyncio.CancelledError for clean Kubernetes pod drains.
-    """
-    _MAX_RESTARTS       = 10
+    _MAX_RESTARTS = 10
     _BASE_RESTART_DELAY = 5.0
 
     def __init__(self):
         self.tasks: list[asyncio.Task] = []
         self._shutdown_event = asyncio.Event()
 
-    async def start_worker(
-        self,
-        name: str,
-        coro_fn: Callable[..., Awaitable],
-        *args,
-        **kwargs,
-    ):
+    async def start_worker(self, name: str, coro_fn: Callable[..., Awaitable], *args, **kwargs):
         async def wrapper():
-            restarts    = 0
+            restarts = 0
             restart_gap = self._BASE_RESTART_DELAY
             while not self._shutdown_event.is_set():
                 try:
                     await coro_fn(*args, **kwargs)
-                    # Clean return — reset restart budget
-                    restarts    = 0
+                    restarts = 0
                     restart_gap = self._BASE_RESTART_DELAY
                 except asyncio.CancelledError:
                     logger.info("Worker '%s' cancelled cleanly.", name)
@@ -103,40 +68,24 @@ class BackgroundWorkerSupervisor:
                 except Exception as exc:
                     restarts += 1
                     if restarts > self._MAX_RESTARTS:
-                        logger.critical(
-                            "Worker '%s' exceeded restart budget (%d). Giving up permanently.",
-                            name, self._MAX_RESTARTS,
-                            exc_info=True,
-                        )
+                        logger.critical("Worker '%s' exceeded restart budget (%d). Giving up permanently.", name, self._MAX_RESTARTS, exc_info=True)
                         return
                     restart_gap = min(120.0, restart_gap * 2)
-                    logger.error(
-                        "Worker '%s' crashed (attempt %d/%d). Restarting in %.1fs: %s",
-                        name, restarts, self._MAX_RESTARTS, restart_gap, exc,
-                    )
+                    logger.error("Worker '%s' crashed (attempt %d/%d). Restarting in %.1fs: %s", name, restarts, self._MAX_RESTARTS, restart_gap, exc)
                     try:
-                        await asyncio.wait_for(
-                            self._shutdown_event.wait(), timeout=restart_gap
-                        )
-                        return  # shutdown requested during backoff window
+                        await asyncio.wait_for(self._shutdown_event.wait(), timeout=restart_gap)
+                        return
                     except asyncio.TimeoutError:
                         pass
-
         task = asyncio.create_task(wrapper(), name=name)
         self.tasks.append(task)
         logger.info("Supervisor started worker: %s", name)
 
     async def graceful_shutdown(self, drain_timeout: float = 30.0):
-        """
-        Signal all workers to stop and wait for clean termination.
-        Hard-cancels any worker that does not drain within drain_timeout.
-        """
         logger.info("Initiating graceful supervisor shutdown...")
-        self._shutdown_event.set()   # ← .set(), NOT .is_set()
-
+        self._shutdown_event.set()
         for task in self.tasks:
             task.cancel()
-
         results = await asyncio.gather(*self.tasks, return_exceptions=True)
         for name, result in zip([t.get_name() for t in self.tasks], results):
             if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
@@ -144,22 +93,12 @@ class BackgroundWorkerSupervisor:
         logger.info("All supervised workers drained. Supervisor shutdown complete.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Global supervisor singleton
-# ─────────────────────────────────────────────────────────────────────────────
-
 supervisor = BackgroundWorkerSupervisor()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Background worker coroutines
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def _zombie_reclaim_loop():
-    """Reclaim crashed idempotency winners every 60s."""
     from app.core.database import AsyncSessionLocal
     from app.core.idempotency import IdempotencyEngine
-
     while True:
         try:
             async with asyncio.timeout(10):
@@ -175,10 +114,8 @@ async def _zombie_reclaim_loop():
 
 
 async def _anchor_key_archive_loop():
-    """Archive expired completed idempotency anchor keys every 6 hours."""
     from app.core.database import AsyncSessionLocal
     from app.core.idempotency import IdempotencyEngine
-
     while True:
         await asyncio.sleep(6 * 3600)
         try:
@@ -191,9 +128,7 @@ async def _anchor_key_archive_loop():
 
 
 async def _lock_registry_sweep_loop():
-    """Sweep stale lock registry entries every 5 minutes."""
     from app.core.crypto import EnvelopeEncryptionProvider
-
     while True:
         await asyncio.sleep(300)
         try:
@@ -208,9 +143,7 @@ async def _lock_registry_sweep_loop():
 
 
 async def _kms_bulkhead_sweep_loop():
-    """Sweep idle KMS bulkhead breakers every 10 minutes."""
     from app.core.crypto import kms_bulkhead
-
     while True:
         await asyncio.sleep(600)
         try:
@@ -221,88 +154,52 @@ async def _kms_bulkhead_sweep_loop():
             logger.error("KMS bulkhead sweep error: %s", exc)
 
 
-async def _partition_lifecycle_loop():
-    """Pre-create upcoming partitions and detach expired ones weekly."""
-    from app.core.database import async_engine
-    from app.core.partition_manager import OutboxPartitionLifecycleManager
-
-    manager = OutboxPartitionLifecycleManager(retention_weeks=8)
-    while True:
-        try:
-            async with asyncio.timeout(300):
-                await manager.run_lifecycle(async_engine)
-        except asyncio.TimeoutError:
-            logger.warning("Partition lifecycle run timed out.")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.error("Partition lifecycle error: %s", exc)
-        await asyncio.sleep(7 * 24 * 3600)   # run weekly
-
-
 async def _dek_registry_startup():
-    """Register the DEK registry DB lookup function into EnvelopeEncryptionProvider."""
     from app.core.crypto import EnvelopeEncryptionProvider
     from app.core.database import AsyncSessionLocal
 
     async def _db_dek_lookup(tenant_id: str, key_version: int) -> bytes:
         async with AsyncSessionLocal() as db:
             import sqlalchemy as sa
-            res = await db.execute(
-                sa.text("""
-                    SELECT encrypted_dek FROM public.encryption_key_registry
-                    WHERE tenant_id = :tid AND key_version = :ver
-                """),
-                {"tid": tenant_id, "ver": key_version},
-            )
+            res = await db.execute(sa.text("""
+                SELECT encrypted_dek FROM public.encryption_key_registry
+                WHERE tenant_id = :tid AND key_version = :ver
+            """), {"tid": tenant_id, "ver": key_version})
             row = res.fetchone()
             if not row:
                 raise ValueError(f"DEK not found: tenant={tenant_id} version={key_version}")
             return bytes(row.encrypted_dek)
-
     EnvelopeEncryptionProvider.register_dek_lookup(_db_dek_lookup)
     logger.info("DEK registry lookup registered into EnvelopeEncryptionProvider.")
 
 
 async def _wfq_start_loop():
-    """Keeps the WFQ dispatch loop running."""
     from app.core.concurrency import fair_queue
     fair_queue.start()
-    # Block indefinitely — the WFQ task is self-managing
     await asyncio.Event().wait()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# lifespan integration
-# ─────────────────────────────────────────────────────────────────────────────
+async def _attest_fastapi_database_bindings() -> None:
+    from app.core.config import settings
+    if not settings.is_production:
+        return
+    from app.core.runtime_principal_attestation import attest_configured_runtime_bindings
+    await asyncio.to_thread(attest_configured_runtime_bindings, ("api", "auth"))
+
 
 @asynccontextmanager
 async def platform_lifespan():
-    """
-    Async context manager for FastAPI lifespan.
-    Registers all platform background workers under the supervisor tree.
-
-    Usage in main.py:
-        @asynccontextmanager
-        async def lifespan(app):
-            async with platform_lifespan():
-                yield
-    """
-    # One-shot startup tasks (run once, no restart loop)
+    await _attest_fastapi_database_bindings()
     await _dek_registry_startup()
-
-    # Supervised long-running workers
-    await supervisor.start_worker("zombie_reclaim",      _zombie_reclaim_loop)
-    await supervisor.start_worker("anchor_key_archive",  _anchor_key_archive_loop)
+    await supervisor.start_worker("zombie_reclaim", _zombie_reclaim_loop)
+    await supervisor.start_worker("anchor_key_archive", _anchor_key_archive_loop)
     await supervisor.start_worker("lock_registry_sweep", _lock_registry_sweep_loop)
-    await supervisor.start_worker("kms_bulkhead_sweep",  _kms_bulkhead_sweep_loop)
-    await supervisor.start_worker("partition_lifecycle", _partition_lifecycle_loop)
-    await supervisor.start_worker("wfq_dispatcher",      _wfq_start_loop)
-    await supervisor.start_worker("maps_stale_sweep",    _maps_stale_verification_loop)
+    await supervisor.start_worker("kms_bulkhead_sweep", _kms_bulkhead_sweep_loop)
+    await supervisor.start_worker("wfq_dispatcher", _wfq_start_loop)
+    await supervisor.start_worker("maps_stale_sweep", _maps_stale_verification_loop)
     await supervisor.start_worker("places_cache_cleanup", _places_cache_cleanup_loop)
-    await supervisor.start_worker("maps_retry_sweep",    _maps_retry_verification_loop)
-
-    logger.info("Platform supervisor: all workers started.")
+    await supervisor.start_worker("maps_retry_sweep", _maps_retry_verification_loop)
+    logger.info("Platform supervisor: all API-owned workers started.")
     try:
         yield
     finally:
@@ -310,13 +207,10 @@ async def platform_lifespan():
 
 
 async def _maps_stale_verification_loop():
-    """Mark verified maps data as stale after 30 days. Daily + jitter."""
     from app.core.database import AsyncSessionLocal
     import sqlalchemy as sa
     import random
-
     while True:
-        # 24 hours + jitter (-1800 to 1800 seconds)
         sleep_secs = 24 * 3600 + random.randint(-1800, 1800)
         await asyncio.sleep(sleep_secs)
         try:
@@ -337,13 +231,10 @@ async def _maps_stale_verification_loop():
 
 
 async def _places_cache_cleanup_loop():
-    """Delete expired cache rows. Nightly + jitter."""
     from app.core.database import AsyncSessionLocal
     import sqlalchemy as sa
     import random
-
     while True:
-        # 24 hours + jitter (-1800 to 1800 seconds)
         sleep_secs = 24 * 3600 + random.randint(-1800, 1800)
         await asyncio.sleep(sleep_secs)
         try:
@@ -362,16 +253,11 @@ async def _places_cache_cleanup_loop():
 
 
 async def _maps_retry_verification_loop():
-    """
-    Periodic sweep for addresses pending retry verification.
-    Uses FOR UPDATE SKIP LOCKED to prevent duplicate work.
-    """
     from app.core.database import AsyncSessionLocal
     import sqlalchemy as sa
     from app.tasks.geocoding import geocode_address_task
-
     while True:
-        await asyncio.sleep(300) # every 5 minutes
+        await asyncio.sleep(300)
         try:
             async with AsyncSessionLocal() as db:
                 result = await db.execute(sa.text("""
@@ -387,19 +273,15 @@ async def _maps_retry_verification_loop():
                     FOR UPDATE SKIP LOCKED
                 """))
                 rows = result.fetchall()
-
                 for row in rows:
-                    # Update maps_next_retry_at ahead to avoid re-sweeping in next loop
                     await db.execute(sa.text("""
                         UPDATE organization_addresses
                         SET maps_next_retry_at = now() + interval '10 minutes'
                         WHERE id = :addr_id
                     """), {"addr_id": row.id})
                     geocode_address_task.delay(str(row.id))
-
                 await db.commit()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.error("Maps retry verification sweep error: %s", exc)
-

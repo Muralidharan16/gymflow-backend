@@ -15,7 +15,7 @@ class GeocodingAPIError(Exception):
 
 
 async def _geocode_address_task_async(address_id: str) -> None:
-    from app.core.database import AsyncSessionLocal
+    from app.core.database import worker_async_session_maker
     from app.models.address import OrganizationAddress
     from app.models.notification import Notification
     from app.services.maps_service import (
@@ -27,7 +27,7 @@ async def _geocode_address_task_async(address_id: str) -> None:
         _deterministic_lineage_id
     )
 
-    async with AsyncSessionLocal() as db:
+    async with worker_async_session_maker() as db:
         try:
             stmt = select(OrganizationAddress).where(OrganizationAddress.id == address_id)
             res = await db.execute(stmt)
@@ -58,7 +58,6 @@ async def _geocode_address_task_async(address_id: str) -> None:
                         addr.formatted_address = data["formatted_address"]
                         addr.is_verified = True
                         addr.geocoding_failed = False
-                        
                         transition_maps_state(
                             addr,
                             new_status=MapsVerificationStatus.verified,
@@ -76,7 +75,6 @@ async def _geocode_address_task_async(address_id: str) -> None:
                         err_msg = MapsVerificationError.NETWORK_ERROR
 
                     addr.maps_retry_count += 1
-                    
                     is_permanent = err_msg in (
                         MapsVerificationError.PLACE_NOT_FOUND,
                         MapsVerificationError.INVALID_PLACE_ID,
@@ -124,8 +122,7 @@ async def _geocode_address_task_async(address_id: str) -> None:
                         addr.maps_verification_error = err_msg
 
                     await db.commit()
-                    logger.warning("Google Place ID verification failed for %s (error: %s, retry: %d)", 
-                                   address_id, err_msg, addr.maps_retry_count)
+                    logger.warning("Google Place ID verification failed for %s (error: %s, retry: %d)", address_id, err_msg, addr.maps_retry_count)
         except Exception as exc:
             logger.warning(f"Geocoding API attempt failed: {str(exc)}")
             await db.rollback()
@@ -139,28 +136,24 @@ async def _geocode_address_task_async(address_id: str) -> None:
     default_retry_delay=60
 )
 def geocode_address_task(self, address_id: str) -> None:
-    """
-    Synchronous Celery geocoding background task with retry policy and max retry notifications.
-    """
     logger.info(f"Geocoding address with ID: {address_id}")
 
-    from app.core.database import SessionLocal
+    from app.core.database import WorkerSyncSessionLocal
     from app.models.address import OrganizationAddress, MemberAddress
     from app.models.notification import Notification
 
-    if not SessionLocal:
-        logger.error("Sync database session not available.")
-        return
+    if not WorkerSyncSessionLocal:
+        raise RuntimeError("Worker sync database session is unavailable")
 
     has_place_id = False
-    with SessionLocal() as db:
+    with WorkerSyncSessionLocal() as db:
         try:
             addr = db.query(OrganizationAddress).filter(OrganizationAddress.id == address_id).first()
             is_org = True
             if not addr:
                 addr = db.query(MemberAddress).filter(MemberAddress.id == address_id).first()
                 is_org = False
-                
+
             if not addr:
                 logger.error(f"Address with ID {address_id} not found in DB.")
                 return
@@ -169,7 +162,6 @@ def geocode_address_task(self, address_id: str) -> None:
                 has_place_id = True
 
             if not has_place_id:
-                # Run legacy sync flow right here in the same block to match expected query count
                 if getattr(addr, "address_line1", "") == "FAIL" or "FAIL" in getattr(addr, "address_line1", ""):
                     raise GeocodingAPIError("Simulated external Maps API connection failure")
 
@@ -186,13 +178,13 @@ def geocode_address_task(self, address_id: str) -> None:
                     self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
                 except MaxRetriesExceededError as max_exc:
                     logger.error(f"Max retries exhausted for address {address_id}")
-                    
+
                     addr = db.query(OrganizationAddress).filter(OrganizationAddress.id == address_id).first()
                     is_org = True
                     if not addr:
                         addr = db.query(MemberAddress).filter(MemberAddress.id == address_id).first()
                         is_org = False
-                        
+
                     if addr:
                         addr.is_verified = False
                         addr.geocoding_failed = True

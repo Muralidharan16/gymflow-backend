@@ -32,7 +32,6 @@ class Settings(BaseSettings):
     # ── Email ──────────────────────────────────────
     MAIL_PROVIDER: str = "smtp"
     MAIL_FROM: str = "noreply@doers.io"
-
     MAIL_SERVER: str = "sandbox.smtp.mailtrap.io"
     MAIL_PORT: int = 587
     MAIL_USERNAME: str = ""
@@ -83,34 +82,32 @@ class Settings(BaseSettings):
                     "AUTH_DATABASE_URL is required in production so auth/bootstrap "
                     "does not share the ordinary application database identity"
                 )
-            if self.AUTH_DATABASE_URL == self.DATABASE_URL:
-                raise ValueError(
-                    "AUTH_DATABASE_URL must use a distinct production database identity"
-                )
             if not self.WORKER_DATABASE_URL:
                 raise ValueError(
                     "WORKER_DATABASE_URL is required in production so asynchronous "
                     "workers do not reuse API or auth credentials"
-                )
-            if self.WORKER_DATABASE_URL in {
-                self.DATABASE_URL,
-                self.AUTH_DATABASE_URL,
-            }:
-                raise ValueError(
-                    "WORKER_DATABASE_URL must use a distinct production database identity"
                 )
             if not self.MAINTENANCE_DATABASE_URL:
                 raise ValueError(
                     "MAINTENANCE_DATABASE_URL is required in production so lifecycle "
                     "watchdog/reconciliation sweeps do not reuse API, auth, or worker credentials"
                 )
-            if self.MAINTENANCE_DATABASE_URL in {
-                self.DATABASE_URL,
-                self.AUTH_DATABASE_URL,
-                self.WORKER_DATABASE_URL,
-            }:
+
+            from app.core.runtime_principal_attestation import validate_runtime_url_configuration
+
+            violations = validate_runtime_url_configuration({
+                "api": self.DATABASE_URL,
+                "auth": self.AUTH_DATABASE_URL,
+                "worker": self.WORKER_DATABASE_URL,
+                "maintenance": self.MAINTENANCE_DATABASE_URL,
+            })
+            if violations:
+                detail = "; ".join(
+                    f"[{item.code}] {item.subject}: {item.message}"
+                    for item in violations
+                )
                 raise ValueError(
-                    "MAINTENANCE_DATABASE_URL must use a distinct production database identity"
+                    "Production database identity configuration is unsafe: " + detail
                 )
         return self
 

@@ -1,0 +1,53 @@
+{
+  "contract_id": "doers-postgresql-runtime-bindings-v1",
+  "schema_version": 1,
+  "approved_grantors": [
+    "postgres"
+  ],
+  "membership_options": {
+    "admin_option": false,
+    "inherit_option": true,
+    "set_option": false
+  },
+  "bindings": {
+    "api": {
+      "environment_variable": "DATABASE_URL",
+      "runtime_capability": "app_runtime",
+      "direct_capabilities": [
+        "app_runtime",
+        "app_user"
+      ]
+    },
+    "auth": {
+      "environment_variable": "AUTH_DATABASE_URL",
+      "runtime_capability": "auth_runtime",
+      "direct_capabilities": [
+        "auth_runtime",
+        "app_runtime",
+        "app_user"
+      ]
+    },
+    "worker": {
+      "environment_variable": "WORKER_DATABASE_URL",
+      "runtime_capability": "worker_runtime",
+      "direct_capabilities": [
+        "worker_runtime"
+      ]
+    },
+    "maintenance": {
+      "environment_variable": "MAINTENANCE_DATABASE_URL",
+      "runtime_capability": "lifecycle_maintenance_runtime",
+      "direct_capabilities": [
+        "lifecycle_maintenance_runtime"
+      ]
+    }
+  },
+  "rules": {
+    "runtime_logins_are_distinct": true,
+    "all_runtime_logins_target_same_database": true,
+    "reject_unknown_direct_memberships": true,
+    "require_row_security": true,
+    "require_baseline_current_user": true,
+    "forbid_set_role_to_managed_roles": true
+  }
+}

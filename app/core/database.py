@@ -20,13 +20,13 @@ Key design decisions:
   • Celery's synchronous task wrappers create short-lived asyncio loops, so worker
     and maintenance async engines use NullPool: asyncpg connections are never
     reused by a later task running on a different event loop.
+  • Legacy synchronous Celery tasks use a dedicated worker Psycopg 3 engine;
+    the API synchronous compatibility engine is never a worker credential source.
   • API and background transactions have separate bounded timeout budgets;
     installing internal-maintenance context must never silently replace the
     background role's operational budget with the shorter request budget.
   • Cluster-level/privileged lock-detection settings such as ``deadlock_timeout``
     remain an administrator-owned PostgreSQL configuration boundary.
-  • Sync engine is preserved for legacy Celery tasks and uses the declared
-    Psycopg 3 driver; new tenant-sensitive workers use bounded async identities.
 """
 
 from __future__ import annotations
@@ -37,22 +37,17 @@ from typing import AsyncGenerator, Optional
 
 import sqlalchemy as sa
 from sqlalchemy import create_engine, event
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.core.runtime_principal_attestation import install_connection_identity_guard
 
 logger = logging.getLogger("doers.database")
 
 _SESSION_CONTEXT_KEY = "doers.request_db_context"
-_ALLOWED_PRINCIPAL_TYPES = frozenset(
-    {"owner", "organization_user", "legacy_gym_owner"}
-)
+_ALLOWED_PRINCIPAL_TYPES = frozenset({"owner", "organization_user", "legacy_gym_owner"})
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
 _API_LOCK_TIMEOUT_MS = 500
@@ -71,52 +66,50 @@ async_engine = create_async_engine(
     echo=settings.ENVIRONMENT == "development",
     pool_recycle=1800,
 )
+if settings.is_production:
+    install_connection_identity_guard(async_engine.sync_engine, "api", settings.DATABASE_URL)
 
-AsyncSessionLocal = async_sessionmaker(
-    async_engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-)
+AsyncSessionLocal = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+ApiAsyncSessionLocal = AsyncSessionLocal
+api_async_session_maker = ApiAsyncSessionLocal
+async_session_maker = ApiAsyncSessionLocal
 
-async_session_maker = AsyncSessionLocal
-
-# Worker sessions intentionally do not participate in the request pool manager.
-# Celery task wrappers use asyncio.run(), which creates a new event loop for each
-# invocation. asyncpg connections are loop-bound, therefore reusing an async
-# connection pool across task loops is unsafe. NullPool gives every worker
-# transaction a loop-local connection and closes it before that loop exits.
 worker_async_engine = create_async_engine(
     settings.worker_database_url,
     poolclass=NullPool,
     pool_pre_ping=True,
     echo=settings.ENVIRONMENT == "development",
 )
-
+if settings.is_production:
+    install_connection_identity_guard(
+        worker_async_engine.sync_engine,
+        "worker",
+        settings.worker_database_url,
+    )
 WorkerAsyncSessionLocal = async_sessionmaker(
     worker_async_engine,
     class_=AsyncSession,
     expire_on_commit=False,
 )
-
 worker_async_session_maker = WorkerAsyncSessionLocal
 
-# Lifecycle maintenance is deliberately separate from both API and queue-worker
-# credentials. It is cross-tenant by design, so its database role is restricted
-# to watchdog/reconciliation surfaces and requires transaction-local maintenance
-# context before FORCE-RLS policies expose those rows.
 maintenance_async_engine = create_async_engine(
     settings.maintenance_database_url,
     poolclass=NullPool,
     pool_pre_ping=True,
     echo=settings.ENVIRONMENT == "development",
 )
-
+if settings.is_production:
+    install_connection_identity_guard(
+        maintenance_async_engine.sync_engine,
+        "maintenance",
+        settings.maintenance_database_url,
+    )
 MaintenanceAsyncSessionLocal = async_sessionmaker(
     maintenance_async_engine,
     class_=AsyncSession,
     expire_on_commit=False,
 )
-
 maintenance_async_session_maker = MaintenanceAsyncSessionLocal
 
 
@@ -165,14 +158,9 @@ def _context_settings(context: dict[str, Optional[str]]):
 
 
 def _apply_context_sync(connection, context: dict[str, Optional[str]]) -> None:
-    statement = sa.text(
-        "SELECT pg_catalog.set_config(:setting_name, :setting_value, true)"
-    )
+    statement = sa.text("SELECT pg_catalog.set_config(:setting_name, :setting_value, true)")
     for name, value in _context_settings(context):
-        connection.execute(
-            statement,
-            {"setting_name": name, "setting_value": value},
-        )
+        connection.execute(statement, {"setting_name": name, "setting_value": value})
 
 
 @event.listens_for(Session, "after_begin")
@@ -200,9 +188,7 @@ async def update_session_context(
     context = dict(session.info.get(_SESSION_CONTEXT_KEY, {}))
     updates = {
         "principal_id": principal_id,
-        "principal_type": _validate_principal_type(principal_type)
-        if principal_type is not None
-        else None,
+        "principal_type": _validate_principal_type(principal_type) if principal_type is not None else None,
         "org_id": org_id,
         "gym_id": gym_id,
         "trace_id": trace_id,
@@ -220,14 +206,9 @@ async def update_session_context(
     session.info[_SESSION_CONTEXT_KEY] = context
 
     if session.in_transaction():
-        statement = sa.text(
-            "SELECT pg_catalog.set_config(:setting_name, :setting_value, true)"
-        )
+        statement = sa.text("SELECT pg_catalog.set_config(:setting_name, :setting_value, true)")
         for name, value in _context_settings(context):
-            await session.execute(
-                statement,
-                {"setting_name": name, "setting_value": value},
-            )
+            await session.execute(statement, {"setting_name": name, "setting_value": value})
 
 
 class SessionContextInitializer:
@@ -256,12 +237,7 @@ class SessionContextInitializer:
 
 
 async def initialize_request_session(session: AsyncSession, request=None) -> None:
-    """Attach verified request state to any application database identity.
-
-    Ordinary and auth/bootstrap pools use this helper; background workers use
-    ``update_session_context`` after claiming durable work because their scope
-    is derived from persisted task data rather than a request.
-    """
+    """Attach verified request state to any application database identity."""
     principal_id = _ZERO_UUID
     principal_type = None
     org_id = None
@@ -271,18 +247,12 @@ async def initialize_request_session(session: AsyncSession, request=None) -> Non
 
     if request is not None:
         state = request.state
-        principal_id = getattr(
-            state,
-            "principal_id",
-            getattr(state, "staff_id", principal_id),
-        )
+        principal_id = getattr(state, "principal_id", getattr(state, "staff_id", principal_id))
         principal_type = getattr(state, "principal_type", None)
         org_id = getattr(state, "org_id", None)
         gym_id = getattr(state, "gym_id", None)
         role = getattr(state, "role", "unknown")
-        trace_id = getattr(state, "otel_trace_id", None) or getattr(
-            state, "correlation_id", "unknown"
-        )
+        trace_id = getattr(state, "otel_trace_id", None) or getattr(state, "correlation_id", "unknown")
 
     await SessionContextInitializer.initialize(
         session,
@@ -320,12 +290,37 @@ async def get_db(request=None) -> AsyncGenerator[AsyncSession, None]:  # type: i
 SYNC_DATABASE_URL = settings.DATABASE_URL.replace("+asyncpg", "+psycopg")
 sync_engine = None
 SyncSessionLocal = None
-
 try:
     if "postgresql" in SYNC_DATABASE_URL:
         sync_engine = create_engine(SYNC_DATABASE_URL, pool_pre_ping=True)
+        if settings.is_production:
+            install_connection_identity_guard(sync_engine, "api", settings.DATABASE_URL)
         SyncSessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False)
 except Exception as exc:
-    logger.warning("Sync DB engine could not be initialized: %s", exc)
+    logger.warning("Sync API DB engine could not be initialized: %s", exc)
 
+ApiSyncSessionLocal = SyncSessionLocal
 SessionLocal = SyncSessionLocal
+
+WORKER_SYNC_DATABASE_URL = settings.worker_database_url.replace("+asyncpg", "+psycopg")
+worker_sync_engine = None
+WorkerSyncSessionLocal = None
+try:
+    if "postgresql" in WORKER_SYNC_DATABASE_URL:
+        worker_sync_engine = create_engine(
+            WORKER_SYNC_DATABASE_URL,
+            poolclass=NullPool,
+            pool_pre_ping=True,
+        )
+        if settings.is_production:
+            install_connection_identity_guard(
+                worker_sync_engine,
+                "worker",
+                settings.worker_database_url,
+            )
+        WorkerSyncSessionLocal = sessionmaker(
+            bind=worker_sync_engine,
+            expire_on_commit=False,
+        )
+except Exception as exc:
+    logger.warning("Sync worker DB engine could not be initialized: %s", exc)
