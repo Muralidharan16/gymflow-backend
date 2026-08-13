@@ -78,7 +78,6 @@ async def test_data(auth_db_session):
         request_id=f"staff-roles-{suffix}-{uuid.uuid4()}",
     )
 
-    # The application requires a corresponding organization user for role FKs.
     auth_db_session.add(
         OrganizationUser(
             id=owner_id,
@@ -171,9 +170,7 @@ async def test_organization_user_flow(client, test_data):
 
     response = await client.get("/organizations/users", headers=headers)
     assert response.status_code == 200
-    assert any(
-        user["id"] == user_id for user in response.json()["data"]
-    )
+    assert any(user["id"] == user_id for user in response.json()["data"])
 
     response = await client.patch(
         f"/organizations/users/{user_id}",
@@ -230,10 +227,7 @@ async def test_branch_staff_role_assignment(client, test_data):
         headers=headers,
     )
     assert response_overlap.status_code == 400
-    assert (
-        "already has an active or scheduled role assignment"
-        in response_overlap.json()["detail"]
-    )
+    assert "already has an active or scheduled role assignment" in response_overlap.json()["detail"]
 
     response_list = await client.get(
         f"/branches/{branch_id}/staff",
@@ -314,7 +308,7 @@ async def test_access_control_via_dependency(client, test_data):
 
     @app.get("/branches/{branch_id}/test-trainer-endpoint")
     async def dummy_endpoint(
-        staff=Depends(await require_branch_staff_role(["trainer"])),
+        staff=Depends(require_branch_staff_role(["trainer"])),
     ):
         return {"status": "ok", "user_id": str(staff.id)}
 
