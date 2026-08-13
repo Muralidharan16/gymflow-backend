@@ -1,162 +1,123 @@
-import os
-from typing import List
-from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+"""Validated application settings and production process identity boundaries."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from pydantic import model_validator
+
+from app.core.settings_schema import DoersSettingsSchema
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+_PROCESS_PROFILE_MANIFEST = (
+    Path(__file__).resolve().parents[2]
+    / "security"
+    / "runtime_identity"
+    / "process_profiles.v1.json"
+)
+_DISABLED_ASYNC_URL = "postgresql+asyncpg://disabled@invalid.invalid/doers_disabled"
 
-    # ── Database ───────────────────────────────────
-    DATABASE_URL: str
-    AUTH_DATABASE_URL: str = ""
-    WORKER_DATABASE_URL: str = ""
-    MAINTENANCE_DATABASE_URL: str = ""
-    TEST_DATABASE_URL: str = ""
-    REDIS_URL: str
-    CELERY_BROKER_URL: str
-    CELERY_RESULT_BACKEND: str
-    CELERY_WORKER_PROFILE: str = ""
 
-    # ── Auth ───────────────────────────────────────
-    SECRET_KEY: str
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+def _process_manifest() -> dict:
+    raw = json.loads(_PROCESS_PROFILE_MANIFEST.read_text(encoding="utf-8"))
+    if raw.get("schema_version") != 1 or not isinstance(raw.get("profiles"), dict):
+        raise ValueError("unsupported P2E process profile manifest")
+    return raw
 
-    # ── URLs ───────────────────────────────────────
-    BACKEND_BASE_URL: str = "http://localhost:8000"
-    FRONTEND_URL: str = "http://localhost:3000"
 
-    # ── CORS ───────────────────────────────────────
-    CORS_ORIGINS: str = "http://localhost:5173,http://localhost:5174"
+class Settings(DoersSettingsSchema):
+    def _raw_runtime_value(self, component: str) -> str:
+        from app.core.runtime_principal_attestation import load_runtime_binding_contract
 
-    # ── Email ──────────────────────────────────────
-    MAIL_PROVIDER: str = "smtp"
-    MAIL_FROM: str = "noreply@doers.io"
-    MAIL_SERVER: str = "sandbox.smtp.mailtrap.io"
-    MAIL_PORT: int = 587
-    MAIL_USERNAME: str = ""
-    MAIL_PASSWORD: str = ""
-    RESEND_API_KEY: str = ""
-
-    # ── WhatsApp ───────────────────────────────────
-    WA_PHONE_NUMBER_ID: str = ""
-    WA_ACCESS_TOKEN: str = ""
-    WA_TEMPLATE_REMINDER: str = "member_renewal_reminder"
-    WA_TEMPLATE_DIGEST: str = "daily_digest_notification"
-
-    # ── Google Maps ────────────────────────────────
-    GOOGLE_MAPS_SERVER_API_KEY: str = ""
-
-    # ── App ────────────────────────────────────────
-    ENVIRONMENT: str = "development"
-    LOG_LEVEL: str = "info"
-
-    # ── Platform Billing Feature Flags ─────────────
-    PLATFORM_BILLING_READ_API: bool = False
-    PLATFORM_BILLING_SHADOW_RESOLVER: bool = False
-    PLATFORM_BILLING_ENFORCEMENT: bool = False
-    PLATFORM_BILLING_FRONTEND_SHELL: bool = False
-    PLATFORM_BILLING_CHECKOUT: bool = False
-    PLATFORM_BILLING_FAKE_CHECKOUT_ENABLED: bool = False
-    PLATFORM_BILLING_FAKE_CHECKOUT_SIMULATION_ENABLED: bool = False
-    PLATFORM_BILLING_FAKE_CHECKOUT_RECONCILIATION_ENABLED: bool = False
-    PLATFORM_BILLING_PROVIDER_MODE: str = "disabled"
-    PLATFORM_BILLING_WEBHOOK_PAYLOAD_STORE_DIR: str = "/tmp/gymflow-platform-webhook-payloads"
-    PLATFORM_BILLING_FAKE_PROVIDER_EVIDENCE_DIR: str = "/tmp/gymflow-platform-fake-provider-evidence"
-    PLATFORM_BILLING_WEBHOOK_PROCESSING: bool = False
-    PLATFORM_BILLING_DUNNING_TRANSITIONS: bool = False
-    PLATFORM_BILLING_NOTIFICATIONS: bool = False
-
-    # ── Storage (S3) ───────────────────────────────
-    AWS_ACCESS_KEY_ID: str = Field(..., alias="AWS_ACCESS_KEY_ID")
-    AWS_SECRET_ACCESS_KEY: str = Field(..., alias="AWS_SECRET_ACCESS_KEY")
-    AWS_REGION_NAME: str = "us-east-1"
-    S3_BUCKET_NAME: str = "gymflow-local-bucket"
-    CDN_BASE_URL: str = "https://cdn.gymflow.local"
+        binding = load_runtime_binding_contract().bindings.get(component)
+        if binding is None:
+            raise ValueError(f"unknown runtime component: {component!r}")
+        for field_name, field_info in type(self).model_fields.items():
+            if field_info.alias == binding.environment_variable:
+                return str(getattr(self, field_name) or "").strip()
+        raise ValueError(f"runtime component {component!r} has no settings field")
 
     @model_validator(mode="after")
     def validate_database_identity_boundaries(self):
-        if self.ENVIRONMENT == "production":
-            from app.core.runtime_principal_attestation import validate_runtime_url_configuration
+        from app.core.runtime_principal_attestation import (
+            load_runtime_binding_contract,
+            validate_runtime_url_configuration,
+        )
 
-            worker_profile = self.CELERY_WORKER_PROFILE.strip().lower()
-            if worker_profile:
-                if worker_profile not in {"worker", "maintenance"}:
-                    raise ValueError(
-                        "CELERY_WORKER_PROFILE must be either 'worker' or 'maintenance'"
-                    )
+        runtime = load_runtime_binding_contract()
+        if self.ENVIRONMENT != "production":
+            if not self._raw_runtime_value("api"):
+                raise ValueError("application database configuration is required")
+            return self
 
-                active_url = (
-                    self.WORKER_DATABASE_URL
-                    if worker_profile == "worker"
-                    else self.MAINTENANCE_DATABASE_URL
-                )
-                inactive_name = (
-                    "MAINTENANCE_DATABASE_URL"
-                    if worker_profile == "worker"
-                    else "WORKER_DATABASE_URL"
-                )
-                inactive_url = (
-                    self.MAINTENANCE_DATABASE_URL
-                    if worker_profile == "worker"
-                    else self.WORKER_DATABASE_URL
-                )
+        manifest = _process_manifest()
+        profiles = manifest["profiles"]
+        profile_name = self.process_profile
+        if set(profiles) != {"api", "worker", "maintenance", "beat"}:
+            raise ValueError("P2E process manifest has invalid profile coverage")
+        profile = profiles.get(profile_name)
+        if profile is None:
+            raise ValueError(
+                "DOERS_PROCESS_PROFILE is required in production and must be "
+                "api, worker, maintenance, or beat"
+            )
 
-                if not active_url:
-                    raise ValueError(
-                        f"{worker_profile.upper()}_DATABASE_URL is required for the "
-                        f"{worker_profile} Celery worker profile"
-                    )
-                if self.AUTH_DATABASE_URL:
-                    raise ValueError(
-                        "Celery worker processes must not receive AUTH_DATABASE_URL"
-                    )
-                if inactive_url:
-                    raise ValueError(
-                        f"Celery {worker_profile} worker must not receive {inactive_name}"
-                    )
-                if self.DATABASE_URL != active_url:
-                    raise ValueError(
-                        "Celery worker DATABASE_URL must alias its active bounded runtime "
-                        "credential so the process cannot retain the API database secret"
-                    )
+        governed_variables = set(manifest.get("database_environment_variables", ()))
+        runtime_variables = {
+            binding.environment_variable for binding in runtime.bindings.values()
+        }
+        if governed_variables != runtime_variables:
+            raise ValueError("P2E process manifest drifted from P2D runtime bindings")
 
-                violations = validate_runtime_url_configuration(
-                    {worker_profile: active_url}
-                )
-            else:
-                if not self.AUTH_DATABASE_URL:
-                    raise ValueError(
-                        "AUTH_DATABASE_URL is required in production so auth/bootstrap "
-                        "does not share the ordinary application database identity"
-                    )
-                if not self.WORKER_DATABASE_URL:
-                    raise ValueError(
-                        "WORKER_DATABASE_URL is required in production so asynchronous "
-                        "workers do not reuse API or auth credentials"
-                    )
-                if not self.MAINTENANCE_DATABASE_URL:
-                    raise ValueError(
-                        "MAINTENANCE_DATABASE_URL is required in production so lifecycle "
-                        "watchdog/reconciliation sweeps do not reuse API, auth, or worker credentials"
-                    )
+        components = tuple(profile.get("runtime_components", ()))
+        if any(component not in runtime.bindings for component in components):
+            raise ValueError(f"invalid runtime component in process profile {profile_name!r}")
 
-                violations = validate_runtime_url_configuration({
-                    "api": self.DATABASE_URL,
-                    "auth": self.AUTH_DATABASE_URL,
-                    "worker": self.WORKER_DATABASE_URL,
-                    "maintenance": self.MAINTENANCE_DATABASE_URL,
-                })
+        required_variables = set(profile.get("required_database_variables", ()))
+        expected_required = {
+            runtime.bindings[component].environment_variable
+            for component in components
+        }
+        forbidden_variables = set(profile.get("forbidden_database_variables", ()))
+        if (
+            required_variables != expected_required
+            or required_variables & forbidden_variables
+            or required_variables | forbidden_variables != governed_variables
+        ):
+            raise ValueError(f"process profile {profile_name!r} has an invalid variable partition")
 
-            if violations:
-                detail = "; ".join(
-                    f"[{item.code}] {item.subject}: {item.message}"
-                    for item in violations
-                )
-                raise ValueError(
-                    "Production database identity configuration is unsafe: " + detail
-                )
+        present = {
+            binding.environment_variable: self._raw_runtime_value(component)
+            for component, binding in runtime.bindings.items()
+        }
+        missing = sorted(name for name in required_variables if not present[name])
+        forbidden_present = sorted(
+            name for name in forbidden_variables if present[name]
+        )
+        if missing:
+            raise ValueError(
+                f"process profile {profile_name!r} is missing required database variables: {missing!r}"
+            )
+        if forbidden_present:
+            raise ValueError(
+                f"process profile {profile_name!r} received forbidden database variables: "
+                f"{forbidden_present!r}"
+            )
+
+        expected_worker_profile = profile.get("celery_worker_profile") or ""
+        if self.CELERY_WORKER_PROFILE.strip().lower() != expected_worker_profile:
+            raise ValueError(
+                "CELERY_WORKER_PROFILE does not match the production process profile"
+            )
+
+        urls = {component: self._raw_runtime_value(component) for component in components}
+        violations = validate_runtime_url_configuration(urls)
+        if violations:
+            detail = "; ".join(
+                f"[{item.code}] {item.subject}: {item.message}" for item in violations
+            )
+            raise ValueError("Production database identity configuration is unsafe: " + detail)
         return self
 
     @property
@@ -164,25 +125,56 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
     @property
-    def worker_database_url(self) -> str:
-        """Return the bounded worker URL.
+    def process_profile(self) -> str:
+        return self.DOERS_PROCESS_PROFILE.strip().lower()
 
-        Production is fail-closed by the model validator above. Development and
-        test environments may intentionally share the application URL so the
-        repository remains easy to run locally before a dedicated worker login
-        is provisioned.
-        """
-        return self.WORKER_DATABASE_URL or self.DATABASE_URL
+    def database_component_enabled(self, component: str) -> bool:
+        if component not in {"api", "auth", "worker", "maintenance"}:
+            raise ValueError(f"unknown database component: {component!r}")
+        if not self.is_production:
+            return True
+        profile = _process_manifest()["profiles"].get(self.process_profile)
+        if profile is None:
+            return False
+        return component in set(profile.get("runtime_components", ()))
+
+    def _exposed_runtime_value(self, component: str, *, allow_empty: bool = False) -> str:
+        raw = self._raw_runtime_value(component)
+        if not self.is_production:
+            return raw
+        if self.database_component_enabled(component):
+            return raw
+        return "" if allow_empty else _DISABLED_ASYNC_URL
+
+    @property
+    def DATABASE_URL(self) -> str:
+        return self._exposed_runtime_value("api")
+
+    @property
+    def AUTH_DATABASE_URL(self) -> str:
+        return self._exposed_runtime_value("auth", allow_empty=True)
+
+    @property
+    def WORKER_DATABASE_URL(self) -> str:
+        return self._exposed_runtime_value("worker", allow_empty=True)
+
+    @property
+    def MAINTENANCE_DATABASE_URL(self) -> str:
+        return self._exposed_runtime_value("maintenance", allow_empty=True)
+
+    @property
+    def worker_database_url(self) -> str:
+        raw = self._raw_runtime_value("worker")
+        if self.is_production:
+            return raw if self.database_component_enabled("worker") else _DISABLED_ASYNC_URL
+        return raw or self._raw_runtime_value("api")
 
     @property
     def maintenance_database_url(self) -> str:
-        """Return the bounded lifecycle-maintenance URL.
-
-        Production must use a fourth database identity. Development and tests
-        may share the application URL until the dedicated maintenance login is
-        provisioned, matching the worker-local-development behavior above.
-        """
-        return self.MAINTENANCE_DATABASE_URL or self.DATABASE_URL
+        raw = self._raw_runtime_value("maintenance")
+        if self.is_production:
+            return raw if self.database_component_enabled("maintenance") else _DISABLED_ASYNC_URL
+        return raw or self._raw_runtime_value("api")
 
     @property
     def celery_worker_profile(self) -> str:
