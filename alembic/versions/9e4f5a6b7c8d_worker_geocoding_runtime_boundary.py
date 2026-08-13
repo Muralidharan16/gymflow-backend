@@ -71,7 +71,14 @@ def _require_geocoding_failure_function(bind) -> None:
             owner.rolname::text AS owner_name,
             p.prosecdef,
             p.proconfig,
-            pg_catalog.pg_get_function_identity_arguments(p.oid)::text AS identity_args,
+            p.proargtypes::oid[] = ARRAY[
+                'pg_catalog.uuid'::pg_catalog.regtype::oid,
+                'pg_catalog.uuid'::pg_catalog.regtype::oid,
+                'pg_catalog.text'::pg_catalog.regtype::oid,
+                'pg_catalog.int4'::pg_catalog.regtype::oid,
+                'pg_catalog.text'::pg_catalog.regtype::oid,
+                'pg_catalog.uuid'::pg_catalog.regtype::oid
+            ] AS signature_matches,
             p.prosrc,
             EXISTS (
                 SELECT 1
@@ -109,7 +116,7 @@ def _require_geocoding_failure_function(bind) -> None:
     if len(rows) != 1:
         raise RuntimeError("bounded geocoding failure function identity is ambiguous")
     row = rows[0]
-    if row["identity_args"] != "uuid, uuid, text, integer, text, uuid":
+    if not row["signature_matches"]:
         raise RuntimeError("bounded geocoding failure function signature drifted")
     if row["owner_name"] != "app_security_owner" or not row["prosecdef"]:
         raise RuntimeError("bounded geocoding failure function owner/security drifted")
