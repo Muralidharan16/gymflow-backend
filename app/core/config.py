@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     REDIS_URL: str
     CELERY_BROKER_URL: str
     CELERY_RESULT_BACKEND: str
+    CELERY_WORKER_PROFILE: str = ""
 
     # ── Auth ───────────────────────────────────────
     SECRET_KEY: str
@@ -77,30 +78,77 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_database_identity_boundaries(self):
         if self.ENVIRONMENT == "production":
-            if not self.AUTH_DATABASE_URL:
-                raise ValueError(
-                    "AUTH_DATABASE_URL is required in production so auth/bootstrap "
-                    "does not share the ordinary application database identity"
-                )
-            if not self.WORKER_DATABASE_URL:
-                raise ValueError(
-                    "WORKER_DATABASE_URL is required in production so asynchronous "
-                    "workers do not reuse API or auth credentials"
-                )
-            if not self.MAINTENANCE_DATABASE_URL:
-                raise ValueError(
-                    "MAINTENANCE_DATABASE_URL is required in production so lifecycle "
-                    "watchdog/reconciliation sweeps do not reuse API, auth, or worker credentials"
-                )
-
             from app.core.runtime_principal_attestation import validate_runtime_url_configuration
 
-            violations = validate_runtime_url_configuration({
-                "api": self.DATABASE_URL,
-                "auth": self.AUTH_DATABASE_URL,
-                "worker": self.WORKER_DATABASE_URL,
-                "maintenance": self.MAINTENANCE_DATABASE_URL,
-            })
+            worker_profile = self.CELERY_WORKER_PROFILE.strip().lower()
+            if worker_profile:
+                if worker_profile not in {"worker", "maintenance"}:
+                    raise ValueError(
+                        "CELERY_WORKER_PROFILE must be either 'worker' or 'maintenance'"
+                    )
+
+                active_url = (
+                    self.WORKER_DATABASE_URL
+                    if worker_profile == "worker"
+                    else self.MAINTENANCE_DATABASE_URL
+                )
+                inactive_name = (
+                    "MAINTENANCE_DATABASE_URL"
+                    if worker_profile == "worker"
+                    else "WORKER_DATABASE_URL"
+                )
+                inactive_url = (
+                    self.MAINTENANCE_DATABASE_URL
+                    if worker_profile == "worker"
+                    else self.WORKER_DATABASE_URL
+                )
+
+                if not active_url:
+                    raise ValueError(
+                        f"{worker_profile.upper()}_DATABASE_URL is required for the "
+                        f"{worker_profile} Celery worker profile"
+                    )
+                if self.AUTH_DATABASE_URL:
+                    raise ValueError(
+                        "Celery worker processes must not receive AUTH_DATABASE_URL"
+                    )
+                if inactive_url:
+                    raise ValueError(
+                        f"Celery {worker_profile} worker must not receive {inactive_name}"
+                    )
+                if self.DATABASE_URL != active_url:
+                    raise ValueError(
+                        "Celery worker DATABASE_URL must alias its active bounded runtime "
+                        "credential so the process cannot retain the API database secret"
+                    )
+
+                violations = validate_runtime_url_configuration(
+                    {worker_profile: active_url}
+                )
+            else:
+                if not self.AUTH_DATABASE_URL:
+                    raise ValueError(
+                        "AUTH_DATABASE_URL is required in production so auth/bootstrap "
+                        "does not share the ordinary application database identity"
+                    )
+                if not self.WORKER_DATABASE_URL:
+                    raise ValueError(
+                        "WORKER_DATABASE_URL is required in production so asynchronous "
+                        "workers do not reuse API or auth credentials"
+                    )
+                if not self.MAINTENANCE_DATABASE_URL:
+                    raise ValueError(
+                        "MAINTENANCE_DATABASE_URL is required in production so lifecycle "
+                        "watchdog/reconciliation sweeps do not reuse API, auth, or worker credentials"
+                    )
+
+                violations = validate_runtime_url_configuration({
+                    "api": self.DATABASE_URL,
+                    "auth": self.AUTH_DATABASE_URL,
+                    "worker": self.WORKER_DATABASE_URL,
+                    "maintenance": self.MAINTENANCE_DATABASE_URL,
+                })
+
             if violations:
                 detail = "; ".join(
                     f"[{item.code}] {item.subject}: {item.message}"
@@ -135,6 +183,10 @@ class Settings(BaseSettings):
         provisioned, matching the worker-local-development behavior above.
         """
         return self.MAINTENANCE_DATABASE_URL or self.DATABASE_URL
+
+    @property
+    def celery_worker_profile(self) -> str:
+        return self.CELERY_WORKER_PROFILE.strip().lower()
 
     @property
     def is_production(self) -> bool:

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from app.core.runtime_principal_attestation import validate_runtime_url_configuration
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -8,16 +12,28 @@ CONFIG = ROOT / "app/core/config.py"
 DATABASE = ROOT / "app/core/database.py"
 
 
-def test_production_requires_distinct_worker_database_identity() -> None:
+def test_production_rejects_worker_login_reuse_semantically() -> None:
     source = CONFIG.read_text(encoding="utf-8")
+    assert "validate_runtime_url_configuration" in source
 
-    assert "WORKER_DATABASE_URL: str" in source
-    assert 'if self.ENVIRONMENT == "production"' in source
-    assert 'if not self.WORKER_DATABASE_URL:' in source
-    assert "self.WORKER_DATABASE_URL in" in source
-    assert "self.DATABASE_URL" in source
-    assert "self.AUTH_DATABASE_URL" in source
-    assert "must use a distinct production database identity" in source
+    parsed = [
+        SimpleNamespace(drivername="postgresql+asyncpg", username="api_login", database="prod"),
+        SimpleNamespace(drivername="postgresql+asyncpg", username="auth_login", database="prod"),
+        SimpleNamespace(drivername="postgresql+asyncpg", username="api_login", database="prod"),
+        SimpleNamespace(drivername="postgresql+asyncpg", username="maintenance_login", database="prod"),
+    ]
+    with patch(
+        "app.core.runtime_principal_attestation.make_url",
+        side_effect=parsed,
+    ):
+        violations = validate_runtime_url_configuration({
+            "api": "api",
+            "auth": "auth",
+            "worker": "worker",
+            "maintenance": "maintenance",
+        })
+
+    assert "runtime.config.login_reuse" in {item.code for item in violations}
 
 
 def test_worker_asyncpg_connections_are_not_reused_across_celery_event_loops() -> None:
@@ -50,9 +66,6 @@ def test_background_sql_timeout_application_contract_is_explicit_and_wired() -> 
         in source
     )
 
-    # Background work must retain a distinct, longer operational budget than
-    # latency-sensitive API requests; do not collapse both identities onto one
-    # timeout contract.
     assert "_API_STMT_TIMEOUT_MS = 5000" in source
     assert "_API_LOCK_TIMEOUT_MS = 500" in source
     assert "_API_IDLE_TIMEOUT_MS = 15000" in source

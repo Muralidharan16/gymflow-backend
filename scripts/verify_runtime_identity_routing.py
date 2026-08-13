@@ -137,10 +137,41 @@ def verify_repository(root: Path = ROOT) -> tuple[str, ...]:
             )
 
     celery_app = (root / "app" / "core" / "celery_app.py").read_text(encoding="utf-8")
-    if "RuntimeDatabaseIdentityBootstep" not in celery_app:
-        violations.append("app/core/celery_app.py must register the P2D runtime identity bootstep")
-    if 'celery_app.steps["worker"].add(RuntimeDatabaseIdentityBootstep)' not in celery_app:
-        violations.append("P2D worker bootstep is not attached to the Celery worker blueprint")
+    for required in (
+        "RuntimeDatabaseIdentityBootstep",
+        'celery_app.steps["worker"].add(RuntimeDatabaseIdentityBootstep)',
+        'WORKER_QUEUE = "worker"',
+        'MAINTENANCE_QUEUE = "lifecycle-maintenance"',
+        "task_default_queue=WORKER_QUEUE",
+        "task_routes={",
+        "profile = settings.celery_worker_profile",
+        "attest_configured_runtime_bindings((profile,))",
+    ):
+        if required not in celery_app:
+            violations.append(
+                f"app/core/celery_app.py missing P2D worker/maintenance boundary: {required!r}"
+            )
+    if 'attest_configured_runtime_bindings(("worker", "maintenance"))' in celery_app:
+        violations.append(
+            "Celery worker bootstep still attests worker and maintenance credentials in one process"
+        )
+
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    for required in (
+        "celery-worker:",
+        "celery-maintenance-worker:",
+        "CELERY_WORKER_PROFILE: worker",
+        "CELERY_WORKER_PROFILE: maintenance",
+        "-Q worker",
+        "-Q lifecycle-maintenance",
+        'AUTH_DATABASE_URL: ""',
+        'MAINTENANCE_DATABASE_URL: ""',
+        'WORKER_DATABASE_URL: ""',
+    ):
+        if required not in compose:
+            violations.append(
+                f"docker-compose.yml missing credential/queue compartmentalization: {required!r}"
+            )
 
     return tuple(violations)
 

@@ -7,6 +7,13 @@ from celery.schedules import crontab
 from app.core.config import settings
 
 
+WORKER_QUEUE = "worker"
+MAINTENANCE_QUEUE = "lifecycle-maintenance"
+MAINTENANCE_TASKS = (
+    "app.tasks.branch_lifecycle_sweeps.watchdog",
+    "app.tasks.branch_lifecycle_sweeps.reconciliation",
+)
+
 celery_app = Celery(
     "doers",
     broker=settings.CELERY_BROKER_URL,
@@ -24,6 +31,11 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     task_always_eager=(settings.ENVIRONMENT == "development"),
+    task_default_queue=WORKER_QUEUE,
+    task_routes={
+        task_name: {"queue": MAINTENANCE_QUEUE}
+        for task_name in MAINTENANCE_TASKS
+    },
 )
 
 
@@ -35,9 +47,17 @@ class RuntimeDatabaseIdentityBootstep(bootsteps.StartStopStep):
     def start(self, worker) -> None:
         if not settings.is_production:
             return
+
+        profile = settings.celery_worker_profile
+        if profile not in {"worker", "maintenance"}:
+            raise RuntimeError(
+                "Production Celery workers require CELERY_WORKER_PROFILE=worker "
+                "or CELERY_WORKER_PROFILE=maintenance"
+            )
+
         from app.core.runtime_principal_attestation import attest_configured_runtime_bindings
 
-        attest_configured_runtime_bindings(("worker", "maintenance"))
+        attest_configured_runtime_bindings((profile,))
 
 
 celery_app.steps["worker"].add(RuntimeDatabaseIdentityBootstep)
@@ -79,9 +99,11 @@ celery_app.conf.beat_schedule = {
     "watchdog-sweep": {
         "task": "app.tasks.branch_lifecycle_sweeps.watchdog",
         "schedule": crontab(minute="*/5"),
+        "options": {"queue": MAINTENANCE_QUEUE},
     },
     "reconciliation-sweep": {
         "task": "app.tasks.branch_lifecycle_sweeps.reconciliation",
         "schedule": crontab(minute="*/15"),
+        "options": {"queue": MAINTENANCE_QUEUE},
     },
 }

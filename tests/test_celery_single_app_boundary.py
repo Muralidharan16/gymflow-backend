@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "app/core/celery_app.py"
 ENTRYPOINT = ROOT / "app/tasks/celery_app.py"
+COMPOSE = ROOT / "docker-compose.yml"
 
 
 def _source(path: Path) -> str:
@@ -61,3 +62,29 @@ def test_canonical_beat_schedule_contains_all_operational_sweeps() -> None:
     }
     for task_name in required_tasks:
         assert task_name in source
+
+
+def test_maintenance_tasks_are_routed_to_a_dedicated_queue() -> None:
+    source = _source(CORE)
+
+    assert 'WORKER_QUEUE = "worker"' in source
+    assert 'MAINTENANCE_QUEUE = "lifecycle-maintenance"' in source
+    assert "task_default_queue=WORKER_QUEUE" in source
+    assert "task_routes={" in source
+    assert '"app.tasks.branch_lifecycle_sweeps.watchdog"' in source
+    assert '"app.tasks.branch_lifecycle_sweeps.reconciliation"' in source
+    assert '"options": {"queue": MAINTENANCE_QUEUE}' in source
+
+
+def test_deployment_separates_worker_and_maintenance_processes() -> None:
+    source = _source(COMPOSE)
+
+    assert "celery-worker:" in source
+    assert "celery-maintenance-worker:" in source
+    assert "CELERY_WORKER_PROFILE: worker" in source
+    assert "CELERY_WORKER_PROFILE: maintenance" in source
+    assert "-Q worker" in source
+    assert "-Q lifecycle-maintenance" in source
+    assert 'AUTH_DATABASE_URL: ""' in source
+    assert 'MAINTENANCE_DATABASE_URL: ""' in source
+    assert 'WORKER_DATABASE_URL: ""' in source
