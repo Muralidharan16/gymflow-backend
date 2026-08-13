@@ -1,7 +1,7 @@
 """Live, read-only PostgreSQL cluster-role preflight for Alembic HEAD.
 
 The machine-readable manifests in ``security/cluster_role_bootstrap`` are the
-source of truth.  This module only captures the live PostgreSQL catalog through
+source of truth. This module only captures the live PostgreSQL catalog through
 an already-open migration connection and delegates semantic validation to the
 pure ``cluster_role_contract`` validator.
 
@@ -13,7 +13,7 @@ Alembic may silently fix.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -50,9 +50,7 @@ def _setting_pair(raw_setting: object) -> tuple[str, str]:
         )
     key, value = raw_setting.split("=", 1)
     if not key:
-        raise RuntimeError(
-            "PostgreSQL returned an empty role-setting name"
-        )
+        raise RuntimeError("PostgreSQL returned an empty role-setting name")
     return key, value
 
 
@@ -90,9 +88,7 @@ def capture_external_role_catalog(
         ORDER BY rolname
         """,
     )
-    role_rows = [
-        row for row in role_rows if row.get("role") in managed_roles
-    ]
+    role_rows = [row for row in role_rows if row.get("role") in managed_roles]
 
     membership_rows = _mapping_rows(
         connection,
@@ -160,10 +156,7 @@ def capture_external_role_catalog(
         role_settings = settings_by_role[role]
         if key in role_settings:
             duplicate_global_settings.append(
-                {
-                    "role": role,
-                    "setting": key,
-                }
+                {"role": role, "setting": key}
             )
             continue
         role_settings[key] = value
@@ -175,7 +168,7 @@ def capture_external_role_catalog(
             "roles": role_rows,
             "role_settings": settings_by_role,
             "memberships": membership_rows,
-            # Object ownership is a post-migration contract.  At preflight the
+            # Object ownership is a post-migration contract. At preflight the
             # target database may be empty, so ownership completeness is disabled.
             "objects": [],
         },
@@ -251,11 +244,32 @@ def assert_external_role_preflight(
     connection: Connection,
     bundle: ContractBundle | None = None,
 ) -> None:
-    """Fail closed before Alembic HEAD if the external role contract drifted."""
+    """Fail closed before Alembic HEAD if the external role contract drifted.
+
+    SQLAlchemy 2.x starts a transaction automatically on the first catalog
+    SELECT. Alembic must receive a pristine connection so revisions that use
+    ``autocommit_block()`` can establish their own transaction lifecycle. The
+    preflight therefore rejects a caller-owned transaction and always rolls
+    back its own read-only autobegin transaction before returning or raising.
+    """
+
+    if connection.in_transaction():
+        raise RuntimeError(
+            "External PostgreSQL role preflight requires a pristine connection; "
+            "refusing to inspect inside a caller-owned transaction."
+        )
 
     contract = bundle or load_contract_bundle()
-    catalog = capture_external_role_catalog(connection, contract)
-    violations = evaluate_external_role_catalog(catalog, contract)
+    violations: tuple[ContractViolation, ...] = ()
+    try:
+        catalog = capture_external_role_catalog(connection, contract)
+        violations = evaluate_external_role_catalog(catalog, contract)
+    finally:
+        # Catalog SELECTs trigger SQLAlchemy autobegin. Rollback is mandatory so
+        # the guard is transaction-neutral and cannot leak state into Alembic.
+        if connection.in_transaction():
+            connection.rollback()
+
     if not violations:
         return
 
