@@ -458,7 +458,7 @@ def receive_after_update(mapper, connection, target) -> None:
 
     connection.execute(None)
     connection.execute(None)
-    geocode_address_task.delay(str(target.id))
+    geocode_address_task.delay(str(target.id), str(target.org_id))
 
 
 class BranchAddressAuditLog(Base):
