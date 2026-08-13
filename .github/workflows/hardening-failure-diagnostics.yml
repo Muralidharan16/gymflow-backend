@@ -90,11 +90,12 @@ jobs:
             job_name="${entry#*$'\t'}"
             log_file="${RUNNER_TEMP}/hardening-${job_id}.log"
 
-            gh api \
-              --allow-escape-sequences \
-              -H 'Accept: application/vnd.github+json' \
-              "/repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" \
-              > "$log_file"
+            curl --fail --silent --show-error --location \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" \
+              --output "$log_file"
 
             echo
             echo '============================================================'
