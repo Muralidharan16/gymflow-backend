@@ -11,6 +11,7 @@ from alembic import context
 from app.models import Base  # noqa: F401
 import app.finance_core.models  # noqa: F401
 import app.platform_billing.models  # noqa: F401
+from app.core.cluster_role_preflight import assert_external_role_preflight
 
 
 config = context.config
@@ -79,8 +80,30 @@ def check_destructive_migrations() -> None:
         pass
 
 
+def _destination_targets_head() -> bool:
+    """Return True only when the requested Alembic destination is a repo HEAD."""
+
+    destination = context.get_revision_argument()
+    if destination is None:
+        return False
+
+    if isinstance(destination, (tuple, list, set, frozenset)):
+        destination_revisions = {value for value in destination if value}
+    else:
+        destination_revisions = {destination}
+
+    head_revisions = set(context.get_head_revisions() or ())
+    return bool(destination_revisions & head_revisions)
+
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
+    if _destination_targets_head():
+        raise RuntimeError(
+            "Alembic HEAD requires a live PostgreSQL external-role preflight; "
+            "offline HEAD execution is forbidden."
+        )
+
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -97,6 +120,12 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection) -> None:
+    if _destination_targets_head():
+        # This is deliberately before context.configure()/begin_transaction():
+        # HEAD may not mutate database state until the externally managed
+        # PostgreSQL role/settings/membership contract has been proven live.
+        assert_external_role_preflight(connection)
+
     context.configure(
         connection=connection, 
         target_metadata=target_metadata,
