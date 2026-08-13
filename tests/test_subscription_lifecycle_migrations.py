@@ -17,6 +17,7 @@ from conftest import APP_DATABASE_URL, TEST_DATABASE_URL
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_REVISION = "b1c2d3e4f5a6"
+CONSTRAINT_REVISION = "e5f6a7b8c9d0"
 
 
 def _validated_migration_test_database_url() -> str:
@@ -270,12 +271,20 @@ async def assert_table_absent(table_name: str) -> None:
     ) == 0
 
 
-async def expect_db_error(sql: str, params: dict[str, object]) -> None:
+async def expect_db_error(
+    sql: str,
+    params: dict[str, object],
+    expected_fragment: str,
+) -> None:
     async with MigrationTestSessionLocal() as session:
-        with pytest.raises(Exception):
+        with pytest.raises(Exception) as exc_info:
             await session.execute(text(sql), params)
             await session.commit()
         await session.rollback()
+    assert expected_fragment in str(exc_info.value), (
+        f"expected database failure containing {expected_fragment!r}, "
+        f"got {exc_info.value!r}"
+    )
 
 
 def _subscription_params(seed: LifecycleSeed) -> dict[str, object]:
@@ -308,13 +317,13 @@ async def assert_baseline_source_preserved(seed: LifecycleSeed) -> None:
     ) == 5
 
 
-async def prepare_migrated_lifecycle() -> LifecycleSeed:
+async def prepare_migrated_lifecycle(target_revision: str = "head") -> LifecycleSeed:
     run_alembic("upgrade", "head")
     run_alembic("downgrade", BASELINE_REVISION)
     seed = new_seed()
     await seed_v2_source_data(seed)
     await assert_baseline_source_preserved(seed)
-    run_alembic("upgrade", "head")
+    run_alembic("upgrade", target_revision)
     return seed
 
 
@@ -402,8 +411,7 @@ async def test_lifecycle_migration_round_trip_preserves_v2_and_backfills_conserv
     ) == 4
 
 
-async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignment_integrity():
-    seed = await prepare_migrated_lifecycle()
+async def _assert_lifecycle_constraints(seed: LifecycleSeed) -> None:
     async with MigrationTestSessionLocal() as session:
         term = (
             await session.execute(
@@ -455,6 +463,7 @@ async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignme
          DATE '2026-10-01', DATE '2026-09-01', DATE '2026-09-01', 'scheduled'::subscription_term_status)
         """,
         base,
+        "chk_subscription_terms_dates_order",
     )
     await expect_db_error(
         term_prefix + """
@@ -463,6 +472,7 @@ async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignme
          DATE '2026-10-01', DATE '2026-12-01', DATE '2026-12-01', 'scheduled'::subscription_term_status)
         """,
         base,
+        "chk_subscription_terms_amounts_nonnegative",
     )
     await expect_db_error(
         term_prefix + """
@@ -471,6 +481,7 @@ async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignme
          DATE '2026-07-01', DATE '2026-08-01', DATE '2026-08-01', 'scheduled'::subscription_term_status)
         """,
         base,
+        "ex_subscription_terms_series_reserving_overlap",
     )
     await expect_db_error(
         """
@@ -486,6 +497,7 @@ async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignme
           'scheduled'::subscription_term_status)
         """,
         base,
+        "subscription_terms renewal parent must belong to same subscription series",
     )
     assignment_prefix = """
         INSERT INTO subscription_slot_assignments (
@@ -498,6 +510,7 @@ async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignme
          DATE '2026-06-20', DATE '2026-07-01', 'active'::subscription_assignment_state, :owner1)
         """,
         base,
+        "ex_subscription_slot_assignments_slot_overlap",
     )
     await expect_db_error(
         assignment_prefix + """
@@ -505,6 +518,7 @@ async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignme
          DATE '2026-05-01', DATE '2026-05-31', 'active'::subscription_assignment_state, :owner1)
         """,
         base,
+        "subscription_slot_assignments dates must fit within subscription term",
     )
 
     adjacent_code = f"ADJACENT-OK-{seed.suffix}"
@@ -538,3 +552,15 @@ async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignme
             {"code": adjacent_code},
         )
         await session.commit()
+
+
+async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignment_integrity():
+    seed = await prepare_migrated_lifecycle(CONSTRAINT_REVISION)
+    try:
+        await _assert_lifecycle_constraints(seed)
+    finally:
+        # Later revisions intentionally FORCE-RLS the legacy member/plan tables
+        # and scope those policies to app_runtime. Restore the dedicated
+        # migration database to current head without granting migration_owner a
+        # runtime visibility path just to execute this historical contract test.
+        run_alembic("upgrade", "head")
