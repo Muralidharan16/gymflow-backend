@@ -67,6 +67,35 @@ def test_alembic_env_uses_explicit_database_url_boundary() -> None:
     )
 
 
+def test_alembic_head_is_hard_gated_by_live_external_role_preflight() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    env_path = repository / "alembic" / "env.py"
+    source = env_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(env_path))
+
+    assert "from app.core.cluster_role_preflight import assert_external_role_preflight" in source
+    assert "context.get_revision_argument()" in source
+    assert "context.get_head_revisions()" in source
+    assert "offline HEAD execution is forbidden" in source
+
+    do_run = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "do_run_migrations"
+    )
+    do_run_source = ast.get_source_segment(source, do_run)
+    assert do_run_source is not None
+    assert "if _destination_targets_head():" in do_run_source
+    assert "assert_external_role_preflight(connection)" in do_run_source
+    assert do_run_source.index("assert_external_role_preflight(connection)") < do_run_source.index(
+        "context.configure("
+    )
+    assert do_run_source.index("assert_external_role_preflight(connection)") < do_run_source.index(
+        "context.run_migrations()"
+    )
+
+
 def test_alembic_missing_database_url_fails_without_runtime_settings() -> None:
     repository = Path(__file__).resolve().parents[1]
     environment = os.environ.copy()
