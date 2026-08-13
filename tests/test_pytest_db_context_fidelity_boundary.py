@@ -76,13 +76,22 @@ def _calls_named(function: ast.AST, name: str) -> list[ast.Call]:
     ]
 
 
+def _attribute_chain(node: ast.AST) -> tuple[str, ...]:
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+    return tuple(reversed(parts))
+
+
 def _calls_initializer(function: ast.AST) -> bool:
     return any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "initialize"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "SessionContextInitializer"
+        and _attribute_chain(node.func)[-2:] == ("SessionContextInitializer", "initialize")
         for node in ast.walk(function)
     )
 
@@ -100,7 +109,6 @@ def test_pytest_db_override_requires_fastapi_request_injection() -> None:
 def test_production_context_initializer_is_the_single_request_state_contract() -> None:
     initializer = _async_function(PRODUCTION_DB, "initialize_request_session")
     getattrs = _state_getattr_calls(initializer)
-
     assert {
         "principal_id",
         "staff_id",
@@ -155,10 +163,7 @@ def test_pytest_override_preserves_same_typed_context_fields() -> None:
 
 
 def test_pytest_db_override_does_not_bypass_rls_or_impersonate_privileged_roles() -> None:
-    override = _source_segment(
-        CONFTEST,
-        _async_function(CONFTEST, "override_get_db"),
-    ).upper()
+    override = _source_segment(CONFTEST, _async_function(CONFTEST, "override_get_db")).upper()
     forbidden = (
         "BYPASSRLS",
         "DISABLE ROW LEVEL SECURITY",
@@ -173,37 +178,22 @@ def test_pytest_db_override_does_not_bypass_rls_or_impersonate_privileged_roles(
 
 def test_test_url_validator_allows_same_disposable_db_with_distinct_identity() -> None:
     validate = _load_test_url_validator()
-    runtime = (
-        "postgresql+asyncpg://finance_test_runtime:runtime@127.0.0.1:5432/"
-        "gymflow_finance_test_ci"
-    )
-    migration = (
-        "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/"
-        "gymflow_finance_test_ci"
-    )
+    runtime = "postgresql+asyncpg://finance_test_runtime:runtime@127.0.0.1:5432/gymflow_finance_test_ci"
+    migration = "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/gymflow_finance_test_ci"
     assert validate(runtime, migration) == runtime
 
 
 def test_test_url_validator_rejects_same_identity_on_shared_disposable_db() -> None:
     validate = _load_test_url_validator()
-    runtime = (
-        "postgresql+asyncpg://migration_owner:runtime@127.0.0.1:5432/"
-        "gymflow_finance_test_ci"
-    )
-    migration = (
-        "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/"
-        "gymflow_finance_test_ci"
-    )
+    runtime = "postgresql+asyncpg://migration_owner:runtime@127.0.0.1:5432/gymflow_finance_test_ci"
+    migration = "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/gymflow_finance_test_ci"
     with pytest.raises(RuntimeError, match="distinct runtime identity"):
         validate(runtime, migration)
 
 
 def test_test_url_validator_rejects_exact_database_url_reuse() -> None:
     validate = _load_test_url_validator()
-    url = (
-        "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/"
-        "gymflow_test"
-    )
+    url = "postgresql+asyncpg://migration_owner:admin@127.0.0.1:5432/gymflow_test"
     with pytest.raises(RuntimeError, match="exact DATABASE_URL reuse"):
         validate(url, url)
 
