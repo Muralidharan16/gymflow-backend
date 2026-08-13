@@ -14,10 +14,12 @@ from app.domain.subscription_lifecycle import (
 from app.repositories.subscription_lifecycle_repo import SubscriptionLifecycleRepository
 from conftest import TEST_DATABASE_URL
 from test_subscription_lifecycle_migrations import (
+    CONSTRAINT_REVISION,
     LifecycleSeed,
     MIGRATION_TEST_DATABASE_URL,
     MigrationTestSessionLocal,
     prepare_migrated_lifecycle,
+    run_alembic,
 )
 
 
@@ -88,10 +90,15 @@ async def _series_id_for_legacy(session: AsyncSession, legacy_subscription_id: s
 
 
 async def _seed_phase3_read_overlays(seed: LifecycleSeed):
-    """Add read-model overlays through the privileged migration test harness.
+    """Add read-model overlays before later runtime RLS hardening.
 
-    Runtime repository sessions remain read-only/reduced; test-only fixture
-    mutations never require widening the application role.
+    The lifecycle integrity triggers validate member/plan ownership by reading
+    the legacy source tables.  Current HEAD deliberately FORCE-enables RLS on
+    those source tables and scopes them to app_runtime, so migration_owner must
+    not be granted a runtime visibility path merely to mutate test fixtures.
+    Repository fixtures are therefore written at the lifecycle constraint
+    revision and the dedicated migration database is upgraded to HEAD before
+    any reduced-runtime repository read is exercised.
     """
     async with MigrationTestSessionLocal() as session:
         term_a_id = await _term_id_for_legacy(session, seed.sub_a)
@@ -154,9 +161,21 @@ async def _seed_phase3_read_overlays(seed: LifecycleSeed):
         return term_a_id, series_a_id
 
 
+async def _prepare_repository_state() -> tuple[LifecycleSeed, UUID, UUID]:
+    """Stage fixtures at the constraint revision, then verify reads at HEAD."""
+    seed = await prepare_migrated_lifecycle(CONSTRAINT_REVISION)
+    try:
+        term_a_id, series_a_id = await _seed_phase3_read_overlays(seed)
+    finally:
+        # Restore current HEAD even when fixture staging fails.  Later runtime
+        # hardening remains part of every repository-read test and is never
+        # bypassed by the migration identity.
+        run_alembic("upgrade", "head")
+    return seed, term_a_id, series_a_id
+
+
 async def test_series_summaries_are_tenant_scoped_and_derive_current_status():
-    seed = await prepare_migrated_lifecycle()
-    term_a_id, series_a_id = await _seed_phase3_read_overlays(seed)
+    seed, term_a_id, series_a_id = await _prepare_repository_state()
     code_a, code_b, code_family = _term_codes(seed)
 
     async with LifecycleRuntimeSessionLocal() as session:
@@ -205,8 +224,7 @@ async def test_series_summaries_are_tenant_scoped_and_derive_current_status():
 
 
 async def test_repository_reads_slots_timeline_upcoming_history_and_projection():
-    seed = await prepare_migrated_lifecycle()
-    term_a_id, series_a_id = await _seed_phase3_read_overlays(seed)
+    seed, term_a_id, series_a_id = await _prepare_repository_state()
     code_a, code_b, _ = _term_codes(seed)
 
     async with LifecycleRuntimeSessionLocal() as session:
