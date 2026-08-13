@@ -83,7 +83,18 @@ def check_destructive_migrations() -> None:
 def _destination_targets_head() -> bool:
     """Return True only when the requested Alembic destination is a repo HEAD."""
 
-    destination = context.get_revision_argument()
+    try:
+        destination = context.get_revision_argument()
+    except KeyError as exc:
+        # Inspection commands such as ``alembic current --check-heads`` do not
+        # populate Alembic's destination_rev context option. They cannot execute
+        # revisions, so there is no migration destination to hard-gate here.
+        # Keep this catch exact so an unrelated Alembic context failure is never
+        # silently treated as a non-HEAD command.
+        if exc.args != ("destination_rev",):
+            raise
+        return False
+
     if destination is None:
         return False
 
