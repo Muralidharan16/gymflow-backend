@@ -278,15 +278,6 @@ async def expect_db_error(sql: str, params: dict[str, object]) -> None:
         await session.rollback()
 
 
-async def prepare_migrated_lifecycle() -> LifecycleSeed:
-    run_alembic("upgrade", "head")
-    run_alembic("downgrade", BASELINE_REVISION)
-    seed = new_seed()
-    await seed_v2_source_data(seed)
-    run_alembic("upgrade", "head")
-    return seed
-
-
 def _subscription_params(seed: LifecycleSeed) -> dict[str, object]:
     return {
         "sub_a": seed.sub_a,
@@ -296,14 +287,53 @@ def _subscription_params(seed: LifecycleSeed) -> dict[str, object]:
     }
 
 
+async def assert_baseline_source_preserved(seed: LifecycleSeed) -> None:
+    """Verify exact source rows while the schema is at the pre-lifecycle baseline.
+
+    Current head deliberately FORCE-enables tenant RLS on the legacy member
+    subscription tables and scopes those policies to app_runtime. The reduced
+    migration_owner therefore must not be used as a backdoor to read those
+    source rows after head. Preservation is proved at the predecessor, after
+    downgrade, and by the lifecycle rows produced at head.
+    """
+    params = _subscription_params(seed)
+    id_filter = "(:sub_a, :sub_b, :sub_family, :sub_expired)"
+    assert await scalar_int(
+        f"SELECT count(*) FROM member_subscriptions_v2 WHERE id IN {id_filter}",
+        params,
+    ) == 4
+    assert await scalar_int(
+        f"SELECT count(*) FROM subscription_members WHERE subscription_id IN {id_filter}",
+        params,
+    ) == 5
+
+
+async def prepare_migrated_lifecycle() -> LifecycleSeed:
+    run_alembic("upgrade", "head")
+    run_alembic("downgrade", BASELINE_REVISION)
+    seed = new_seed()
+    await seed_v2_source_data(seed)
+    await assert_baseline_source_preserved(seed)
+    run_alembic("upgrade", "head")
+    return seed
+
+
 async def test_lifecycle_migration_round_trip_preserves_v2_and_backfills_conservatively():
     seed = await prepare_migrated_lifecycle()
     params = _subscription_params(seed)
     id_filter = "(:sub_a, :sub_b, :sub_family, :sub_expired)"
 
-    assert await scalar_int(f"SELECT count(*) FROM member_subscriptions_v2 WHERE id IN {id_filter}", params) == 4
-    assert await scalar_int(f"SELECT count(*) FROM subscription_series WHERE legacy_member_subscription_v2_id IN {id_filter}", params) == 4
-    assert await scalar_int(f"SELECT count(*) FROM subscription_terms WHERE legacy_member_subscription_v2_id IN {id_filter}", params) == 4
+    # At current head member_subscriptions_v2 is FORCE-RLS and its policies are
+    # scoped to app_runtime. Migration-owner verification therefore starts with
+    # the lifecycle rows produced from the already-proven baseline source set.
+    assert await scalar_int(
+        f"SELECT count(*) FROM subscription_series WHERE legacy_member_subscription_v2_id IN {id_filter}",
+        params,
+    ) == 4
+    assert await scalar_int(
+        f"SELECT count(*) FROM subscription_terms WHERE legacy_member_subscription_v2_id IN {id_filter}",
+        params,
+    ) == 4
     assert await scalar_int(
         f"SELECT count(*) FROM subscription_term_slots s JOIN subscription_terms t ON t.id=s.term_id WHERE t.legacy_member_subscription_v2_id IN {id_filter}",
         params,
@@ -359,12 +389,17 @@ async def test_lifecycle_migration_round_trip_preserves_v2_and_backfills_conserv
 
     run_alembic("downgrade", BASELINE_REVISION)
     await assert_table_absent("subscription_series")
-    assert await scalar_int(f"SELECT count(*) FROM member_subscriptions_v2 WHERE id IN {id_filter}", params) == 4
-    assert await scalar_int(f"SELECT count(*) FROM subscription_members WHERE subscription_id IN {id_filter}", params) == 5
+    await assert_baseline_source_preserved(seed)
 
     run_alembic("upgrade", "head")
-    assert await scalar_int(f"SELECT count(*) FROM subscription_series WHERE legacy_member_subscription_v2_id IN {id_filter}", params) == 4
-    assert await scalar_int(f"SELECT count(*) FROM subscription_terms WHERE legacy_member_subscription_v2_id IN {id_filter}", params) == 4
+    assert await scalar_int(
+        f"SELECT count(*) FROM subscription_series WHERE legacy_member_subscription_v2_id IN {id_filter}",
+        params,
+    ) == 4
+    assert await scalar_int(
+        f"SELECT count(*) FROM subscription_terms WHERE legacy_member_subscription_v2_id IN {id_filter}",
+        params,
+    ) == 4
 
 
 async def test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignment_integrity():
