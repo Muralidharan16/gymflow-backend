@@ -261,7 +261,7 @@ async def _maps_retry_verification_loop():
         try:
             async with AsyncSessionLocal() as db:
                 result = await db.execute(sa.text("""
-                    SELECT id
+                    SELECT id, org_id
                     FROM organization_addresses
                     WHERE maps_verification_status IN ('pending', 'stale')
                       AND (maps_next_retry_at IS NULL OR maps_next_retry_at <= now())
@@ -279,7 +279,7 @@ async def _maps_retry_verification_loop():
                         SET maps_next_retry_at = now() + interval '10 minutes'
                         WHERE id = :addr_id
                     """), {"addr_id": row.id})
-                    geocode_address_task.delay(str(row.id))
+                    geocode_address_task.delay(str(row.id), str(row.org_id))
                 await db.commit()
         except asyncio.CancelledError:
             raise
