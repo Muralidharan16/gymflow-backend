@@ -4,6 +4,7 @@ from uuid import UUID
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 
 from app.core.security import hash_password
 from app.core.redis import redis_client
@@ -17,6 +18,42 @@ from app.schemas.staff_roles import (
 )
 
 logger = logging.getLogger(__name__)
+
+_BRANCH_ROLE_OVERLAP_SQLSTATE = "23P01"
+_BRANCH_ROLE_OVERLAP_CONSTRAINT = "ex_branch_role_overlap_v2"
+
+
+def _integrity_error_metadata(exc: IntegrityError) -> tuple[Optional[str], Optional[str]]:
+    """Extract PostgreSQL SQLSTATE and constraint name across DBAPI adapters."""
+    sqlstate: Optional[str] = None
+    constraint_name: Optional[str] = None
+    candidates = [
+        getattr(exc, "orig", None),
+        getattr(getattr(exc, "orig", None), "__cause__", None),
+        getattr(exc, "__cause__", None),
+    ]
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if sqlstate is None:
+            sqlstate = getattr(candidate, "sqlstate", None) or getattr(candidate, "pgcode", None)
+        if constraint_name is None:
+            constraint_name = getattr(candidate, "constraint_name", None)
+            diag = getattr(candidate, "diag", None)
+            if constraint_name is None and diag is not None:
+                constraint_name = getattr(diag, "constraint_name", None)
+
+    return sqlstate, constraint_name
+
+
+def _is_branch_role_overlap_violation(exc: IntegrityError) -> bool:
+    sqlstate, constraint_name = _integrity_error_metadata(exc)
+    return (
+        sqlstate == _BRANCH_ROLE_OVERLAP_SQLSTATE
+        and constraint_name == _BRANCH_ROLE_OVERLAP_CONSTRAINT
+    )
+
 
 class StaffRolesService:
     def __init__(self, session):
@@ -48,7 +85,7 @@ class StaffRolesService:
 
         # Fallback to Database
         db_roles = await self.repo.list_user_staff_roles(user_id, org_id, include_inactive=False)
-        
+
         branch_roles = {}
         for r in db_roles:
             b_str = str(r.branch_id)
@@ -158,7 +195,8 @@ class StaffRolesService:
         mapped_role_id = ROLE_MAP.get(data.role, 3)
         member = await self.repo.get_or_create_member(org_id, data.user_id)
 
-        # 3.5 Check for temporal range overlap in Python (soft check)
+        # 3.5 Fast-path overlap check for a clear client error. The database
+        # exclusion constraint remains authoritative for concurrent writers.
         active_assignments = await self.repo.get_active_assignments(
             branch_id=branch_id,
             member_id=member.id,
@@ -167,12 +205,18 @@ class StaffRolesService:
         )
 
         for assign in active_assignments:
-            # Check overlap between [data.effective_from, data.effective_to] and [assign.effective_from, assign.effective_to]
-            e_from_1 = data.effective_from.replace(tzinfo=timezone.utc)
-            e_to_1 = data.effective_to.replace(tzinfo=timezone.utc) if data.effective_to else datetime.max.replace(tzinfo=timezone.utc)
-            
-            e_from_2 = assign.effective_from.replace(tzinfo=timezone.utc)
-            e_to_2 = assign.effective_to.replace(tzinfo=timezone.utc) if assign.effective_to else datetime.max.replace(tzinfo=timezone.utc)
+            e_from_1 = data.effective_from.astimezone(timezone.utc)
+            e_to_1 = (
+                data.effective_to.astimezone(timezone.utc)
+                if data.effective_to
+                else datetime.max.replace(tzinfo=timezone.utc)
+            )
+            e_from_2 = assign.effective_from.astimezone(timezone.utc)
+            e_to_2 = (
+                assign.effective_to.astimezone(timezone.utc)
+                if assign.effective_to
+                else datetime.max.replace(tzinfo=timezone.utc)
+            )
 
             if e_from_1 < e_to_2 and e_from_2 < e_to_1:
                 raise HTTPException(
@@ -183,7 +227,8 @@ class StaffRolesService:
         # 3.8 Get assigner member
         assigner = await self.repo.get_or_create_member(org_id, assigned_by) if assigned_by else None
 
-        # 4. Create assignment
+        # 4. Create assignment. Handle only the authoritative overlap
+        # constraint; every other integrity failure must propagate unchanged.
         new_assignment = BranchStaffRole(
             org_id=org_id,
             branch_id=branch_id,
@@ -198,11 +243,22 @@ class StaffRolesService:
             member=member
         )
 
-        created_role = await self.repo.create_role_assignment(new_assignment)
-        
+        try:
+            created_role = await self.repo.create_role_assignment(new_assignment)
+        except IntegrityError as exc:
+            if not _is_branch_role_overlap_violation(exc):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "This user already has an active or scheduled role assignment "
+                    f"as '{data.role.value}' during this period."
+                ),
+            ) from exc
+
         # 5. Clear Redis Cache for user
         await self.invalidate_user_role_cache(data.user_id)
-        
+
         return created_role
 
     async def revoke_branch_staff_role(
@@ -227,7 +283,7 @@ class StaffRolesService:
 
         # 1. Get revoker member and update assignment
         revoker = await self.repo.get_or_create_member(org_id, revoked_by) if revoked_by else None
-        
+
         assignment.revoked_at = datetime.now(timezone.utc)
         assignment.revoked_by = revoker.id if revoker else None
 

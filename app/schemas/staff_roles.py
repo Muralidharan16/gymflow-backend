@@ -1,6 +1,6 @@
-from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator, model_validator
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 import json
 from app.models.organization_user import BranchStaffRoleEnum
@@ -33,9 +33,24 @@ class OrganizationUserResponse(BaseModel):
 class BranchStaffRoleCreate(BaseModel):
     user_id: UUID
     role: BranchStaffRoleEnum
-    effective_from: datetime = Field(default_factory=datetime.utcnow)
+    effective_from: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     effective_to: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
+
+    @field_validator("effective_from", "effective_to")
+    @classmethod
+    def normalize_aware_timestamp(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Role assignment timestamps must include a timezone offset")
+        return value.astimezone(timezone.utc)
+
+    @model_validator(mode="after")
+    def validate_effective_window(self):
+        if self.effective_to is not None and self.effective_to <= self.effective_from:
+            raise ValueError("effective_to must be later than effective_from")
+        return self
 
 class BranchStaffRoleResponse(BaseModel):
     id: UUID
@@ -68,5 +83,5 @@ class PublicStaffSummary(BaseModel):
     user_id: UUID
     role: BranchStaffRoleEnum
     assigned_at: datetime
-    
+
     model_config = ConfigDict(from_attributes=True)
