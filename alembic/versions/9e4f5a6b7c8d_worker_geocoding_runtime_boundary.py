@@ -110,9 +110,10 @@ def upgrade() -> None:
     )
     op.execute("GRANT INSERT ON TABLE public.notifications TO app_security_owner")
     op.execute("GRANT INSERT ON TABLE public.event_outbox TO app_security_owner")
-    op.execute("GRANT USAGE ON SCHEMA app_secure TO worker_runtime")
 
     op.execute("SET LOCAL ROLE app_security_owner")
+    # app_security_owner owns app_secure; migration_owner intentionally does not.
+    op.execute("GRANT USAGE ON SCHEMA app_secure TO worker_runtime")
     op.execute("""
         CREATE FUNCTION app_secure.record_org_geocoding_failure(
             p_address_id uuid,
@@ -202,9 +203,9 @@ def downgrade() -> None:
         DROP FUNCTION
         app_secure.record_org_geocoding_failure(uuid,uuid,text,integer,text,uuid)
     """)
+    op.execute("REVOKE USAGE ON SCHEMA app_secure FROM worker_runtime")
     op.execute("RESET ROLE")
 
-    op.execute("REVOKE USAGE ON SCHEMA app_secure FROM worker_runtime")
     op.execute("REVOKE INSERT ON TABLE public.event_outbox FROM app_security_owner")
     op.execute("REVOKE INSERT ON TABLE public.notifications FROM app_security_owner")
     op.execute("""
