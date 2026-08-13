@@ -322,14 +322,17 @@ async def test_lifecycle_migration_round_trip_preserves_v2_and_backfills_conserv
     seed = await prepare_migrated_lifecycle()
     params = _subscription_params(seed)
     id_filter = "(:sub_a, :sub_b, :sub_family, :sub_expired)"
+    series_count_sql = f"""
+        SELECT count(DISTINCT s.id)
+        FROM subscription_series AS s
+        JOIN subscription_terms AS t ON t.series_id = s.id
+        WHERE t.legacy_member_subscription_v2_id IN {id_filter}
+    """
 
     # At current head member_subscriptions_v2 is FORCE-RLS and its policies are
     # scoped to app_runtime. Migration-owner verification therefore starts with
     # the lifecycle rows produced from the already-proven baseline source set.
-    assert await scalar_int(
-        f"SELECT count(*) FROM subscription_series WHERE legacy_member_subscription_v2_id IN {id_filter}",
-        params,
-    ) == 4
+    assert await scalar_int(series_count_sql, params) == 4
     assert await scalar_int(
         f"SELECT count(*) FROM subscription_terms WHERE legacy_member_subscription_v2_id IN {id_filter}",
         params,
@@ -392,10 +395,7 @@ async def test_lifecycle_migration_round_trip_preserves_v2_and_backfills_conserv
     await assert_baseline_source_preserved(seed)
 
     run_alembic("upgrade", "head")
-    assert await scalar_int(
-        f"SELECT count(*) FROM subscription_series WHERE legacy_member_subscription_v2_id IN {id_filter}",
-        params,
-    ) == 4
+    assert await scalar_int(series_count_sql, params) == 4
     assert await scalar_int(
         f"SELECT count(*) FROM subscription_terms WHERE legacy_member_subscription_v2_id IN {id_filter}",
         params,
