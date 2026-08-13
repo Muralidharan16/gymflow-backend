@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from unittest.mock import patch
+
 import pytest
 from pydantic import ValidationError
 
@@ -22,7 +25,11 @@ _MAINTENANCE = "postgresql+asyncpg://maintenance_login@localhost/doers"
 
 
 def _settings(**values) -> Settings:
-    return Settings(**(_BASE | values))
+    # BaseSettings deliberately reads ambient process variables. These tests prove
+    # the profile contract in isolation, so CI/runtime database variables must not
+    # bleed into a synthetic process profile.
+    with patch.dict(os.environ, {}, clear=True):
+        return Settings(_env_file=None, **(_BASE | values))
 
 
 def test_api_profile_exposes_only_api_and_auth_database_components() -> None:
