@@ -7,7 +7,7 @@ from app.core.database import get_db
 from app.core.deps import require_org_admin, Staff
 from app.models.organization import OrganizationRegistration
 from app.repositories.organization_profile import (
-    OrganizationProfileAuthorizationError,
+    ProfileAuthorizationError,
     get_current_organization_profile,
     update_current_organization_profile,
 )
@@ -95,7 +95,7 @@ def _profile_response(
 async def _get_profile_or_forbidden(db: AsyncSession) -> dict | None:
     try:
         return await get_current_organization_profile(db)
-    except OrganizationProfileAuthorizationError as exc:
+    except ProfileAuthorizationError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Organization profile access denied",
@@ -108,7 +108,7 @@ async def _update_profile_or_forbidden(
 ) -> dict | None:
     try:
         return await update_current_organization_profile(db, patch)
-    except OrganizationProfileAuthorizationError as exc:
+    except ProfileAuthorizationError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Organization profile access denied",
