@@ -19,13 +19,13 @@ def test_auth_settings_follow_dedicated_auth_runtime_defaults() -> None:
     assert auth.session_settings["row_security"] == "on"
 
 
-def test_misaligned_setting_is_rejected() -> None:
+def test_inherited_setting_misalignment_is_rejected() -> None:
     contract = load_runtime_binding_contract()
-    auth = contract.bindings["auth"]
-    settings = dict(auth.session_settings)
+    api = contract.bindings["api"]
+    settings = dict(api.session_settings)
     settings["statement_timeout"] = "6s"
     bindings = dict(contract.bindings)
-    bindings["auth"] = replace(auth, session_settings=settings)
+    bindings["api"] = replace(api, session_settings=settings)
     drifted = replace(contract, bindings=bindings)
     codes = {item.code for item in validate_runtime_binding_cluster_setting_alignment(drifted)}
     assert "runtime.cluster_setting_alignment" in codes
