@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 55
     env:
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_platform_maintenance_test
+      MIGRATION_PASSWORD: ci-migration-owner
       REDIS_URL: redis://127.0.0.1:6379/0
       CELERY_BROKER_URL: redis://127.0.0.1:6379/1
       CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
@@ -133,7 +134,6 @@ jobs:
       - name: Prove maintenance has helper-only access and API cannot execute helpers
         run: |
           set -euo pipefail
-          # Neither deployment login may touch the global maintenance tables directly.
           if PGPASSWORD='ci-maint-runtime' psql -X -v ON_ERROR_STOP=1 \
               -h 127.0.0.1 -U maintenance_platform_test_runtime \
               -d gymflow_platform_maintenance_test \
@@ -148,7 +148,6 @@ jobs:
             echo 'API login unexpectedly executes platform-maintenance helper' >&2
             exit 1
           fi
-          # Even the maintenance login must fail closed without transaction-local context.
           if PGPASSWORD='ci-maint-runtime' psql -X -v ON_ERROR_STOP=1 \
               -h 127.0.0.1 -U maintenance_platform_test_runtime \
               -d gymflow_platform_maintenance_test \
@@ -294,8 +293,6 @@ jobs:
             kill "$pid" 2>/dev/null || true
             exit 1
           fi
-          # Keep the process alive beyond readiness so supervised workers get a
-          # chance to run; the old P2F candidate failed here after startup.
           sleep 4
           kill "$pid"
           wait "$pid" || true
