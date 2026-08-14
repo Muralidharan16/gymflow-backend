@@ -1,0 +1,158 @@
+name: P2F 8bec826 Exact Migration Lifecycle Equivalence
+
+on:
+  push:
+    branches:
+      - certification/p2f-8bec826
+    paths:
+      - .github/workflows/p2f-8bec-lifecycle-equivalence.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2f-lifecycle-equivalence-8bec826
+  cancel-in-progress: false
+
+env:
+  EXPECTED_HEAD: 8bec826b979f6cac14fb17603b4cd645f4779ec8
+  EXPECTED_TREE: 1f0648a89a2b23d35110956d7f278966984e3f78
+  EXPECTED_BASE: 43e03954723583601ee123505c5ce155b0bba162
+  HARDENING_BRANCH: hardening/complete-migration-lineage
+  PR_NUMBER: '2'
+  PIP_VERSION: 26.2.1
+  PYTHONDONTWRITEBYTECODE: '1'
+  REDIS_URL: redis://127.0.0.1:6379/0
+  CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+  CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+  SECRET_KEY: p2f-certification-only-not-production
+  AWS_ACCESS_KEY_ID: p2f-ci
+  AWS_SECRET_ACCESS_KEY: p2f-ci
+  AWS_REGION_NAME: us-east-1
+  S3_BUCKET_NAME: gymflow-p2f-certification
+  ENVIRONMENT: test
+
+jobs:
+  lifecycle:
+    name: Literal SHA virgin-cluster base HEAD base HEAD equivalence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      MIGRATION_PASSWORD: p2f-migration-owner
+      DATABASE_URL: postgresql+asyncpg://migration_owner:p2f-migration-owner@127.0.0.1:5432/gymflow_p2f_lifecycle_test
+      DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:p2f-migration-owner@127.0.0.1:5432/postgres
+      EVIDENCE_DIR: /tmp/p2f-lifecycle-equivalence
+    steps:
+      - name: Checkout literal candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: 8bec826b979f6cac14fb17603b4cd645f4779ec8
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove literal source base and merge tree
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain=v1)"
+          git fsck --strict
+          git fetch --no-tags origin \
+            "+refs/heads/main:refs/remotes/origin/p2f-main" \
+            "+refs/heads/${HARDENING_BRANCH}:refs/remotes/origin/p2f-hardening" \
+            "+refs/pull/${PR_NUMBER}/merge:refs/remotes/origin/p2f-merge"
+          test "$(git rev-parse refs/remotes/origin/p2f-main)" = "$EXPECTED_BASE"
+          test "$(git rev-parse refs/remotes/origin/p2f-hardening)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse refs/remotes/origin/p2f-merge^{tree})" = "$EXPECTED_TREE"
+          read -r merge_sha merge_base merge_head < <(git rev-list --parents -n 1 refs/remotes/origin/p2f-merge)
+          test "$merge_base" = "$EXPECTED_BASE"
+          test "$merge_head" = "$EXPECTED_HEAD"
+          printf '%s\n' "$EXPECTED_HEAD" > "$EVIDENCE_DIR/candidate-sha.txt"
+          printf '%s\n' "$EXPECTED_TREE" > "$EVIDENCE_DIR/candidate-tree.txt"
+          printf '%s\n' "$EXPECTED_BASE" > "$EVIDENCE_DIR/base-sha.txt"
+          printf '%s\n' "$merge_sha" > "$EVIDENCE_DIR/merge-sha.txt"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Reproduce lock install fresh PG16 and prove virgin cluster
+        run: |
+          set -euo pipefail
+          python -m pip install "pip==$PIP_VERSION"
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > "$EVIDENCE_DIR/resolved-test-environment.txt"
+          diff -u requirements-test.lock "$EVIDENCE_DIR/resolved-test-environment.txt"
+          python -s scripts/verify_alembic_graph.py | tee "$EVIDENCE_DIR/alembic-graph.log"
+          python -s scripts/migration_semantics_gate.py | tee "$EVIDENCE_DIR/migration-semantics.log"
+          bash scripts/ci/install_pg16_test_stack.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='migration_owner') THEN RAISE EXCEPTION 'cluster not virgin'; END IF;
+            IF EXISTS (SELECT 1 FROM pg_catalog.pg_database WHERE datname LIKE 'gymflow_p2f_%') THEN RAISE EXCEPTION 'certification database already exists'; END IF;
+          END $$;
+          SQL
+
+      - name: Bootstrap canonical external roles and extensions
+        run: |
+          set -euo pipefail
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'p2f-migration-owner';
+          CREATE DATABASE gymflow_p2f_lifecycle_test OWNER migration_owner;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          python -s scripts/verify_cluster_role_bootstrap.py | tee "$EVIDENCE_DIR/p2b-before.log"
+          python -s scripts/verify_cluster_identity_graph.py | tee "$EVIDENCE_DIR/p2c-before.log"
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p2f_lifecycle_test
+          sudo -u postgres psql -X -At -d gymflow_p2f_lifecycle_test -c "SELECT extname||'='||extversion FROM pg_catalog.pg_extension ORDER BY extname" > "$EVIDENCE_DIR/extensions.txt"
+
+      - name: Execute and compare base HEAD base HEAD
+        run: |
+          set -euo pipefail
+          python scripts/migration_lifecycle_snapshot.py --mode database --output "$EVIDENCE_DIR/database-baseline.json"
+          python scripts/migration_lifecycle_snapshot.py --mode cluster --output "$EVIDENCE_DIR/cluster-baseline.json"
+          python -s -m alembic -c alembic.ini upgrade head 2>&1 | tee "$EVIDENCE_DIR/upgrade-head-1.log"
+          python -s -m alembic -c alembic.ini current --check-heads | tee "$EVIDENCE_DIR/current-head-1.log"
+          python scripts/migration_lifecycle_snapshot.py --mode database --output "$EVIDENCE_DIR/database-head-1.json"
+          python scripts/migration_lifecycle_snapshot.py --mode cluster --output "$EVIDENCE_DIR/cluster-head-1.json"
+          sudo -u postgres pg_dump --schema-only --no-comments --restrict-key=P2FLifecycle --dbname=gymflow_p2f_lifecycle_test > "$EVIDENCE_DIR/schema-head-1.sql"
+          cmp "$EVIDENCE_DIR/cluster-baseline.json" "$EVIDENCE_DIR/cluster-head-1.json"
+          python -s -m alembic -c alembic.ini downgrade base 2>&1 | tee "$EVIDENCE_DIR/downgrade-base.log"
+          python scripts/migration_lifecycle_snapshot.py --mode database --output "$EVIDENCE_DIR/database-base-restored.json"
+          python scripts/migration_lifecycle_snapshot.py --mode cluster --output "$EVIDENCE_DIR/cluster-base-restored.json"
+          cmp "$EVIDENCE_DIR/database-baseline.json" "$EVIDENCE_DIR/database-base-restored.json"
+          cmp "$EVIDENCE_DIR/cluster-baseline.json" "$EVIDENCE_DIR/cluster-base-restored.json"
+          python -s -m alembic -c alembic.ini upgrade head 2>&1 | tee "$EVIDENCE_DIR/upgrade-head-2.log"
+          python -s -m alembic -c alembic.ini current --check-heads | tee "$EVIDENCE_DIR/current-head-2.log"
+          python scripts/migration_lifecycle_snapshot.py --mode database --output "$EVIDENCE_DIR/database-head-2.json"
+          python scripts/migration_lifecycle_snapshot.py --mode cluster --output "$EVIDENCE_DIR/cluster-head-2.json"
+          sudo -u postgres pg_dump --schema-only --no-comments --restrict-key=P2FLifecycle --dbname=gymflow_p2f_lifecycle_test > "$EVIDENCE_DIR/schema-head-2.sql"
+          cmp "$EVIDENCE_DIR/database-head-1.json" "$EVIDENCE_DIR/database-head-2.json"
+          cmp "$EVIDENCE_DIR/schema-head-1.sql" "$EVIDENCE_DIR/schema-head-2.sql"
+          cmp "$EVIDENCE_DIR/cluster-baseline.json" "$EVIDENCE_DIR/cluster-head-2.json"
+          python -s scripts/verify_cluster_role_bootstrap.py | tee "$EVIDENCE_DIR/p2b-after.log"
+          python -s scripts/verify_cluster_identity_graph.py | tee "$EVIDENCE_DIR/p2c-after.log"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain=v1)"
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/p2f-main-final" "+refs/heads/${HARDENING_BRANCH}:refs/remotes/origin/p2f-hardening-final"
+          test "$(git rev-parse refs/remotes/origin/p2f-main-final)" = "$EXPECTED_BASE"
+          test "$(git rev-parse refs/remotes/origin/p2f-hardening-final)" = "$EXPECTED_HEAD"
+          printf 'success\n' > "$EVIDENCE_DIR/status.txt"
+          find "$EVIDENCE_DIR" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE_DIR/SHA256SUMS"
+
+      - name: Upload lifecycle equivalence evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: p2f-lifecycle-equivalence-${{ env.EXPECTED_HEAD }}
+          path: /tmp/p2f-lifecycle-equivalence/
+          if-no-files-found: error
+          retention-days: 30
