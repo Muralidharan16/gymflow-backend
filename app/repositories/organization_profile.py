@@ -18,7 +18,7 @@ _PROFILE_UPDATE_SQL = text(
 )
 
 
-class OrganizationProfileAuthorizationError(PermissionError):
+class ProfileAuthorizationError(PermissionError):
     """The database rejected the current principal/tenant profile context."""
 
 
@@ -44,7 +44,7 @@ async def _execute_profile_capability(
         return await session.execute(statement, parameters or {})
     except DBAPIError as exc:
         if _sqlstate(exc) == "42501":
-            raise OrganizationProfileAuthorizationError(
+            raise ProfileAuthorizationError(
                 "organization profile authorization denied"
             ) from exc
         raise
