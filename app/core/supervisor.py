@@ -152,34 +152,35 @@ async def _kms_bulkhead_sweep_loop() -> None:
             logger.error("KMS bulkhead sweep error: %s", exc)
 
 
+async def _lookup_encrypted_dek(tenant_id: str, key_version: int) -> bytes:
+    from app.core.database import AsyncSessionLocal, update_session_context
+    import sqlalchemy as sa
+
+    async with AsyncSessionLocal() as db:
+        # This lookup owns a fresh pooled API session. Install transaction-local
+        # tenant context before the first SQL; the bounded database function
+        # independently verifies the same tenant before reading key material.
+        await update_session_context(db, org_id=tenant_id)
+        res = await db.execute(
+            sa.text(
+                """
+                SELECT app_secure.lookup_encrypted_dek(:tid, :ver)
+                """
+            ),
+            {"tid": tenant_id, "ver": key_version},
+        )
+        encrypted_dek = res.scalar_one_or_none()
+        if encrypted_dek is None:
+            raise ValueError(
+                f"DEK not found: tenant={tenant_id} version={key_version}"
+            )
+        return bytes(encrypted_dek)
+
+
 async def _dek_registry_startup() -> None:
     from app.core.crypto import EnvelopeEncryptionProvider
-    from app.core.database import AsyncSessionLocal, update_session_context
 
-    async def _db_dek_lookup(tenant_id: str, key_version: int) -> bytes:
-        async with AsyncSessionLocal() as db:
-            import sqlalchemy as sa
-
-            # The lookup owns a fresh pooled API session, so tenant context must
-            # be installed before its first SQL.  The database function verifies
-            # the same transaction-local tenant before reading key material.
-            await update_session_context(db, org_id=tenant_id)
-            res = await db.execute(
-                sa.text(
-                    """
-                    SELECT app_secure.lookup_encrypted_dek(:tid, :ver)
-                    """
-                ),
-                {"tid": tenant_id, "ver": key_version},
-            )
-            encrypted_dek = res.scalar_one_or_none()
-            if encrypted_dek is None:
-                raise ValueError(
-                    f"DEK not found: tenant={tenant_id} version={key_version}"
-                )
-            return bytes(encrypted_dek)
-
-    EnvelopeEncryptionProvider.register_dek_lookup(_db_dek_lookup)
+    EnvelopeEncryptionProvider.register_dek_lookup(_lookup_encrypted_dek)
     logger.info("Tenant-bound DEK registry lookup registered into EnvelopeEncryptionProvider.")
 
 
