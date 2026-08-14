@@ -5,8 +5,8 @@ Revises: 9e4f5a6b7c8d
 Create Date: 2026-08-14
 
 The FastAPI/API identity must never receive cross-tenant maintenance privileges.
-This revision exposes only four bounded SECURITY DEFINER functions to the
-isolated maintenance capability. The functions require transaction-local
+This revision exposes four bounded SECURITY DEFINER functions to the isolated
+maintenance capability. The functions require transaction-local
 ``app.internal_maintenance=platform`` and operate in bounded batches.
 """
 
@@ -24,6 +24,17 @@ _MIGRATION_OWNER = "migration_owner"
 _SECURITY_OWNER = "app_security_owner"
 _MAINTENANCE_ROLE = "lifecycle_maintenance_runtime"
 _POLICY = "platform_maintenance_geolocation"
+_TARGET_TABLES = (
+    "active_idempotency_keys",
+    "branch_geolocation_state",
+    "google_places_cache",
+)
+_FUNCTIONS = (
+    "app_secure.reclaim_stale_idempotency_keys(integer,integer)",
+    "app_secure.archive_expired_idempotency_keys(integer,integer)",
+    "app_secure.claim_due_geocoding_reverification(integer)",
+    "app_secure.cleanup_expired_places_cache(integer)",
+)
 
 
 def _scalar(bind, sql: str, params: dict[str, object] | None = None):
@@ -35,7 +46,8 @@ def _require_identity(bind) -> None:
         SELECT session_user::text, current_user::text,
                rolsuper, rolinherit, rolcreatedb, rolcreaterole,
                rolreplication, rolbypassrls
-        FROM pg_catalog.pg_roles WHERE rolname = current_user
+        FROM pg_catalog.pg_roles
+        WHERE rolname = current_user
     """)).one()
     if row[0] != _MIGRATION_OWNER or row[1] != _MIGRATION_OWNER:
         raise RuntimeError("platform maintenance migration requires migration_owner")
@@ -55,17 +67,30 @@ def _require_identity(bind) -> None:
         raise RuntimeError("required platform-maintenance roles are missing")
     for name, role in by_name.items():
         if role["rolcanlogin"] or role["rolsuper"] or role["rolinherit"] or role["rolbypassrls"]:
-            raise RuntimeError(f"managed role {name} violates NOLOGIN/NOINHERIT/NOBYPASSRLS")
+            raise RuntimeError(
+                f"managed role {name} violates NOLOGIN/NOINHERIT/NOBYPASSRLS"
+            )
 
     edge = bind.execute(sa.text("""
         SELECT m.admin_option, m.inherit_option, m.set_option
         FROM pg_catalog.pg_auth_members AS m
         JOIN pg_catalog.pg_roles AS granted ON granted.oid = m.roleid
         JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = m.member
-        WHERE granted.rolname = :granted AND member_role.rolname = :member
-    """), {"granted": _SECURITY_OWNER, "member": _MIGRATION_OWNER}).mappings().all()
-    if len(edge) != 1 or edge[0]["admin_option"] or edge[0]["inherit_option"] or not edge[0]["set_option"]:
-        raise RuntimeError("migration_owner -> app_security_owner must remain SET-only")
+        WHERE granted.rolname = :granted
+          AND member_role.rolname = :member
+    """), {
+        "granted": _SECURITY_OWNER,
+        "member": _MIGRATION_OWNER,
+    }).mappings().all()
+    if (
+        len(edge) != 1
+        or edge[0]["admin_option"]
+        or edge[0]["inherit_option"]
+        or not edge[0]["set_option"]
+    ):
+        raise RuntimeError(
+            "migration_owner -> app_security_owner must remain SET-only"
+        )
 
 
 def _require_force_rls(bind, relation: str) -> None:
@@ -73,11 +98,14 @@ def _require_force_rls(bind, relation: str) -> None:
         SELECT c.relrowsecurity, c.relforcerowsecurity
         FROM pg_catalog.pg_class AS c
         JOIN pg_catalog.pg_namespace AS ns ON ns.oid = c.relnamespace
-        WHERE ns.nspname = 'public' AND c.relname = :relation
-          AND c.relkind IN ('r','p')
+        WHERE ns.nspname = 'public'
+          AND c.relname = :relation
+          AND c.relkind IN ('r', 'p')
     """), {"relation": relation}).one_or_none()
     if row is None or not row[0] or not row[1]:
-        raise RuntimeError(f"public.{relation} must retain ENABLE + FORCE RLS")
+        raise RuntimeError(
+            f"public.{relation} must retain ENABLE + FORCE RLS"
+        )
 
 
 def _direct_schema_usage(bind, role: str) -> bool:
@@ -100,25 +128,25 @@ def _has_table(bind, role: str, relation: str, privilege: str) -> bool:
     return bool(_scalar(
         bind,
         "SELECT pg_catalog.has_table_privilege(:role, :relation, :privilege)",
-        {"role": role, "relation": f"public.{relation}", "privilege": privilege},
+        {
+            "role": role,
+            "relation": f"public.{relation}",
+            "privilege": privilege,
+        },
     ))
 
 
 def _require_predecessor_acl(bind) -> None:
     if _direct_schema_usage(bind, _MAINTENANCE_ROLE):
         raise RuntimeError(
-            "platform-maintenance predecessor unexpectedly grants app_secure USAGE "
-            "to lifecycle_maintenance_runtime"
+            "predecessor unexpectedly grants app_secure USAGE to maintenance"
         )
-    for relation in (
-        "active_idempotency_keys",
-        "branch_geolocation_state",
-        "google_places_cache",
-    ):
+    for relation in _TARGET_TABLES:
         for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
             if _has_table(bind, _MAINTENANCE_ROLE, relation, privilege):
                 raise RuntimeError(
-                    f"maintenance role unexpectedly has direct {privilege} on public.{relation}"
+                    f"predecessor unexpectedly grants maintenance {privilege} "
+                    f"on public.{relation}"
                 )
 
 
@@ -126,12 +154,7 @@ def _require_forward_contract(bind) -> None:
     _require_force_rls(bind, "branch_geolocation_state")
     if not _direct_schema_usage(bind, _MAINTENANCE_ROLE):
         raise RuntimeError("maintenance role lacks app_secure USAGE")
-
-    for relation in (
-        "active_idempotency_keys",
-        "branch_geolocation_state",
-        "google_places_cache",
-    ):
+    for relation in _TARGET_TABLES:
         for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
             if _has_table(bind, _MAINTENANCE_ROLE, relation, privilege):
                 raise RuntimeError(
@@ -140,8 +163,12 @@ def _require_forward_contract(bind) -> None:
 
     policy = bind.execute(sa.text("""
         SELECT p.polcmd::text AS command,
-               pg_catalog.pg_get_expr(p.polqual, p.polrelid, true)::text AS using_expr,
-               pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid, true)::text AS check_expr,
+               pg_catalog.pg_get_expr(
+                   p.polqual, p.polrelid, true
+               )::text AS using_expr,
+               pg_catalog.pg_get_expr(
+                   p.polwithcheck, p.polrelid, true
+               )::text AS check_expr,
                ARRAY(
                    SELECT role.rolname::text
                    FROM pg_catalog.unnest(p.polroles) AS role_oid(oid)
@@ -155,19 +182,29 @@ def _require_forward_contract(bind) -> None:
           AND c.relname = 'branch_geolocation_state'
           AND p.polname = :policy
     """), {"policy": _POLICY}).mappings().one_or_none()
-    if policy is None or policy["command"] != "*" or list(policy["roles"] or []) != [_SECURITY_OWNER]:
+    if (
+        policy is None
+        or policy["command"] != "*"
+        or list(policy["roles"] or []) != [_SECURITY_OWNER]
+    ):
         raise RuntimeError("platform geolocation maintenance RLS policy drifted")
     for expr in (policy["using_expr"], policy["check_expr"]):
-        if expr is None or "app.internal_maintenance" not in expr or "platform" not in expr:
-            raise RuntimeError("platform geolocation maintenance RLS predicate drifted")
+        if (
+            expr is None
+            or "app.internal_maintenance" not in expr
+            or "platform" not in expr
+        ):
+            raise RuntimeError(
+                "platform geolocation maintenance RLS predicate drifted"
+            )
 
-    signatures = {
+    expected = {
         "reclaim_stale_idempotency_keys": 2,
         "archive_expired_idempotency_keys": 2,
         "claim_due_geocoding_reverification": 1,
         "cleanup_expired_places_cache": 1,
     }
-    for function_name, nargs in signatures.items():
+    for function_name, nargs in expected.items():
         rows = bind.execute(sa.text("""
             SELECT owner.rolname::text AS owner_name,
                    p.prosecdef,
@@ -176,18 +213,26 @@ def _require_forward_contract(bind) -> None:
                    EXISTS (
                        SELECT 1
                        FROM pg_catalog.aclexplode(
-                           COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+                           COALESCE(
+                               p.proacl,
+                               pg_catalog.acldefault('f', p.proowner)
+                           )
                        ) AS acl
-                       JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = acl.grantee
+                       JOIN pg_catalog.pg_roles AS grantee
+                         ON grantee.oid = acl.grantee
                        WHERE grantee.rolname = :maintenance_role
                          AND acl.privilege_type = 'EXECUTE'
                    ) AS maintenance_execute,
                    EXISTS (
                        SELECT 1
                        FROM pg_catalog.aclexplode(
-                           COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+                           COALESCE(
+                               p.proacl,
+                               pg_catalog.acldefault('f', p.proowner)
+                           )
                        ) AS acl
-                       WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+                       WHERE acl.grantee = 0
+                         AND acl.privilege_type = 'EXECUTE'
                    ) AS public_execute
             FROM pg_catalog.pg_proc AS p
             JOIN pg_catalog.pg_namespace AS ns ON ns.oid = p.pronamespace
@@ -202,16 +247,29 @@ def _require_forward_contract(bind) -> None:
             "maintenance_role": _MAINTENANCE_ROLE,
         }).mappings().all()
         if len(rows) != 1:
-            raise RuntimeError(f"platform maintenance function {function_name} is ambiguous")
+            raise RuntimeError(
+                f"platform maintenance function {function_name} is ambiguous"
+            )
         row = rows[0]
         if row["owner_name"] != _SECURITY_OWNER or not row["prosecdef"]:
-            raise RuntimeError(f"platform maintenance function {function_name} owner/security drifted")
-        if set(row["proconfig"] or []) != {"search_path=pg_catalog", "row_security=on"}:
-            raise RuntimeError(f"platform maintenance function {function_name} settings drifted")
+            raise RuntimeError(
+                f"platform maintenance function {function_name} owner/security drifted"
+            )
+        if set(row["proconfig"] or []) != {
+            "search_path=pg_catalog",
+            "row_security=on",
+        }:
+            raise RuntimeError(
+                f"platform maintenance function {function_name} settings drifted"
+            )
         if not row["maintenance_execute"] or row["public_execute"]:
-            raise RuntimeError(f"platform maintenance function {function_name} EXECUTE ACL drifted")
+            raise RuntimeError(
+                f"platform maintenance function {function_name} EXECUTE ACL drifted"
+            )
         if "app.internal_maintenance" not in (row["prosrc"] or ""):
-            raise RuntimeError(f"platform maintenance function {function_name} lost context gate")
+            raise RuntimeError(
+                f"platform maintenance function {function_name} lost context gate"
+            )
 
 
 def upgrade() -> None:
@@ -220,9 +278,12 @@ def upgrade() -> None:
     _require_force_rls(bind, "branch_geolocation_state")
     _require_predecessor_acl(bind)
 
+    # The SECURITY DEFINER owner gets only the columns needed by each helper.
+    # The maintenance role itself receives no direct table privilege.
     op.execute("""
-        GRANT SELECT (id, status, locked_at, updated_at),
-              UPDATE (status, locked_by, locked_at, updated_at), DELETE
+        GRANT SELECT (
+            tenant_id, idempotency_key, status, heartbeat_at, created_at
+        ), UPDATE (status), DELETE
         ON TABLE public.active_idempotency_keys TO app_security_owner
     """)
     op.execute("""
@@ -237,52 +298,71 @@ def upgrade() -> None:
         ON TABLE public.google_places_cache TO app_security_owner
     """)
 
-    # Policies are table-owner DDL and therefore remain under migration_owner.
+    # Policies are table-owner DDL and remain under migration_owner.
     op.execute("""
         CREATE POLICY platform_maintenance_geolocation
         ON public.branch_geolocation_state
         FOR ALL
         TO app_security_owner
         USING (
-            pg_catalog.current_setting('app.internal_maintenance', true) = 'platform'
+            pg_catalog.current_setting(
+                'app.internal_maintenance', true
+            ) = 'platform'
         )
         WITH CHECK (
-            pg_catalog.current_setting('app.internal_maintenance', true) = 'platform'
+            pg_catalog.current_setting(
+                'app.internal_maintenance', true
+            ) = 'platform'
         )
     """)
 
     op.execute("SET LOCAL ROLE app_security_owner")
-    op.execute("GRANT USAGE ON SCHEMA app_secure TO lifecycle_maintenance_runtime")
+    op.execute(
+        "GRANT USAGE ON SCHEMA app_secure TO lifecycle_maintenance_runtime"
+    )
 
     op.execute(r"""
         CREATE FUNCTION app_secure.reclaim_stale_idempotency_keys(
-            p_stale_seconds integer, p_batch_size integer
+            p_stale_seconds integer,
+            p_batch_size integer
         ) RETURNS integer
-        LANGUAGE plpgsql VOLATILE SECURITY DEFINER
-        SET search_path = pg_catalog SET row_security = on
+        LANGUAGE plpgsql
+        VOLATILE
+        SECURITY DEFINER
+        SET search_path = pg_catalog
+        SET row_security = on
         AS $function$
-        DECLARE v_count integer := 0;
+        DECLARE
+            v_count integer := 0;
         BEGIN
-            IF pg_catalog.current_setting('app.internal_maintenance', true) <> 'platform'
-               OR p_stale_seconds < 30 OR p_stale_seconds > 3600
-               OR p_batch_size < 1 OR p_batch_size > 5000 THEN
+            IF pg_catalog.current_setting(
+                   'app.internal_maintenance', true
+               ) <> 'platform'
+               OR p_stale_seconds < 30
+               OR p_stale_seconds > 3600
+               OR p_batch_size < 1
+               OR p_batch_size > 5000 THEN
                 RAISE EXCEPTION 'invalid platform idempotency reclaim command'
                     USING ERRCODE = '42501';
             END IF;
+
             WITH target AS (
-                SELECT id FROM public.active_idempotency_keys
-                WHERE status = 'processing'
-                  AND locked_at IS NOT NULL
-                  AND locked_at < pg_catalog.clock_timestamp()
+                SELECT tenant_id, idempotency_key
+                FROM public.active_idempotency_keys
+                WHERE status = 'IN_PROGRESS'
+                  AND heartbeat_at IS NOT NULL
+                  AND heartbeat_at < pg_catalog.clock_timestamp()
                       - pg_catalog.make_interval(secs => p_stale_seconds)
-                ORDER BY locked_at, id
+                ORDER BY heartbeat_at, tenant_id, idempotency_key
                 LIMIT p_batch_size
                 FOR UPDATE SKIP LOCKED
             )
             UPDATE public.active_idempotency_keys AS key_data
-            SET status = 'available', locked_by = NULL, locked_at = NULL,
-                updated_at = pg_catalog.clock_timestamp()
-            FROM target WHERE key_data.id = target.id;
+            SET status = 'FAILED'
+            FROM target
+            WHERE key_data.tenant_id = target.tenant_id
+              AND key_data.idempotency_key = target.idempotency_key;
+
             GET DIAGNOSTICS v_count = ROW_COUNT;
             RETURN v_count;
         END;
@@ -291,30 +371,44 @@ def upgrade() -> None:
 
     op.execute(r"""
         CREATE FUNCTION app_secure.archive_expired_idempotency_keys(
-            p_retention_hours integer, p_batch_size integer
+            p_retention_hours integer,
+            p_batch_size integer
         ) RETURNS integer
-        LANGUAGE plpgsql VOLATILE SECURITY DEFINER
-        SET search_path = pg_catalog SET row_security = on
+        LANGUAGE plpgsql
+        VOLATILE
+        SECURITY DEFINER
+        SET search_path = pg_catalog
+        SET row_security = on
         AS $function$
-        DECLARE v_count integer := 0;
+        DECLARE
+            v_count integer := 0;
         BEGIN
-            IF pg_catalog.current_setting('app.internal_maintenance', true) <> 'platform'
-               OR p_retention_hours < 24 OR p_retention_hours > 720
-               OR p_batch_size < 1 OR p_batch_size > 5000 THEN
+            IF pg_catalog.current_setting(
+                   'app.internal_maintenance', true
+               ) <> 'platform'
+               OR p_retention_hours < 24
+               OR p_retention_hours > 720
+               OR p_batch_size < 1
+               OR p_batch_size > 5000 THEN
                 RAISE EXCEPTION 'invalid platform idempotency archive command'
                     USING ERRCODE = '42501';
             END IF;
+
             WITH target AS (
-                SELECT id FROM public.active_idempotency_keys
-                WHERE status <> 'processing'
-                  AND updated_at < pg_catalog.clock_timestamp()
+                SELECT tenant_id, idempotency_key
+                FROM public.active_idempotency_keys
+                WHERE status = 'COMPLETED'
+                  AND created_at < pg_catalog.clock_timestamp()
                       - pg_catalog.make_interval(hours => p_retention_hours)
-                ORDER BY updated_at, id
+                ORDER BY created_at, tenant_id, idempotency_key
                 LIMIT p_batch_size
                 FOR UPDATE SKIP LOCKED
             )
             DELETE FROM public.active_idempotency_keys AS key_data
-            USING target WHERE key_data.id = target.id;
+            USING target
+            WHERE key_data.tenant_id = target.tenant_id
+              AND key_data.idempotency_key = target.idempotency_key;
+
             GET DIAGNOSTICS v_count = ROW_COUNT;
             RETURN v_count;
         END;
@@ -325,32 +419,49 @@ def upgrade() -> None:
         CREATE FUNCTION app_secure.claim_due_geocoding_reverification(
             p_batch_size integer
         ) RETURNS TABLE(address_id uuid, org_id uuid)
-        LANGUAGE plpgsql VOLATILE SECURITY DEFINER
-        SET search_path = pg_catalog SET row_security = on
+        LANGUAGE plpgsql
+        VOLATILE
+        SECURITY DEFINER
+        SET search_path = pg_catalog
+        SET row_security = on
         AS $function$
         BEGIN
-            IF pg_catalog.current_setting('app.internal_maintenance', true) <> 'platform'
-               OR p_batch_size < 1 OR p_batch_size > 500 THEN
+            IF pg_catalog.current_setting(
+                   'app.internal_maintenance', true
+               ) <> 'platform'
+               OR p_batch_size < 1
+               OR p_batch_size > 500 THEN
                 RAISE EXCEPTION 'invalid platform geocoding claim command'
                     USING ERRCODE = '42501';
             END IF;
+
             RETURN QUERY
             WITH target AS (
                 SELECT state.address_id, state.org_id
                 FROM public.branch_geolocation_state AS state
                 WHERE state.geocode_attempts < 10
                   AND (
-                    (state.validation_status = 'success'
-                     AND state.geocoded_at IS NOT NULL
-                     AND state.geocoded_at < pg_catalog.clock_timestamp()
-                         - pg_catalog.make_interval(days => 30))
-                    OR
-                    (state.validation_status IN ('pending', 'failed', 'queued')
-                     AND (state.next_retry_at IS NULL
-                          OR state.next_retry_at <= pg_catalog.clock_timestamp()))
+                    (
+                        state.validation_status = 'success'
+                        AND state.geocoded_at IS NOT NULL
+                        AND state.geocoded_at < pg_catalog.clock_timestamp()
+                            - pg_catalog.make_interval(days => 30)
+                    )
+                    OR (
+                        state.validation_status IN (
+                            'pending', 'failed', 'queued'
+                        )
+                        AND (
+                            state.next_retry_at IS NULL
+                            OR state.next_retry_at
+                               <= pg_catalog.clock_timestamp()
+                        )
+                    )
                   )
-                ORDER BY state.next_retry_at NULLS FIRST,
-                         state.geocoded_at NULLS FIRST, state.address_id
+                ORDER BY
+                    state.next_retry_at NULLS FIRST,
+                    state.geocoded_at NULLS FIRST,
+                    state.address_id
                 LIMIT p_batch_size
                 FOR UPDATE SKIP LOCKED
             ), claimed AS (
@@ -363,7 +474,8 @@ def upgrade() -> None:
                 RETURNING state.address_id, state.org_id
             )
             SELECT claimed.address_id, claimed.org_id
-            FROM claimed ORDER BY claimed.address_id;
+            FROM claimed
+            ORDER BY claimed.address_id;
         END;
         $function$;
     """)
@@ -372,18 +484,27 @@ def upgrade() -> None:
         CREATE FUNCTION app_secure.cleanup_expired_places_cache(
             p_batch_size integer
         ) RETURNS integer
-        LANGUAGE plpgsql VOLATILE SECURITY DEFINER
-        SET search_path = pg_catalog SET row_security = on
+        LANGUAGE plpgsql
+        VOLATILE
+        SECURITY DEFINER
+        SET search_path = pg_catalog
+        SET row_security = on
         AS $function$
-        DECLARE v_count integer := 0;
+        DECLARE
+            v_count integer := 0;
         BEGIN
-            IF pg_catalog.current_setting('app.internal_maintenance', true) <> 'platform'
-               OR p_batch_size < 1 OR p_batch_size > 5000 THEN
+            IF pg_catalog.current_setting(
+                   'app.internal_maintenance', true
+               ) <> 'platform'
+               OR p_batch_size < 1
+               OR p_batch_size > 5000 THEN
                 RAISE EXCEPTION 'invalid platform places-cache cleanup command'
                     USING ERRCODE = '42501';
             END IF;
+
             WITH target AS (
-                SELECT place_id FROM public.google_places_cache
+                SELECT place_id
+                FROM public.google_places_cache
                 WHERE expires_at < pg_catalog.clock_timestamp()
                     - pg_catalog.make_interval(days => 90)
                 ORDER BY expires_at, place_id
@@ -391,22 +512,20 @@ def upgrade() -> None:
                 FOR UPDATE SKIP LOCKED
             )
             DELETE FROM public.google_places_cache AS cache
-            USING target WHERE cache.place_id = target.place_id;
+            USING target
+            WHERE cache.place_id = target.place_id;
+
             GET DIAGNOSTICS v_count = ROW_COUNT;
             RETURN v_count;
         END;
         $function$;
     """)
 
-    for signature in (
-        "app_secure.reclaim_stale_idempotency_keys(integer,integer)",
-        "app_secure.archive_expired_idempotency_keys(integer,integer)",
-        "app_secure.claim_due_geocoding_reverification(integer)",
-        "app_secure.cleanup_expired_places_cache(integer)",
-    ):
+    for signature in _FUNCTIONS:
         op.execute(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC")
         op.execute(
-            f"GRANT EXECUTE ON FUNCTION {signature} TO lifecycle_maintenance_runtime"
+            f"GRANT EXECUTE ON FUNCTION {signature} "
+            "TO lifecycle_maintenance_runtime"
         )
     op.execute("RESET ROLE")
 
@@ -419,14 +538,12 @@ def downgrade() -> None:
     _require_forward_contract(bind)
 
     op.execute("SET LOCAL ROLE app_security_owner")
-    for signature in (
-        "app_secure.cleanup_expired_places_cache(integer)",
-        "app_secure.claim_due_geocoding_reverification(integer)",
-        "app_secure.archive_expired_idempotency_keys(integer,integer)",
-        "app_secure.reclaim_stale_idempotency_keys(integer,integer)",
-    ):
+    for signature in reversed(_FUNCTIONS):
         op.execute(f"DROP FUNCTION {signature}")
-    op.execute("REVOKE USAGE ON SCHEMA app_secure FROM lifecycle_maintenance_runtime")
+    op.execute(
+        "REVOKE USAGE ON SCHEMA app_secure "
+        "FROM lifecycle_maintenance_runtime"
+    )
     op.execute("RESET ROLE")
 
     op.execute(
@@ -445,8 +562,9 @@ def downgrade() -> None:
         ON TABLE public.branch_geolocation_state FROM app_security_owner
     """)
     op.execute("""
-        REVOKE SELECT (id, status, locked_at, updated_at),
-               UPDATE (status, locked_by, locked_at, updated_at), DELETE
+        REVOKE SELECT (
+            tenant_id, idempotency_key, status, heartbeat_at, created_at
+        ), UPDATE (status), DELETE
         ON TABLE public.active_idempotency_keys FROM app_security_owner
     """)
 
