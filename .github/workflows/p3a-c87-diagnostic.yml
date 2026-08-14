@@ -72,9 +72,11 @@ jobs:
           exit "$status"
 
       - name: Capture live branch-state RLS evidence
+        id: rls_probe
         if: steps.migrate.outcome == 'success'
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -uo pipefail
           {
             echo '=== POLICY INVENTORY ==='
             PGPASSWORD='ci-migration-owner' psql -X -A -F '|' -v ON_ERROR_STOP=1 \
@@ -83,13 +85,13 @@ jobs:
               p.polname,
               CASE WHEN p.polpermissive THEN 'PERMISSIVE' ELSE 'RESTRICTIVE' END,
               p.polcmd,
-              array_to_string(
+              pg_catalog.array_to_string(
                   ARRAY(
                       SELECT CASE
-                          WHEN role_oid = 0 THEN 'PUBLIC'
-                          ELSE pg_catalog.pg_get_userbyid(role_oid)::text
+                          WHEN role_data.role_oid = 0 THEN 'PUBLIC'
+                          ELSE pg_catalog.pg_get_userbyid(role_data.role_oid)::text
                       END
-                      FROM unnest(p.polroles) AS role_oid
+                      FROM unnest(p.polroles) AS role_data(role_oid)
                       ORDER BY 1
                   ),
                   ','
@@ -121,8 +123,10 @@ jobs:
               NULLIF(pg_catalog.current_setting('app.current_org_id',true),'')::text AS org_id;
           ROLLBACK;
           SQL
-          } > /tmp/c87-rls-evidence.txt
+          } > /tmp/c87-rls-evidence.txt 2>&1
+          status=$?
           sed -i 's/ci-auth-runtime/<redacted>/g' /tmp/c87-rls-evidence.txt
+          exit "$status"
 
       - name: Upload C87 failure evidence
         if: steps.migrate.outcome == 'failure'
@@ -134,7 +138,7 @@ jobs:
           retention-days: 1
 
       - name: Upload C87 RLS evidence
-        if: steps.migrate.outcome == 'success'
+        if: always() && steps.migrate.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: p3a-c87-rls-${{ github.sha }}
@@ -142,10 +146,10 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - name: Fail on migration error
-        if: steps.migrate.outcome == 'failure'
+      - name: Fail on migration or probe error
+        if: steps.migrate.outcome == 'failure' || steps.rls_probe.outcome == 'failure'
         run: exit 1
 
       - name: Prove current HEAD
-        if: steps.migrate.outcome == 'success'
+        if: steps.migrate.outcome == 'success' && steps.rls_probe.outcome == 'success'
         run: python -s -m alembic -c alembic.ini current --check-heads
