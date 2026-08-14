@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: p3a-c87-diagnostic-${{ github.event.pull_request.number || github.ref }}
@@ -53,64 +53,29 @@ jobs:
           bash scripts/ci/verify_cluster_roles.sh
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_c87_diag
 
-      - name: Run fresh HEAD and persist exact migration failure
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_BRANCH: ${{ github.head_ref }}
+      - name: Run fresh HEAD and capture migration failure
+        id: migrate
+        continue-on-error: true
         run: |
           set -uo pipefail
           python -s -m alembic -c alembic.ini upgrade head 2>&1 | tee /tmp/c87-alembic.log
           status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            python - <<'PY'
-          import base64
-          import json
-          import os
-          import urllib.error
-          import urllib.request
-          from pathlib import Path
+          sed -i 's/ci-migration-owner/<redacted>/g' /tmp/c87-alembic.log
+          exit "$status"
 
-          text = Path('/tmp/c87-alembic.log').read_text(encoding='utf-8', errors='replace')
-          text = text.replace('ci-migration-owner', '<redacted>')
-          tail = text[-12000:]
-          repo = os.environ['GITHUB_REPOSITORY']
-          branch = os.environ.get('HEAD_BRANCH', '').strip()
-          path = '.p3a-c87-diagnostic.txt'
-          api = f'https://api.github.com/repos/{repo}/contents/{path}'
-          headers = {
-              'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
-              'Accept': 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-              'Content-Type': 'application/json',
-          }
+      - name: Upload C87 failure evidence
+        if: steps.migrate.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p3a-c87-alembic-${{ github.sha }}
+          path: /tmp/c87-alembic.log
+          if-no-files-found: error
+          retention-days: 1
 
-          exists = False
-          try:
-              request = urllib.request.Request(api + f'?ref={branch}', headers=headers)
-              with urllib.request.urlopen(request, timeout=20):
-                  exists = True
-          except urllib.error.HTTPError as exc:
-              if exc.code != 404:
-                  raise
+      - name: Fail on migration error
+        if: steps.migrate.outcome == 'failure'
+        run: exit 1
 
-          if branch and not exists:
-              payload = {
-                  'message': 'ci(p3a): persist c87 diagnostic evidence',
-                  'content': base64.b64encode(tail.encode('utf-8')).decode('ascii'),
-                  'branch': branch,
-              }
-              request = urllib.request.Request(
-                  api,
-                  data=json.dumps(payload).encode('utf-8'),
-                  headers=headers,
-                  method='PUT',
-              )
-              with urllib.request.urlopen(request, timeout=20) as response:
-                  if response.status not in (200, 201):
-                      raise RuntimeError(
-                          f'failed to persist c87 evidence: HTTP {response.status}'
-                      )
-          PY
-            exit "$status"
-          fi
-          python -s -m alembic -c alembic.ini current --check-heads
+      - name: Prove current HEAD
+        if: steps.migrate.outcome == 'success'
+        run: python -s -m alembic -c alembic.ini current --check-heads
