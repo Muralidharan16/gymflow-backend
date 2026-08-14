@@ -1,26 +1,30 @@
-"""P3A: authorize only the canonical initial branch-state bootstrap for auth.
+"""P3A: authorize exact auth visibility required by branch-state RETURNING.
 
 Revision ID: c87d8e9f0a22
 Revises: c77d8e9f0a21
 Create Date: 2026-08-14
 
-C77 intentionally leaves ``auth_runtime`` with INSERT-only authority on
-``org_branch_state`` plus SELECT on the two SQLAlchemy RETURNING columns needed
-for the first branch-state row.  The existing lifecycle INSERT policy is owned
-by the branch lifecycle control plane and is deliberately scoped to its own
-database identities.  Reduced-auth owner onboarding therefore reaches the
-correct ACL but is rejected by FORCE RLS when it creates the canonical initial
-state row.
+C77 intentionally gives ``auth_runtime`` INSERT on ``org_branch_state`` and
+column-level SELECT only on the two server-generated columns emitted by the
+SQLAlchemy INSERT RETURNING clause: ``status_changed_at`` and ``updated_at``.
+The predecessor lifecycle INSERT policy already authorizes tenant-bound owner
+bootstrap through ``auth_runtime``.  However, PostgreSQL also applies SELECT RLS
+policies to rows read by a data-modifying statement's RETURNING clause.  The
+predecessor SELECT policies do not target ``auth_runtime``, so a valid INSERT is
+rejected at RETURNING even though its INSERT policy and exact column ACL pass.
 
-P3A must not widen that lifecycle policy (the role/lifecycle matrix is P3D).
-This revision leaves the predecessor lifecycle policy unchanged and adds one
-separate permissive INSERT policy targeted only at ``auth_runtime``.  Its CHECK
-expression binds the real database identity, tenant and typed owner context and
-accepts only the canonical active/primary initial state emitted by first-branch
-onboarding.  No role membership or relation/column privilege is changed.
+P3A must not widen the lifecycle role matrix (P3D) and must not grant broad
+relation SELECT.  This revision therefore leaves every predecessor policy and
+ACL unchanged and adds one separate SELECT policy targeted exactly at
+``auth_runtime``.  Its USING expression is tenant/owner/identity bound and only
+makes the canonical initial active/primary branch-state row visible.  Because
+C77 retains SELECT privilege on exactly two columns, the auth process can read
+only those RETURNING values; it still cannot SELECT arbitrary branch-state
+columns or mutate lifecycle state.
 
-Downgrade drops only the P3A-owned bootstrap policy.  Both directions snapshot
-the predecessor lifecycle policy and fail if it changes as a side effect.
+Downgrade drops only the P3A-owned RETURNING policy.  Both directions snapshot
+the predecessor INSERT and SELECT policies and fail if either changes as a side
+effect.
 """
 
 from __future__ import annotations
@@ -37,8 +41,9 @@ depends_on = None
 _MIGRATION_OWNER = "migration_owner"
 _AUTH_ROLE = "auth_runtime"
 _RELATION = "public.org_branch_state"
-_LIFECYCLE_POLICY = "p_branch_insert"
-_BOOTSTRAP_POLICY = "p_branch_insert_auth_bootstrap"
+_INSERT_POLICY = "p_branch_insert"
+_SELECT_POLICY = "p_branch_select"
+_RETURNING_POLICY = "p_branch_select_auth_bootstrap_returning"
 _EXPECTED_TABLE_ACL = {"INSERT"}
 _EXPECTED_COLUMN_ACL = {
     ("status_changed_at", "SELECT", False, _MIGRATION_OWNER),
@@ -53,13 +58,13 @@ def _policy_row(bind, policy_name: str):
             SELECT
                 policy_data.polcmd::text AS command,
                 policy_data.polpermissive AS permissive,
-                array_to_string(
+                pg_catalog.array_to_string(
                     ARRAY(
                         SELECT CASE
-                            WHEN role_oid = 0 THEN 'PUBLIC'
-                            ELSE pg_catalog.pg_get_userbyid(role_oid)::text
+                            WHEN role_data.role_oid = 0 THEN 'PUBLIC'
+                            ELSE pg_catalog.pg_get_userbyid(role_data.role_oid)::text
                         END
-                        FROM unnest(policy_data.polroles) AS role_oid
+                        FROM unnest(policy_data.polroles) AS role_data(role_oid)
                         ORDER BY 1
                     ),
                     ','
@@ -283,49 +288,57 @@ def _require_identity_and_relation(bind) -> None:
             )
 
 
-def _require_lifecycle_policy(bind) -> tuple[object, ...]:
-    snapshot = _policy_snapshot(bind, _LIFECYCLE_POLICY)
-    if snapshot is None:
-        raise RuntimeError("predecessor p_branch_insert lifecycle policy is missing")
-    row = _policy_row(bind, _LIFECYCLE_POLICY)
-    assert row is not None
-    if row["command"] != "a" or not bool(row["permissive"]):
-        raise RuntimeError("p_branch_insert command/permissive posture drifted")
-    if row["using_expr"] is not None:
-        raise RuntimeError("p_branch_insert unexpectedly has USING expression")
-    source = _normalized(row["check_expr"])
-    for token in ("auth.role()", "superadmin", "system"):
-        if token not in source:
-            raise RuntimeError(f"p_branch_insert lost lifecycle token {token!r}")
-    if "auth_runtime" in source or _BOOTSTRAP_POLICY.lower() in source:
-        raise RuntimeError("lifecycle policy already contains P3A bootstrap logic")
-    return snapshot
+def _require_predecessor_policies(bind) -> dict[str, tuple[object, ...]]:
+    snapshots: dict[str, tuple[object, ...]] = {}
+    for policy_name in (_INSERT_POLICY, _SELECT_POLICY):
+        snapshot = _policy_snapshot(bind, policy_name)
+        if snapshot is None:
+            raise RuntimeError(f"predecessor {policy_name} policy is missing")
+        snapshots[policy_name] = snapshot
+
+    insert_row = _policy_row(bind, _INSERT_POLICY)
+    assert insert_row is not None
+    if (
+        insert_row["command"] != "a"
+        or not bool(insert_row["permissive"])
+        or insert_row["using_expr"] is not None
+        or str(insert_row["role_fingerprint"] or "") != _AUTH_ROLE
+    ):
+        raise RuntimeError("predecessor p_branch_insert posture drifted")
+    insert_source = _normalized(insert_row["check_expr"])
+    for token in ("app.current_org_id", "auth.role()", "owner", "superadmin", "system"):
+        if token not in insert_source:
+            raise RuntimeError(f"p_branch_insert lost predecessor token {token!r}")
+
+    select_row = _policy_row(bind, _SELECT_POLICY)
+    assert select_row is not None
+    if select_row["command"] != "r" or not bool(select_row["permissive"]):
+        raise RuntimeError("predecessor p_branch_select posture drifted")
+    if select_row["check_expr"] is not None:
+        raise RuntimeError("predecessor p_branch_select unexpectedly has WITH CHECK")
+    if _AUTH_ROLE in str(select_row["role_fingerprint"] or "").split(","):
+        raise RuntimeError("predecessor p_branch_select already targets auth_runtime")
+
+    return snapshots
 
 
-def _require_bootstrap_absent(bind) -> None:
-    if _policy_row(bind, _BOOTSTRAP_POLICY) is not None:
-        raise RuntimeError(f"{_BOOTSTRAP_POLICY} already exists")
+def _require_returning_absent(bind) -> None:
+    if _policy_row(bind, _RETURNING_POLICY) is not None:
+        raise RuntimeError(f"{_RETURNING_POLICY} already exists")
 
 
-def _require_bootstrap_policy(bind) -> None:
-    row = _policy_row(bind, _BOOTSTRAP_POLICY)
+def _require_returning_policy(bind) -> None:
+    row = _policy_row(bind, _RETURNING_POLICY)
     if row is None:
-        raise RuntimeError(f"{_BOOTSTRAP_POLICY} is missing")
-    if row["command"] != "a" or not bool(row["permissive"]):
-        raise RuntimeError("auth bootstrap policy command/permissive posture drifted")
-    if row["using_expr"] is not None:
-        raise RuntimeError("auth bootstrap INSERT policy unexpectedly has USING")
-    if not bool(row["auth_only"]):
-        raise RuntimeError(
-            "auth bootstrap policy must target exactly auth_runtime and no other role"
-        )
-    if str(row["role_fingerprint"] or "") != _AUTH_ROLE:
-        raise RuntimeError(
-            "auth bootstrap policy role fingerprint drifted: "
-            f"{row['role_fingerprint']!r}"
-        )
+        raise RuntimeError(f"{_RETURNING_POLICY} is missing")
+    if row["command"] != "r" or not bool(row["permissive"]):
+        raise RuntimeError("auth RETURNING policy command/permissive posture drifted")
+    if row["check_expr"] is not None:
+        raise RuntimeError("auth RETURNING SELECT policy unexpectedly has WITH CHECK")
+    if not bool(row["auth_only"]) or str(row["role_fingerprint"] or "") != _AUTH_ROLE:
+        raise RuntimeError("auth RETURNING policy must target exactly auth_runtime")
 
-    source = _normalized(row["check_expr"])
+    source = _normalized(row["using_expr"])
     required_tokens = (
         "current_user = session_user",
         "auth_runtime",
@@ -343,18 +356,18 @@ def _require_bootstrap_policy(bind) -> None:
     )
     for token in required_tokens:
         if token not in source:
-            raise RuntimeError(f"auth bootstrap policy missing token {token!r}")
+            raise RuntimeError(f"auth RETURNING policy missing token {token!r}")
     if "app_runtime" in source or "public" in str(row["role_fingerprint"] or "").lower():
-        raise RuntimeError("auth bootstrap policy widened beyond auth_runtime")
+        raise RuntimeError("auth RETURNING policy widened beyond auth_runtime")
 
 
-_BOOTSTRAP_SQL = r"""
-CREATE POLICY p_branch_insert_auth_bootstrap
+_RETURNING_POLICY_SQL = r"""
+CREATE POLICY p_branch_select_auth_bootstrap_returning
 ON public.org_branch_state
 AS PERMISSIVE
-FOR INSERT
+FOR SELECT
 TO auth_runtime
-WITH CHECK (
+USING (
     current_user = session_user
     AND pg_catalog.pg_has_role(session_user, 'auth_runtime', 'MEMBER')
     AND auth.role() = 'owner'
@@ -409,30 +422,31 @@ WITH CHECK (
 def upgrade() -> None:
     bind = op.get_bind()
     _require_identity_and_relation(bind)
-    lifecycle_before = _require_lifecycle_policy(bind)
-    _require_bootstrap_absent(bind)
+    predecessor_before = _require_predecessor_policies(bind)
+    _require_returning_absent(bind)
 
-    op.execute(_BOOTSTRAP_SQL)
+    op.execute(_RETURNING_POLICY_SQL)
 
     _require_identity_and_relation(bind)
-    _require_bootstrap_policy(bind)
-    lifecycle_after = _require_lifecycle_policy(bind)
-    if lifecycle_after != lifecycle_before:
-        raise RuntimeError("c87 changed the predecessor lifecycle policy")
+    _require_returning_policy(bind)
+    predecessor_after = _require_predecessor_policies(bind)
+    if predecessor_after != predecessor_before:
+        raise RuntimeError("c87 changed predecessor branch-state policies")
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     _require_identity_and_relation(bind)
-    lifecycle_before = _require_lifecycle_policy(bind)
-    _require_bootstrap_policy(bind)
+    predecessor_before = _require_predecessor_policies(bind)
+    _require_returning_policy(bind)
 
     op.execute(
-        "DROP POLICY p_branch_insert_auth_bootstrap ON public.org_branch_state"
+        "DROP POLICY p_branch_select_auth_bootstrap_returning "
+        "ON public.org_branch_state"
     )
 
     _require_identity_and_relation(bind)
-    _require_bootstrap_absent(bind)
-    lifecycle_after = _require_lifecycle_policy(bind)
-    if lifecycle_after != lifecycle_before:
-        raise RuntimeError("c87 downgrade changed the predecessor lifecycle policy")
+    _require_returning_absent(bind)
+    predecessor_after = _require_predecessor_policies(bind)
+    if predecessor_after != predecessor_before:
+        raise RuntimeError("c87 downgrade changed predecessor branch-state policies")
