@@ -151,12 +151,15 @@ def test_security_owner_receives_only_onboarding_specific_extra_update_authority
 
 def test_app_secure_schema_acl_is_mutated_only_by_its_exact_owner() -> None:
     source = _source(MIGRATION)
+    schema_owner = _function_source(MIGRATION, "_schema_owner")
     upgrade = _function_source(MIGRATION, "upgrade")
     downgrade = _function_source(MIGRATION, "downgrade")
     predecessor = _function_source(MIGRATION, "_require_predecessor")
     forward = _function_source(MIGRATION, "_require_forward")
 
     assert "_schema_owner" in source
+    assert "pg_catalog.pg_get_userbyid(namespace_data.nspowner)" in schema_owner
+    assert "namespace_data.nspname = 'app_secure'" in schema_owner
     assert "app_secure schema owner drift before onboarding boundary" in predecessor
     assert "app_secure schema owner drift after onboarding boundary" in forward
     assert upgrade.index("_set_security_owner(bind)") < upgrade.index(
