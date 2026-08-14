@@ -53,6 +53,12 @@ _EXTRA_SECURITY_UPDATE_COLUMNS = (
     "profile_completed",
 )
 _OWNER_SELECT_COLUMNS = ("id", "org_id", "onboarding_completed")
+_PREDECESSOR_OWNER_SELECT_ACL = {
+    ("email_verified", "SELECT", False, "migration_owner"),
+    ("id", "SELECT", False, "migration_owner"),
+    ("onboarding_completed", "SELECT", False, "migration_owner"),
+    ("org_id", "SELECT", False, "migration_owner"),
+}
 
 
 def _scalar(bind, sql: str, params: dict[str, object] | None = None):
@@ -167,6 +173,42 @@ def _direct_column_acl(bind, relation: str, role_name: str) -> set[tuple[str, st
     }
 
 
+def _direct_column_acl_detail(
+    bind, relation: str, role_name: str
+) -> set[tuple[str, str, bool, str]]:
+    rows = bind.execute(
+        sa.text(
+            """
+            SELECT attribute_data.attname::text,
+                   acl_data.privilege_type::text,
+                   acl_data.is_grantable,
+                   grantor_role.rolname::text
+            FROM pg_catalog.pg_attribute AS attribute_data
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                attribute_data.attacl
+            ) AS acl_data
+            JOIN pg_catalog.pg_roles AS grantee_role
+              ON grantee_role.oid = acl_data.grantee
+            LEFT JOIN pg_catalog.pg_roles AS grantor_role
+              ON grantor_role.oid = acl_data.grantor
+            WHERE attribute_data.attrelid = pg_catalog.to_regclass(:relation)
+              AND attribute_data.attnum > 0
+              AND NOT attribute_data.attisdropped
+              AND grantee_role.rolname = :role_name
+            ORDER BY attribute_data.attname, acl_data.privilege_type,
+                     acl_data.is_grantable, grantor_role.rolname
+            """
+        ),
+        {"relation": relation, "role_name": role_name},
+    ).all()
+    if any(row[3] is None for row in rows):
+        raise RuntimeError("direct column ACL contains an unresolved grantor")
+    return {
+        (str(row[0]), str(row[1]), bool(row[2]), str(row[3]))
+        for row in rows
+    }
+
+
 def _direct_schema_usage(bind, role_name: str) -> bool:
     return bool(
         _scalar(
@@ -266,12 +308,11 @@ def _require_predecessor(bind) -> None:
             raise RuntimeError(
                 f"app_security_owner unexpectedly has UPDATE({column}) before onboarding boundary"
             )
-    owner_acl = _direct_column_acl(bind, "public.owners", _SECURITY_OWNER)
-    for column in _OWNER_SELECT_COLUMNS:
-        if (column, "SELECT") in owner_acl:
-            raise RuntimeError(
-                f"app_security_owner unexpectedly has owners SELECT({column}) before onboarding boundary"
-            )
+    owner_acl = _direct_column_acl_detail(bind, "public.owners", _SECURITY_OWNER)
+    if owner_acl != _PREDECESSOR_OWNER_SELECT_ACL:
+        raise RuntimeError(
+            "app_security_owner exact predecessor owners column ACL drift"
+        )
     if _direct_schema_usage(bind, _AUTH):
         raise RuntimeError("auth_runtime unexpectedly has direct app_secure USAGE before onboarding boundary")
 
@@ -286,9 +327,15 @@ def _require_forward(bind) -> None:
     for column in _EXTRA_SECURITY_UPDATE_COLUMNS:
         if (column, "UPDATE") not in security_org_acl:
             raise RuntimeError(f"app_security_owner lacks onboarding UPDATE({column})")
-    security_owner_acl = _direct_column_acl(bind, "public.owners", _SECURITY_OWNER)
+    security_owner_acl = _direct_column_acl_detail(
+        bind, "public.owners", _SECURITY_OWNER
+    )
+    if security_owner_acl != _PREDECESSOR_OWNER_SELECT_ACL:
+        raise RuntimeError(
+            "app_security_owner owners ACL changed across onboarding boundary"
+        )
     for column in _OWNER_SELECT_COLUMNS:
-        if (column, "SELECT") not in security_owner_acl:
+        if (column, "SELECT", False, _MIGRATION_OWNER) not in security_owner_acl:
             raise RuntimeError(f"app_security_owner lacks owners SELECT({column})")
 
     if not _direct_schema_usage(bind, _AUTH):
@@ -493,11 +540,6 @@ def upgrade() -> None:
         + ", ".join(_EXTRA_SECURITY_UPDATE_COLUMNS)
         + ") ON TABLE public.organizations TO app_security_owner"
     )
-    op.execute(
-        "GRANT SELECT ("
-        + ", ".join(_OWNER_SELECT_COLUMNS)
-        + ") ON TABLE public.owners TO app_security_owner"
-    )
     op.execute("GRANT USAGE ON SCHEMA app_secure TO auth_runtime")
 
     _set_security_owner(bind)
@@ -544,11 +586,6 @@ def downgrade() -> None:
         _reset_role(bind)
 
     op.execute("REVOKE USAGE ON SCHEMA app_secure FROM auth_runtime")
-    op.execute(
-        "REVOKE SELECT ("
-        + ", ".join(_OWNER_SELECT_COLUMNS)
-        + ") ON TABLE public.owners FROM app_security_owner"
-    )
     op.execute(
         "REVOKE UPDATE ("
         + ", ".join(_EXTRA_SECURITY_UPDATE_COLUMNS)

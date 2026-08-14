@@ -141,6 +141,26 @@ def test_security_owner_receives_only_onboarding_specific_extra_update_authority
         "org_id",
         "onboarding_completed",
     }
+    assert set(_assignment("_PREDECESSOR_OWNER_SELECT_ACL")) == {
+        ("email_verified", "SELECT", False, "migration_owner"),
+        ("id", "SELECT", False, "migration_owner"),
+        ("onboarding_completed", "SELECT", False, "migration_owner"),
+        ("org_id", "SELECT", False, "migration_owner"),
+    }
+
+
+def test_onboarding_reuses_exact_predecessor_owner_acl_without_accumulation() -> None:
+    source = _source(MIGRATION)
+    upgrade = _function_source(MIGRATION, "upgrade")
+    downgrade = _function_source(MIGRATION, "downgrade")
+    predecessor = _function_source(MIGRATION, "_require_predecessor")
+    forward = _function_source(MIGRATION, "_require_forward")
+
+    assert "_direct_column_acl_detail" in source
+    assert "_PREDECESSOR_OWNER_SELECT_ACL" in predecessor
+    assert "_PREDECESSOR_OWNER_SELECT_ACL" in forward
+    assert "ON TABLE public.owners TO app_security_owner" not in upgrade
+    assert "ON TABLE public.owners FROM app_security_owner" not in downgrade
 
 
 def test_onboarding_service_has_no_direct_organization_orm_mutation() -> None:
