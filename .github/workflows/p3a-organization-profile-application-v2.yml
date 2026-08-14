@@ -80,8 +80,6 @@ jobs:
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT auth_runtime TO auth_p3a_runtime
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_runtime TO auth_p3a_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO auth_p3a_runtime
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 
@@ -97,6 +95,42 @@ jobs:
           set -euo pipefail
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Prove auth identity is decoupled from ordinary API capability
+        run: |
+          set -euo pipefail
+          PGPASSWORD='ci-auth-runtime' psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U auth_p3a_runtime -d gymflow_p3a_app_v2 <<'SQL'
+          DO $$
+          BEGIN
+            IF pg_catalog.pg_has_role(current_user,'app_runtime','MEMBER') THEN
+              RAISE EXCEPTION 'auth deployment login inherited app_runtime';
+            END IF;
+            IF pg_catalog.has_function_privilege(
+                current_user,
+                'app_secure.current_organization_profile()',
+                'EXECUTE'
+            ) OR pg_catalog.has_function_privilege(
+                current_user,
+                'app_secure.update_current_organization_profile(jsonb)',
+                'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'auth deployment login inherited ordinary profile capability';
+            END IF;
+            IF NOT pg_catalog.has_table_privilege(
+                current_user,'public.organization_addresses','SELECT'
+            ) OR NOT pg_catalog.has_table_privilege(
+                current_user,'public.organization_addresses','INSERT'
+            ) OR pg_catalog.has_table_privilege(
+                current_user,'public.organization_addresses','UPDATE'
+            ) OR pg_catalog.has_table_privilege(
+                current_user,'public.organization_addresses','DELETE'
+            ) THEN
+              RAISE EXCEPTION 'auth address bootstrap authority is not exact';
+            END IF;
+          END
+          $$;
+          SQL
 
       - name: Seed two organizations and owner principals
         run: |
@@ -286,7 +320,6 @@ jobs:
                   assert payload['tagline'] is None, payload
                   assert payload['year_established'] == 2003, payload
 
-                  # Validation/dependency failures happen before P3B registration access.
                   for body in (
                       {'year_established': 1799},
                       {'year_established': 9999},
@@ -306,8 +339,6 @@ jobs:
                   )
                   assert response.status_code == 403, response.text
 
-                  # A signed but stale/mismatched tenant claim is rejected by the
-                  # principal-membership DB wrapper before P3B registration access.
                   response = await client.patch(
                       '/organizations/profile',
                       headers={'Authorization': f'Bearer {token(org_id=BETA_ORG)}'},
