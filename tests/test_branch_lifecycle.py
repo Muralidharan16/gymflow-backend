@@ -79,15 +79,20 @@ async def cleanup_lifecycle_fixture() -> None:
 
 @pytest_asyncio.fixture
 async def lifecycle_setup(auth_db_session):
-    """Seed lifecycle prerequisites through the same bounded identities as production.
+    """Seed lifecycle prerequisites without widening production identities.
 
-    Tenant-root and actor records are administrative fixture evidence. Branch/state
-    bootstrap is executed through auth_runtime using the canonical first-branch
-    shape required by the production onboarding boundary. Once a branch exists,
-    ordinary state mutation is performed through app_runtime. This preserves the
-    production split instead of widening either identity for test convenience.
-    Lifecycle behavior itself continues to run through the reduced application
-    runtime identity below.
+    Tenant-root and actor records are administrative fixture evidence. Branch one
+    is created through auth_runtime with the canonical active/primary onboarding
+    state and therefore exercises the production INSERT RETURNING boundary. The
+    lifecycle scenarios also need a second operational branch, but P3A purposely
+    authorizes auth RETURNING visibility only for that canonical initial primary
+    state. For the second prerequisite, keep the existing tenant/owner-bound auth
+    INSERT authority and issue the state INSERT without RETURNING, with
+    ``is_primary = FALSE``. This avoids both an illegal app_runtime mutation of
+    ``is_primary`` and a second simultaneous primary branch, without expanding
+    auth SELECT or app UPDATE privileges. It is fixture construction only; branch
+    role/lifecycle product authorization remains outside P3A. Lifecycle behavior
+    itself continues to run through the reduced application runtime identity.
     """
     org_id = uuid.uuid4()
     owner_id = uuid.uuid4()
@@ -194,19 +199,6 @@ async def lifecycle_setup(auth_db_session):
     auth_db_session.add(b1)
     await auth_db_session.commit()
 
-    # Auth owns canonical bootstrap INSERT. Ordinary app runtime owns subsequent
-    # lifecycle state mutation. Demote branch one before bootstrapping branch two
-    # so the fixture never relies on two simultaneous primary branches.
-    async with AsyncSessionLocal() as session:
-        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
-        first_state = (
-            await session.execute(
-                select(OrgBranchState).where(OrgBranchState.branch_id == b1_id)
-            )
-        ).scalar_one()
-        first_state.is_primary = False
-        await session.commit()
-
     await set_db_session_context(
         auth_db_session, str(org_id), str(owner_id), "owner"
     )
@@ -221,17 +213,63 @@ async def lifecycle_setup(auth_db_session):
         currency_code="USD",
         created_by=owner_id,
     )
-    s2 = OrgBranchState(
-        branch_id=b2_id,
-        org_id=org_id,
-        status="active",
-        is_primary=True,
-        is_operational=True,
-        search_epoch_ulid="01AN4V07BY79KA1307SR1XF31B",
-    )
-    b2.state = s2
     auth_db_session.add(b2)
+    await auth_db_session.flush()
+
+    # C87 intentionally exposes auth SELECT only for the canonical initial
+    # active/primary row needed by ORM INSERT RETURNING. The predecessor INSERT
+    # policy itself remains tenant/owner bound and permits this non-primary
+    # prerequisite, so avoid RETURNING rather than broadening that SELECT policy.
+    await auth_db_session.execute(
+        text(
+            """
+            INSERT INTO public.org_branch_state (
+                branch_id,
+                org_id,
+                status,
+                is_primary,
+                is_operational,
+                watchdog_recovery_count,
+                search_visibility_version,
+                search_epoch_ulid
+            ) VALUES (
+                :branch_id,
+                :org_id,
+                'active',
+                FALSE,
+                TRUE,
+                0,
+                1,
+                :search_epoch_ulid
+            )
+            """
+        ),
+        {
+            "branch_id": b2_id,
+            "org_id": org_id,
+            "search_epoch_ulid": "01AN4V07BY79KA1307SR1XF31B",
+        },
+    )
     await auth_db_session.commit()
+
+    # Verify the fixture through the ordinary tenant runtime. This is read-only:
+    # app_runtime must not be used to rewrite primary-branch metadata merely to
+    # construct a test prerequisite.
+    async with AsyncSessionLocal() as session:
+        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
+        states = (
+            await session.execute(
+                select(OrgBranchState).where(
+                    OrgBranchState.branch_id.in_([b1_id, b2_id])
+                )
+            )
+        ).scalars().all()
+        state_by_branch = {state.branch_id: state for state in states}
+        assert set(state_by_branch) == {b1_id, b2_id}
+        assert state_by_branch[b1_id].is_primary is True
+        assert state_by_branch[b2_id].is_primary is False
+        assert state_by_branch[b1_id].is_operational is True
+        assert state_by_branch[b2_id].is_operational is True
 
     yield {
         "org_id": org_id,
