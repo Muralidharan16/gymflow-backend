@@ -1,0 +1,195 @@
+name: P2F 8bec826 Exact Tenant DEK Boundary
+
+on:
+  push:
+    branches:
+      - certification/p2f-8bec826
+    paths:
+      - .github/workflows/p2f-8bec-tenant-dek.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2f-tenant-dek-8bec826
+  cancel-in-progress: false
+
+env:
+  EXPECTED_HEAD: 8bec826b979f6cac14fb17603b4cd645f4779ec8
+  EXPECTED_TREE: 1f0648a89a2b23d35110956d7f278966984e3f78
+  EXPECTED_BASE: 43e03954723583601ee123505c5ce155b0bba162
+  HARDENING_BRANCH: hardening/complete-migration-lineage
+
+jobs:
+  tenant-dek:
+    name: Literal SHA bounded historical DEK lookup under API identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:p2f-migration-owner@127.0.0.1:5432/gymflow_p2f_tenant_dek_test
+      MIGRATION_PASSWORD: p2f-migration-owner
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: p2f-tenant-dek-not-production
+      AWS_ACCESS_KEY_ID: p2f-tenant-dek
+      AWS_SECRET_ACCESS_KEY: p2f-tenant-dek
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-p2f-tenant-dek
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+      EVIDENCE_DIR: /tmp/p2f-8bec/tenant-dek
+    steps:
+      - name: Checkout literal candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: 8bec826b979f6cac14fb17603b4cd645f4779ec8
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prove exact source
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain=v1)"
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > "$EVIDENCE_DIR/resolved-test-environment.txt"
+          diff -u requirements-test.lock "$EVIDENCE_DIR/resolved-test-environment.txt"
+      - name: Certify static DEK boundary
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+          python -m py_compile app/core/supervisor.py alembic/versions/b06c7d8e9f0a_tenant_dek_lookup_boundary.py
+          python -m pytest --noconftest -q tests/test_tenant_dek_lookup_boundary.py tests/test_migration_app_secure_owner_context_boundary.py
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/migration_semantics_gate.py
+      - name: Install virgin PostgreSQL 16
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='migration_owner') THEN RAISE EXCEPTION 'cluster not virgin'; END IF; END $$;
+          SQL
+      - name: Bootstrap canonical roles and API overlays
+        run: |
+          set -euo pipefail
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'p2f-migration-owner';
+          CREATE ROLE app_dek_test_runtime LOGIN PASSWORD 'p2f-api-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_dek_test_runtime LOGIN PASSWORD 'p2f-auth-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE app_dek_test_runtime SET row_security='on'; ALTER ROLE app_dek_test_runtime SET statement_timeout='5s'; ALTER ROLE app_dek_test_runtime SET lock_timeout='2s'; ALTER ROLE app_dek_test_runtime SET idle_in_transaction_session_timeout='15s';
+          ALTER ROLE auth_dek_test_runtime SET row_security='on'; ALTER ROLE auth_dek_test_runtime SET statement_timeout='5s'; ALTER ROLE auth_dek_test_runtime SET lock_timeout='2s'; ALTER ROLE auth_dek_test_runtime SET idle_in_transaction_session_timeout='15s';
+          GRANT app_runtime TO app_dek_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_dek_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_dek_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_dek_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_dek_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_p2f_tenant_dek_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p2f_tenant_dek_test TO app_dek_test_runtime,auth_dek_test_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p2f_tenant_dek_test
+      - name: Fresh Alembic HEAD through reduced migration identity
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+      - name: Prove direct key-table access denied and helper fails closed without tenant context
+        run: |
+          set -euo pipefail
+          if PGPASSWORD='p2f-api-runtime' psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_dek_test_runtime -d gymflow_p2f_tenant_dek_test -c "SELECT encrypted_dek FROM public.encryption_key_registry LIMIT 1"; then echo 'API has direct key-table SELECT' >&2; exit 1; fi
+          if PGPASSWORD='p2f-api-runtime' psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_dek_test_runtime -d gymflow_p2f_tenant_dek_test -c "SELECT app_secure.lookup_encrypted_dek('11111111-1111-4111-8111-111111111111',910001)"; then echo 'DEK helper ran without tenant context' >&2; exit 1; fi
+      - name: Seed two tenants of encrypted key material
+        run: |
+          PGPASSWORD='p2f-migration-owner' psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_p2f_tenant_dek_test <<'SQL'
+          INSERT INTO public.encryption_key_registry(key_version,tenant_id,table_name,encrypted_dek,key_status) VALUES
+          (910001,'11111111-1111-4111-8111-111111111111','organization_addresses',decode('01020304aabbccdd','hex'),'DEPRECATED'),
+          (910002,'22222222-2222-4222-8222-222222222222','organization_addresses',decode('10203040ddeeff00','hex'),'DEPRECATED');
+          SQL
+      - name: Prove tenant match succeeds and mismatch is denied
+        run: |
+          set -euo pipefail
+          first=$(PGPASSWORD='p2f-api-runtime' psql -X -A -t -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_dek_test_runtime -d gymflow_p2f_tenant_dek_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','11111111-1111-4111-8111-111111111111',true);
+          SELECT pg_catalog.encode(app_secure.lookup_encrypted_dek('11111111-1111-4111-8111-111111111111',910001),'hex');
+          COMMIT;
+          SQL
+          )
+          printf '%s\n' "$first" | grep -qx '01020304aabbccdd'
+          if PGPASSWORD='p2f-api-runtime' psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_dek_test_runtime -d gymflow_p2f_tenant_dek_test <<'SQL'; then
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','11111111-1111-4111-8111-111111111111',true);
+          SELECT app_secure.lookup_encrypted_dek('22222222-2222-4222-8222-222222222222',910002);
+          COMMIT;
+          SQL
+            echo 'DEK helper crossed tenant context' >&2; exit 1
+          fi
+      - name: Execute real production callback under API identity
+        env:
+          ENVIRONMENT: production
+          DOERS_PROCESS_PROFILE: api
+          CELERY_WORKER_PROFILE: ''
+          DATABASE_URL: postgresql+asyncpg://app_dek_test_runtime:p2f-api-runtime@127.0.0.1:5432/gymflow_p2f_tenant_dek_test
+          AUTH_DATABASE_URL: postgresql+asyncpg://auth_dek_test_runtime:p2f-auth-runtime@127.0.0.1:5432/gymflow_p2f_tenant_dek_test
+          WORKER_DATABASE_URL: ''
+          MAINTENANCE_DATABASE_URL: ''
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import asyncio
+          from app.core.supervisor import _lookup_encrypted_dek
+          async def main():
+              first=await _lookup_encrypted_dek('11111111-1111-4111-8111-111111111111',910001)
+              second=await _lookup_encrypted_dek('22222222-2222-4222-8222-222222222222',910002)
+              assert first == bytes.fromhex('01020304aabbccdd')
+              assert second == bytes.fromhex('10203040ddeeff00')
+              try: await _lookup_encrypted_dek('11111111-1111-4111-8111-111111111111',999999)
+              except ValueError: pass
+              else: raise AssertionError('missing historical DEK did not fail closed')
+          asyncio.run(main())
+          PY
+      - name: Reprove privilege identity and ref seals
+        env:
+          DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:p2f-migration-owner@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          PGPASSWORD='p2f-migration-owner' psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_p2f_tenant_dek_test <<'SQL'
+          DO $$ BEGIN
+            IF pg_catalog.has_table_privilege('app_dek_test_runtime','public.encryption_key_registry','SELECT') THEN RAISE EXCEPTION 'API login gained direct key-registry SELECT'; END IF;
+            IF pg_catalog.has_column_privilege('app_runtime','public.encryption_key_registry','encrypted_dek','SELECT') THEN RAISE EXCEPTION 'app_runtime gained direct encrypted_dek SELECT'; END IF;
+          END $$;
+          SQL
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain=v1)"
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/p2f-main-final" "+refs/heads/${HARDENING_BRANCH}:refs/remotes/origin/p2f-hardening-final"
+          test "$(git rev-parse refs/remotes/origin/p2f-main-final)" = "$EXPECTED_BASE"
+          test "$(git rev-parse refs/remotes/origin/p2f-hardening-final)" = "$EXPECTED_HEAD"
+          printf 'success\n' > "$EVIDENCE_DIR/status.txt"
+          find "$EVIDENCE_DIR" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE_DIR/SHA256SUMS"
+      - name: Upload tenant-DEK evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: p2f-tenant-dek-${{ env.EXPECTED_HEAD }}
+          path: /tmp/p2f-8bec/tenant-dek/
+          if-no-files-found: error
+          retention-days: 30
