@@ -1,0 +1,438 @@
+name: P3A Organization Profile Boundary
+
+on:
+  pull_request:
+    branches: [main, hardening/complete-migration-lineage]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p3a-org-profile-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p3a-organization-profile-boundary:
+    name: Principal-bound tenant-root mutation under real DB identities
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3a_test
+      MIGRATION_PASSWORD: ci-migration-owner
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p3a-not-production
+      AWS_ACCESS_KEY_ID: ci-p3a
+      AWS_SECRET_ACCESS_KEY: ci-p3a
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-p3a-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Certify static P3A contracts
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            alembic/versions/c17d8e9f0a1b_organization_profile_authorization.py \
+            alembic/versions/c27d8e9f0a1c_organization_onboarding_authorization.py \
+            alembic/versions/c37d8e9f0a1d_organization_profile_principal_binding.py \
+            app/repositories/organization_profile.py \
+            app/repositories/organization_onboarding.py \
+            app/routers/organizations.py \
+            app/services/onboarding_service.py \
+            app/schemas/organization.py
+          python -m pytest --noconftest -q \
+            tests/test_organization_profile_authorization_boundary.py \
+            tests/test_organization_onboarding_authorization_boundary.py \
+            tests/test_organization_profile_principal_binding.py
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/migration_semantics_gate.py
+
+      - name: Install PostgreSQL 16
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+
+      - name: Bootstrap canonical roles and production-shaped login overlays
+        run: |
+          set -euo pipefail
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+
+          CREATE ROLE app_p3a_runtime LOGIN PASSWORD 'ci-api-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_p3a_runtime LOGIN PASSWORD 'ci-auth-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_p3a_runtime SET row_security='on';
+          ALTER ROLE app_p3a_runtime SET statement_timeout='5s';
+          ALTER ROLE app_p3a_runtime SET lock_timeout='2s';
+          ALTER ROLE app_p3a_runtime SET idle_in_transaction_session_timeout='15s';
+          ALTER ROLE auth_p3a_runtime SET row_security='on';
+          ALTER ROLE auth_p3a_runtime SET statement_timeout='5s';
+          ALTER ROLE auth_p3a_runtime SET lock_timeout='2s';
+          ALTER ROLE auth_p3a_runtime SET idle_in_transaction_session_timeout='15s';
+
+          GRANT app_runtime TO app_p3a_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_p3a_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_p3a_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_p3a_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_p3a_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_p3a_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p3a_test
+            TO app_p3a_runtime, auth_p3a_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3a_test
+
+      - name: Fresh Alembic HEAD through reduced migration identity
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Seed two tenants and typed principals
+        run: |
+          set -euo pipefail
+          PGPASSWORD='ci-migration-owner' psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p3a_test <<'SQL'
+          INSERT INTO public.organizations (id, name, slug, tier, is_active, tagline)
+          VALUES
+            ('11111111-1111-4111-8111-111111111111', 'Alpha Gym', 'alpha-gym', 'basic', TRUE, 'alpha-old'),
+            ('22222222-2222-4222-8222-222222222222', 'Beta Gym', 'beta-gym', 'basic', TRUE, 'beta-old');
+
+          INSERT INTO public.owners (
+              id, org_id, owner_name, email, hashed_password,
+              email_verified, onboarding_completed
+          ) VALUES
+            ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+             '11111111-1111-4111-8111-111111111111',
+             'Alpha Owner', 'alpha-owner@example.test', 'not-a-real-password', FALSE, FALSE),
+            ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+             '22222222-2222-4222-8222-222222222222',
+             'Beta Owner', 'beta-owner@example.test', 'not-a-real-password', FALSE, FALSE);
+          SQL
+
+          PGPASSWORD='ci-migration-owner' psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p3a_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config(
+              'app.current_org_id','11111111-1111-4111-8111-111111111111',true
+          );
+          INSERT INTO public.organization_users (
+              id, org_id, name, email, password_hash, is_active, is_verified, token_version
+          ) VALUES (
+              'aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa',
+              '11111111-1111-4111-8111-111111111111',
+              'Alpha Admin', 'alpha-admin@example.test', 'not-a-real-password', TRUE, TRUE, 1
+          );
+          COMMIT;
+          SQL
+
+      - name: Prove API has no direct tenant-root read or mutation
+        run: |
+          set -euo pipefail
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test \
+              -c "SELECT name FROM public.organizations LIMIT 1"; then
+            echo 'API unexpectedly has direct organizations SELECT' >&2
+            exit 1
+          fi
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test \
+              -c "UPDATE public.organizations SET tagline='direct-api' WHERE id='11111111-1111-4111-8111-111111111111'"; then
+            echo 'API unexpectedly has direct organizations UPDATE' >&2
+            exit 1
+          fi
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test \
+              -c "UPDATE public.organizations SET tier='elite' WHERE id='11111111-1111-4111-8111-111111111111'"; then
+            echo 'API unexpectedly mutated protected organization control state' >&2
+            exit 1
+          fi
+
+      - name: Prove profile capability fails closed without valid principal and role context
+        run: |
+          set -euo pipefail
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test \
+              -c "SELECT * FROM app_secure.current_organization_profile()"; then
+            echo 'profile helper unexpectedly ran without context' >&2
+            exit 1
+          fi
+
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test <<'SQL'; then
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','not-a-uuid',true);
+          SELECT pg_catalog.set_config('app.current_user_id','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT * FROM app_secure.current_organization_profile();
+          COMMIT;
+          SQL
+            echo 'profile helper accepted malformed tenant context' >&2
+            exit 1
+          fi
+
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test <<'SQL'; then
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','11111111-1111-4111-8111-111111111111',true);
+          SELECT pg_catalog.set_config('app.current_user_id','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','trainer',true);
+          SELECT * FROM app_secure.update_current_organization_profile('{"tagline":"wrong-role"}'::jsonb);
+          COMMIT;
+          SQL
+            echo 'profile helper accepted non-admin business role' >&2
+            exit 1
+          fi
+
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test <<'SQL'; then
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','11111111-1111-4111-8111-111111111111',true);
+          SELECT pg_catalog.set_config('app.current_user_id','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT pg_catalog.set_config('app.current_gym_id','33333333-3333-4333-8333-333333333333',true);
+          SELECT * FROM app_secure.update_current_organization_profile('{"tagline":"branch-scope"}'::jsonb);
+          COMMIT;
+          SQL
+            echo 'profile helper accepted branch-scoped context' >&2
+            exit 1
+          fi
+
+      - name: Prove principal membership prevents cross-tenant profile mutation
+        run: |
+          set -euo pipefail
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test <<'SQL'; then
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','22222222-2222-4222-8222-222222222222',true);
+          SELECT pg_catalog.set_config('app.current_user_id','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT * FROM app_secure.update_current_organization_profile('{"tagline":"cross-tenant"}'::jsonb);
+          COMMIT;
+          SQL
+            echo 'owner A crossed into organization B' >&2
+            exit 1
+          fi
+
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test <<'SQL'; then
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','22222222-2222-4222-8222-222222222222',true);
+          SELECT pg_catalog.set_config('app.current_user_id','aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','organization_user',true);
+          SELECT pg_catalog.set_config('app.current_role','admin',true);
+          SELECT * FROM app_secure.current_organization_profile();
+          COMMIT;
+          SQL
+            echo 'organization-user A crossed into organization B' >&2
+            exit 1
+          fi
+
+      - name: Prove allowed owner and organization-admin profile operations
+        run: |
+          set -euo pipefail
+          result=$(PGPASSWORD='ci-api-runtime' psql -X -A -t -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','11111111-1111-4111-8111-111111111111',true);
+          SELECT pg_catalog.set_config('app.current_user_id','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT name || '|' || COALESCE(tagline,'<NULL>')
+          FROM app_secure.update_current_organization_profile(
+              '{"name":"Alpha Hardened","tagline":null,"website_url":"https://alpha.example"}'::jsonb
+          );
+          COMMIT;
+          SQL
+          )
+          printf '%s\n' "$result" | grep -qx 'Alpha Hardened|<NULL>'
+
+          result=$(PGPASSWORD='ci-api-runtime' psql -X -A -t -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','11111111-1111-4111-8111-111111111111',true);
+          SELECT pg_catalog.set_config('app.current_user_id','aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','organization_user',true);
+          SELECT pg_catalog.set_config('app.current_role','admin',true);
+          SELECT name FROM app_secure.current_organization_profile();
+          COMMIT;
+          SQL
+          )
+          printf '%s\n' "$result" | grep -qx 'Alpha Hardened'
+
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test <<'SQL'; then
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','11111111-1111-4111-8111-111111111111',true);
+          SELECT pg_catalog.set_config('app.current_user_id','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT * FROM app_secure.update_current_organization_profile('{"tier":"elite"}'::jsonb);
+          COMMIT;
+          SQL
+            echo 'profile helper accepted protected tier field' >&2
+            exit 1
+          fi
+
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test <<'SQL'; then
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','11111111-1111-4111-8111-111111111111',true);
+          SELECT pg_catalog.set_config('app.current_user_id','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT * FROM app_secure.current_organization_profile_internal();
+          COMMIT;
+          SQL
+            echo 'API unexpectedly executed unbound internal profile helper' >&2
+            exit 1
+          fi
+
+      - name: Prove auth onboarding is bounded and direct auth UPDATE is denied
+        run: |
+          set -euo pipefail
+          if PGPASSWORD='ci-auth-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U auth_p3a_runtime -d gymflow_p3a_test \
+              -c "UPDATE public.organizations SET phone='+919999999999' WHERE id='11111111-1111-4111-8111-111111111111'"; then
+            echo 'auth identity unexpectedly retains direct organizations UPDATE' >&2
+            exit 1
+          fi
+
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test \
+              -c "SELECT app_secure.complete_current_organization_onboarding_profile('{}'::jsonb)"; then
+            echo 'ordinary API unexpectedly executes auth-only onboarding capability' >&2
+            exit 1
+          fi
+
+          result=$(PGPASSWORD='ci-auth-runtime' psql -X -A -t -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U auth_p3a_runtime -d gymflow_p3a_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','11111111-1111-4111-8111-111111111111',true);
+          SELECT pg_catalog.set_config('app.current_user_id','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT app_secure.complete_current_organization_onboarding_profile(
+              '{"phone":"+919876543210","address_line1":"1 Alpha Street","address_line2":null,"city":"Puducherry","state":"Puducherry","pincode":"605001","description":"onboarded"}'::jsonb
+          );
+          COMMIT;
+          SQL
+          )
+          printf '%s\n' "$result" | grep -qx 't'
+
+          if PGPASSWORD='ci-auth-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U auth_p3a_runtime -d gymflow_p3a_test <<'SQL'; then
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','22222222-2222-4222-8222-222222222222',true);
+          SELECT pg_catalog.set_config('app.current_user_id','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT app_secure.complete_current_organization_onboarding_profile(
+              '{"phone":"+919999999999","address_line1":"cross","address_line2":null,"city":"x","state":"x","pincode":"605002"}'::jsonb
+          );
+          COMMIT;
+          SQL
+            echo 'auth onboarding helper crossed tenant boundary' >&2
+            exit 1
+          fi
+
+      - name: Verify durable state and protected columns
+        run: |
+          set -euo pipefail
+          observed=$(PGPASSWORD='ci-migration-owner' psql -X -A -t -F '|' -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p3a_test \
+            -c "SELECT id,name,COALESCE(tagline,'<NULL>'),tier,is_active,COALESCE(phone,'<NULL>'),profile_completed FROM public.organizations ORDER BY id")
+          printf '%s\n' "$observed"
+          printf '%s\n' "$observed" | grep -Fqx '11111111-1111-4111-8111-111111111111|Alpha Hardened|<NULL>|basic|t|+919876543210|t'
+          printf '%s\n' "$observed" | grep -Fqx '22222222-2222-4222-8222-222222222222|Beta Gym|beta-old|basic|t|<NULL>|f'
+
+      - name: Prove downgrade to certified predecessor and re-upgrade preserve data and ACLs
+        run: |
+          set -euo pipefail
+          before=$(PGPASSWORD='ci-migration-owner' psql -X -A -t -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p3a_test \
+            -c "SELECT pg_catalog.md5(pg_catalog.string_agg(id::text || '|' || name || '|' || COALESCE(tagline,'') || '|' || tier::text || '|' || is_active::text || '|' || COALESCE(phone,'') || '|' || profile_completed::text, E'\\n' ORDER BY id)) FROM public.organizations")
+
+          python -s -m alembic -c alembic.ini downgrade b06c7d8e9f0a
+          PGPASSWORD='ci-migration-owner' psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p3a_test <<'SQL'
+          DO $$
+          BEGIN
+            IF pg_catalog.to_regprocedure('app_secure.current_organization_profile()') IS NOT NULL
+               OR pg_catalog.to_regprocedure('app_secure.update_current_organization_profile(jsonb)') IS NOT NULL
+               OR pg_catalog.to_regprocedure('app_secure.complete_current_organization_onboarding_profile(jsonb)') IS NOT NULL THEN
+              RAISE EXCEPTION 'P3A function remains at certified predecessor';
+            END IF;
+            IF NOT pg_catalog.has_table_privilege('auth_runtime','public.organizations','UPDATE') THEN
+              RAISE EXCEPTION 'auth_runtime predecessor UPDATE was not restored';
+            END IF;
+          END
+          $$;
+          SQL
+
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          after=$(PGPASSWORD='ci-migration-owner' psql -X -A -t -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p3a_test \
+            -c "SELECT pg_catalog.md5(pg_catalog.string_agg(id::text || '|' || name || '|' || COALESCE(tagline,'') || '|' || tier::text || '|' || is_active::text || '|' || COALESCE(phone,'') || '|' || profile_completed::text, E'\\n' ORDER BY id)) FROM public.organizations")
+          test "$before" = "$after"
+
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_test \
+              -c "UPDATE public.organizations SET tagline='post-cycle-direct' WHERE id='11111111-1111-4111-8111-111111111111'"; then
+            echo 'API gained direct UPDATE after migration cycle' >&2
+            exit 1
+          fi
+          if PGPASSWORD='ci-auth-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U auth_p3a_runtime -d gymflow_p3a_test \
+              -c "UPDATE public.organizations SET phone='+919999999999' WHERE id='11111111-1111-4111-8111-111111111111'"; then
+            echo 'auth identity gained direct UPDATE after migration cycle' >&2
+            exit 1
+          fi
+
+      - name: Reprove cluster identity graph
+        env:
+          DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:ci-migration-owner@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py
