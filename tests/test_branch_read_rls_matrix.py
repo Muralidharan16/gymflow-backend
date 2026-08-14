@@ -43,6 +43,63 @@ async def _set_context(session, org_id: uuid.UUID, actor_id: uuid.UUID, role: st
     )
 
 
+async def _seed_matrix_branch_state_without_returning(
+    session,
+    *,
+    branch_id: uuid.UUID,
+    org_id: uuid.UUID,
+    lifecycle_status: str,
+    status_reason: str | None,
+    search_epoch_ulid: str,
+) -> None:
+    """Seed synthetic lifecycle state without widening auth RETURNING visibility.
+
+    The read matrix needs states that are not onboarding's canonical initial
+    active/primary state. Auth already owns the tenant-bound INSERT capability,
+    but C87 deliberately limits auth SELECT/RETURNING visibility to that one
+    canonical onboarding shape. Fixture setup therefore inserts these synthetic
+    rows without RETURNING instead of manufacturing broader SELECT/RLS rights.
+    """
+    await session.execute(
+        text(
+            """
+            INSERT INTO public.org_branch_state (
+                branch_id,
+                org_id,
+                branch_status,
+                status,
+                is_primary,
+                is_operational,
+                status_reason,
+                transition_source,
+                watchdog_recovery_count,
+                search_visibility_version,
+                search_epoch_ulid
+            ) VALUES (
+                :branch_id,
+                :org_id,
+                'active',
+                :lifecycle_status,
+                FALSE,
+                TRUE,
+                :status_reason,
+                'api',
+                0,
+                1,
+                :search_epoch_ulid
+            )
+            """
+        ),
+        {
+            "branch_id": branch_id,
+            "org_id": org_id,
+            "lifecycle_status": lifecycle_status,
+            "status_reason": status_reason,
+            "search_epoch_ulid": search_epoch_ulid,
+        },
+    )
+
+
 @pytest_asyncio.fixture
 async def branch_read_matrix_fixture():
     """Seed one UUID-isolated tenant matrix in the disposable CI database.
@@ -51,6 +108,12 @@ async def branch_read_matrix_fixture():
     fixture therefore leaves its UUID-scoped rows for database teardown instead
     of manufacturing test-only grants, temporary RLS policies, SET ROLE edges,
     or hidden cascades that do not exist in production.
+
+    Branch roots are flushed one at a time so SQLAlchemy cannot turn the fixture
+    into a multi-row INSERT ... RETURNING that asks auth for unrelated branch-id
+    read authority. Synthetic lifecycle states use the existing bounded auth
+    INSERT policy without RETURNING; all matrix assertions still execute through
+    the reduced ordinary application runtime identity.
     """
     assert AuthTestSessionLocal is not None
 
@@ -91,19 +154,27 @@ async def branch_read_matrix_fixture():
         for index, lifecycle_status in enumerate(STATUSES, start=1):
             branch_id = uuid.uuid4()
             branch_ids[lifecycle_status] = branch_id
-            branch = OrgBranch(
-                id=branch_id,
-                org_id=org_id,
-                branch_name=f"Matrix {lifecycle_status}",
-                branch_code=f"MX-{index}",
-                internal_slug=f"mx-{index}",
-                created_by=owner_id,
+            session.add(
+                OrgBranch(
+                    id=branch_id,
+                    org_id=org_id,
+                    branch_name=f"Matrix {lifecycle_status}",
+                    branch_code=f"MX-{index}",
+                    internal_slug=f"mx-{index}",
+                    created_by=owner_id,
+                )
             )
-            branch.state = OrgBranchState(
+
+            # Flush each root separately. A batch flush adds the PK as an
+            # insertmanyvalues RETURNING sentinel, which is intentionally outside
+            # the narrow C57 auth branch-returning contract.
+            await session.flush()
+
+            await _seed_matrix_branch_state_without_returning(
+                session,
                 branch_id=branch_id,
                 org_id=org_id,
-                branch_status="active",
-                status=lifecycle_status,
+                lifecycle_status=lifecycle_status,
                 status_reason=(
                     "Matrix terminal status"
                     if lifecycle_status in {"compliance_suspended", "permanently_closed"}
@@ -111,7 +182,6 @@ async def branch_read_matrix_fixture():
                 ),
                 search_epoch_ulid=f"01AN4V07BY79KA1307SR1XF3{index}",
             )
-            session.add(branch)
 
         await session.commit()
 
