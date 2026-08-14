@@ -32,48 +32,52 @@ def test_c87_preserves_exact_auth_acl_and_does_not_widen_privileges() -> None:
     assert "GRANT auth_runtime" not in source
 
 
-def test_c87_adds_a_separate_auth_only_bootstrap_policy() -> None:
+def test_c87_adds_only_auth_returning_select_policy() -> None:
     source = _source()
-    assert '_LIFECYCLE_POLICY = "p_branch_insert"' in source
-    assert '_BOOTSTRAP_POLICY = "p_branch_insert_auth_bootstrap"' in source
-    assert "CREATE POLICY p_branch_insert_auth_bootstrap" in source
+    assert '_INSERT_POLICY = "p_branch_insert"' in source
+    assert '_SELECT_POLICY = "p_branch_select"' in source
+    assert '_RETURNING_POLICY = "p_branch_select_auth_bootstrap_returning"' in source
+    assert "CREATE POLICY p_branch_select_auth_bootstrap_returning" in source
     assert "ON public.org_branch_state" in source
     assert "AS PERMISSIVE" in source
-    assert "FOR INSERT" in source
+    assert "FOR SELECT" in source
     assert "TO auth_runtime" in source
-    assert "ALTER POLICY p_branch_insert " not in source
-    assert "auth bootstrap policy must target exactly auth_runtime" in source
-    assert "policy_data.polroles = ARRAY[" in source
+    assert "FOR INSERT\nTO auth_runtime" not in source
+    assert "p_branch_insert_auth_bootstrap" not in source
+    assert "ALTER POLICY p_branch_insert" not in source
+    assert "auth RETURNING policy must target exactly auth_runtime" in source
 
 
-def test_c87_proves_lifecycle_policy_is_unchanged_in_both_directions() -> None:
+def test_c87_proves_predecessor_insert_and_select_policies_are_unchanged() -> None:
     source = _source()
-    assert "lifecycle_before = _require_lifecycle_policy(bind)" in source
-    assert "lifecycle_after = _require_lifecycle_policy(bind)" in source
-    assert source.count("if lifecycle_after != lifecycle_before:") == 2
-    assert "c87 changed the predecessor lifecycle policy" in source
-    assert "c87 downgrade changed the predecessor lifecycle policy" in source
-    assert "p_branch_insert lost lifecycle token" in source
+    assert "predecessor_before = _require_predecessor_policies(bind)" in source
+    assert "predecessor_after = _require_predecessor_policies(bind)" in source
+    assert source.count("if predecessor_after != predecessor_before:") == 2
+    assert "c87 changed predecessor branch-state policies" in source
+    assert "c87 downgrade changed predecessor branch-state policies" in source
+    assert "predecessor p_branch_insert posture drifted" in source
+    assert "predecessor p_branch_select posture drifted" in source
+    assert "predecessor p_branch_select already targets auth_runtime" in source
 
 
-def test_auth_bootstrap_policy_is_bound_to_real_db_identity_and_tenant() -> None:
+def test_auth_returning_policy_is_bound_to_real_db_identity_and_tenant() -> None:
     source = _source()
-    bootstrap = source.split("_BOOTSTRAP_SQL =", 1)[1].split("def upgrade()", 1)[0]
-    assert "current_user = session_user" in bootstrap
-    assert "pg_catalog.pg_has_role(session_user, 'auth_runtime', 'MEMBER')" in bootstrap
-    assert "auth.role() = 'owner'" in bootstrap
-    assert "app.current_org_id" in bootstrap
-    assert "app.current_user_id" in bootstrap
-    assert "app.current_principal_type" in bootstrap
-    assert "app.current_gym_id" in bootstrap
-    assert "('owner', 'legacy_gym_owner')" in bootstrap
-    assert "app_runtime" not in bootstrap
-    assert "TO PUBLIC" not in bootstrap
+    returning = source.split("_RETURNING_POLICY_SQL =", 1)[1].split("def upgrade()", 1)[0]
+    assert "current_user = session_user" in returning
+    assert "pg_catalog.pg_has_role(session_user, 'auth_runtime', 'MEMBER')" in returning
+    assert "auth.role() = 'owner'" in returning
+    assert "app.current_org_id" in returning
+    assert "app.current_user_id" in returning
+    assert "app.current_principal_type" in returning
+    assert "app.current_gym_id" in returning
+    assert "('owner', 'legacy_gym_owner')" in returning
+    assert "app_runtime" not in returning
+    assert "TO PUBLIC" not in returning
 
 
-def test_auth_bootstrap_policy_only_accepts_canonical_initial_state() -> None:
+def test_auth_returning_policy_only_exposes_canonical_initial_state() -> None:
     source = _source()
-    bootstrap = source.split("_BOOTSTRAP_SQL =", 1)[1].split("def upgrade()", 1)[0]
+    returning = source.split("_RETURNING_POLICY_SQL =", 1)[1].split("def upgrade()", 1)[0]
     required_fragments = (
         "branch_status = 'active'",
         "is_primary IS TRUE",
@@ -109,17 +113,15 @@ def test_auth_bootstrap_policy_only_accepts_canonical_initial_state() -> None:
         "^[0-9A-HJKMNP-TV-Z]{26}$",
     )
     for fragment in required_fragments:
-        assert fragment in bootstrap
+        assert fragment in returning
 
 
-def test_c87_downgrade_removes_only_the_p3a_owned_bootstrap_policy() -> None:
+def test_c87_downgrade_removes_only_the_p3a_owned_returning_policy() -> None:
     source = _source()
     downgrade = source.split("def downgrade()", 1)[1]
-    assert (
-        'DROP POLICY p_branch_insert_auth_bootstrap ON public.org_branch_state'
-        in downgrade
-    )
+    assert "DROP POLICY p_branch_select_auth_bootstrap_returning" in downgrade
     assert "ALTER POLICY" not in downgrade
-    assert "DROP POLICY p_branch_insert ON" not in downgrade
-    assert "_require_bootstrap_absent(bind)" in downgrade
-    assert "_require_lifecycle_policy(bind)" in downgrade
+    assert "DROP POLICY p_branch_insert" not in downgrade
+    assert "DROP POLICY p_branch_select ON" not in downgrade
+    assert "_require_returning_absent(bind)" in downgrade
+    assert "_require_predecessor_policies(bind)" in downgrade
