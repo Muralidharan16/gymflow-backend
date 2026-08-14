@@ -286,9 +286,26 @@ jobs:
             tests/test_p3a_auth_runtime_decoupling.py
 
       - name: Run general regression suite fail-fast
+        id: general_pytest
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          python -m pytest -q --maxfail=1 --ignore=tests/platform_billing
+          set -uo pipefail
+          python -m pytest -q --maxfail=1 --ignore=tests/platform_billing 2>&1 \
+            | tee /tmp/p3a-general-pytest.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload general regression failure evidence
+        if: steps.general_pytest.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p3a-general-pytest-${{ github.sha }}
+          path: /tmp/p3a-general-pytest.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Enforce general regression result
+        if: steps.general_pytest.outcome == 'failure'
+        run: exit 1
 
       - name: Reprove cluster identity graph after regressions
         env:
