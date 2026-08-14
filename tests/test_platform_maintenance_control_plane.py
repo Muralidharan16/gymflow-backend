@@ -95,6 +95,23 @@ def test_geocoding_reverification_uses_current_state_model_not_legacy_maps_colum
     assert "maps_retry_count" not in source
 
 
+def test_platform_maintenance_preserves_idempotency_anchor_state_machine() -> None:
+    source = _source(MIGRATION)
+    # The canonical anchor is keyed by (tenant_id, idempotency_key) and uses
+    # heartbeat_at / created_at.  Maintenance must not invent lock/id columns
+    # or a new state transition.
+    assert "tenant_id, idempotency_key, status, heartbeat_at, created_at" in source
+    assert "WHERE status = 'IN_PROGRESS'" in source
+    assert "heartbeat_at < pg_catalog.clock_timestamp()" in source
+    assert "SET status = 'FAILED'" in source
+    assert "WHERE status = 'COMPLETED'" in source
+    assert "created_at < pg_catalog.clock_timestamp()" in source
+    assert "locked_at" not in source
+    assert "locked_by" not in source
+    assert "status = 'available'" not in source
+    assert "status = 'processing'" not in source
+
+
 def test_platform_maintenance_helpers_are_bounded_and_context_gated() -> None:
     source = _source(MIGRATION)
     assert "p_batch_size < 1" in source
