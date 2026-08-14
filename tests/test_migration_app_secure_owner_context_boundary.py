@@ -1,8 +1,8 @@
 """Closed app_secure migration inventory with the original hardening suite preserved.
 
 The pre-P2D static contract is kept byte-for-byte in the non-collected baseline
-module. P2D extends only the closed sensitive-migration inventory for the new
-geocoding boundary; every other hardening regression is re-exported unchanged.
+module. Later hardening revisions extend only the closed sensitive-migration
+inventory; every other hardening regression is re-exported unchanged.
 """
 
 from __future__ import annotations
@@ -28,7 +28,9 @@ for _name, _value in vars(_BASELINE).items():
         globals()[_name] = _value
 
 _P2D_MIGRATION = "9e4f5a6b7c8d_worker_geocoding_runtime_boundary.py"
+_P2F_REMEDIATION_MIGRATION = "af5b6c7d8e9f_platform_maintenance_control_plane.py"
 APP_SECURE_FILES.add(_P2D_MIGRATION)
+APP_SECURE_FILES.add(_P2F_REMEDIATION_MIGRATION)
 
 
 def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
@@ -56,6 +58,10 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "revoke_schema",
         },
         _P2D_MIGRATION: {
+            "grant_schema",
+            "revoke_schema",
+        },
+        _P2F_REMEDIATION_MIGRATION: {
             "grant_schema",
             "revoke_schema",
         },
