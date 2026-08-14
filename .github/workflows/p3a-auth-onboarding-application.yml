@@ -183,6 +183,8 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import asyncio
+          import logging
+          import traceback
 
           from httpx import ASGITransport, AsyncClient
 
@@ -191,6 +193,30 @@ jobs:
 
           ORG_ID = '41111111-1111-4111-8111-111111111111'
           OWNER_ID = 'daaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+
+          class CaptureHandler(logging.Handler):
+              def __init__(self) -> None:
+                  super().__init__()
+                  self.messages: list[str] = []
+
+              def emit(self, record: logging.LogRecord) -> None:
+                  message = self.format(record)
+                  if record.exc_info:
+                      message += '\n' + ''.join(traceback.format_exception(*record.exc_info))
+                  self.messages.append(message)
+
+          capture = CaptureHandler()
+          capture.setFormatter(logging.Formatter('%(levelname)s %(name)s: %(message)s'))
+          onboarding_logger = logging.getLogger('app.services.onboarding_service')
+          onboarding_logger.addHandler(capture)
+
+          def annotate_failure(message: str) -> None:
+              safe = (
+                  message.replace('%', '%25')
+                  .replace('\r', '%0D')
+                  .replace('\n', '%0A')
+              )
+              print(f'::error title=P3A onboarding runtime failure::{safe[-12000:]}')
 
           token = create_access_token(
               owner_id=OWNER_ID,
@@ -226,6 +252,11 @@ jobs:
                           'social_links': {'instagram': 'alpha'},
                       },
                   )
+                  if response.status_code != 200:
+                      captured = '\n\n'.join(capture.messages[-3:])
+                      annotate_failure(
+                          f'HTTP {response.status_code}: {response.text}\n{captured}'
+                      )
                   assert response.status_code == 200, response.text
                   payload = response.json()
                   assert payload['status'] == 'success', payload
@@ -242,6 +273,10 @@ jobs:
                           'pincode': '605001',
                       },
                   )
+                  if repeat.status_code != 409:
+                      annotate_failure(
+                          f'repeat onboarding returned HTTP {repeat.status_code}: {repeat.text}'
+                      )
                   assert repeat.status_code == 409, (repeat.status_code, repeat.text)
 
           asyncio.run(main())
