@@ -154,31 +154,33 @@ async def _kms_bulkhead_sweep_loop() -> None:
 
 async def _dek_registry_startup() -> None:
     from app.core.crypto import EnvelopeEncryptionProvider
-    from app.core.database import AsyncSessionLocal
+    from app.core.database import AsyncSessionLocal, update_session_context
 
     async def _db_dek_lookup(tenant_id: str, key_version: int) -> bytes:
         async with AsyncSessionLocal() as db:
             import sqlalchemy as sa
 
+            # The lookup owns a fresh pooled API session, so tenant context must
+            # be installed before its first SQL.  The database function verifies
+            # the same transaction-local tenant before reading key material.
+            await update_session_context(db, org_id=tenant_id)
             res = await db.execute(
                 sa.text(
                     """
-                    SELECT encrypted_dek
-                    FROM public.encryption_key_registry
-                    WHERE tenant_id = :tid AND key_version = :ver
+                    SELECT app_secure.lookup_encrypted_dek(:tid, :ver)
                     """
                 ),
                 {"tid": tenant_id, "ver": key_version},
             )
-            row = res.fetchone()
-            if not row:
+            encrypted_dek = res.scalar_one_or_none()
+            if encrypted_dek is None:
                 raise ValueError(
                     f"DEK not found: tenant={tenant_id} version={key_version}"
                 )
-            return bytes(row.encrypted_dek)
+            return bytes(encrypted_dek)
 
     EnvelopeEncryptionProvider.register_dek_lookup(_db_dek_lookup)
-    logger.info("DEK registry lookup registered into EnvelopeEncryptionProvider.")
+    logger.info("Tenant-bound DEK registry lookup registered into EnvelopeEncryptionProvider.")
 
 
 async def _wfq_start_loop() -> None:
