@@ -1,0 +1,94 @@
+name: P3A c27 Exact Predecessor Repair v2
+
+on:
+  push:
+    branches:
+      - hardening/p3a-organization-profile-authorization
+    paths:
+      - .github/workflows/p3a-c27-predecessor-repair-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+      - name: Apply exact measured predecessor contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          migration = Path('alembic/versions/c27d8e9f0a1c_organization_onboarding_authorization.py')
+          text = migration.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one migration match, got {count}: {old[:100]!r}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '_OWNER_SELECT_COLUMNS = ("id", "org_id", "onboarding_completed")\n',
+              '_OWNER_SELECT_COLUMNS = ("id", "org_id", "onboarding_completed")\n'
+              '_PREDECESSOR_OWNER_SELECT_ACL = {\n'
+              '    ("email_verified", "SELECT", False, "migration_owner"),\n'
+              '    ("id", "SELECT", False, "migration_owner"),\n'
+              '    ("onboarding_completed", "SELECT", False, "migration_owner"),\n'
+              '    ("org_id", "SELECT", False, "migration_owner"),\n'
+              '}\n'
+          )
+
+          marker = '''def _direct_schema_usage(bind, role_name: str) -> bool:\n'''
+          detail_helper = '''def _direct_column_acl_detail(\n    bind, relation: str, role_name: str\n) -> set[tuple[str, str, bool, str]]:\n    rows = bind.execute(\n        sa.text(\n            """\n            SELECT attribute_data.attname::text,\n                   acl_data.privilege_type::text,\n                   acl_data.is_grantable,\n                   grantor_role.rolname::text\n            FROM pg_catalog.pg_attribute AS attribute_data\n            CROSS JOIN LATERAL pg_catalog.aclexplode(\n                attribute_data.attacl\n            ) AS acl_data\n            JOIN pg_catalog.pg_roles AS grantee_role\n              ON grantee_role.oid = acl_data.grantee\n            LEFT JOIN pg_catalog.pg_roles AS grantor_role\n              ON grantor_role.oid = acl_data.grantor\n            WHERE attribute_data.attrelid = pg_catalog.to_regclass(:relation)\n              AND attribute_data.attnum > 0\n              AND NOT attribute_data.attisdropped\n              AND grantee_role.rolname = :role_name\n            ORDER BY attribute_data.attname, acl_data.privilege_type,\n                     acl_data.is_grantable, grantor_role.rolname\n            """\n        ),\n        {"relation": relation, "role_name": role_name},\n    ).all()\n    if any(row[3] is None for row in rows):\n        raise RuntimeError("direct column ACL contains an unresolved grantor")\n    return {\n        (str(row[0]), str(row[1]), bool(row[2]), str(row[3]))\n        for row in rows\n    }\n\n\n'''
+          replace_once(marker, detail_helper + marker)
+
+          replace_once(
+              '''    owner_acl = _direct_column_acl(bind, "public.owners", _SECURITY_OWNER)\n    for column in _OWNER_SELECT_COLUMNS:\n        if (column, "SELECT") in owner_acl:\n            raise RuntimeError(\n                f"app_security_owner unexpectedly has owners SELECT({column}) before onboarding boundary"\n            )\n''',
+              '''    owner_acl = _direct_column_acl_detail(bind, "public.owners", _SECURITY_OWNER)\n    if owner_acl != _PREDECESSOR_OWNER_SELECT_ACL:\n        raise RuntimeError(\n            "app_security_owner exact predecessor owners column ACL drift"\n        )\n'''
+          )
+
+          replace_once(
+              '''    security_owner_acl = _direct_column_acl(bind, "public.owners", _SECURITY_OWNER)\n    for column in _OWNER_SELECT_COLUMNS:\n        if (column, "SELECT") not in security_owner_acl:\n            raise RuntimeError(f"app_security_owner lacks owners SELECT({column})")\n''',
+              '''    security_owner_acl = _direct_column_acl_detail(\n        bind, "public.owners", _SECURITY_OWNER\n    )\n    if security_owner_acl != _PREDECESSOR_OWNER_SELECT_ACL:\n        raise RuntimeError(\n            "app_security_owner owners ACL changed across onboarding boundary"\n        )\n    for column in _OWNER_SELECT_COLUMNS:\n        if (column, "SELECT", False, _MIGRATION_OWNER) not in security_owner_acl:\n            raise RuntimeError(f"app_security_owner lacks owners SELECT({column})")\n'''
+          )
+
+          replace_once(
+              '''    op.execute(\n        "GRANT SELECT ("\n        + ", ".join(_OWNER_SELECT_COLUMNS)\n        + ") ON TABLE public.owners TO app_security_owner"\n    )\n''',
+              ''
+          )
+
+          replace_once(
+              '''    op.execute(\n        "REVOKE SELECT ("\n        + ", ".join(_OWNER_SELECT_COLUMNS)\n        + ") ON TABLE public.owners FROM app_security_owner"\n    )\n''',
+              ''
+          )
+
+          migration.write_text(text)
+
+          test = Path('tests/test_organization_onboarding_authorization_boundary.py')
+          t = test.read_text()
+          old = '''    assert set(_assignment("_OWNER_SELECT_COLUMNS")) == {\n        "id",\n        "org_id",\n        "onboarding_completed",\n    }\n'''
+          new = old + '''    assert set(_assignment("_PREDECESSOR_OWNER_SELECT_ACL")) == {\n        ("email_verified", "SELECT", False, "migration_owner"),\n        ("id", "SELECT", False, "migration_owner"),\n        ("onboarding_completed", "SELECT", False, "migration_owner"),\n        ("org_id", "SELECT", False, "migration_owner"),\n    }\n\n\ndef test_onboarding_reuses_exact_predecessor_owner_acl_without_accumulation() -> None:\n    source = _source(MIGRATION)\n    upgrade = _function_source(MIGRATION, "upgrade")\n    downgrade = _function_source(MIGRATION, "downgrade")\n    predecessor = _function_source(MIGRATION, "_require_predecessor")\n    forward = _function_source(MIGRATION, "_require_forward")\n\n    assert "_direct_column_acl_detail" in source\n    assert "_PREDECESSOR_OWNER_SELECT_ACL" in predecessor\n    assert "_PREDECESSOR_OWNER_SELECT_ACL" in forward\n    assert "ON TABLE public.owners TO app_security_owner" not in upgrade\n    assert "ON TABLE public.owners FROM app_security_owner" not in downgrade\n'''
+          if t.count(old) != 1:
+              raise SystemExit('expected exactly one test insertion point')
+          t = t.replace(old, new, 1)
+          test.write_text(t)
+          PY
+
+          python -m py_compile alembic/versions/c27d8e9f0a1c_organization_onboarding_authorization.py
+          git diff --check
+          git diff -- alembic/versions/c27d8e9f0a1c_organization_onboarding_authorization.py tests/test_organization_onboarding_authorization_boundary.py
+
+          git rm .github/workflows/p3a-predecessor-acl-diagnostic.yml
+          git rm .github/workflows/p3a-c27-predecessor-repair.yml
+          git rm .github/workflows/p3a-c27-predecessor-repair-v2.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add alembic/versions/c27d8e9f0a1c_organization_onboarding_authorization.py tests/test_organization_onboarding_authorization_boundary.py
+          git commit -m 'fix: preserve exact c27 predecessor owner ACL'
+          git push origin HEAD:hardening/p3a-organization-profile-authorization
