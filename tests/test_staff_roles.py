@@ -5,13 +5,14 @@ import pytest
 import pytest_asyncio
 from fastapi import Depends
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 
 from app.core.database import update_session_context
 from app.core.redis import close_redis, init_redis
 from app.core.security import create_access_token
 from app.main import app
 from app.models.auth import Owner
-from app.models.org_branch import OrgBranch, OrgBranchState
+from app.models.org_branch import OrgBranch
 from app.models.organization import Organization
 from app.models.organization_user import OrganizationUser
 
@@ -103,14 +104,44 @@ async def test_data(auth_db_session):
     )
     await auth_db_session.flush()
 
-    auth_db_session.add(
-        OrgBranchState(
-            branch_id=branch_id,
-            org_id=org_id,
-            search_epoch_ulid="01AN4V076P0000000000000000",
-            branch_status="active",
-            is_active=True,
-        )
+    # This fixture needs a synthetic non-primary active state, not onboarding's
+    # canonical first-primary state. C87 intentionally exposes auth SELECT only
+    # for that canonical INSERT ... RETURNING shape, so seed this prerequisite
+    # through the existing tenant/owner-bound auth INSERT policy without
+    # RETURNING instead of widening RLS or column SELECT.
+    await auth_db_session.execute(
+        text(
+            """
+            INSERT INTO public.org_branch_state (
+                branch_id,
+                org_id,
+                branch_status,
+                status,
+                is_primary,
+                is_operational,
+                transition_source,
+                watchdog_recovery_count,
+                search_visibility_version,
+                search_epoch_ulid
+            ) VALUES (
+                :branch_id,
+                :org_id,
+                'active',
+                'active',
+                FALSE,
+                TRUE,
+                'api',
+                0,
+                1,
+                :search_epoch_ulid
+            )
+            """
+        ),
+        {
+            "branch_id": branch_id,
+            "org_id": org_id,
+            "search_epoch_ulid": "01AN4V076P0000000000000000",
+        },
     )
     await auth_db_session.commit()
 
