@@ -46,8 +46,10 @@ def _app_secure_ddl_categories(path: pathlib.Path) -> set[str]:
 
 _P2D_MIGRATION = "9e4f5a6b7c8d_worker_geocoding_runtime_boundary.py"
 _P2F_REMEDIATION_MIGRATION = "af5b6c7d8e9f_platform_maintenance_control_plane.py"
+_P2F_DEK_MIGRATION = "b06c7d8e9f0a_tenant_dek_lookup_boundary.py"
 APP_SECURE_FILES.add(_P2D_MIGRATION)
 APP_SECURE_FILES.add(_P2F_REMEDIATION_MIGRATION)
+APP_SECURE_FILES.add(_P2F_DEK_MIGRATION)
 
 
 def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
@@ -90,6 +92,10 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "grant_schema",
             "revoke_schema",
         },
+        # Function-level DDL is covered by the dedicated DEK owner/ACL/runtime
+        # contract.  This historical category detector intentionally remains
+        # schema/view/policy scoped rather than reclassifying old migrations.
+        _P2F_DEK_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {
