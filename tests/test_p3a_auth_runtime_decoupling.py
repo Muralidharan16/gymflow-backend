@@ -15,6 +15,18 @@ def _migration_source() -> str:
     return MIGRATION.read_text(encoding="utf-8")
 
 
+def _function_source(name: str) -> str:
+    source = _migration_source()
+    tree = ast.parse(source, filename=str(MIGRATION))
+    node = next(
+        item
+        for item in ast.walk(tree)
+        if isinstance(item, ast.FunctionDef) and item.name == name
+    )
+    assert node.end_lineno is not None
+    return "".join(source.splitlines(keepends=True)[node.lineno - 1 : node.end_lineno])
+
+
 def test_c47_is_downstream_of_principal_binding() -> None:
     source = _migration_source()
     assert 'revision = "c47d8e9f0a1e"' in source
@@ -44,6 +56,10 @@ def test_auth_address_authority_is_exact_and_force_rls_guarded() -> None:
         "REVOKE SELECT, INSERT ON TABLE public.organization_addresses FROM auth_runtime"
         in normalized
     )
+
+    # Restrict privilege-mutation assertions to executable migration entrypoints;
+    # comments and catalog column names such as rolbypassrls are not mutations.
+    executable = (_function_source("upgrade") + _function_source("downgrade")).upper()
     for forbidden in (
         "GRANT UPDATE",
         "GRANT DELETE",
@@ -53,7 +69,7 @@ def test_auth_address_authority_is_exact_and_force_rls_guarded() -> None:
         "ROW_SECURITY = OFF",
         "GRANT ALL",
     ):
-        assert forbidden not in source.upper()
+        assert forbidden not in executable
 
 
 def test_auth_role_has_no_direct_profile_function_execute() -> None:
