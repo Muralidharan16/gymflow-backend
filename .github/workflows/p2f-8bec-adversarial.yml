@@ -1,0 +1,112 @@
+name: P2F 8bec826 Exact Adversarial Migration Safety
+
+on:
+  push:
+    branches:
+      - certification/p2f-8bec826
+    paths:
+      - .github/workflows/p2f-8bec-adversarial.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2f-adversarial-8bec826
+  cancel-in-progress: false
+
+env:
+  EXPECTED_HEAD: 8bec826b979f6cac14fb17603b4cd645f4779ec8
+  EXPECTED_TREE: 1f0648a89a2b23d35110956d7f278966984e3f78
+  EXPECTED_BASE: 43e03954723583601ee123505c5ce155b0bba162
+  HARDENING_BRANCH: hardening/complete-migration-lineage
+  MIGRATION_USER: migration_owner
+  MIGRATION_PASSWORD: p2f-migration-owner
+  PGHOST: 127.0.0.1
+  PGPORT: '5432'
+  EVIDENCE_DIR: /tmp/p2f-8bec/adversarial
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  adversarial:
+    name: Literal SHA adversarial migration production safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout literal candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: 8bec826b979f6cac14fb17603b4cd645f4779ec8
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Prove exact source and install locked dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain=v1)"
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > "$EVIDENCE_DIR/resolved-test-environment.txt"
+          diff -u requirements-test.lock "$EVIDENCE_DIR/resolved-test-environment.txt"
+          python -m py_compile scripts/verify_00f_adversarial.py scripts/run_00f_adversarial.py scripts/verify_00f_predecessor_refs.py scripts/verify_0002_populated_rollback.py scripts/verify_0003_populated_rollback.py scripts/verify_0004_maps_rollback.py scripts/verify_0006_audit_outbox_rollback.py
+      - name: Install PostgreSQL 16
+        run: bash scripts/ci/install_pg16_test_stack.sh
+      - name: Bootstrap isolated reduced-role databases
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          CREATE ROLE migration_owner LOGIN PASSWORD 'p2f-migration-owner' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE branch_viewer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE ops_support NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE DATABASE gymflow_adv_0002 OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_0003 OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_0004 OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_0006 OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_multi OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_ambiguous OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_evolved OWNER migration_owner;
+          CREATE DATABASE gymflow_adv_reference OWNER migration_owner;
+          SQL
+          for database in gymflow_adv_0002 gymflow_adv_0003 gymflow_adv_0004 gymflow_adv_0006 gymflow_adv_multi gymflow_adv_ambiguous gymflow_adv_evolved gymflow_adv_reference; do
+            sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$database" <<'SQL'
+          CREATE EXTENSION btree_gist;
+          CREATE EXTENSION citext;
+          CREATE EXTENSION pg_trgm;
+          CREATE EXTENSION postgis;
+          SQL
+          done
+      - name: Execute populated rollback and adversarial scenarios
+        run: |
+          set -euo pipefail
+          python -m scripts.verify_0002_populated_rollback --database gymflow_adv_0002 --evidence-dir "$EVIDENCE_DIR"
+          python -m scripts.verify_0003_populated_rollback --database gymflow_adv_0003 --evidence-dir "$EVIDENCE_DIR"
+          python -m scripts.verify_0004_maps_rollback --database gymflow_adv_0004 --evidence-dir "$EVIDENCE_DIR"
+          python -m scripts.verify_0006_audit_outbox_rollback --database gymflow_adv_0006 --evidence-dir "$EVIDENCE_DIR"
+          python -m scripts.run_00f_adversarial --multi-db gymflow_adv_multi --ambiguous-db gymflow_adv_ambiguous --evolved-db gymflow_adv_evolved --evidence-dir "$EVIDENCE_DIR"
+          python -m scripts.verify_00f_predecessor_refs --database gymflow_adv_reference --evidence-dir "$EVIDENCE_DIR"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain=v1)"
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/p2f-main-final" "+refs/heads/${HARDENING_BRANCH}:refs/remotes/origin/p2f-hardening-final"
+          test "$(git rev-parse refs/remotes/origin/p2f-main-final)" = "$EXPECTED_BASE"
+          test "$(git rev-parse refs/remotes/origin/p2f-hardening-final)" = "$EXPECTED_HEAD"
+          printf 'success\n' > "$EVIDENCE_DIR/status.txt"
+          find "$EVIDENCE_DIR" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE_DIR/SHA256SUMS"
+      - name: Upload adversarial evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: p2f-adversarial-${{ env.EXPECTED_HEAD }}
+          path: /tmp/p2f-8bec/adversarial/
+          if-no-files-found: error
+          retention-days: 30
