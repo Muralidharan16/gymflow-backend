@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 
@@ -24,6 +25,15 @@ def _function_ddl(source: str, function_name: str) -> str:
     start = source.index(f"CREATE FUNCTION app_secure.{function_name}(")
     end = source.index("$function$;", start) + len("$function$;")
     return source[start:end]
+
+
+def _sql_string_constants(path: pathlib.Path) -> list[str]:
+    tree = ast.parse(_source(path))
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
 
 
 def test_fastapi_supervisor_owns_no_database_global_maintenance_loops() -> None:
@@ -160,18 +170,23 @@ def test_platform_maintenance_helpers_are_bounded_and_context_gated() -> None:
 
 
 def test_places_cache_cleanup_does_not_gain_update_privilege_for_row_locking() -> None:
-    source = _source(MIGRATION)
-    normalized = re.sub(r"\s+", " ", source).upper()
-    assert (
+    sql_constants = [
+        re.sub(r"\s+", " ", sql).strip().upper()
+        for sql in _sql_string_constants(MIGRATION)
+    ]
+    cache_grants = [
+        sql
+        for sql in sql_constants
+        if "ON TABLE PUBLIC.GOOGLE_PLACES_CACHE TO APP_SECURITY_OWNER" in sql
+        and sql.startswith("GRANT ")
+    ]
+    assert cache_grants == [
         "GRANT SELECT (PLACE_ID, EXPIRES_AT), DELETE "
         "ON TABLE PUBLIC.GOOGLE_PLACES_CACHE TO APP_SECURITY_OWNER"
-    ) in normalized
-    assert not re.search(
-        r"GRANT\s+[^;]*UPDATE[^;]*ON\s+TABLE\s+PUBLIC\.GOOGLE_PLACES_CACHE",
-        normalized,
-        flags=re.DOTALL,
-    )
+    ]
+    assert "UPDATE" not in cache_grants[0]
 
+    source = _source(MIGRATION)
     cleanup = _function_ddl(source, "cleanup_expired_places_cache")
     assert "WITH target AS MATERIALIZED" in cleanup
     assert "ORDER BY expires_at, place_id" in cleanup
