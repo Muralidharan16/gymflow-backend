@@ -1,0 +1,241 @@
+name: P2F Corrected General Platform Exact-SHA Certification
+
+on:
+  push:
+    branches:
+      - certification/p2f-0346c73
+    paths:
+      - .github/workflows/p2f-corrected-general-platform.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2f-corrected-general-platform-0346c73
+  cancel-in-progress: false
+
+env:
+  EXPECTED_HEAD: 0346c73aaee5013eb43b4c90c257a81fba7f5c9c
+  EXPECTED_TREE: 48ce9c2ea616f4efab84ff430d290a3424d11fb3
+  EXPECTED_BASE: 43e03954723583601ee123505c5ce155b0bba162
+  HARDENING_BRANCH: hardening/complete-migration-lineage
+  PIP_VERSION: 26.2.1
+  PYTHONDONTWRITEBYTECODE: '1'
+  REDIS_URL: redis://127.0.0.1:6379/0
+  CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+  CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+  SECRET_KEY: p2f-certification-only-not-production
+  AWS_ACCESS_KEY_ID: p2f-ci
+  AWS_SECRET_ACCESS_KEY: p2f-ci
+  AWS_REGION_NAME: us-east-1
+  S3_BUCKET_NAME: gymflow-p2f-certification
+  ENVIRONMENT: test
+
+jobs:
+  general:
+    name: Literal SHA General with separate migration rehearsal and runtime databases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MIGRATION_PASSWORD: p2f-migration-owner
+      GENERAL_RUNTIME_PASSWORD: p2f-app-runtime
+      AUTH_RUNTIME_PASSWORD: p2f-auth-runtime
+      MAINTENANCE_RUNTIME_PASSWORD: p2f-maintenance-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:p2f-migration-owner@127.0.0.1:5432/gymflow_p2f_general_migration_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:p2f-app-runtime@127.0.0.1:5432/gymflow_p2f_general_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:p2f-migration-owner@127.0.0.1:5432/gymflow_p2f_general_test
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:p2f-auth-runtime@127.0.0.1:5432/gymflow_p2f_general_test
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:p2f-maintenance-runtime@127.0.0.1:5432/gymflow_p2f_general_test
+      EVIDENCE_DIR: /tmp/p2f-corrected/general
+    steps:
+      - name: Checkout literal candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: 0346c73aaee5013eb43b4c90c257a81fba7f5c9c
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Prove literal source and locked dependency environment
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain=v1)"
+          python -m pip install "pip==$PIP_VERSION"
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > "$EVIDENCE_DIR/resolved-test-environment.txt"
+          diff -u requirements-test.lock "$EVIDENCE_DIR/resolved-test-environment.txt"
+          ! python -m pip freeze | grep -qi '^psycopg2'
+      - name: Provision isolated migration and runtime databases
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          sudo apt-get install -y redis-server
+          sudo systemctl start redis-server
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'p2f-migration-owner';
+          CREATE ROLE test_runner LOGIN PASSWORD 'p2f-test-runner' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'p2f-app-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime LOGIN PASSWORD 'p2f-auth-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'p2f-maintenance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE app_test_runtime SET row_security='on'; ALTER ROLE app_test_runtime SET statement_timeout='5s'; ALTER ROLE app_test_runtime SET lock_timeout='2s'; ALTER ROLE app_test_runtime SET idle_in_transaction_session_timeout='15s';
+          ALTER ROLE auth_test_runtime SET row_security='on'; ALTER ROLE auth_test_runtime SET statement_timeout='5s'; ALTER ROLE auth_test_runtime SET lock_timeout='2s'; ALTER ROLE auth_test_runtime SET idle_in_transaction_session_timeout='15s';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on'; ALTER ROLE lifecycle_maintenance_test_runtime SET statement_timeout='15s'; ALTER ROLE lifecycle_maintenance_test_runtime SET lock_timeout='2s'; ALTER ROLE lifecycle_maintenance_test_runtime SET idle_in_transaction_session_timeout='30s';
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_p2f_general_migration_test OWNER migration_owner;
+          CREATE DATABASE gymflow_p2f_general_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p2f_general_migration_test TO app_test_runtime;
+          GRANT CONNECT ON DATABASE gymflow_p2f_general_test TO app_test_runtime,auth_test_runtime,lifecycle_maintenance_test_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          for d in gymflow_p2f_general_migration_test gymflow_p2f_general_test; do
+            bash scripts/ci/provision_infrastructure_extensions.sh "$d"
+          done
+          DATABASE_URL=postgresql+asyncpg://migration_owner:p2f-migration-owner@127.0.0.1:5432/gymflow_p2f_general_migration_test python -s -m alembic -c alembic.ini upgrade head
+          DATABASE_URL=postgresql+asyncpg://migration_owner:p2f-migration-owner@127.0.0.1:5432/gymflow_p2f_general_test python -s -m alembic -c alembic.ini upgrade head
+      - name: Prove bounded runtime identities and run complete General suite
+        run: |
+          set -euo pipefail
+          PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_test_runtime -d gymflow_p2f_general_test <<'SQL'
+          DO $$ DECLARE r record; BEGIN
+            SELECT * INTO r FROM pg_catalog.pg_roles WHERE rolname=current_user;
+            IF r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolinherit OR r.rolreplication OR r.rolbypassrls THEN RAISE EXCEPTION 'General runtime overprivileged'; END IF;
+            IF pg_catalog.has_database_privilege(current_user,current_database(),'CREATE') OR pg_catalog.has_schema_privilege(current_user,'public','CREATE') THEN RAISE EXCEPTION 'General runtime can create objects'; END IF;
+            IF pg_catalog.pg_has_role(current_user,'auth_runtime','MEMBER') OR pg_catalog.pg_has_role(current_user,'worker_runtime','MEMBER') OR pg_catalog.pg_has_role(current_user,'lifecycle_maintenance_runtime','MEMBER') OR pg_catalog.pg_has_role(current_user,'app_runtime','SET') OR pg_catalog.pg_has_role(current_user,'app_user','SET') THEN RAISE EXCEPTION 'General runtime role reachability invalid'; END IF;
+            IF pg_catalog.has_table_privilege(current_user,'public.organizations','INSERT') THEN RAISE EXCEPTION 'General runtime can create tenant roots'; END IF;
+          END $$;
+          SQL
+          PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_test_runtime -d gymflow_p2f_general_migration_test -c 'SELECT current_user,current_database()' > "$EVIDENCE_DIR/lifecycle-runtime-migration-db.txt"
+          PGPASSWORD="$AUTH_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U auth_test_runtime -d gymflow_p2f_general_test -c "SELECT current_user,current_setting('row_security'),current_setting('statement_timeout'),current_setting('lock_timeout')" > "$EVIDENCE_DIR/auth-posture.txt"
+          PGPASSWORD="$MAINTENANCE_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U lifecycle_maintenance_test_runtime -d gymflow_p2f_general_test -c "SELECT current_user,current_setting('row_security'),current_setting('statement_timeout'),current_setting('lock_timeout')" > "$EVIDENCE_DIR/maintenance-posture.txt"
+          set -o pipefail
+          python -m pytest -q --maxfail=1 --ignore=tests/platform_billing 2>&1 | tee "$EVIDENCE_DIR/pytest-general.log"
+          printf 'success\n' > "$EVIDENCE_DIR/status.txt"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain=v1)"
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/p2f-main-final" "+refs/heads/${HARDENING_BRANCH}:refs/remotes/origin/p2f-hardening-final"
+          test "$(git rev-parse refs/remotes/origin/p2f-main-final)" = "$EXPECTED_BASE"
+          test "$(git rev-parse refs/remotes/origin/p2f-hardening-final)" = "$EXPECTED_HEAD"
+          find "$EVIDENCE_DIR" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE_DIR/SHA256SUMS"
+      - name: Upload General evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: p2f-general-final-${{ env.EXPECTED_HEAD }}
+          path: /tmp/p2f-corrected/general/
+          if-no-files-found: error
+          retention-days: 30
+
+  platform_billing:
+    name: Literal SHA Platform Billing with mandated disposable isolation prefix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MIGRATION_PASSWORD: p2f-migration-owner
+      PLATFORM_RUNTIME_PASSWORD: p2f-platform-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:p2f-migration-owner@127.0.0.1:5432/gymflow_p2f_platform_shared_test
+      TEST_DATABASE_URL: postgresql+asyncpg://migration_owner:p2f-migration-owner@127.0.0.1:5432/gymflow_p2f_platform_shared_test
+      PLATFORM_BILLING_TEST_DATABASE_URL: postgresql+asyncpg://platform_billing_test_runtime:p2f-platform-runtime@127.0.0.1:5432/gymflow_platform_billing_test_p2f_0346
+      PLATFORM_BILLING_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:p2f-migration-owner@127.0.0.1:5432/gymflow_platform_billing_test_p2f_0346
+      EVIDENCE_DIR: /tmp/p2f-corrected/platform
+    steps:
+      - name: Checkout literal candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: 0346c73aaee5013eb43b4c90c257a81fba7f5c9c
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Prove literal source and locked dependency environment
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain=v1)"
+          python -m pip install "pip==$PIP_VERSION"
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > "$EVIDENCE_DIR/resolved-test-environment.txt"
+          diff -u requirements-test.lock "$EVIDENCE_DIR/resolved-test-environment.txt"
+      - name: Provision isolated Platform Billing database and bounded runtime
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          sudo apt-get install -y redis-server
+          sudo systemctl start redis-server
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'p2f-migration-owner';
+          CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE platform_billing_test_runtime LOGIN PASSWORD 'p2f-platform-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE platform_billing_test_runtime SET row_security='on'; ALTER ROLE platform_billing_test_runtime SET statement_timeout='30s'; ALTER ROLE platform_billing_test_runtime SET lock_timeout='5s';
+          CREATE DATABASE gymflow_p2f_platform_shared_test OWNER migration_owner;
+          CREATE DATABASE gymflow_platform_billing_test_p2f_0346 OWNER migration_owner;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_platform_billing_test_p2f_0346
+          DATABASE_URL=postgresql+asyncpg://migration_owner:p2f-migration-owner@127.0.0.1:5432/gymflow_platform_billing_test_p2f_0346 python -s -m alembic -c alembic.ini upgrade head
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_platform_billing_test_p2f_0346 <<'SQL'
+          DO $$ DECLARE t record; BEGIN
+            FOR t IN SELECT n.nspname s,c.relname r FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') AND (c.relname='organizations' OR c.relname LIKE 'platform\_%' ESCAPE '\') LOOP
+              EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE %I.%I TO platform_billing_test_runtime',t.s,t.r);
+            END LOOP;
+          END $$;
+          SQL
+      - name: Prove exact isolation contract and run complete Platform Billing suite
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from tests.platform_billing.platform_billing_test_isolation import get_platform_billing_test_config
+          c=get_platform_billing_test_config()
+          assert c.identity.database == 'gymflow_platform_billing_test_p2f_0346'
+          assert c.runtime_user == 'platform_billing_test_runtime'
+          assert c.admin_user == 'migration_owner'
+          print(c.sanitized_identity)
+          PY
+          PGPASSWORD="$PLATFORM_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U platform_billing_test_runtime -d gymflow_platform_billing_test_p2f_0346 <<'SQL'
+          DO $$ DECLARE r record; BEGIN
+            SELECT * INTO r FROM pg_catalog.pg_roles WHERE rolname=current_user;
+            IF r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolinherit OR r.rolreplication OR r.rolbypassrls THEN RAISE EXCEPTION 'Platform Billing runtime overprivileged'; END IF;
+            IF pg_catalog.has_database_privilege(current_user,current_database(),'CREATE') OR pg_catalog.has_schema_privilege(current_user,'public','CREATE') THEN RAISE EXCEPTION 'Platform Billing runtime can create objects'; END IF;
+            IF pg_catalog.pg_has_role(current_user,'worker_runtime','MEMBER') OR pg_catalog.pg_has_role(current_user,'lifecycle_maintenance_runtime','MEMBER') THEN RAISE EXCEPTION 'Platform Billing crossed background boundary'; END IF;
+            IF EXISTS (SELECT 1 FROM information_schema.table_privileges WHERE grantee=current_user AND table_schema='public' AND ((table_name<>'organizations' AND table_name NOT LIKE 'platform\_%' ESCAPE '\') OR privilege_type NOT IN ('SELECT','INSERT','UPDATE','DELETE'))) THEN RAISE EXCEPTION 'Platform Billing has out-of-bound ACL'; END IF;
+          END $$;
+          SQL
+          set -o pipefail
+          python -m pytest -q --maxfail=1 tests/platform_billing 2>&1 | tee "$EVIDENCE_DIR/pytest-platform.log"
+          printf 'success\n' > "$EVIDENCE_DIR/status.txt"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain=v1)"
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/p2f-main-final" "+refs/heads/${HARDENING_BRANCH}:refs/remotes/origin/p2f-hardening-final"
+          test "$(git rev-parse refs/remotes/origin/p2f-main-final)" = "$EXPECTED_BASE"
+          test "$(git rev-parse refs/remotes/origin/p2f-hardening-final)" = "$EXPECTED_HEAD"
+          find "$EVIDENCE_DIR" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE_DIR/SHA256SUMS"
+      - name: Upload Platform Billing evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: p2f-platform-final-${{ env.EXPECTED_HEAD }}
+          path: /tmp/p2f-corrected/platform/
+          if-no-files-found: error
+          retention-days: 30
