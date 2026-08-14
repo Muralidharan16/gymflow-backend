@@ -263,14 +263,14 @@ jobs:
           import asyncio
           from app.tasks.platform_maintenance import (
               _run_archive_expired_idempotency,
-              _run_cleanup_expired_places_cache,
               _run_geocoding_reverification,
+              _run_places_cache_cleanup,
               _run_reclaim_stale_idempotency,
           )
           assert asyncio.run(_run_reclaim_stale_idempotency()) == 0
           assert asyncio.run(_run_archive_expired_idempotency()) == 0
           assert asyncio.run(_run_geocoding_reverification()) == 0
-          assert asyncio.run(_run_cleanup_expired_places_cache()) == 0
+          assert asyncio.run(_run_places_cache_cleanup()) == 0
           PY
 
       - name: Boot production API with only API and auth credentials and reject supervisor DB errors
