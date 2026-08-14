@@ -390,7 +390,14 @@ def _require_forward(bind) -> None:
         nargs=1,
         volatility="v",
         required_tokens=common_tokens
-        + ("p_patch", "unknown organization profile fields", "updated_at"),
+        + (
+            "p_patch",
+            "unknown organization profile fields",
+            "year_established",
+            "pg_catalog.trunc",
+            "pg_catalog.date_part",
+            "updated_at",
+        ),
     )
 
 
@@ -572,10 +579,16 @@ BEGIN
             USING ERRCODE = '22023';
     END IF;
     IF p_patch ? 'year_established'
-       AND p_patch->'year_established' <> 'null'::jsonb
-       AND pg_catalog.jsonb_typeof(p_patch->'year_established') <> 'number' THEN
-        RAISE EXCEPTION 'organization profile year_established is invalid'
-            USING ERRCODE = '22023';
+       AND p_patch->'year_established' <> 'null'::jsonb THEN
+        IF pg_catalog.jsonb_typeof(p_patch->'year_established') <> 'number'
+           OR (p_patch->>'year_established')::numeric
+                <> pg_catalog.trunc((p_patch->>'year_established')::numeric)
+           OR (p_patch->>'year_established')::numeric < 1800
+           OR (p_patch->>'year_established')::numeric
+                > pg_catalog.date_part('year', CURRENT_DATE) THEN
+            RAISE EXCEPTION 'organization profile year_established is invalid'
+                USING ERRCODE = '22023';
+        END IF;
     END IF;
     IF p_patch ? 'social_links' THEN
         IF p_patch->'social_links' = 'null'::jsonb
