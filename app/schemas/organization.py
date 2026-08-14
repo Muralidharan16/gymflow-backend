@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator, model_validator, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, HttpUrl
 import uuid
 import re
 from typing import Optional, List
@@ -50,6 +50,11 @@ class OrganizationProfileResponse(BaseModel):
     cover_desktop_url: Optional[str] = None
 
 class OrganizationUpdate(BaseModel):
+    # A protected/control-plane field must never be silently ignored.  Returning
+    # 422 for unknown input keeps the HTTP contract aligned with the database
+    # capability, which independently rejects unknown JSON keys.
+    model_config = ConfigDict(extra="forbid")
+
     name: Optional[str] = Field(None, min_length=2, max_length=100)
     business_type: Optional[str] = Field(None, max_length=50)
     tagline: Optional[str] = Field(None, max_length=150)
