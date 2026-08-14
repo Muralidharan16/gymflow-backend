@@ -96,7 +96,7 @@ def _direct_column_acl(bind, relation: str, role_name: str) -> set[tuple[str, st
                        acl_data.privilege_type::text
                 FROM pg_catalog.pg_attribute AS attribute_data
                 CROSS JOIN LATERAL pg_catalog.aclexplode(
-                    COALESCE(attribute_data.attacl, '{}'::aclitem[])
+                    attribute_data.attacl
                 ) AS acl_data
                 JOIN pg_catalog.pg_roles AS grantee_role
                   ON grantee_role.oid = acl_data.grantee

@@ -177,7 +177,7 @@ def _direct_relation_acl(bind, role_name: str) -> set[str]:
                 SELECT acl_data.privilege_type::text
                 FROM pg_catalog.pg_class AS relation_data
                 CROSS JOIN LATERAL pg_catalog.aclexplode(
-                    COALESCE(relation_data.relacl, '{}'::aclitem[])
+                    relation_data.relacl
                 ) AS acl_data
                 JOIN pg_catalog.pg_roles AS grantee_role
                   ON grantee_role.oid = acl_data.grantee
@@ -201,7 +201,7 @@ def _direct_column_acl(bind, role_name: str) -> set[tuple[str, str]]:
                        acl_data.privilege_type::text
                 FROM pg_catalog.pg_attribute AS attribute_data
                 CROSS JOIN LATERAL pg_catalog.aclexplode(
-                    COALESCE(attribute_data.attacl, '{}'::aclitem[])
+                    attribute_data.attacl
                 ) AS acl_data
                 JOIN pg_catalog.pg_roles AS grantee_role
                   ON grantee_role.oid = acl_data.grantee
@@ -226,7 +226,7 @@ def _direct_schema_usage(bind, role_name: str) -> bool:
                 SELECT 1
                 FROM pg_catalog.pg_namespace AS namespace_data
                 CROSS JOIN LATERAL pg_catalog.aclexplode(
-                    COALESCE(namespace_data.nspacl, '{}'::aclitem[])
+                    namespace_data.nspacl
                 ) AS acl_data
                 JOIN pg_catalog.pg_roles AS grantee_role
                   ON grantee_role.oid = acl_data.grantee
