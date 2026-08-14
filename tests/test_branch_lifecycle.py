@@ -220,6 +220,8 @@ async def lifecycle_setup(auth_db_session):
     # active/primary row needed by ORM INSERT RETURNING. The predecessor INSERT
     # policy itself remains tenant/owner bound and permits this non-primary
     # prerequisite, so avoid RETURNING rather than broadening that SELECT policy.
+    # Preserve Python-side ORM defaults that have no server default when using
+    # raw SQL for this deliberately non-RETURNING fixture insert.
     await auth_db_session.execute(
         text(
             """
@@ -229,6 +231,7 @@ async def lifecycle_setup(auth_db_session):
                 status,
                 is_primary,
                 is_operational,
+                transition_source,
                 watchdog_recovery_count,
                 search_visibility_version,
                 search_epoch_ulid
@@ -238,6 +241,7 @@ async def lifecycle_setup(auth_db_session):
                 'active',
                 FALSE,
                 TRUE,
+                'manual',
                 0,
                 1,
                 :search_epoch_ulid
