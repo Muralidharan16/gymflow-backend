@@ -55,7 +55,7 @@ class OrganizationUpdate(BaseModel):
     tagline: Optional[str] = Field(None, max_length=150)
     description: Optional[str] = None
     year_established: Optional[int] = Field(None, ge=1800)
-    website_url: Optional[str] = None
+    website_url: Optional[str] = Field(None, max_length=255)
     social_links: Optional[dict] = None
     business_id: Optional[str] = None
     gst_number: Optional[str] = None
@@ -69,6 +69,14 @@ class OrganizationUpdate(BaseModel):
             if v > current_year:
                 raise ValueError(f"Year established cannot be in the future (max {current_year})")
         return v
+
+    @model_validator(mode="after")
+    def validate_non_nullable_profile_fields(self) -> "OrganizationUpdate":
+        if "name" in self.model_fields_set and self.name is None:
+            raise ValueError("Organization name cannot be null")
+        if "social_links" in self.model_fields_set and self.social_links is None:
+            raise ValueError("Social links cannot be null")
+        return self
 
 class LogoUploadUrlResponse(BaseModel):
     upload_url: str
@@ -100,4 +108,3 @@ class AssetUploadUrlResponse(BaseModel):
     fields: dict
     upload_id: str
     expires_in: int
-
