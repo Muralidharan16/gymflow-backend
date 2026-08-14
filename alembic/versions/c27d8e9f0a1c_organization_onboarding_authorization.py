@@ -209,6 +209,19 @@ def _direct_column_acl_detail(
     }
 
 
+def _schema_owner(bind) -> str:
+    return str(
+        _scalar(
+            bind,
+            """
+            SELECT pg_catalog.pg_get_userbyid(namespace_data.nspowner)::text
+            FROM pg_catalog.pg_namespace AS namespace_data
+            WHERE namespace_data.nspname = 'app_secure'
+            """,
+        )
+    )
+
+
 def _direct_schema_usage(bind, role_name: str) -> bool:
     return bool(
         _scalar(
@@ -313,6 +326,8 @@ def _require_predecessor(bind) -> None:
         raise RuntimeError(
             "app_security_owner exact predecessor owners column ACL drift"
         )
+    if _schema_owner(bind) != _SECURITY_OWNER:
+        raise RuntimeError("app_secure schema owner drift before onboarding boundary")
     if _direct_schema_usage(bind, _AUTH):
         raise RuntimeError("auth_runtime unexpectedly has direct app_secure USAGE before onboarding boundary")
 
@@ -338,6 +353,8 @@ def _require_forward(bind) -> None:
         if (column, "SELECT", False, _MIGRATION_OWNER) not in security_owner_acl:
             raise RuntimeError(f"app_security_owner lacks owners SELECT({column})")
 
+    if _schema_owner(bind) != _SECURITY_OWNER:
+        raise RuntimeError("app_secure schema owner drift after onboarding boundary")
     if not _direct_schema_usage(bind, _AUTH):
         raise RuntimeError("auth_runtime lacks direct app_secure USAGE")
 
@@ -540,10 +557,9 @@ def upgrade() -> None:
         + ", ".join(_EXTRA_SECURITY_UPDATE_COLUMNS)
         + ") ON TABLE public.organizations TO app_security_owner"
     )
-    op.execute("GRANT USAGE ON SCHEMA app_secure TO auth_runtime")
-
     _set_security_owner(bind)
     try:
+        op.execute("GRANT USAGE ON SCHEMA app_secure TO auth_runtime")
         op.execute(_CREATE_FUNCTION)
         op.execute(
             "REVOKE ALL ON FUNCTION "
@@ -582,10 +598,10 @@ def downgrade() -> None:
             "DROP FUNCTION "
             "app_secure.complete_current_organization_onboarding_profile(jsonb) RESTRICT"
         )
+        op.execute("REVOKE USAGE ON SCHEMA app_secure FROM auth_runtime")
     finally:
         _reset_role(bind)
 
-    op.execute("REVOKE USAGE ON SCHEMA app_secure FROM auth_runtime")
     op.execute(
         "REVOKE UPDATE ("
         + ", ".join(_EXTRA_SECURITY_UPDATE_COLUMNS)
