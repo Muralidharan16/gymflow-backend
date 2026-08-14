@@ -82,9 +82,10 @@ async def lifecycle_setup(auth_db_session):
     """Seed lifecycle prerequisites through the same bounded identities as production.
 
     Tenant-root and actor records are administrative fixture evidence. Branch/state
-    bootstrap is executed as discrete auth operations, matching the real onboarding
-    path instead of batching multiple branch INSERTs into one SQLAlchemy
-    ``insertmanyvalues`` statement with a broader synthetic RETURNING projection.
+    bootstrap is executed through auth_runtime using the canonical first-branch
+    shape required by the production onboarding boundary. Once a branch exists,
+    ordinary state mutation is performed through app_runtime. This preserves the
+    production split instead of widening either identity for test convenience.
     Lifecycle behavior itself continues to run through the reduced application
     runtime identity below.
     """
@@ -185,12 +186,30 @@ async def lifecycle_setup(auth_db_session):
         branch_id=b1_id,
         org_id=org_id,
         status="active",
+        is_primary=True,
         is_operational=True,
         search_epoch_ulid="01AN4V07BY79KA1307SR1XF31A",
     )
     b1.state = s1
     auth_db_session.add(b1)
     await auth_db_session.commit()
+
+    # Auth owns canonical bootstrap INSERT. Ordinary app runtime owns subsequent
+    # lifecycle state mutation. Demote branch one before bootstrapping branch two
+    # so the fixture never relies on two simultaneous primary branches.
+    async with AsyncSessionLocal() as session:
+        await set_db_session_context(session, str(org_id), str(owner_id), "owner")
+        first_state = (
+            await session.execute(
+                select(OrgBranchState).where(OrgBranchState.branch_id == b1_id)
+            )
+        ).scalar_one()
+        first_state.is_primary = False
+        await session.commit()
+
+    await set_db_session_context(
+        auth_db_session, str(org_id), str(owner_id), "owner"
+    )
 
     b2 = OrgBranch(
         id=b2_id,
@@ -206,6 +225,7 @@ async def lifecycle_setup(auth_db_session):
         branch_id=b2_id,
         org_id=org_id,
         status="active",
+        is_primary=True,
         is_operational=True,
         search_epoch_ulid="01AN4V07BY79KA1307SR1XF31B",
     )
