@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "alembic/versions/c37d8e9f0a1d_organization_profile_principal_binding.py"
+DATABASE = ROOT / "app/core/database.py"
 
 
 def _source() -> str:
@@ -53,6 +54,37 @@ def test_profile_wrappers_bind_owner_or_active_org_user_to_current_tenant() -> N
 
     assert "ELSIF v_principal_type = 'organization_user'" in source
     assert "IF v_principal_type = 'owner'" in source
+
+
+def test_fastapi_get_db_requires_the_verified_http_request() -> None:
+    source = DATABASE.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(DATABASE))
+    get_db = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "get_db"
+    )
+
+    assert len(get_db.args.args) == 1
+    request_arg = get_db.args.args[0]
+    assert request_arg.arg == "request"
+    assert isinstance(request_arg.annotation, ast.Name)
+    assert request_arg.annotation.id == "Request"
+    assert get_db.args.defaults == []
+
+    get_db_source = "".join(
+        source.splitlines(keepends=True)[get_db.lineno - 1 : get_db.end_lineno]
+    )
+    assert "await initialize_request_session(session, request)" in get_db_source
+    assert "request=None" not in get_db_source
+
+    imports_request = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "fastapi"
+        and any(alias.name == "Request" for alias in node.names)
+        for node in tree.body
+    )
+    assert imports_request
 
 
 def test_internal_unbound_functions_are_not_executable_by_api_runtime() -> None:
