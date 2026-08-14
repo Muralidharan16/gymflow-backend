@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -79,7 +80,22 @@ def test_platform_maintenance_migration_never_grants_api_or_worker_global_dml() 
     assert "GRANT EXECUTE" in source
     assert "TO app_runtime" not in source
     assert "TO worker_runtime" not in source
-    assert "BYPASSRLS" not in source.upper()
+
+    # Catalog inspection of pg_roles.rolbypassrls is required to prove that
+    # managed roles remain NOBYPASSRLS.  Reject actual role DDL that would add
+    # BYPASSRLS instead of rejecting the word used by the verifier itself.
+    for role in (
+        "app_runtime",
+        "worker_runtime",
+        "lifecycle_maintenance_runtime",
+        "app_security_owner",
+    ):
+        assert not re.search(
+            rf"\b(?:CREATE|ALTER)\s+ROLE\s+{re.escape(role)}\b[^;]*\bBYPASSRLS\b",
+            source,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    assert "rolbypassrls" in source.lower()
     assert "GRANT ALL" not in source.upper()
 
 
