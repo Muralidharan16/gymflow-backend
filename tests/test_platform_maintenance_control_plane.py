@@ -20,6 +20,12 @@ def _source(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _function_ddl(source: str, function_name: str) -> str:
+    start = source.index(f"CREATE FUNCTION app_secure.{function_name}(")
+    end = source.index("$function$;", start) + len("$function$;")
+    return source[start:end]
+
+
 def test_fastapi_supervisor_owns_no_database_global_maintenance_loops() -> None:
     source = _source(SUPERVISOR)
     forbidden = (
@@ -144,8 +150,32 @@ def test_platform_maintenance_helpers_are_bounded_and_context_gated() -> None:
     assert "p_batch_size > 5000" in source
     assert "p_batch_size > 500" in source
     assert "LIMIT p_batch_size" in source
-    assert "FOR UPDATE SKIP LOCKED" in source
+    # Only helpers that own a legitimate UPDATE capability may use a locking
+    # SELECT. Cache eviction deliberately remains SELECT + DELETE only.
+    assert source.count("FOR UPDATE SKIP LOCKED") == 3
     assert "invalid platform idempotency reclaim command" in source
     assert "invalid platform idempotency archive command" in source
     assert "invalid platform geocoding claim command" in source
     assert "invalid platform places-cache cleanup command" in source
+
+
+def test_places_cache_cleanup_does_not_gain_update_privilege_for_row_locking() -> None:
+    source = _source(MIGRATION)
+    normalized = re.sub(r"\s+", " ", source).upper()
+    assert (
+        "GRANT SELECT (PLACE_ID, EXPIRES_AT), DELETE "
+        "ON TABLE PUBLIC.GOOGLE_PLACES_CACHE TO APP_SECURITY_OWNER"
+    ) in normalized
+    assert not re.search(
+        r"GRANT\s+[^;]*UPDATE[^;]*ON\s+TABLE\s+PUBLIC\.GOOGLE_PLACES_CACHE",
+        normalized,
+        flags=re.DOTALL,
+    )
+
+    cleanup = _function_ddl(source, "cleanup_expired_places_cache")
+    assert "WITH target AS MATERIALIZED" in cleanup
+    assert "ORDER BY expires_at, place_id" in cleanup
+    assert "LIMIT p_batch_size" in cleanup
+    assert "FOR UPDATE" not in cleanup
+    assert "FOR SHARE" not in cleanup
+    assert "DELETE FROM public.google_places_cache" in cleanup
