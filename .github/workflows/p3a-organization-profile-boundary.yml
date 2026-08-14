@@ -396,14 +396,151 @@ jobs:
           PGPASSWORD='ci-migration-owner' psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_p3a_test <<'SQL'
           DO $$
+          DECLARE
+            auth_relation_acl text[];
+            security_org_columns text[];
+            security_owner_columns text[];
           BEGIN
-            IF pg_catalog.to_regprocedure('app_secure.current_organization_profile()') IS NOT NULL
-               OR pg_catalog.to_regprocedure('app_secure.update_current_organization_profile(jsonb)') IS NOT NULL
-               OR pg_catalog.to_regprocedure('app_secure.complete_current_organization_onboarding_profile(jsonb)') IS NOT NULL THEN
+            -- Raw catalogs are deliberate: migration_owner must not need
+            -- USAGE on app_secure to prove that P3A objects are absent.
+            IF EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_proc AS procedure_data
+                JOIN pg_catalog.pg_namespace AS namespace_data
+                  ON namespace_data.oid = procedure_data.pronamespace
+                WHERE namespace_data.nspname = 'app_secure'
+                  AND procedure_data.proname = ANY (ARRAY[
+                      'current_organization_profile',
+                      'update_current_organization_profile',
+                      'current_organization_profile_internal',
+                      'update_current_organization_profile_internal',
+                      'complete_current_organization_onboarding_profile'
+                  ]::text[])
+            ) THEN
               RAISE EXCEPTION 'P3A function remains at certified predecessor';
             END IF;
-            IF NOT pg_catalog.has_table_privilege('auth_runtime','public.organizations','UPDATE') THEN
-              RAISE EXCEPTION 'auth_runtime predecessor UPDATE was not restored';
+
+            SELECT COALESCE(
+                       pg_catalog.array_agg(acl_data.privilege_type::text ORDER BY acl_data.privilege_type),
+                       ARRAY[]::text[]
+                   )
+              INTO auth_relation_acl
+              FROM pg_catalog.pg_class AS relation_data
+              CROSS JOIN LATERAL pg_catalog.aclexplode(relation_data.relacl) AS acl_data
+              JOIN pg_catalog.pg_roles AS grantee_role
+                ON grantee_role.oid = acl_data.grantee
+              WHERE relation_data.oid = 'public.organizations'::regclass
+                AND grantee_role.rolname = 'auth_runtime';
+            IF auth_relation_acl IS DISTINCT FROM ARRAY['INSERT','SELECT','UPDATE']::text[] THEN
+              RAISE EXCEPTION 'auth_runtime predecessor relation ACL drift: %', auth_relation_acl;
+            END IF;
+
+            IF EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_attribute AS attribute_data
+                CROSS JOIN LATERAL pg_catalog.aclexplode(attribute_data.attacl) AS acl_data
+                JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = acl_data.grantee
+                WHERE attribute_data.attrelid = 'public.organizations'::regclass
+                  AND attribute_data.attnum > 0
+                  AND NOT attribute_data.attisdropped
+                  AND grantee_role.rolname = 'auth_runtime'
+            ) THEN
+              RAISE EXCEPTION 'auth_runtime predecessor retained direct organization column ACL';
+            END IF;
+
+            IF EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_class AS relation_data
+                CROSS JOIN LATERAL pg_catalog.aclexplode(relation_data.relacl) AS acl_data
+                JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = acl_data.grantee
+                WHERE relation_data.oid = 'public.organizations'::regclass
+                  AND grantee_role.rolname IN ('app_runtime','app_security_owner')
+            ) THEN
+              RAISE EXCEPTION 'P3A predecessor gained forbidden organization relation ACL';
+            END IF;
+
+            IF EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_attribute AS attribute_data
+                CROSS JOIN LATERAL pg_catalog.aclexplode(attribute_data.attacl) AS acl_data
+                JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = acl_data.grantee
+                WHERE attribute_data.attrelid = 'public.organizations'::regclass
+                  AND attribute_data.attnum > 0
+                  AND NOT attribute_data.attisdropped
+                  AND grantee_role.rolname = 'app_runtime'
+            ) THEN
+              RAISE EXCEPTION 'app_runtime predecessor gained direct organization column ACL';
+            END IF;
+
+            SELECT COALESCE(
+                       pg_catalog.array_agg(
+                           attribute_data.attname::text || ':' || acl_data.privilege_type::text
+                           ORDER BY attribute_data.attname, acl_data.privilege_type
+                       ), ARRAY[]::text[]
+                   )
+              INTO security_org_columns
+              FROM pg_catalog.pg_attribute AS attribute_data
+              CROSS JOIN LATERAL pg_catalog.aclexplode(attribute_data.attacl) AS acl_data
+              JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = acl_data.grantee
+              WHERE attribute_data.attrelid = 'public.organizations'::regclass
+                AND attribute_data.attnum > 0
+                AND NOT attribute_data.attisdropped
+                AND grantee_role.rolname = 'app_security_owner';
+            IF security_org_columns IS DISTINCT FROM ARRAY[
+                'default_currency_code:SELECT','id:SELECT','slug:SELECT'
+            ]::text[] THEN
+              RAISE EXCEPTION 'app_security_owner predecessor organization column ACL drift: %', security_org_columns;
+            END IF;
+
+            SELECT COALESCE(
+                       pg_catalog.array_agg(
+                           attribute_data.attname::text || ':' || acl_data.privilege_type::text || ':' ||
+                           acl_data.is_grantable::text || ':' || grantor_role.rolname::text
+                           ORDER BY attribute_data.attname, acl_data.privilege_type,
+                                    acl_data.is_grantable, grantor_role.rolname
+                       ), ARRAY[]::text[]
+                   )
+              INTO security_owner_columns
+              FROM pg_catalog.pg_attribute AS attribute_data
+              CROSS JOIN LATERAL pg_catalog.aclexplode(attribute_data.attacl) AS acl_data
+              JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = acl_data.grantee
+              LEFT JOIN pg_catalog.pg_roles AS grantor_role ON grantor_role.oid = acl_data.grantor
+              WHERE attribute_data.attrelid = 'public.owners'::regclass
+                AND attribute_data.attnum > 0
+                AND NOT attribute_data.attisdropped
+                AND grantee_role.rolname = 'app_security_owner';
+            IF security_owner_columns IS DISTINCT FROM ARRAY[
+                'email_verified:SELECT:false:migration_owner',
+                'id:SELECT:false:migration_owner',
+                'onboarding_completed:SELECT:false:migration_owner',
+                'org_id:SELECT:false:migration_owner'
+            ]::text[] THEN
+              RAISE EXCEPTION 'app_security_owner predecessor owners ACL drift: %', security_owner_columns;
+            END IF;
+
+            IF EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_attribute AS attribute_data
+                CROSS JOIN LATERAL pg_catalog.aclexplode(attribute_data.attacl) AS acl_data
+                JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = acl_data.grantee
+                WHERE attribute_data.attrelid = 'public.organization_users'::regclass
+                  AND attribute_data.attnum > 0
+                  AND NOT attribute_data.attisdropped
+                  AND grantee_role.rolname = 'app_security_owner'
+            ) THEN
+              RAISE EXCEPTION 'c37 organization_users ACL remained after downgrade';
+            END IF;
+
+            IF EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_namespace AS namespace_data
+                CROSS JOIN LATERAL pg_catalog.aclexplode(namespace_data.nspacl) AS acl_data
+                JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = acl_data.grantee
+                WHERE namespace_data.nspname = 'app_secure'
+                  AND grantee_role.rolname = 'auth_runtime'
+                  AND acl_data.privilege_type = 'USAGE'
+            ) THEN
+              RAISE EXCEPTION 'auth_runtime app_secure USAGE remained after downgrade';
             END IF;
           END
           $$;
