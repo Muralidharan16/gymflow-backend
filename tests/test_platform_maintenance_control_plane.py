@@ -82,7 +82,7 @@ def test_platform_maintenance_migration_never_grants_api_or_worker_global_dml() 
     assert "TO worker_runtime" not in source
 
     # Catalog inspection of pg_roles.rolbypassrls is required to prove that
-    # managed roles remain NOBYPASSRLS.  Reject actual role DDL that would add
+    # managed roles remain NOBYPASSRLS. Reject actual role DDL that would add
     # BYPASSRLS instead of rejecting the word used by the verifier itself.
     for role in (
         "app_runtime",
@@ -114,7 +114,7 @@ def test_geocoding_reverification_uses_current_state_model_not_legacy_maps_colum
 def test_platform_maintenance_preserves_idempotency_anchor_state_machine() -> None:
     source = _source(MIGRATION)
     # The canonical anchor is keyed by (tenant_id, idempotency_key) and uses
-    # heartbeat_at / created_at.  Maintenance must not invent lock/id columns
+    # heartbeat_at / created_at. Maintenance must not invent lock/id columns
     # or a new state transition.
     assert "tenant_id, idempotency_key, status, heartbeat_at, created_at" in source
     assert "WHERE status = 'IN_PROGRESS'" in source
@@ -130,6 +130,16 @@ def test_platform_maintenance_preserves_idempotency_anchor_state_machine() -> No
 
 def test_platform_maintenance_helpers_are_bounded_and_context_gated() -> None:
     source = _source(MIGRATION)
+    fail_closed_context_guards = re.findall(
+        r"pg_catalog\.current_setting\(\s*"
+        r"'app\.internal_maintenance',\s*true\s*\)\s*"
+        r"IS\s+DISTINCT\s+FROM\s+'platform'",
+        source,
+        flags=re.IGNORECASE,
+    )
+    assert len(fail_closed_context_guards) == 4
+    assert "<> 'platform'" not in source
+    assert "lost fail-closed" in source
     assert "p_batch_size < 1" in source
     assert "p_batch_size > 5000" in source
     assert "p_batch_size > 500" in source
