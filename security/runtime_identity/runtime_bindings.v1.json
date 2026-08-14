@@ -29,7 +29,6 @@
       "runtime_capability": "auth_runtime",
       "direct_capabilities": [
         "auth_runtime",
-        "app_runtime",
         "app_user"
       ],
       "session_settings": {
