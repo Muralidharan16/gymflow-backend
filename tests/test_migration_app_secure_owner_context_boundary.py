@@ -62,6 +62,8 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "revoke_schema",
         },
         _P2F_REMEDIATION_MIGRATION: {
+            "create_policy",
+            "drop_policy",
             "grant_schema",
             "revoke_schema",
         },
