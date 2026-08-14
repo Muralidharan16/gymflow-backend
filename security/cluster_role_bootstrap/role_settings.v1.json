@@ -1,0 +1,68 @@
+{
+  "contract_id": "doers-postgresql-cluster-role-settings-v1",
+  "downgrade_policy": {
+    "role_settings_survive_database_downgrade": true
+  },
+  "exact_match_required": true,
+  "schema_version": 1,
+  "settings_by_role": {
+    "app_rls_executor": {},
+    "app_runtime": {
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "5s"
+    },
+    "app_security_owner": {},
+    "app_user": {},
+    "audit_writer": {},
+    "auth_runtime": {},
+    "branch_admin": {},
+    "branch_viewer": {},
+    "lifecycle_maintenance_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "15s"
+    },
+    "migration_owner": {},
+    "ops_support": {},
+    "readonly_analytics": {},
+    "worker_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "15s"
+    }
+  },
+  "source_evidence": {
+    "contract": {
+      "path": "v2-bootstrap-contract.md",
+      "sha256": "edcf8caa32a7ba85ec69adadb998f98695b3189fd96b8752799cedd49764f3a5"
+    },
+    "downgrade": {
+      "path": "v2-downgrade-dependencies.json",
+      "sha256": "6b960eafd9ec25a340cb825887c4ec17ad3b2c4f64b80460bf1ab1f55c046f0a"
+    },
+    "memberships": {
+      "path": "v2-membership-manifest.json",
+      "sha256": "aee8b7a99a78caee804fab49cb868f81a098daa5edd8d4622d8470055909d974"
+    },
+    "ownership": {
+      "path": "v2-ownership-manifest.json",
+      "sha256": "546e20cd0859c80e6f4a7a15d5a425ed86ad5d7333c39d1dddbef646d2d01327"
+    },
+    "roles": {
+      "path": "v2-role-matrices.json",
+      "sha256": "8cdd16d1a191a5601ab7124dd50c7c87d07cf018669fe38deebb7dbabcbf191d"
+    },
+    "semantic": {
+      "path": "v2-semantic-validation.json",
+      "sha256": "74ead098ea615c13916a5bd555ee4dd2d401e4ad54a77210245b8a24e4bdc065"
+    },
+    "settings": {
+      "path": "v2-role-setting-manifest.json",
+      "sha256": "38007e7b50e29feec729afa7b09f4f690d4996a5f83c2a88e77f94e42cfd0abb"
+    }
+  },
+  "unexpected_settings_forbidden": true
+}

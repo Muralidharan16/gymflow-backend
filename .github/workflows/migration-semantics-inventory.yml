@@ -1,0 +1,50 @@
+name: Migration Semantics Inventory
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-semantics-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inventory:
+    name: Full lineage migration-risk inventory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile inventory tool
+        run: python -m py_compile scripts/migration_semantics_inventory.py
+
+      - name: Inventory every Alembic revision
+        run: |
+          mkdir -p migration-semantics-evidence
+          python scripts/migration_semantics_inventory.py \
+            --json-output migration-semantics-evidence/findings.json \
+            --markdown-output migration-semantics-evidence/findings.md
+          cat migration-semantics-evidence/findings.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload migration semantics evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-semantics-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: migration-semantics-evidence/
+          if-no-files-found: error
+          retention-days: 14

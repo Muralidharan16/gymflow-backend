@@ -1,0 +1,165 @@
+name: P2D Runtime Principal Attestation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-principal-attestation:
+    name: P2D runtime identity routing and live PG16 attestation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p2d
+      API_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-runtime@127.0.0.1:5432/gymflow_p2d
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-runtime@127.0.0.1:5432/gymflow_p2d
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-runtime@127.0.0.1:5432/gymflow_p2d
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://maintenance_test_runtime:ci-maintenance-runtime@127.0.0.1:5432/gymflow_p2d
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p2d-only-not-production
+      AWS_ACCESS_KEY_ID: ci-p2d
+      AWS_SECRET_ACCESS_KEY: ci-p2d
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+
+      - name: Compile and certify static P2D contracts
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          python -m py_compile \
+            app/core/runtime_principal_attestation.py \
+            app/core/config.py \
+            app/core/database.py \
+            app/core/auth_database.py \
+            app/core/celery_app.py \
+            app/core/supervisor.py \
+            scripts/verify_runtime_principal_bindings.py \
+            scripts/verify_runtime_identity_routing.py \
+            tests/test_runtime_principal_attestation.py
+          python -m pytest --noconftest -q \
+            tests/test_runtime_principal_attestation.py
+          python -s scripts/verify_runtime_identity_routing.py
+          bash -n scripts/ci/certify_runtime_principal_negative_paths.sh
+
+      - name: Install PostgreSQL 16
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision exact P2D deployment-login overlays
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime LOGIN PASSWORD 'ci-auth-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-worker-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE maintenance_test_runtime LOGIN PASSWORD 'ci-maintenance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_test_runtime SET row_security = 'on';
+          ALTER ROLE app_test_runtime SET statement_timeout = '5s';
+          ALTER ROLE app_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE app_test_runtime SET idle_in_transaction_session_timeout = '15s';
+          ALTER ROLE auth_test_runtime SET row_security = 'on';
+          ALTER ROLE auth_test_runtime SET statement_timeout = '5s';
+          ALTER ROLE auth_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE auth_test_runtime SET idle_in_transaction_session_timeout = '15s';
+          ALTER ROLE worker_test_runtime SET row_security = 'on';
+          ALTER ROLE worker_test_runtime SET statement_timeout = '15s';
+          ALTER ROLE worker_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE worker_test_runtime SET idle_in_transaction_session_timeout = '30s';
+          ALTER ROLE maintenance_test_runtime SET row_security = 'on';
+          ALTER ROLE maintenance_test_runtime SET statement_timeout = '15s';
+          ALTER ROLE maintenance_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE maintenance_test_runtime SET idle_in_transaction_session_timeout = '30s';
+
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_p2d OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p2d TO app_test_runtime, auth_test_runtime, worker_test_runtime, maintenance_test_runtime;
+          SQL
+
+      - name: Verify P2B and P2C cluster contracts before HEAD
+        env:
+          DOERS_CLUSTER_VERIFY_DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+        run: |
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_p2d <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Fresh Alembic lineage to HEAD
+        env:
+          DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+        run: python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Verify exact live runtime principal bindings
+        env:
+          DATABASE_URL: ${{ env.API_DATABASE_URL }}
+          ENVIRONMENT: production
+        run: python -s scripts/verify_runtime_principal_bindings.py
+
+      - name: Prove runtime principal drift rejects fail closed
+        env:
+          DATABASE_URL: ${{ env.API_DATABASE_URL }}
+          ENVIRONMENT: production
+        run: bash scripts/ci/certify_runtime_principal_negative_paths.sh
+
+      - name: Reverify P2B and P2C after P2D adversarial restoration
+        env:
+          DOERS_CLUSTER_VERIFY_DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+          ENVIRONMENT: test
+        run: |
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py

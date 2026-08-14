@@ -1,0 +1,372 @@
+name: Worker Production Boundary
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-production-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  worker-production-boundary:
+    name: PG16 worker production boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_worker_boundary
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_worker_boundary
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_worker_boundary
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_worker_boundary
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_worker_boundary
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+
+      - name: Install PostgreSQL 16 extension packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision worker CI login and database overlay
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE test_runner
+            LOGIN PASSWORD 'ci-test-runner'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime
+            LOGIN PASSWORD 'ci-app-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime
+            LOGIN PASSWORD 'ci-auth-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime
+            LOGIN PASSWORD 'ci-worker-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_test_runtime SET row_security = 'on';
+          ALTER ROLE auth_test_runtime SET row_security = 'on';
+          ALTER ROLE worker_test_runtime SET row_security = 'on';
+
+          GRANT app_runtime TO app_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_worker_boundary OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_worker_boundary
+            TO app_test_runtime, auth_test_runtime, worker_test_runtime;
+          SQL
+
+      - name: Verify canonical external role contract
+        run: bash scripts/ci/verify_cluster_roles.sh
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_worker_boundary <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Prove role graph before migration
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_worker_boundary <<'SQL'
+          DO $$
+          DECLARE worker_record record;
+          BEGIN
+            SELECT * INTO worker_record FROM pg_catalog.pg_roles
+            WHERE rolname = 'worker_runtime';
+            IF worker_record.rolcanlogin OR worker_record.rolsuper
+               OR worker_record.rolinherit OR worker_record.rolcreatedb
+               OR worker_record.rolcreaterole OR worker_record.rolreplication
+               OR worker_record.rolbypassrls THEN
+              RAISE EXCEPTION 'worker_runtime attributes are unsafe';
+            END IF;
+            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET') THEN
+              RAISE EXCEPTION 'migration_owner can access worker_runtime';
+            END IF;
+            IF pg_catalog.pg_has_role('worker_test_runtime', 'app_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('worker_test_runtime', 'auth_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('worker_test_runtime', 'app_user', 'MEMBER') THEN
+              RAISE EXCEPTION 'worker login inherited API/auth privilege groups';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Fresh PG16 lineage to HEAD
+        run: python -s -m alembic -c alembic.ini upgrade head
+
+      - name: API has only bounded branch-hours enqueue capability
+        run: |
+          PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_test_runtime -d gymflow_worker_boundary <<'SQL'
+          DO $$
+          BEGIN
+            IF pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'SELECT')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'INSERT')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'UPDATE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'DELETE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'TRUNCATE') THEN
+              RAISE EXCEPTION 'api_transactional_outbox_table_acl_leak';
+            END IF;
+            IF NOT pg_catalog.has_function_privilege(
+                current_user,
+                'public.enqueue_branch_hours_rebuild(uuid,uuid)',
+                'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'api_missing_branch_hours_enqueue_execute';
+            END IF;
+            IF pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN
+              RAISE EXCEPTION 'api_public_schema_create_leak';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Worker has no tenant-root auth or DDL capability
+        run: |
+          PGPASSWORD="$WORKER_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_worker_boundary <<'SQL'
+          DO $$
+          BEGIN
+            IF pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') THEN
+              RAISE EXCEPTION 'worker_public_schema_create_leak';
+            END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.organizations', 'SELECT')
+               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT')
+               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'UPDATE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'DELETE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.owners', 'SELECT')
+               OR pg_catalog.has_table_privilege(current_user, 'public.owners', 'UPDATE') THEN
+              RAISE EXCEPTION 'worker_tenant_root_or_owner_acl_leak';
+            END IF;
+            IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role(current_user, 'app_user', 'MEMBER') THEN
+              RAISE EXCEPTION 'worker_api_auth_membership_leak';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Branch-hours queue ACL is column-bounded
+        run: |
+          PGPASSWORD="$WORKER_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_worker_boundary <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'SELECT') THEN
+              RAISE EXCEPTION 'worker_missing_transactional_outbox_select';
+            END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'INSERT')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'DELETE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.transactional_outbox', 'TRUNCATE') THEN
+              RAISE EXCEPTION 'worker_transactional_outbox_direct_or_destructive_acl_leak';
+            END IF;
+            IF NOT pg_catalog.has_column_privilege(current_user, 'public.transactional_outbox', 'leased_by', 'UPDATE')
+               OR NOT pg_catalog.has_column_privilege(current_user, 'public.transactional_outbox', 'processed_at', 'UPDATE')
+               OR NOT pg_catalog.has_column_privilege(current_user, 'public.transactional_outbox', 'available_at', 'UPDATE') THEN
+              RAISE EXCEPTION 'worker_missing_transactional_outbox_mutable_columns';
+            END IF;
+            IF pg_catalog.has_column_privilege(current_user, 'public.transactional_outbox', 'tenant_id', 'UPDATE')
+               OR pg_catalog.has_column_privilege(current_user, 'public.transactional_outbox', 'branch_id', 'UPDATE')
+               OR pg_catalog.has_column_privilege(current_user, 'public.transactional_outbox', 'payload', 'UPDATE')
+               OR pg_catalog.has_column_privilege(current_user, 'public.transactional_outbox', 'correlation_id', 'UPDATE') THEN
+              RAISE EXCEPTION 'worker_transactional_outbox_identity_payload_update_leak';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Lifecycle queue ACL is column-bounded
+        run: |
+          PGPASSWORD="$WORKER_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_worker_boundary <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT pg_catalog.has_table_privilege(current_user, 'public.branch_outbox_events', 'SELECT') THEN
+              RAISE EXCEPTION 'worker_missing_lifecycle_outbox_select';
+            END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'public.branch_outbox_events', 'INSERT')
+               OR pg_catalog.has_table_privilege(current_user, 'public.branch_outbox_events', 'DELETE')
+               OR pg_catalog.has_table_privilege(current_user, 'public.branch_outbox_events', 'TRUNCATE') THEN
+              RAISE EXCEPTION 'worker_lifecycle_outbox_direct_or_destructive_acl_leak';
+            END IF;
+            IF NOT pg_catalog.has_column_privilege(current_user, 'public.branch_outbox_events', 'leased_by', 'UPDATE')
+               OR NOT pg_catalog.has_column_privilege(current_user, 'public.branch_outbox_events', 'status', 'UPDATE')
+               OR NOT pg_catalog.has_column_privilege(current_user, 'public.branch_outbox_events', 'process_after', 'UPDATE') THEN
+              RAISE EXCEPTION 'worker_missing_lifecycle_outbox_mutable_columns';
+            END IF;
+            IF pg_catalog.has_column_privilege(current_user, 'public.branch_outbox_events', 'tenant_id', 'UPDATE')
+               OR pg_catalog.has_column_privilege(current_user, 'public.branch_outbox_events', 'branch_id', 'UPDATE')
+               OR pg_catalog.has_column_privilege(current_user, 'public.branch_outbox_events', 'payload', 'UPDATE')
+               OR pg_catalog.has_column_privilege(current_user, 'public.branch_outbox_events', 'correlation_id', 'UPDATE') THEN
+              RAISE EXCEPTION 'worker_lifecycle_outbox_identity_payload_update_leak';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Worker child command functions are executable but not public
+        run: |
+          PGPASSWORD="$WORKER_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_worker_boundary <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT pg_catalog.has_function_privilege(
+                current_user,
+                'public.enqueue_branch_hours_child(uuid,uuid,uuid,timestamptz,text)',
+                'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'worker_missing_branch_hours_child_execute';
+            END IF;
+            IF NOT pg_catalog.has_function_privilege(
+                current_user,
+                'public.enqueue_branch_lifecycle_child(uuid,uuid,text,jsonb,uuid)',
+                'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'worker_missing_lifecycle_child_execute';
+            END IF;
+          END
+          $$;
+          SQL
+
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_worker_boundary <<'SQL'
+          DO $$
+          DECLARE public_exec_count integer;
+          BEGIN
+            SELECT count(*) INTO public_exec_count
+            FROM pg_catalog.pg_proc AS p
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+            ) AS acl
+            WHERE p.oid IN (
+                'public.enqueue_branch_hours_rebuild(uuid,uuid)'::regprocedure,
+                'public.enqueue_organization_hours_rebuild(uuid)'::regprocedure,
+                'public.enqueue_branch_hours_child(uuid,uuid,uuid,timestamptz,text)'::regprocedure,
+                'public.enqueue_branch_lifecycle_child(uuid,uuid,text,jsonb,uuid)'::regprocedure
+            )
+              AND acl.grantee = 0
+              AND acl.privilege_type = 'EXECUTE';
+            IF public_exec_count <> 0 THEN
+              RAISE EXCEPTION 'public_execute_leak_on_internal_enqueue_functions';
+            END IF;
+            IF pg_catalog.has_schema_privilege('app_security_owner', 'public', 'CREATE') THEN
+              RAISE EXCEPTION 'app_security_owner_public_create_leak';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Branch-hours source RLS is invisible without live lease
+        run: |
+          PGPASSWORD="$WORKER_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_worker_boundary <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id', gen_random_uuid()::text, true);
+          SELECT pg_catalog.set_config('app.internal_maintenance', 'branch_hours_projection', true);
+          SELECT pg_catalog.set_config('app.worker_id', gen_random_uuid()::text, true);
+          DO $$
+          DECLARE branch_count bigint;
+          DECLARE state_count bigint;
+          BEGIN
+            SELECT count(*) INTO branch_count FROM public.org_branches;
+            SELECT count(*) INTO state_count FROM public.org_branch_state;
+            IF branch_count <> 0 OR state_count <> 0 THEN
+              RAISE EXCEPTION 'branch_hours_source_visible_without_live_lease';
+            END IF;
+          END
+          $$;
+          ROLLBACK;
+          SQL
+
+      - name: Lifecycle source RLS is invisible without live saga lease
+        run: |
+          PGPASSWORD="$WORKER_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_worker_boundary <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id', gen_random_uuid()::text, true);
+          SELECT pg_catalog.set_config('app.internal_maintenance', 'branch_lifecycle_saga', true);
+          SELECT pg_catalog.set_config('app.worker_id', gen_random_uuid()::text, true);
+          DO $$
+          DECLARE branch_count bigint;
+          DECLARE state_count bigint;
+          BEGIN
+            SELECT count(*) INTO branch_count FROM public.org_branches;
+            SELECT count(*) INTO state_count FROM public.org_branch_state;
+            IF branch_count <> 0 OR state_count <> 0 THEN
+              RAISE EXCEPTION 'lifecycle_source_visible_without_live_saga_lease';
+            END IF;
+          END
+          $$;
+          ROLLBACK;
+          SQL

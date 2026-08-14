@@ -20,9 +20,21 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # 0. Auth Schema (for RLS)
-    op.execute("CREATE SCHEMA IF NOT EXISTS auth;")
+    # DF590 owns the auth schema at this lineage boundary. Refuse silent
+    # adoption so downgrade may safely restore the DBEB predecessor exactly.
     op.execute("""
-    CREATE OR REPLACE FUNCTION auth.role() RETURNS TEXT LANGUAGE SQL STABLE AS $$
+    DO $df590_auth_schema_preflight$
+    BEGIN
+        IF pg_catalog.to_regnamespace('auth') IS NOT NULL THEN
+            RAISE EXCEPTION
+                'DF590 refuses to adopt pre-existing auth schema';
+        END IF;
+    END
+    $df590_auth_schema_preflight$;
+    """)
+    op.execute("CREATE SCHEMA auth;")
+    op.execute("""
+    CREATE FUNCTION auth.role() RETURNS TEXT LANGUAGE SQL STABLE AS $$
         SELECT NULLIF(current_setting('app.current_role', true), '');
     $$;
     """)
@@ -146,7 +158,7 @@ def upgrade() -> None:
 
     # 3. Triggers: Core State Table
     op.execute("""
-    CREATE OR REPLACE FUNCTION sync_branch_operational_state()
+    CREATE FUNCTION sync_branch_operational_state()
     RETURNS trigger LANGUAGE plpgsql
     SECURITY DEFINER
     SET search_path = public, pg_temp
@@ -165,7 +177,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE OR REPLACE FUNCTION validate_scheduled_transition()
+    CREATE FUNCTION validate_scheduled_transition()
     RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
         IF NEW.scheduled_transition_at IS NOT NULL
@@ -185,7 +197,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE OR REPLACE FUNCTION guard_worm_immutability()
+    CREATE FUNCTION guard_worm_immutability()
     RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
         IF OLD.worm_archive_status = 'verified' AND (
@@ -208,7 +220,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE OR REPLACE FUNCTION enforce_branch_transition_freeze()
+    CREATE FUNCTION enforce_branch_transition_freeze()
     RETURNS trigger LANGUAGE plpgsql
     SECURITY DEFINER
     SET search_path = public, pg_temp
@@ -280,7 +292,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE OR REPLACE FUNCTION prevent_history_mutation()
+    CREATE FUNCTION prevent_history_mutation()
     RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
         RAISE EXCEPTION
@@ -296,7 +308,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE OR REPLACE FUNCTION validate_history_correlation()
+    CREATE FUNCTION validate_history_correlation()
     RETURNS trigger LANGUAGE plpgsql
     SECURITY DEFINER
     SET search_path = public, pg_temp
@@ -513,7 +525,7 @@ def upgrade() -> None:
     ('active',               'compliance_suspended', ARRAY['compliance','superadmin'], TRUE),
     ('active',               'permanently_closed',   ARRAY['owner','superadmin'],      TRUE),
     ('temporarily_closed',   'active',               ARRAY['owner','org_admin'],       FALSE),
-    ('temporarily_closed',   'permanently_closed',   ARRAY['owner','superadmin'],      TRUE),
+    ('temporarily_closed',   'permanently_closed',    ARRAY['owner','superadmin'],      TRUE),
     ('under_renovation',     'active',               ARRAY['owner','org_admin'],       FALSE),
     ('compliance_suspended', 'active',               ARRAY['compliance','superadmin'], TRUE),
     ('compliance_suspended', 'permanently_closed',   ARRAY['compliance','superadmin'], TRUE)
@@ -536,5 +548,313 @@ def upgrade() -> None:
     ON CONFLICT DO NOTHING;
     """)
 
+
 def downgrade() -> None:
-    pass
+    """Restore the exact DBEB predecessor surface without cascading drift."""
+    # Fail before mutation if the lifecycle surface is already incomplete or if
+    # Alembic is not running under the reduced migration identity.
+    op.execute("""
+    DO $$
+    DECLARE
+        relation_name text;
+        function_name text;
+        required_column_count integer;
+        required_policy_count integer;
+        required_trigger_count integer;
+        state_record record;
+    BEGIN
+        IF session_user <> 'migration_owner' OR current_user <> 'migration_owner' THEN
+            RAISE EXCEPTION
+                'DF590 downgrade requires session_user=current_user=migration_owner';
+        END IF;
+
+        FOREACH relation_name IN ARRAY ARRAY[
+            'public.org_branch_state',
+            'public.branch_status_definitions',
+            'public.branch_status_transitions',
+            'public.branch_deactivation_policies',
+            'public.branch_status_history',
+            'public.branch_lifecycle_events',
+            'public.branch_lifecycle_events_2026_q2',
+            'public.branch_lifecycle_events_2026_q3',
+            'public.branch_outbox_events',
+            'public.branch_watchdog_alerts'
+        ]
+        LOOP
+            IF pg_catalog.to_regclass(relation_name) IS NULL THEN
+                RAISE EXCEPTION 'DF590 required relation is absent before downgrade: %', relation_name;
+            END IF;
+        END LOOP;
+
+        SELECT count(*) INTO required_column_count
+        FROM pg_catalog.pg_attribute AS attribute_data
+        WHERE attribute_data.attrelid = 'public.org_branch_state'::regclass
+          AND attribute_data.attnum > 0
+          AND NOT attribute_data.attisdropped
+          AND attribute_data.attname = ANY (ARRAY[
+              'status', 'is_operational', 'status_changed_at', 'status_changed_by',
+              'status_reason', 'transition_source', 'scheduled_transition_at',
+              'scheduled_transition_to', 'lifecycle_transition_in_progress',
+              'saga_last_checkpoint', 'saga_compensation_strategy',
+              'watchdog_recovered_at', 'watchdog_recovery_count',
+              'search_visibility_version', 'search_last_synced_at',
+              'search_sync_failed_at', 'reconciliation_claimed_by',
+              'reconciliation_claimed_at', 'worm_archive_uri',
+              'worm_archive_checksum', 'worm_archive_verified_at',
+              'worm_archive_status'
+          ]);
+        IF required_column_count <> 22 THEN
+            RAISE EXCEPTION
+                'DF590 org_branch_state column surface drifted: expected 22, observed %',
+                required_column_count;
+        END IF;
+
+        SELECT count(*) INTO required_policy_count
+        FROM pg_catalog.pg_policy AS policy_data
+        WHERE policy_data.polrelid = 'public.org_branch_state'::regclass
+          AND policy_data.polname = ANY (ARRAY[
+              'p_branch_select', 'p_branch_update',
+              'p_branch_insert', 'p_branch_delete'
+          ]);
+        IF required_policy_count <> 4 THEN
+            RAISE EXCEPTION
+                'DF590 org_branch_state policy surface drifted: expected 4, observed %',
+                required_policy_count;
+        END IF;
+
+        SELECT count(*) INTO required_trigger_count
+        FROM pg_catalog.pg_trigger AS trigger_data
+        WHERE trigger_data.tgrelid = 'public.org_branch_state'::regclass
+          AND NOT trigger_data.tgisinternal
+          AND trigger_data.tgname = ANY (ARRAY[
+              'trg_sync_operational_state',
+              'trg_validate_scheduled_transition',
+              'trg_guard_worm_immutability'
+          ]);
+        IF required_trigger_count <> 3 THEN
+            RAISE EXCEPTION
+                'DF590 org_branch_state trigger surface drifted: expected 3, observed %',
+                required_trigger_count;
+        END IF;
+
+        FOREACH function_name IN ARRAY ARRAY[
+            'auth.role()',
+            'public.sync_branch_operational_state()',
+            'public.validate_scheduled_transition()',
+            'public.guard_worm_immutability()',
+            'public.enforce_branch_transition_freeze()',
+            'public.prevent_history_mutation()',
+            'public.validate_history_correlation()'
+        ]
+        LOOP
+            IF pg_catalog.to_regprocedure(function_name) IS NULL THEN
+                RAISE EXCEPTION 'DF590 required function is absent before downgrade: %', function_name;
+            END IF;
+        END LOOP;
+
+        SELECT relrowsecurity, relforcerowsecurity
+        INTO state_record
+        FROM pg_catalog.pg_class
+        WHERE oid = 'public.org_branch_state'::regclass;
+        IF NOT state_record.relrowsecurity OR NOT state_record.relforcerowsecurity THEN
+            RAISE EXCEPTION
+                'DF590 predecessor-owned org_branch_state lost its required RLS posture';
+        END IF;
+    END
+    $$;
+    """)
+
+    # Policies attached to the predecessor-owned state table are DF590-owned.
+    op.execute("DROP POLICY p_branch_select ON public.org_branch_state;")
+    op.execute("DROP POLICY p_branch_update ON public.org_branch_state;")
+    op.execute("DROP POLICY p_branch_insert ON public.org_branch_state;")
+    op.execute("DROP POLICY p_branch_delete ON public.org_branch_state;")
+
+    # Optional freeze guards were installed only when predecessor relations were
+    # present. Detach them conditionally, but never suppress an unexpected error
+    # on an existing relation.
+    op.execute("""
+    DO $$
+    BEGIN
+        IF pg_catalog.to_regclass('public.bookings') IS NOT NULL THEN
+            DROP TRIGGER IF EXISTS trg_freeze_guard_bookings ON public.bookings;
+        END IF;
+        IF pg_catalog.to_regclass('public.schedules') IS NOT NULL THEN
+            DROP TRIGGER IF EXISTS trg_freeze_guard_schedules ON public.schedules;
+        END IF;
+        IF pg_catalog.to_regclass('public.trainer_assignments') IS NOT NULL THEN
+            DROP TRIGGER IF EXISTS trg_freeze_guard_trainer_assignments ON public.trainer_assignments;
+        END IF;
+        IF pg_catalog.to_regclass('public.memberships') IS NOT NULL THEN
+            DROP TRIGGER IF EXISTS trg_freeze_guard_memberships ON public.memberships;
+        END IF;
+    END
+    $$;
+    """)
+
+    op.execute("DROP TRIGGER trg_sync_operational_state ON public.org_branch_state;")
+    op.execute("DROP TRIGGER trg_validate_scheduled_transition ON public.org_branch_state;")
+    op.execute("DROP TRIGGER trg_guard_worm_immutability ON public.org_branch_state;")
+    op.execute("DROP TRIGGER trg_validate_history_correlation ON public.branch_status_history;")
+    op.execute("DROP TRIGGER trg_history_append_only ON public.branch_status_history;")
+
+    # Remove DF590-owned relations in dependency order. No CASCADE is used: an
+    # unknown external dependency is production drift and must block rollback.
+    op.execute("DROP TABLE public.branch_status_history;")
+    op.execute("DROP TABLE public.branch_lifecycle_events_2026_q2;")
+    op.execute("DROP TABLE public.branch_lifecycle_events_2026_q3;")
+    op.execute("DROP TABLE public.branch_lifecycle_events;")
+    op.execute("DROP TABLE public.branch_outbox_events;")
+    op.execute("DROP TABLE public.branch_watchdog_alerts;")
+
+    # Trigger functions are now unreferenced by DF590-owned objects. RESTRICT is
+    # intentional so another object's dependency cannot be silently destroyed.
+    op.execute("DROP FUNCTION public.validate_history_correlation();")
+    op.execute("DROP FUNCTION public.prevent_history_mutation();")
+    op.execute("DROP FUNCTION public.sync_branch_operational_state();")
+    op.execute("DROP FUNCTION public.validate_scheduled_transition();")
+    op.execute("DROP FUNCTION public.guard_worm_immutability();")
+    op.execute("DROP FUNCTION public.enforce_branch_transition_freeze();")
+
+    op.execute("DROP INDEX public.ix_branch_operational_lookup;")
+    op.execute("DROP INDEX public.ix_branch_public_discovery;")
+    op.execute("DROP INDEX public.ix_branch_reconciliation_candidates;")
+
+    op.execute("""
+    ALTER TABLE public.org_branch_state
+        DROP CONSTRAINT chk_transition_source,
+        DROP CONSTRAINT chk_terminal_status_reason,
+        DROP CONSTRAINT chk_scheduled_transition_pair,
+        DROP CONSTRAINT chk_no_delete_while_operational,
+        DROP CONSTRAINT chk_saga_last_checkpoint;
+    """)
+
+    op.execute("""
+    ALTER TABLE public.org_branch_state
+        DROP COLUMN status,
+        DROP COLUMN is_operational,
+        DROP COLUMN status_changed_at,
+        DROP COLUMN status_changed_by,
+        DROP COLUMN status_reason,
+        DROP COLUMN transition_source,
+        DROP COLUMN scheduled_transition_at,
+        DROP COLUMN scheduled_transition_to,
+        DROP COLUMN lifecycle_transition_in_progress,
+        DROP COLUMN saga_last_checkpoint,
+        DROP COLUMN saga_compensation_strategy,
+        DROP COLUMN watchdog_recovered_at,
+        DROP COLUMN watchdog_recovery_count,
+        DROP COLUMN search_visibility_version,
+        DROP COLUMN search_last_synced_at,
+        DROP COLUMN search_sync_failed_at,
+        DROP COLUMN reconciliation_claimed_by,
+        DROP COLUMN reconciliation_claimed_at,
+        DROP COLUMN worm_archive_uri,
+        DROP COLUMN worm_archive_checksum,
+        DROP COLUMN worm_archive_verified_at,
+        DROP COLUMN worm_archive_status;
+    """)
+
+    op.execute("DROP TABLE public.branch_deactivation_policies;")
+    op.execute("DROP TABLE public.branch_status_transitions;")
+    op.execute("DROP TABLE public.branch_status_definitions;")
+
+    # auth is revision-owned. DROP SCHEMA is deliberately RESTRICT (the default)
+    # so any leaked successor object becomes a hard lifecycle failure.
+    op.execute("DROP FUNCTION auth.role();")
+    op.execute("DROP SCHEMA auth;")
+
+    # Prove that only DF590-owned state was removed and predecessor security was
+    # preserved. This blocks a nominally successful but semantically partial
+    # downgrade.
+    op.execute("""
+    DO $$
+    DECLARE
+        relation_name text;
+        function_name text;
+        residual_column_count integer;
+        residual_policy_count integer;
+        state_record record;
+    BEGIN
+        FOREACH relation_name IN ARRAY ARRAY[
+            'public.branch_status_definitions',
+            'public.branch_status_transitions',
+            'public.branch_deactivation_policies',
+            'public.branch_status_history',
+            'public.branch_lifecycle_events',
+            'public.branch_lifecycle_events_2026_q2',
+            'public.branch_lifecycle_events_2026_q3',
+            'public.branch_outbox_events',
+            'public.branch_watchdog_alerts'
+        ]
+        LOOP
+            IF pg_catalog.to_regclass(relation_name) IS NOT NULL THEN
+                RAISE EXCEPTION 'DF590 relation remained after downgrade: %', relation_name;
+            END IF;
+        END LOOP;
+
+        SELECT count(*) INTO residual_column_count
+        FROM pg_catalog.pg_attribute AS attribute_data
+        WHERE attribute_data.attrelid = 'public.org_branch_state'::regclass
+          AND attribute_data.attnum > 0
+          AND NOT attribute_data.attisdropped
+          AND attribute_data.attname = ANY (ARRAY[
+              'status', 'is_operational', 'status_changed_at', 'status_changed_by',
+              'status_reason', 'transition_source', 'scheduled_transition_at',
+              'scheduled_transition_to', 'lifecycle_transition_in_progress',
+              'saga_last_checkpoint', 'saga_compensation_strategy',
+              'watchdog_recovered_at', 'watchdog_recovery_count',
+              'search_visibility_version', 'search_last_synced_at',
+              'search_sync_failed_at', 'reconciliation_claimed_by',
+              'reconciliation_claimed_at', 'worm_archive_uri',
+              'worm_archive_checksum', 'worm_archive_verified_at',
+              'worm_archive_status'
+          ]);
+        IF residual_column_count <> 0 THEN
+            RAISE EXCEPTION
+                'DF590 org_branch_state columns remained after downgrade: %',
+                residual_column_count;
+        END IF;
+
+        SELECT count(*) INTO residual_policy_count
+        FROM pg_catalog.pg_policy AS policy_data
+        WHERE policy_data.polrelid = 'public.org_branch_state'::regclass
+          AND policy_data.polname = ANY (ARRAY[
+              'p_branch_select', 'p_branch_update',
+              'p_branch_insert', 'p_branch_delete'
+          ]);
+        IF residual_policy_count <> 0 THEN
+            RAISE EXCEPTION
+                'DF590 org_branch_state policies remained after downgrade: %',
+                residual_policy_count;
+        END IF;
+
+        FOREACH function_name IN ARRAY ARRAY[
+            'public.sync_branch_operational_state()',
+            'public.validate_scheduled_transition()',
+            'public.guard_worm_immutability()',
+            'public.enforce_branch_transition_freeze()',
+            'public.prevent_history_mutation()',
+            'public.validate_history_correlation()'
+        ]
+        LOOP
+            IF pg_catalog.to_regprocedure(function_name) IS NOT NULL THEN
+                RAISE EXCEPTION 'DF590 function remained after downgrade: %', function_name;
+            END IF;
+        END LOOP;
+
+        IF pg_catalog.to_regnamespace('auth') IS NOT NULL THEN
+            RAISE EXCEPTION 'DF590 auth schema remained after downgrade';
+        END IF;
+
+        SELECT relrowsecurity, relforcerowsecurity
+        INTO state_record
+        FROM pg_catalog.pg_class
+        WHERE oid = 'public.org_branch_state'::regclass;
+        IF NOT state_record.relrowsecurity OR NOT state_record.relforcerowsecurity THEN
+            RAISE EXCEPTION
+                'DF590 downgrade weakened predecessor org_branch_state RLS';
+        END IF;
+    END
+    $$;
+    """)

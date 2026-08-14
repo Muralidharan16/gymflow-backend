@@ -5,10 +5,12 @@ Pytest must never run against the development database. The app runtime still us
 
 ## Required Environment
 
-Use a separate PostgreSQL database whose name clearly contains `test`:
+Use a separate PostgreSQL database whose name clearly contains `test`. Credentials
+must come from the local environment or secret manager; never commit them to the
+repository:
 
 ```bash
-export TEST_DATABASE_URL='postgresql+asyncpg://postgres:Murali%4007@localhost:5432/gymflow_test'
+export TEST_DATABASE_URL='postgresql+asyncpg://test_runner:<password-from-secret-store>@localhost:5432/gymflow_test'
 ```
 
 Pytest fails fast when:
@@ -19,17 +21,18 @@ Pytest fails fast when:
 
 ## Create And Migrate The Test Database
 
-```bash
-createdb -h localhost -U postgres gymflow_test
+Create the database through the approved database bootstrap/admin path, then run
+Alembic with the reduced migration identity:
 
-DATABASE_URL='postgresql+asyncpg://postgres:Murali%4007@localhost:5432/gymflow_test' \
+```bash
+DATABASE_URL='postgresql+asyncpg://migration_owner:<password-from-secret-store>@localhost:5432/gymflow_test' \
 PYTHONPATH=. .venv/bin/alembic upgrade head
 ```
 
-Then run tests with:
+Then run tests with the dedicated test identity:
 
 ```bash
-TEST_DATABASE_URL='postgresql+asyncpg://postgres:Murali%4007@localhost:5432/gymflow_test' \
+TEST_DATABASE_URL='postgresql+asyncpg://test_runner:<password-from-secret-store>@localhost:5432/gymflow_test' \
 PYTHONPATH=. .venv/bin/pytest -q tests/test_auth_register.py
 ```
 

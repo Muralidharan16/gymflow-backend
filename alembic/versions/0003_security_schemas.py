@@ -20,45 +20,119 @@ from __future__ import annotations
 from alembic import op
 import sqlalchemy as sa
 
-revision      = "0003_security_schemas"
+revision = "0003_security_schemas"
 down_revision = "0002_enterprise_platform"
 branch_labels = None
-depends_on    = None
+depends_on = None
+
+
+def _preflight_upgrade() -> None:
+    """Refuse to adopt colliding security/audit objects."""
+    op.execute(
+        """
+        DO $$
+        DECLARE
+            relation_name text;
+        BEGIN
+            FOREACH relation_name IN ARRAY ARRAY[
+                'encryption_key_registry',
+                'encryption_key_registry_key_version_seq',
+                'uq_key_registry_active',
+                'idx_key_registry_tenant_ver',
+                'organization_address_payloads_secure',
+                'idx_addr_payloads_tenant_org',
+                'idx_addr_payloads_key_version',
+                'idx_addr_payloads_created_brin',
+                'address_audit_ledger',
+                'address_audit_ledger_id_seq',
+                'idx_audit_ledger_entity',
+                'idx_audit_ledger_changed_brin',
+                'audit_chain_heads'
+            ] LOOP
+                IF to_regclass('public.' || relation_name) IS NOT NULL THEN
+                    RAISE EXCEPTION
+                        '0003 target relation public.% already exists; refusing adoption',
+                        relation_name;
+                END IF;
+            END LOOP;
+        END
+        $$;
+        """
+    )
+
+
+def _preflight_downgrade() -> None:
+    """Refuse rollback when 0003 security/audit data cannot be represented."""
+    op.execute(
+        """
+        DO $$
+        DECLARE
+            relation_name text;
+            has_rows boolean;
+        BEGIN
+            FOREACH relation_name IN ARRAY ARRAY[
+                'encryption_key_registry',
+                'organization_address_payloads_secure',
+                'address_audit_ledger',
+                'audit_chain_heads'
+            ] LOOP
+                IF to_regclass('public.' || relation_name) IS NULL THEN
+                    RAISE EXCEPTION
+                        '0003 downgrade predecessor drift: required relation public.% is missing',
+                        relation_name;
+                END IF;
+
+                EXECUTE format(
+                    'SELECT EXISTS (SELECT 1 FROM public.%I LIMIT 1)',
+                    relation_name
+                ) INTO has_rows;
+
+                IF has_rows THEN
+                    RAISE EXCEPTION
+                        '0003 downgrade would discard populated security/audit relation public.%',
+                        relation_name;
+                END IF;
+            END LOOP;
+        END
+        $$;
+        """
+    )
 
 
 def upgrade() -> None:
+    _preflight_upgrade()
 
     # ── encryption_key_registry ──────────────────────────────────────────
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.encryption_key_registry (
-            key_version     SERIAL      PRIMARY KEY,
-            tenant_id       UUID        NOT NULL,
+        CREATE TABLE public.encryption_key_registry (
+            key_version     SERIAL       PRIMARY KEY,
+            tenant_id       UUID         NOT NULL,
             table_name      VARCHAR(100) NOT NULL,
-            encrypted_dek   BYTEA       NOT NULL,
-            key_status      VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
+            encrypted_dek   BYTEA        NOT NULL,
+            key_status      VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE'
                             CHECK (key_status IN ('ACTIVE','DEPRECATED','RETIRED')),
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.clock_timestamp(),
-            deprecated_at   TIMESTAMPTZ NULL,
-            retired_at      TIMESTAMPTZ NULL
+            created_at      TIMESTAMPTZ  NOT NULL DEFAULT pg_catalog.clock_timestamp(),
+            deprecated_at   TIMESTAMPTZ  NULL,
+            retired_at      TIMESTAMPTZ  NULL
         ) WITH (fillfactor = 90)
     """)
 
     op.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_key_registry_active
+        CREATE UNIQUE INDEX uq_key_registry_active
             ON public.encryption_key_registry (tenant_id, table_name)
             WHERE key_status = 'ACTIVE'
     """)
 
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_key_registry_tenant_ver
+        CREATE INDEX idx_key_registry_tenant_ver
             ON public.encryption_key_registry (tenant_id, key_version)
     """)
 
     # ── organization_address_payloads_secure ─────────────────────────────
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.organization_address_payloads_secure (
+        CREATE TABLE public.organization_address_payloads_secure (
             id                UUID        PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
             tenant_id         UUID        NOT NULL,
             org_id            UUID        NOT NULL,
@@ -73,39 +147,39 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_addr_payloads_tenant_org
+        CREATE INDEX idx_addr_payloads_tenant_org
             ON public.organization_address_payloads_secure (tenant_id, org_id)
     """)
 
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_addr_payloads_key_version
+        CREATE INDEX idx_addr_payloads_key_version
             ON public.organization_address_payloads_secure (key_version)
             WHERE key_version > 0
     """)
 
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_addr_payloads_created_brin
+        CREATE INDEX idx_addr_payloads_created_brin
             ON public.organization_address_payloads_secure USING BRIN (created_at)
     """)
 
     # ── address_audit_ledger (append-only, HMAC-chained) ─────────────────
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.address_audit_ledger (
-            id              BIGSERIAL   PRIMARY KEY,
-            tenant_id       UUID        NOT NULL,
-            entity_id       UUID        NOT NULL,
-            entity_type     VARCHAR(50) NOT NULL,
-            event_type      VARCHAR(50) NOT NULL,
-            event_version   SMALLINT    NOT NULL DEFAULT 1,
-            changed_by      UUID        NOT NULL,
-            changed_at      TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.clock_timestamp(),
-            payload_hash    CHAR(64)    NOT NULL,
-            chain_hmac      CHAR(64)    NOT NULL,
-            prev_chain_hmac CHAR(64)    NULL,
-            ip_address      VARCHAR(45) NULL,
+        CREATE TABLE public.address_audit_ledger (
+            id              BIGSERIAL    PRIMARY KEY,
+            tenant_id       UUID         NOT NULL,
+            entity_id       UUID         NOT NULL,
+            entity_type     VARCHAR(50)  NOT NULL,
+            event_type      VARCHAR(50)  NOT NULL,
+            event_version   SMALLINT     NOT NULL DEFAULT 1,
+            changed_by      UUID         NOT NULL,
+            changed_at      TIMESTAMPTZ  NOT NULL DEFAULT pg_catalog.clock_timestamp(),
+            payload_hash    CHAR(64)     NOT NULL,
+            chain_hmac      CHAR(64)     NOT NULL,
+            prev_chain_hmac CHAR(64)     NULL,
+            ip_address      VARCHAR(45)  NULL,
             trace_id        VARCHAR(128) NULL,
-            metadata        JSONB       NOT NULL DEFAULT '{}'::jsonb
+            metadata        JSONB        NOT NULL DEFAULT '{}'::jsonb
         ) WITH (fillfactor = 100)
     """)
 
@@ -123,19 +197,19 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_audit_ledger_entity
+        CREATE INDEX idx_audit_ledger_entity
             ON public.address_audit_ledger (tenant_id, entity_id, changed_at)
     """)
 
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_audit_ledger_changed_brin
+        CREATE INDEX idx_audit_ledger_changed_brin
             ON public.address_audit_ledger USING BRIN (changed_at)
     """)
 
     # ── audit_chain_heads ────────────────────────────────────────────────
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.audit_chain_heads (
+        CREATE TABLE public.audit_chain_heads (
             tenant_id      UUID        NOT NULL,
             entity_id      UUID        NOT NULL,
             entity_type    VARCHAR(50) NOT NULL,
@@ -149,7 +223,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS public.audit_chain_heads CASCADE")
-    op.execute("DROP TABLE IF EXISTS public.address_audit_ledger CASCADE")
-    op.execute("DROP TABLE IF EXISTS public.organization_address_payloads_secure CASCADE")
-    op.execute("DROP TABLE IF EXISTS public.encryption_key_registry CASCADE")
+    _preflight_downgrade()
+
+    # Drop children before parents and use RESTRICT so unexpected external
+    # dependencies fail visibly instead of being recursively destroyed.
+    op.execute("DROP TABLE public.audit_chain_heads RESTRICT")
+    op.execute("DROP TABLE public.address_audit_ledger RESTRICT")
+    op.execute("DROP TABLE public.organization_address_payloads_secure RESTRICT")
+    op.execute("DROP TABLE public.encryption_key_registry RESTRICT")

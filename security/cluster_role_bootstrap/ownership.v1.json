@@ -1,0 +1,1316 @@
+{
+  "allowed_target_owners": [
+    "app_rls_executor",
+    "app_security_owner",
+    "migration_owner"
+  ],
+  "contract_id": "doers-postgresql-object-ownership-v1",
+  "downgrade_policy": {
+    "cluster_role_ownership_contract_remains_valid": true,
+    "removed_revision_objects_may_be_absent": true
+  },
+  "forbidden_object_owners": [
+    "app_runtime",
+    "app_user",
+    "audit_writer",
+    "branch_admin",
+    "branch_viewer",
+    "ops_support",
+    "readonly_analytics"
+  ],
+  "objects": [
+    {
+      "dynamic": false,
+      "object": "app_private",
+      "object_type": "SCHEMA",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.append_audit_event",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.append_audit_event(UUID,UUID,UUID,VARCHAR,VARCHAR,TEXT,JSONB,UUID,JSONB,JSONB,TEXT,VARCHAR,VARCHAR,UUID)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.compile_member_permissions",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.compile_member_permissions(UUID, UUID, UUID, SMALLINT)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.create_branch_contacts_audit_partition",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.create_branch_contacts_audit_partition(DATE)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.enforce_membership_state_transition",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.enforce_membership_state_transition()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.ensure_future_partition",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.ensure_future_partition(TEXT, INT)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.ensure_primary_contact_delete",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.ensure_primary_contact_delete()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.ensure_primary_contact_insert",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.ensure_primary_contact_insert()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.ensure_primary_contact_update",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.ensure_primary_contact_update()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.handle_user_deactivation_cascade",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.handle_user_deactivation_cascade()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.log_branch_contact_changes",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.log_branch_contact_changes()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.log_branch_staff_role_audit",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.log_branch_staff_role_audit()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.mark_snapshot_stale",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.mark_snapshot_stale()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.org_advisory_lock_key",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.org_advisory_lock_key(UUID)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.partition_metadata",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.prevent_audit_modification",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.prevent_audit_modification()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.prevent_soft_delete_resurrection",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.prevent_soft_delete_resurrection()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.process_primary_contact_batch",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.process_primary_contact_batch(UUID[])",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.raise_immutable_audit_violation",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.raise_immutable_audit_violation()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.sync_branch_staff_role_contract_fields",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.touch_updated_at",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.touch_updated_at()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.update_timestamp",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.update_timestamp()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.validate_effective_from_window",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.validate_effective_from_window()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.validate_rls_context_match",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.validate_rls_context_match()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure",
+      "object_type": "SCHEMA",
+      "parent_relation": null,
+      "policy": "app_secure schema and approved secure views are owned by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.v_active_branch_staff_roles",
+      "object_type": "VIEW",
+      "parent_relation": null,
+      "policy": "app_secure schema and approved secure views are owned by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.v_effective_member_permissions",
+      "object_type": "VIEW",
+      "parent_relation": null,
+      "policy": "app_secure schema and approved secure views are owned by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "branch_audit_log",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "branch_audit_log_y2026_m05",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "branch_audit_log_y2026_m06",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "branch_audit_log_y2026_m07",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "branch_audit_log_y2026_m08",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "create_next_month_partition",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "enforce_branch_rbac",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "enforce_max_branches",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_addr_payloads_created_brin",
+      "object_type": "INDEX",
+      "parent_relation": "public.organization_address_payloads_secure",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_addr_payloads_key_version",
+      "object_type": "INDEX",
+      "parent_relation": "public.organization_address_payloads_secure",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_addr_payloads_tenant_org",
+      "object_type": "INDEX",
+      "parent_relation": "public.organization_address_payloads_secure",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_audit_ledger_changed_brin",
+      "object_type": "INDEX",
+      "parent_relation": "public.address_audit_ledger",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_audit_ledger_entity",
+      "object_type": "INDEX",
+      "parent_relation": "public.address_audit_ledger",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_audit_log_branch_id_y2026_m05",
+      "object_type": "INDEX",
+      "parent_relation": "branch_audit_log_y2026_m05",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_audit_log_org_id_y2026_m05",
+      "object_type": "INDEX",
+      "parent_relation": "branch_audit_log_y2026_m05",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_event_outbox_consumer",
+      "object_type": "INDEX",
+      "parent_relation": "public.event_outbox",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_idempotency_store_created_brin",
+      "object_type": "INDEX",
+      "parent_relation": "public.idempotency_store",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_idempotency_zombie",
+      "object_type": "INDEX",
+      "parent_relation": "public.active_idempotency_keys",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_key_registry_tenant_ver",
+      "object_type": "INDEX",
+      "parent_relation": "public.encryption_key_registry",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_org_addresses_lat_lng",
+      "object_type": "INDEX",
+      "parent_relation": "organization_addresses",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_org_addresses_next_retry",
+      "object_type": "INDEX",
+      "parent_relation": "organization_addresses",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_org_addresses_verification_status",
+      "object_type": "INDEX",
+      "parent_relation": "organization_addresses",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_outbox_unprocessed_y2026_m05",
+      "object_type": "INDEX",
+      "parent_relation": "outbox_events_y2026_m05",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "idx_places_cache_expires",
+      "object_type": "INDEX",
+      "parent_relation": "google_places_cache",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "increment_branch_state_version",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "ix_active_branch_contacts",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_addr_history_open_window",
+      "object_type": "INDEX",
+      "parent_relation": "branch_address_history",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "ix_audit_branch_contacts_ordered",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts_audit",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": true,
+      "object": "ix_audit_contact",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts_audit",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_audit_event_id",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_audit_log",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_audit_org_category",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_audit_log",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "ix_audit_org_changed",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts_audit",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_audit_org_sequence",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_audit_log",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "ix_branch_contacts_primary_ordered",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_branch_staff_branch_active",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_staff_roles",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_branch_staff_user_active",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_staff_roles",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_bsr_member_active",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_staff_roles",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "ix_contacts_org_branch_active",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": true,
+      "object": "ix_contacts_search_email",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": true,
+      "object": "ix_contacts_search_phone",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_membership_statuses_code",
+      "object_type": "INDEX",
+      "parent_relation": "public.membership_statuses",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_org_members_active",
+      "object_type": "INDEX",
+      "parent_relation": "public.organization_members",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_org_members_status",
+      "object_type": "INDEX",
+      "parent_relation": "public.organization_members",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_org_users_email_lower_active",
+      "object_type": "INDEX",
+      "parent_relation": "public.organization_users",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_perm_snap_member_branch_fresh",
+      "object_type": "INDEX",
+      "parent_relation": "public.member_permission_snapshots",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_perm_snap_member_version",
+      "object_type": "INDEX",
+      "parent_relation": "public.member_permission_snapshots",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_perm_snap_org_stale",
+      "object_type": "INDEX",
+      "parent_relation": "public.member_permission_snapshots",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_permissions_code",
+      "object_type": "INDEX",
+      "parent_relation": "public.permissions",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "ix_primary_contact_lookup",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": true,
+      "object": "ix_public_contacts",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_scope_types_code",
+      "object_type": "INDEX",
+      "parent_relation": "public.scope_types",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "ix_staff_roles_code",
+      "object_type": "INDEX",
+      "parent_relation": "public.staff_roles",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "outbox_events",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "outbox_events_y2026_m05",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "prevent_audit_mutation",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "prevent_critical_branch_deletion",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.active_idempotency_keys",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.address_audit_ledger",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.audit_chain_heads",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.audit_key_registry",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.branch_audit_log_seq",
+      "object_type": "SEQUENCE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.branch_contacts",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "public.branch_contacts_audit",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "public.branch_contacts_audit_default",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": true,
+      "object": "public.branch_contacts_audit_yYYYY_mMM",
+      "object_type": "TABLE PARTITION FAMILY",
+      "parent_relation": "public.branch_contacts_audit",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "public.branch_staff_roles",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.encryption_key_registry",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.event_outbox",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.event_outbox_delivery_state",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.event_outbox_delivery_state_p0",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p1",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p2",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p3",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p4",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p5",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p6",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p7",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.event_outbox_y2026_m05_d18",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.google_places_cache",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.idempotency_store",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.idempotency_store_y2026_m05_d18",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.key_rotation_progress",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.member_permission_snapshots",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.membership_statuses",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.organization_address_payloads_secure",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.organization_members",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.organization_users",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.permissions",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.scope_types",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.staff_roles",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.tenant_resource_quotas",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "set_branches_updated_at",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "set_updated_at",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "snapshot_address_on_change",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "snapshot_address_on_insert",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "uq_branch_name_per_org",
+      "object_type": "INDEX",
+      "parent_relation": "org_branches",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "uq_branch_slug_per_org_ci",
+      "object_type": "INDEX",
+      "parent_relation": "org_branches",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "uq_bsr_single_owner_per_org",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_staff_roles",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "uq_google_place_id_per_org",
+      "object_type": "INDEX",
+      "parent_relation": "organization_addresses",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "uq_key_registry_active",
+      "object_type": "INDEX",
+      "parent_relation": "public.encryption_key_registry",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "uq_one_default_translation_per_branch",
+      "object_type": "INDEX",
+      "parent_relation": "branch_name_translations",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "uq_one_physical_per_branch",
+      "object_type": "INDEX",
+      "parent_relation": "organization_addresses",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "uq_org_addresses_place_id",
+      "object_type": "INDEX",
+      "parent_relation": "organization_addresses",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "uq_primary_contact_guard_idx",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": true,
+      "object": "uq_public_primary_email",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": true,
+      "object": "uq_public_primary_phone",
+      "object_type": "INDEX",
+      "parent_relation": "public.branch_contacts",
+      "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "v_active_org_branches",
+      "object_type": "VIEW",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "v_public_branch_addresses",
+      "object_type": "VIEW",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "validate_branch_transition",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    }
+  ],
+  "planning_downgrade_dependency_count": 441,
+  "schema_version": 1,
+  "source_evidence": {
+    "contract": {
+      "path": "v2-bootstrap-contract.md",
+      "sha256": "edcf8caa32a7ba85ec69adadb998f98695b3189fd96b8752799cedd49764f3a5"
+    },
+    "downgrade": {
+      "path": "v2-downgrade-dependencies.json",
+      "sha256": "6b960eafd9ec25a340cb825887c4ec17ad3b2c4f64b80460bf1ab1f55c046f0a"
+    },
+    "memberships": {
+      "path": "v2-membership-manifest.json",
+      "sha256": "aee8b7a99a78caee804fab49cb868f81a098daa5edd8d4622d8470055909d974"
+    },
+    "ownership": {
+      "path": "v2-ownership-manifest.json",
+      "sha256": "546e20cd0859c80e6f4a7a15d5a425ed86ad5d7333c39d1dddbef646d2d01327"
+    },
+    "roles": {
+      "path": "v2-role-matrices.json",
+      "sha256": "8cdd16d1a191a5601ab7124dd50c7c87d07cf018669fe38deebb7dbabcbf191d"
+    },
+    "semantic": {
+      "path": "v2-semantic-validation.json",
+      "sha256": "74ead098ea615c13916a5bd555ee4dd2d401e4ad54a77210245b8a24e4bdc065"
+    },
+    "settings": {
+      "path": "v2-role-setting-manifest.json",
+      "sha256": "38007e7b50e29feec729afa7b09f4f690d4996a5f83c2a88e77f94e42cfd0abb"
+    }
+  },
+  "validation": {
+    "forbidden_role_ownership_rejected": true,
+    "listed_objects_require_exact_owner": true,
+    "unknown_objects_are_not_assumed_safe": true
+  }
+}

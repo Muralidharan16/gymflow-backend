@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "certified_source_head": "f58d81899c1b0aeb5dcc20c88d6afaca399e66a1",
+  "reviewed_high_finding_count": 37,
+  "reviewed_high_findings_digest": "sha256:fe97ab3f0c871ed2496e6e47c34064865f8095ca63c870d9c12ace1d2d061a37",
+  "policy": {
+    "critical": "deny",
+    "high": "exact-reviewed-baseline-only",
+    "medium": "inventory-and-review",
+    "info": "inventory"
+  },
+  "review_note": "High-risk constructs are the unchanged historical set present in the P2D-certified 98-revision lineage. Any high-risk finding delta requires explicit re-review and a new baseline; this file is not an exception mechanism for critical findings."
+}

@@ -1,3 +1,4 @@
+import os
 import asyncio
 from logging.config import fileConfig
 
@@ -10,7 +11,9 @@ from alembic import context
 from app.models import Base  # noqa: F401
 import app.finance_core.models  # noqa: F401
 import app.platform_billing.models  # noqa: F401
-from app.core.config import settings
+from app.core.cluster_identity_graph import assert_identity_graph_preflight
+from app.core.cluster_role_preflight import assert_external_role_preflight
+
 
 config = context.config
 
@@ -19,11 +22,19 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# Override sqlalchemy.url from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
+# Override sqlalchemy.url from the required DATABASE_URL environment variable
+database_url = os.environ.get("DATABASE_URL")
+if not database_url or not database_url.strip():
+    raise RuntimeError(
+        "DATABASE_URL is required for Alembic migrations."
+    )
+
+config.set_main_option(
+    "sqlalchemy.url",
+    database_url.replace("%", "%%"),
+)
 
 
-import os
 import sys
 
 def check_destructive_migrations() -> None:
@@ -70,8 +81,41 @@ def check_destructive_migrations() -> None:
         pass
 
 
+def _destination_targets_head() -> bool:
+    """Return True only when the requested Alembic destination is a repo HEAD."""
+
+    try:
+        destination = context.get_revision_argument()
+    except KeyError as exc:
+        # Inspection commands such as ``alembic current --check-heads`` do not
+        # populate Alembic's destination_rev context option. They cannot execute
+        # revisions, so there is no migration destination to hard-gate here.
+        # Keep this catch exact so an unrelated Alembic context failure is never
+        # silently treated as a non-HEAD command.
+        if exc.args != ("destination_rev",):
+            raise
+        return False
+
+    if destination is None:
+        return False
+
+    if isinstance(destination, (tuple, list, set, frozenset)):
+        destination_revisions = {value for value in destination if value}
+    else:
+        destination_revisions = {destination}
+
+    head_revisions = set(context.get_head_revisions() or ())
+    return bool(destination_revisions & head_revisions)
+
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
+    if _destination_targets_head():
+        raise RuntimeError(
+            "Alembic HEAD requires a live PostgreSQL external-role preflight; "
+            "offline HEAD execution is forbidden."
+        )
+
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -88,6 +132,16 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection) -> None:
+    if _destination_targets_head():
+        # This is deliberately before context.configure()/begin_transaction():
+        # HEAD may not mutate database state until the externally managed
+        # PostgreSQL role/settings/membership contract has been proven live.
+        assert_external_role_preflight(connection)
+        # P2C is a second independent read-only hard gate. It proves that the
+        # exact roles accepted above cannot reach peer capabilities through
+        # MEMBER, SET, USAGE, helper, or ADMIN-option escalation paths.
+        assert_identity_graph_preflight(connection)
+
     context.configure(
         connection=connection, 
         target_metadata=target_metadata,

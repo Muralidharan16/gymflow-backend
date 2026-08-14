@@ -1,0 +1,36 @@
+{
+  "contract_id": "doers-production-process-database-exposure-v1",
+  "schema_version": 1,
+  "database_environment_variables": [
+    "DATABASE_URL",
+    "AUTH_DATABASE_URL",
+    "WORKER_DATABASE_URL",
+    "MAINTENANCE_DATABASE_URL"
+  ],
+  "profiles": {
+    "api": {
+      "required_database_variables": ["DATABASE_URL", "AUTH_DATABASE_URL"],
+      "forbidden_database_variables": ["WORKER_DATABASE_URL", "MAINTENANCE_DATABASE_URL"],
+      "runtime_components": ["api", "auth"],
+      "celery_worker_profile": null
+    },
+    "worker": {
+      "required_database_variables": ["WORKER_DATABASE_URL"],
+      "forbidden_database_variables": ["DATABASE_URL", "AUTH_DATABASE_URL", "MAINTENANCE_DATABASE_URL"],
+      "runtime_components": ["worker"],
+      "celery_worker_profile": "worker"
+    },
+    "maintenance": {
+      "required_database_variables": ["MAINTENANCE_DATABASE_URL"],
+      "forbidden_database_variables": ["DATABASE_URL", "AUTH_DATABASE_URL", "WORKER_DATABASE_URL"],
+      "runtime_components": ["maintenance"],
+      "celery_worker_profile": "maintenance"
+    },
+    "beat": {
+      "required_database_variables": [],
+      "forbidden_database_variables": ["DATABASE_URL", "AUTH_DATABASE_URL", "WORKER_DATABASE_URL", "MAINTENANCE_DATABASE_URL"],
+      "runtime_components": [],
+      "celery_worker_profile": null
+    }
+  }
+}

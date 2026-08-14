@@ -1,0 +1,56 @@
+name: Migration Lifecycle Contracts
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-lifecycle-contracts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle-contracts:
+    name: Migration ownership and rollback contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+
+      - name: Compile lifecycle-owned migrations
+        run: |
+          python -m py_compile \
+            alembic/versions/aa9303384b66_initial_schema.py \
+            alembic/versions/16c65fdfd9a8_init_geo_infrastructure.py \
+            alembic/versions/00f277c748ea_add_hyperscale_branch_name_and_address_.py \
+            alembic/versions/f6b19eae1a7c_add_logo_upload_and_audit.py \
+            alembic/versions/371b1a44a328_add_cover_upload_and_audit_.py \
+            alembic/versions/371b1a44a333_add_spatial_and_filtering_indexes.py
+
+      - name: Run lifecycle ownership contracts
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          python -m pytest --noconftest -q \
+            tests/test_initial_schema_enum_lifecycle.py \
+            tests/test_16c_geo_infrastructure_lifecycle.py \
+            tests/test_asset_migration_fk_lifecycle.py \
+            tests/test_371b333_spatial_index_lineage.py

@@ -24,6 +24,7 @@ from app.repositories.synthetic_organizations import (
     synthetic_organization_advisory_lock_key,
 )
 from app.services.synthetic_organizations import SyntheticOrganizationCreationService
+from tests.finance_core.admin_database import finance_admin_session
 
 
 NAME = "Vitara TEST Razorpay Smoke Org"
@@ -284,19 +285,75 @@ async def test_different_key_same_identity_conflicts_without_second_mapping():
 
 @pytest.mark.asyncio
 async def test_replay_integrity_rejects_drift_and_inactive_state():
+    # Payload drift is a transactional D10 concern. Keep it entirely on the
+    # reduced synthetic runtime and roll it back so append-only evidence remains
+    # clean and no privileged fixture mutation is needed.
     async with AsyncSessionLocal() as session:
         tx = await session.begin()
         service = SyntheticOrganizationCreationService(session, environment="development")
         created = await service.create_synthetic_organization(command())
-        await session.execute(text("UPDATE organizations SET description = 'drifted' WHERE id = :id"), {"id": created.organization_id})
-        with pytest.raises(SyntheticOrganizationError) as exc:
-            await service.create_synthetic_organization(command())
-        assert exc.value.code == "SYNTHETIC_ORG_REPLAY_INTEGRITY_CONFLICT"
-        await session.execute(text("UPDATE organizations SET description = :description, is_active = false WHERE id = :id"), {"description": SYNTHETIC_ORGANIZATION_DESCRIPTION, "id": created.organization_id})
+        await session.execute(
+            text("UPDATE organizations SET description = 'drifted' WHERE id = :id"),
+            {"id": created.organization_id},
+        )
         with pytest.raises(SyntheticOrganizationError) as exc:
             await service.create_synthetic_organization(command())
         assert exc.value.code == "SYNTHETIC_ORG_REPLAY_INTEGRITY_CONFLICT"
         await tx.rollback()
+
+    # Inactive-state corruption is test evidence setup, not a supported runtime
+    # operation. Reuse the immutable D11 baseline and mutate only is_active via
+    # the guarded admin identity. The reduced synthetic runtime must still detect
+    # the replay-integrity violation; it must never gain internal cascade-table
+    # privileges merely so a test can manufacture this state.
+    async with AsyncSessionLocal() as session:
+        frozen = await frozen_d11_snapshot(session)
+    assert frozen["slug"] == FROZEN_D11_SLUG
+    assert frozen["is_active"] is True
+    frozen_org_id = str(frozen["organization_id"])
+
+    try:
+        async with finance_admin_session() as admin_session:
+            await admin_session.execute(
+                text("SELECT pg_catalog.set_config('app.current_org_id', :org_id, true)"),
+                {"org_id": frozen_org_id},
+            )
+            await admin_session.execute(
+                text("UPDATE organizations SET is_active = false WHERE id = :id"),
+                {"id": frozen_org_id},
+            )
+            await admin_session.commit()
+
+        async with AsyncSessionLocal() as session:
+            tx = await session.begin()
+            service = SyntheticOrganizationCreationService(session, environment="development")
+            with pytest.raises(SyntheticOrganizationError) as exc:
+                await service.create_synthetic_organization(
+                    command(
+                        name=FROZEN_D11_NAME,
+                        slug=FROZEN_D11_SLUG,
+                        idempotency_key=FROZEN_D11_KEY,
+                    )
+                )
+            assert exc.value.code == "SYNTHETIC_ORG_REPLAY_INTEGRITY_CONFLICT"
+            await tx.rollback()
+    finally:
+        async with finance_admin_session() as admin_session:
+            await admin_session.execute(
+                text("SELECT pg_catalog.set_config('app.current_org_id', :org_id, true)"),
+                {"org_id": frozen_org_id},
+            )
+            await admin_session.execute(
+                text("UPDATE organizations SET is_active = true WHERE id = :id"),
+                {"id": frozen_org_id},
+            )
+            await admin_session.commit()
+
+    async with AsyncSessionLocal() as session:
+        restored = await frozen_d11_snapshot(session)
+    assert restored["is_active"] is True
+    assert restored["evidence_id"] == frozen["evidence_id"]
+    assert restored["request_hash_sha256"] == frozen["request_hash_sha256"]
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,125 @@
+name: P2B Cluster Role Bootstrap Certification
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2b-cluster-bootstrap-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p2b-cluster-bootstrap:
+    name: PG16 canonical cluster bootstrap and negative matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      P2B_DATABASE: gymflow_p2b_cluster_bootstrap
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p2b_cluster_bootstrap
+      DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:ci-migration-owner@127.0.0.1:5432/postgres
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+
+      - name: Compile and prove P2B static contracts
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          python -m py_compile \
+            app/core/cluster_role_bootstrap.py \
+            app/core/cluster_role_preflight.py \
+            scripts/render_cluster_role_bootstrap.py \
+            scripts/verify_cluster_role_bootstrap.py \
+            scripts/verify_head_workflow_bootstrap.py \
+            tests/test_p2b_cluster_role_bootstrap.py
+          bash -n \
+            scripts/ci/bootstrap_cluster_roles.sh \
+            scripts/ci/certify_fresh_cluster_bootstrap_fail_closed.sh \
+            scripts/ci/certify_cluster_role_verifier_negative_paths.sh \
+            scripts/ci/verify_cluster_roles.sh \
+            scripts/release/bootstrap_cluster_roles.sh
+          python -m pytest --noconftest -q \
+            tests/test_cluster_role_contract_manifests.py \
+            tests/test_external_cluster_role_preflight.py \
+            tests/test_p2b_cluster_role_bootstrap.py
+          python -s scripts/verify_head_workflow_bootstrap.py
+
+      - name: Install PostgreSQL 16 extension packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+          test -f /usr/share/postgresql/16/extension/pg_partman.control
+
+      - name: Prove fresh bootstrap fails closed before canonical creation
+        run: bash scripts/ci/certify_fresh_cluster_bootstrap_fail_closed.sh
+
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision P2B migration login secret and disposable database overlay
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE DATABASE gymflow_p2b_cluster_bootstrap OWNER migration_owner;
+          SQL
+
+      - name: Prove exact manifest-produced live catalog read-only
+        run: python -s scripts/verify_cluster_role_bootstrap.py
+
+      - name: Exercise live drift rejection without automatic repair
+        run: bash scripts/ci/certify_cluster_role_verifier_negative_paths.sh
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_p2b_cluster_bootstrap <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Re-verify canonical role contract before Alembic HEAD
+        run: python -s scripts/verify_cluster_role_bootstrap.py
+
+      - name: Fresh Alembic lineage to HEAD
+        run: |
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Prove Alembic did not mutate cluster role contract
+        run: python -s scripts/verify_cluster_role_bootstrap.py

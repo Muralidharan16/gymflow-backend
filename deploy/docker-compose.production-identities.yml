@@ -1,0 +1,41 @@
+services:
+  api:
+    environment:
+      DOERS_PROCESS_PROFILE: api
+      CELERY_WORKER_PROFILE: ""
+      WORKER_DATABASE_URL: ""
+      MAINTENANCE_DATABASE_URL: ""
+
+  celery-worker:
+    environment:
+      DOERS_PROCESS_PROFILE: worker
+      CELERY_WORKER_PROFILE: worker
+      DATABASE_URL: ""
+      AUTH_DATABASE_URL: ""
+      MAINTENANCE_DATABASE_URL: ""
+
+  celery-maintenance-worker:
+    environment:
+      DOERS_PROCESS_PROFILE: maintenance
+      CELERY_WORKER_PROFILE: maintenance
+      DATABASE_URL: ""
+      AUTH_DATABASE_URL: ""
+      WORKER_DATABASE_URL: ""
+
+  celery-beat:
+    environment:
+      DOERS_PROCESS_PROFILE: beat
+      CELERY_WORKER_PROFILE: ""
+      DATABASE_URL: ""
+      AUTH_DATABASE_URL: ""
+      WORKER_DATABASE_URL: ""
+      MAINTENANCE_DATABASE_URL: ""
+
+  flower:
+    environment:
+      DOERS_PROCESS_PROFILE: beat
+      CELERY_WORKER_PROFILE: ""
+      DATABASE_URL: ""
+      AUTH_DATABASE_URL: ""
+      WORKER_DATABASE_URL: ""
+      MAINTENANCE_DATABASE_URL: ""
