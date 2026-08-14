@@ -133,6 +133,14 @@ class OnboardingService:
                 import uuid
 
                 branch_id = uuid.uuid4()
+                # Reserve the address UUID before the branch INSERT. org_branches.address_id
+                # is a nullable reference column without a database FK, while
+                # organization_addresses.branch_id has the real FK back to the branch.
+                # Supplying this UUID on the initial INSERT avoids any post-insert branch
+                # UPDATE and keeps auth_runtime on its least-privilege INSERT-only
+                # bootstrap boundary. The enclosing transaction guarantees that a failed
+                # address INSERT cannot leave a durable dangling reference.
+                address_id = uuid.uuid4()
 
                 branch = OrgBranch(
                     id=branch_id,
@@ -143,14 +151,16 @@ class OnboardingService:
                     timezone="Asia/Kolkata",
                     currency_code="INR",
                     country_code="IN",
-                    address_id=None,
+                    address_id=address_id,
                     created_by=owner.id,
                 )
                 self.session.add(branch)
                 await self.session.flush()  # Persist branch to satisfy FK check on address
 
-                # Create the OrganizationAddress record referencing branch_id
+                # Create the OrganizationAddress record using the UUID already stored
+                # by the branch INSERT. No direct org_branches UPDATE is required.
                 org_address = OrganizationAddress(
+                    id=address_id,
                     org_id=org.id,
                     branch_id=branch_id,
                     address_type="physical",
@@ -164,10 +174,7 @@ class OnboardingService:
                     effective_from=datetime.now(timezone.utc),
                 )
                 self.session.add(org_address)
-                await self.session.flush()  # Persist address to get org_address.id
-
-                # Link address_id back to branch
-                branch.address_id = org_address.id
+                await self.session.flush()
 
                 # Create real contacts in branch_contacts table
                 from app.schemas.branch_contacts import (
