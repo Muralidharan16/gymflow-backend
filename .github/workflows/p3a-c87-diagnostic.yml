@@ -7,8 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  issues: write
+  contents: write
 
 concurrency:
   group: p3a-c87-diagnostic-${{ github.event.pull_request.number || github.ref }}
@@ -54,50 +53,63 @@ jobs:
           bash scripts/ci/verify_cluster_roles.sh
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_c87_diag
 
-      - name: Run fresh HEAD and publish exact migration failure
+      - name: Run fresh HEAD and persist exact migration failure
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_BRANCH: ${{ github.head_ref }}
         run: |
           set -uo pipefail
           python -s -m alembic -c alembic.ini upgrade head 2>&1 | tee /tmp/c87-alembic.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             python - <<'PY'
+          import base64
           import json
           import os
+          import urllib.error
           import urllib.request
           from pathlib import Path
 
           text = Path('/tmp/c87-alembic.log').read_text(encoding='utf-8', errors='replace')
-          for secret in ('ci-migration-owner',):
-              text = text.replace(secret, '<redacted>')
-          tail = text[-7000:]
-          safe = tail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-          print(f'::error title=C87 fresh-head migration failure::{safe}')
+          text = text.replace('ci-migration-owner', '<redacted>')
+          tail = text[-12000:]
+          repo = os.environ['GITHUB_REPOSITORY']
+          branch = os.environ.get('HEAD_BRANCH', '').strip()
+          path = '.p3a-c87-diagnostic.txt'
+          api = f'https://api.github.com/repos/{repo}/contents/{path}'
+          headers = {
+              'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'Content-Type': 'application/json',
+          }
 
-          pr_number = os.environ.get('PR_NUMBER', '').strip()
-          if pr_number:
-              body = (
-                  '<!-- p3a-c87-diagnostic -->\n'
-                  '**Temporary P3A C87 migration diagnostic**\n\n'
-                  'Fresh PostgreSQL 16 failed while upgrading to HEAD. Exact tail:\n\n'
-                  '```text\n' + tail + '\n```'
-              )
+          exists = False
+          try:
+              request = urllib.request.Request(api + f'?ref={branch}', headers=headers)
+              with urllib.request.urlopen(request, timeout=20):
+                  exists = True
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404:
+                  raise
+
+          if branch and not exists:
+              payload = {
+                  'message': 'ci(p3a): persist c87 diagnostic evidence',
+                  'content': base64.b64encode(tail.encode('utf-8')).decode('ascii'),
+                  'branch': branch,
+              }
               request = urllib.request.Request(
-                  f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{pr_number}/comments",
-                  data=json.dumps({'body': body}).encode('utf-8'),
-                  headers={
-                      'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
-                      'Accept': 'application/vnd.github+json',
-                      'X-GitHub-Api-Version': '2022-11-28',
-                      'Content-Type': 'application/json',
-                  },
-                  method='POST',
+                  api,
+                  data=json.dumps(payload).encode('utf-8'),
+                  headers=headers,
+                  method='PUT',
               )
               with urllib.request.urlopen(request, timeout=20) as response:
                   if response.status not in (200, 201):
-                      raise RuntimeError(f'failed to publish diagnostic comment: HTTP {response.status}')
+                      raise RuntimeError(
+                          f'failed to persist c87 evidence: HTTP {response.status}'
+                      )
           PY
             exit "$status"
           fi
