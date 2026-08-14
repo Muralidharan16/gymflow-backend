@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import psycopg2
+import psycopg
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select, text
@@ -695,7 +695,7 @@ async def test_simulation_orchestration_commits_before_event_generation(
             for value in kwargs.values()
         )
         assert not boundary["producer_received_session"]
-        with psycopg2.connect(_sync_admin_dsn()) as conn:
+        with psycopg.connect(_sync_admin_dsn()) as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT set_config('app.current_org_id', %s, true)", [str(ADMIN_ORG_ID)])
                 cursor.execute(
