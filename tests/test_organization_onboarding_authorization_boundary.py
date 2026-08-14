@@ -109,6 +109,27 @@ def test_auth_only_onboarding_helper_is_owner_tenant_pair_bound_and_fail_closed(
     assert "TO app_runtime" not in upgrade
 
 
+def test_auth_onboarding_capability_mirrors_application_input_invariants() -> None:
+    source = _source(MIGRATION)
+
+    for token in (
+        "organization onboarding phone is invalid",
+        "'^(\\+91)?[6-9][0-9]{9}$'",
+        "organization onboarding address_line1 is invalid",
+        "pg_catalog.char_length(p_patch->>'address_line1') < 3",
+        "organization onboarding pincode is invalid",
+        "'^[1-9][0-9]{5}$'",
+        "organization onboarding tagline is invalid",
+        "pg_catalog.char_length(p_patch->>'tagline') > 150",
+        "organization onboarding description is invalid",
+        "organization onboarding website_url is invalid",
+        "pg_catalog.trunc((p_patch->>'year_established')::numeric)",
+        "(p_patch->>'year_established')::numeric < 1800",
+        "pg_catalog.date_part('year', CURRENT_DATE)",
+    ):
+        assert token in source
+
+
 def test_security_owner_receives_only_onboarding_specific_extra_update_authority() -> None:
     extra = set(_assignment("_EXTRA_SECURITY_UPDATE_COLUMNS"))
     assert extra == {

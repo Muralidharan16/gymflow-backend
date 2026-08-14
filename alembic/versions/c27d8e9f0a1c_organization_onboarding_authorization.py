@@ -383,6 +383,12 @@ def _require_forward(bind) -> None:
         "public.organizations",
         "organization.id = v_org_id",
         "unknown organization onboarding fields",
+        "organization onboarding phone is invalid",
+        "organization onboarding address_line1 is invalid",
+        "organization onboarding pincode is invalid",
+        "organization onboarding tagline is invalid",
+        "pg_catalog.trunc",
+        "pg_catalog.date_part",
     ):
         if token not in source:
             raise RuntimeError(f"P3A onboarding helper source drift: missing {token}")
@@ -489,6 +495,41 @@ BEGIN
         RAISE EXCEPTION 'organization onboarding address_line2 is invalid'
             USING ERRCODE = '22023';
     END IF;
+
+    IF (p_patch->>'phone') !~ '^(\+91)?[6-9][0-9]{9}$' THEN
+        RAISE EXCEPTION 'organization onboarding phone is invalid'
+            USING ERRCODE = '22023';
+    END IF;
+    IF pg_catalog.char_length(p_patch->>'address_line1') < 3 THEN
+        RAISE EXCEPTION 'organization onboarding address_line1 is invalid'
+            USING ERRCODE = '22023';
+    END IF;
+    IF (p_patch->>'pincode') !~ '^[1-9][0-9]{5}$' THEN
+        RAISE EXCEPTION 'organization onboarding pincode is invalid'
+            USING ERRCODE = '22023';
+    END IF;
+
+    IF p_patch ? 'tagline'
+       AND p_patch->'tagline' <> 'null'::jsonb
+       AND (
+            pg_catalog.jsonb_typeof(p_patch->'tagline') <> 'string'
+            OR pg_catalog.char_length(p_patch->>'tagline') > 150
+       ) THEN
+        RAISE EXCEPTION 'organization onboarding tagline is invalid'
+            USING ERRCODE = '22023';
+    END IF;
+    IF p_patch ? 'description'
+       AND p_patch->'description' <> 'null'::jsonb
+       AND pg_catalog.jsonb_typeof(p_patch->'description') <> 'string' THEN
+        RAISE EXCEPTION 'organization onboarding description is invalid'
+            USING ERRCODE = '22023';
+    END IF;
+    IF p_patch ? 'website_url'
+       AND p_patch->'website_url' <> 'null'::jsonb
+       AND pg_catalog.jsonb_typeof(p_patch->'website_url') <> 'string' THEN
+        RAISE EXCEPTION 'organization onboarding website_url is invalid'
+            USING ERRCODE = '22023';
+    END IF;
     IF p_patch ? 'social_links' AND (
         p_patch->'social_links' = 'null'::jsonb
         OR pg_catalog.jsonb_typeof(p_patch->'social_links') <> 'object'
@@ -497,10 +538,16 @@ BEGIN
             USING ERRCODE = '22023';
     END IF;
     IF p_patch ? 'year_established'
-       AND p_patch->'year_established' <> 'null'::jsonb
-       AND pg_catalog.jsonb_typeof(p_patch->'year_established') <> 'number' THEN
-        RAISE EXCEPTION 'organization onboarding year_established is invalid'
-            USING ERRCODE = '22023';
+       AND p_patch->'year_established' <> 'null'::jsonb THEN
+        IF pg_catalog.jsonb_typeof(p_patch->'year_established') <> 'number'
+           OR (p_patch->>'year_established')::numeric
+                <> pg_catalog.trunc((p_patch->>'year_established')::numeric)
+           OR (p_patch->>'year_established')::numeric < 1800
+           OR (p_patch->>'year_established')::numeric
+                > pg_catalog.date_part('year', CURRENT_DATE) THEN
+            RAISE EXCEPTION 'organization onboarding year_established is invalid'
+                USING ERRCODE = '22023';
+        END IF;
     END IF;
 
     UPDATE public.organizations AS organization
