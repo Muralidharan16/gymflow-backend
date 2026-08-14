@@ -241,7 +241,7 @@ async def lifecycle_setup(auth_db_session):
                 'active',
                 FALSE,
                 TRUE,
-                'manual',
+                'api',
                 0,
                 1,
                 :search_epoch_ulid
