@@ -49,17 +49,63 @@ def _executable_string_literals(name: str) -> list[str]:
 def test_lifecycle_fixture_seeds_tenant_root_only_through_admin_identity() -> None:
     source = _source()
     fixture = _function_source("lifecycle_setup")
+    executable_literals = _executable_string_literals("lifecycle_setup")
+    normalized_literals = [literal.upper() for literal in executable_literals]
 
+    # Tenant-root and actor prerequisites remain administrative fixture setup.
     assert "from conftest import AdminTestSessionLocal, assert_test_database" in source
-    assert "async with AdminTestSessionLocal() as session:" in fixture
+    assert fixture.count("async with AdminTestSessionLocal() as session:") == 1
     assert "Organization(id=org_id" in fixture
     assert "await set_db_session_context(session, str(org_id), str(owner_id), \"owner\")" in fixture
-    assert "auth_db_session" in fixture
-    assert "auth_db_session.add_all([b1, b2])" in fixture
 
-    # The reduced production-equivalent API runtime must not become a fixture
-    # backdoor for tenant-root or initial branch creation.
-    assert "async with AsyncSessionLocal() as session:" not in fixture
+    # Branch roots are created through the reduced auth/bootstrap identity. The
+    # canonical first branch keeps the normal ORM state INSERT/RETURNING shape,
+    # while the second branch root is flushed before its bounded state seed.
+    assert "auth_db_session" in fixture
+    assert "auth_db_session.add(b1)" in fixture
+    assert "auth_db_session.add(b2)" in fixture
+    assert "await auth_db_session.flush()" in fixture
+
+    # C87 deliberately exposes auth SELECT only for the canonical initial
+    # active/primary state needed by ORM INSERT RETURNING. The second operational
+    # prerequisite must therefore use the existing tenant/owner-bound auth INSERT
+    # policy without RETURNING, remain non-primary, and preserve the model's
+    # canonical transition_source default.
+    state_insert_literals = [
+        literal
+        for literal in normalized_literals
+        if "INSERT INTO PUBLIC.ORG_BRANCH_STATE" in literal
+    ]
+    assert len(state_insert_literals) == 1
+    state_insert = state_insert_literals[0]
+    assert "IS_PRIMARY" in state_insert
+    assert "FALSE" in state_insert
+    assert "TRANSITION_SOURCE" in state_insert
+    assert "'API'" in state_insert
+    assert "RETURNING" not in state_insert
+
+    # Ordinary app_runtime may verify the completed fixture, but only read-only.
+    # It must never become a setup backdoor for tenant-root/branch creation or
+    # primary-state mutation just to satisfy the lifecycle tests.
+    assert fixture.count("async with AsyncSessionLocal() as session:") == 1
+    app_verification = fixture.split("async with AsyncSessionLocal() as session:", 1)[1]
+    assert "select(OrgBranchState)" in app_verification
+    assert "state_by_branch[b1_id].is_primary is True" in app_verification
+    assert "state_by_branch[b2_id].is_primary is False" in app_verification
+    assert "session.add(" not in app_verification
+    assert "session.add_all(" not in app_verification
+    assert "session.delete(" not in app_verification
+    assert "session.commit(" not in app_verification
+
+    forbidden_fixture_sql = (
+        "UPDATE PUBLIC.ORG_BRANCH_STATE",
+        "DELETE FROM PUBLIC.ORG_BRANCH_STATE",
+        "ALTER TABLE",
+        "GRANT UPDATE",
+        "BYPASSRLS",
+    )
+    for literal in normalized_literals:
+        assert all(fragment not in literal for fragment in forbidden_fixture_sql)
 
 
 def test_lifecycle_cleanup_does_not_invent_hard_delete_or_rls_bypass() -> None:

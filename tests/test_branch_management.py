@@ -41,6 +41,69 @@ async def set_tenant_context(
     )
 
 
+async def _create_branch_in_bounded_auth_session(session, branch: OrgBranch) -> None:
+    """Create a branch fixture without widening the P3A auth RETURNING boundary.
+
+    C87 intentionally permits auth SELECT/INSERT RETURNING visibility for only
+    the canonical initial active/primary branch state used by onboarding. Tests
+    that need an additional active non-primary branch still use the same
+    tenant/owner-bound auth INSERT policy, but insert that state without
+    RETURNING. This is fixture construction only and must not be generalized into
+    a product lifecycle capability or an app-runtime mutation workaround.
+    """
+    state = branch.state
+    repo = BranchRepository(session)
+
+    if state is None or state.is_primary is True:
+        await repo.create(branch)
+        return
+
+    assert state.branch_status == "active"
+    assert state.search_epoch_ulid is not None
+
+    branch_id = branch.id
+    org_id = branch.org_id
+    search_epoch_ulid = state.search_epoch_ulid
+
+    # Prevent ORM cascade from issuing the non-primary state INSERT ... RETURNING.
+    # The branch root itself continues through the ordinary bounded auth ORM path.
+    branch.state = None
+    await repo.create(branch)
+
+    await session.execute(
+        text(
+            """
+            INSERT INTO public.org_branch_state (
+                branch_id,
+                org_id,
+                status,
+                is_primary,
+                is_operational,
+                transition_source,
+                watchdog_recovery_count,
+                search_visibility_version,
+                search_epoch_ulid
+            ) VALUES (
+                :branch_id,
+                :org_id,
+                'active',
+                FALSE,
+                TRUE,
+                'api',
+                0,
+                1,
+                :search_epoch_ulid
+            )
+            """
+        ),
+        {
+            "branch_id": branch_id,
+            "org_id": org_id,
+            "search_epoch_ulid": search_epoch_ulid,
+        },
+    )
+
+
 async def create_branch_via_bounded_bootstrap(
     *,
     org_id: uuid.UUID,
@@ -54,8 +117,7 @@ async def create_branch_via_bounded_bootstrap(
     async with AuthTestSessionLocal() as session:
         await assert_test_database(session)
         await set_tenant_context(session, str(org_id), str(owner_id), "owner")
-        repo = BranchRepository(session)
-        await repo.create(branch)
+        await _create_branch_in_bounded_auth_session(session, branch)
         await session.commit()
 
 
@@ -228,7 +290,6 @@ async def test_enforce_max_branches_trigger(test_setup):
     async with AuthTestSessionLocal() as session:
         await assert_test_database(session)
         await set_tenant_context(session, str(org_id), str(owner_id), "owner")
-        repo = BranchRepository(session)
 
         b1_id = uuid.uuid4()
         b1 = OrgBranch(
@@ -242,9 +303,10 @@ async def test_enforce_max_branches_trigger(test_setup):
             branch_id=b1_id,
             org_id=org_id,
             branch_status="active",
+            is_primary=True,
             search_epoch_ulid="01AN4V07BY79KA1307SR1XF31A",
         )
-        await repo.create(b1)
+        await _create_branch_in_bounded_auth_session(session, b1)
 
         b2_id = uuid.uuid4()
         b2 = OrgBranch(
@@ -260,7 +322,7 @@ async def test_enforce_max_branches_trigger(test_setup):
             branch_status="active",
             search_epoch_ulid="01AN4V07BY79KA1307SR1XF31B",
         )
-        await repo.create(b2)
+        await _create_branch_in_bounded_auth_session(session, b2)
         await session.commit()
 
         b3_id = uuid.uuid4()
@@ -337,7 +399,6 @@ async def test_rbac_privileges_on_branch_actions(test_setup):
     async with AuthTestSessionLocal() as session:
         await assert_test_database(session)
         await set_tenant_context(session, str(org_id), str(owner_id), "owner")
-        repo = BranchRepository(session)
 
         b1_id = uuid.uuid4()
         b1 = OrgBranch(
@@ -371,8 +432,8 @@ async def test_rbac_privileges_on_branch_actions(test_setup):
             search_epoch_ulid="01AN4V07BY79KA1307SR1XF31B",
         )
 
-        await repo.create(b1)
-        await repo.create(b2)
+        await _create_branch_in_bounded_auth_session(session, b1)
+        await _create_branch_in_bounded_auth_session(session, b2)
         await session.commit()
 
     # The layered boundary is intentional and must remain distinguishable:

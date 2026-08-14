@@ -120,26 +120,31 @@ async def test_data(auth_db_session, db_session):
         org_id=org1_id,
         request_suffix=suffix,
     )
-    auth_db_session.add_all(
-        [
-            OrgBranch(
-                id=branch1_id,
-                org_id=org1_id,
-                branch_name="Branch 1",
-                branch_code="BR1",
-                internal_slug=f"branch-1-{suffix}",
-                created_by=owner1_id,
-            ),
-            OrgBranch(
-                id=branch2_id,
-                org_id=org1_id,
-                branch_name="Branch 2",
-                branch_code="BR2",
-                internal_slug=f"branch-2-{suffix}",
-                created_by=owner1_id,
-            ),
-        ]
+    # Flush each branch root separately. SQLAlchemy's insertmanyvalues batching
+    # adds the primary key as a RETURNING sentinel, which is intentionally
+    # outside C57's narrow auth branch-returning contract.
+    auth_db_session.add(
+        OrgBranch(
+            id=branch1_id,
+            org_id=org1_id,
+            branch_name="Branch 1",
+            branch_code="BR1",
+            internal_slug=f"branch-1-{suffix}",
+            created_by=owner1_id,
+        )
     )
+    await auth_db_session.flush()
+    auth_db_session.add(
+        OrgBranch(
+            id=branch2_id,
+            org_id=org1_id,
+            branch_name="Branch 2",
+            branch_code="BR2",
+            internal_slug=f"branch-2-{suffix}",
+            created_by=owner1_id,
+        )
+    )
+    await auth_db_session.flush()
     await auth_db_session.commit()
 
     await _set_owner_context(

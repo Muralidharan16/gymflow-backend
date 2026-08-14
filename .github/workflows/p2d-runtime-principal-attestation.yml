@@ -54,11 +54,14 @@ jobs:
             app/core/auth_database.py \
             app/core/celery_app.py \
             app/core/supervisor.py \
+            alembic/versions/c47d8e9f0a1e_p3a_auth_runtime_decoupling.py \
             scripts/verify_runtime_principal_bindings.py \
             scripts/verify_runtime_identity_routing.py \
-            tests/test_runtime_principal_attestation.py
+            tests/test_runtime_principal_attestation.py \
+            tests/test_p3a_auth_runtime_decoupling.py
           python -m pytest --noconftest -q \
-            tests/test_runtime_principal_attestation.py
+            tests/test_runtime_principal_attestation.py \
+            tests/test_p3a_auth_runtime_decoupling.py
           python -s scripts/verify_runtime_identity_routing.py
           bash -n scripts/ci/certify_runtime_principal_negative_paths.sh
 
@@ -107,7 +110,6 @@ jobs:
           GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT lifecycle_maintenance_runtime TO maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;

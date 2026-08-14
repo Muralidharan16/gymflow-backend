@@ -9,6 +9,9 @@ from app.models.auth import Owner
 from app.models.organization import Organization
 from app.models.trial import TrialSubscription
 from app.models.audit import AuditLog
+from app.repositories.organization_onboarding import (
+    complete_current_organization_onboarding_profile,
+)
 from app.schemas.onboarding import OnboardingCompleteRequest
 from zoneinfo import ZoneInfo
 
@@ -71,29 +74,36 @@ class OnboardingService:
             user_agent=user_agent,
         )
 
+        # Preserve the historical onboarding PATCH semantics while moving the
+        # organizations write behind the auth-only current-owner capability.
+        profile_patch = {
+            "phone": data.phone,
+            "address_line1": data.address_line1,
+            "address_line2": data.address_line2,
+            "city": data.city,
+            "state": data.state,
+            "pincode": data.pincode,
+        }
+        if data.tagline:
+            profile_patch["tagline"] = data.tagline
+        if data.description:
+            profile_patch["description"] = data.description
+        if data.year_established:
+            profile_patch["year_established"] = data.year_established
+        if data.website_url:
+            profile_patch["website_url"] = data.website_url
+        if data.social_links:
+            profile_patch["social_links"] = data.social_links
+
         # 2. Atomic Transaction
         try:
             async with self.session.begin_nested():
-                # a. Update Organization
-                org.phone = data.phone
-                org.address_line1 = data.address_line1
-                org.address_line2 = data.address_line2
-                org.city = data.city
-                org.state = data.state
-                org.pincode = data.pincode
-                org.profile_completed = True
-
-                # Update Branding
-                if data.tagline:
-                    org.tagline = data.tagline
-                if data.description:
-                    org.description = data.description
-                if data.year_established:
-                    org.year_established = data.year_established
-                if data.website_url:
-                    org.website_url = data.website_url
-                if data.social_links:
-                    org.social_links = data.social_links
+                # a. Update Organization through the bounded auth capability.
+                # auth_runtime has no direct organizations UPDATE at P3A HEAD.
+                await complete_current_organization_onboarding_profile(
+                    self.session,
+                    profile_patch,
+                )
 
                 # b. Update Owner
                 owner.onboarding_completed = True
@@ -123,6 +133,14 @@ class OnboardingService:
                 import uuid
 
                 branch_id = uuid.uuid4()
+                # Reserve the address UUID before the branch INSERT. org_branches.address_id
+                # is a nullable reference column without a database FK, while
+                # organization_addresses.branch_id has the real FK back to the branch.
+                # Supplying this UUID on the initial INSERT avoids any post-insert branch
+                # UPDATE and keeps auth_runtime on its least-privilege INSERT-only
+                # bootstrap boundary. The enclosing transaction guarantees that a failed
+                # address INSERT cannot leave a durable dangling reference.
+                address_id = uuid.uuid4()
 
                 branch = OrgBranch(
                     id=branch_id,
@@ -133,14 +151,16 @@ class OnboardingService:
                     timezone="Asia/Kolkata",
                     currency_code="INR",
                     country_code="IN",
-                    address_id=None,
+                    address_id=address_id,
                     created_by=owner.id,
                 )
                 self.session.add(branch)
                 await self.session.flush()  # Persist branch to satisfy FK check on address
 
-                # Create the OrganizationAddress record referencing branch_id
+                # Create the OrganizationAddress record using the UUID already stored
+                # by the branch INSERT. No direct org_branches UPDATE is required.
                 org_address = OrganizationAddress(
+                    id=address_id,
                     org_id=org.id,
                     branch_id=branch_id,
                     address_type="physical",
@@ -154,10 +174,7 @@ class OnboardingService:
                     effective_from=datetime.now(timezone.utc),
                 )
                 self.session.add(org_address)
-                await self.session.flush()  # Persist address to get org_address.id
-
-                # Link address_id back to branch
-                branch.address_id = org_address.id
+                await self.session.flush()
 
                 # Create real contacts in branch_contacts table
                 from app.schemas.branch_contacts import (

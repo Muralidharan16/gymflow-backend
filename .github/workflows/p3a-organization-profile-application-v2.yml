@@ -1,0 +1,371 @@
+name: P3A Organization Profile Application Boundary v2
+
+on:
+  pull_request:
+    branches: [main, hardening/complete-migration-lineage]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p3a-org-profile-app-v2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p3a-application-boundary:
+    name: FastAPI tenant-root profile under reduced DB identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3a_app_v2
+      MIGRATION_PASSWORD: ci-migration-owner
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p3a-application-not-production
+      AWS_ACCESS_KEY_ID: ci-p3a
+      AWS_SECRET_ACCESS_KEY: ci-p3a
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-p3a-app-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Install PostgreSQL 16 and bootstrap canonical roles
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+
+          CREATE ROLE app_p3a_runtime LOGIN PASSWORD 'ci-api-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_p3a_runtime LOGIN PASSWORD 'ci-auth-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_p3a_runtime SET row_security='on';
+          ALTER ROLE app_p3a_runtime SET statement_timeout='5s';
+          ALTER ROLE app_p3a_runtime SET lock_timeout='2s';
+          ALTER ROLE app_p3a_runtime SET idle_in_transaction_session_timeout='15s';
+          ALTER ROLE auth_p3a_runtime SET row_security='on';
+          ALTER ROLE auth_p3a_runtime SET statement_timeout='5s';
+          ALTER ROLE auth_p3a_runtime SET lock_timeout='2s';
+          ALTER ROLE auth_p3a_runtime SET idle_in_transaction_session_timeout='15s';
+
+          GRANT app_runtime TO app_p3a_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_p3a_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_p3a_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_p3a_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_p3a_app_v2 OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p3a_app_v2
+            TO app_p3a_runtime, auth_p3a_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3a_app_v2
+
+      - name: Fresh Alembic HEAD
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Prove auth identity is decoupled from ordinary API capability
+        run: |
+          set -euo pipefail
+          PGPASSWORD='ci-auth-runtime' psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U auth_p3a_runtime -d gymflow_p3a_app_v2 <<'SQL'
+          DO $$
+          BEGIN
+            IF pg_catalog.pg_has_role(current_user,'app_runtime','MEMBER') THEN
+              RAISE EXCEPTION 'auth deployment login inherited app_runtime';
+            END IF;
+            IF pg_catalog.has_function_privilege(
+                current_user,
+                'app_secure.current_organization_profile()',
+                'EXECUTE'
+            ) OR pg_catalog.has_function_privilege(
+                current_user,
+                'app_secure.update_current_organization_profile(jsonb)',
+                'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'auth deployment login inherited ordinary profile capability';
+            END IF;
+            IF NOT pg_catalog.has_table_privilege(
+                current_user,'public.organization_addresses','SELECT'
+            ) OR NOT pg_catalog.has_table_privilege(
+                current_user,'public.organization_addresses','INSERT'
+            ) OR pg_catalog.has_table_privilege(
+                current_user,'public.organization_addresses','UPDATE'
+            ) OR pg_catalog.has_table_privilege(
+                current_user,'public.organization_addresses','DELETE'
+            ) THEN
+              RAISE EXCEPTION 'auth address bootstrap authority is not exact';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Seed two organizations and owner principals
+        run: |
+          set -euo pipefail
+          PGPASSWORD='ci-migration-owner' psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p3a_app_v2 <<'SQL'
+          INSERT INTO public.organizations (
+              id, name, slug, tier, is_active, tagline, year_established
+          ) VALUES
+            ('31111111-1111-4111-8111-111111111111',
+             'Application Alpha', 'application-alpha', 'basic', TRUE, 'alpha-before', 2001),
+            ('32222222-2222-4222-8222-222222222222',
+             'Application Beta', 'application-beta', 'basic', TRUE, 'beta-before', 2002);
+
+          INSERT INTO public.owners (
+              id, org_id, owner_name, email, hashed_password,
+              email_verified, onboarding_completed
+          ) VALUES
+            ('caaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+             '31111111-1111-4111-8111-111111111111',
+             'Application Alpha Owner', 'app-alpha-owner@example.test',
+             'not-a-real-password', TRUE, FALSE),
+            ('cbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+             '32222222-2222-4222-8222-222222222222',
+             'Application Beta Owner', 'app-beta-owner@example.test',
+             'not-a-real-password', TRUE, FALSE);
+          SQL
+
+      - name: Prove P3B registration surface is not broadened by P3A
+        run: |
+          set -euo pipefail
+          observed=$(PGPASSWORD='ci-migration-owner' psql -X -A -t -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p3a_app_v2 \
+            -c "SELECT pg_catalog.has_table_privilege('app_p3a_runtime','public.organization_registrations','SELECT')")
+          test "$observed" = 'f'
+
+          if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_app_v2 \
+              -c "SELECT id FROM public.organization_registrations LIMIT 1"; then
+            echo 'P3A unexpectedly broadened organization_registrations SELECT' >&2
+            exit 1
+          fi
+
+      - name: Prove profile DB input range cannot be bypassed directly
+        run: |
+          set -euo pipefail
+          for patch in \
+            '{"year_established":1799}' \
+            '{"year_established":2000.5}' \
+            '{"year_established":9999}'
+          do
+            if PGPASSWORD='ci-api-runtime' psql -X -v ON_ERROR_STOP=1 \
+                -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_app_v2 \
+                -v patch="$patch" <<'SQL'; then
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','31111111-1111-4111-8111-111111111111',true);
+          SELECT pg_catalog.set_config('app.current_user_id','caaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT * FROM app_secure.update_current_organization_profile(CAST(:'patch' AS jsonb));
+          COMMIT;
+          SQL
+              echo "profile capability accepted invalid year patch: $patch" >&2
+              exit 1
+            fi
+          done
+
+      - name: Prove auth onboarding DB input contract cannot be bypassed directly
+        run: |
+          set -euo pipefail
+          for patch in \
+            '{"phone":"123","address_line1":"1 Alpha Street","address_line2":null,"city":"Puducherry","state":"Puducherry","pincode":"605001"}' \
+            '{"phone":"+919876543210","address_line1":"x","address_line2":null,"city":"Puducherry","state":"Puducherry","pincode":"605001"}' \
+            '{"phone":"+919876543210","address_line1":"1 Alpha Street","address_line2":null,"city":"Puducherry","state":"Puducherry","pincode":"012345"}' \
+            '{"phone":"+919876543210","address_line1":"1 Alpha Street","address_line2":null,"city":"Puducherry","state":"Puducherry","pincode":"605001","tagline":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}' \
+            '{"phone":"+919876543210","address_line1":"1 Alpha Street","address_line2":null,"city":"Puducherry","state":"Puducherry","pincode":"605001","year_established":1799}' \
+            '{"phone":"+919876543210","address_line1":"1 Alpha Street","address_line2":null,"city":"Puducherry","state":"Puducherry","pincode":"605001","year_established":2000.5}' \
+            '{"phone":"+919876543210","address_line1":"1 Alpha Street","address_line2":null,"city":"Puducherry","state":"Puducherry","pincode":"605001","year_established":9999}'
+          do
+            if PGPASSWORD='ci-auth-runtime' psql -X -v ON_ERROR_STOP=1 \
+                -h 127.0.0.1 -U auth_p3a_runtime -d gymflow_p3a_app_v2 \
+                -v patch="$patch" <<'SQL'; then
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','31111111-1111-4111-8111-111111111111',true);
+          SELECT pg_catalog.set_config('app.current_user_id','caaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT app_secure.complete_current_organization_onboarding_profile(CAST(:'patch' AS jsonb));
+          COMMIT;
+          SQL
+              echo "onboarding capability accepted invalid patch: $patch" >&2
+              exit 1
+            fi
+          done
+
+      - name: Exercise P3A FastAPI boundary through real API database login
+        env:
+          DATABASE_URL: postgresql+asyncpg://app_p3a_runtime:ci-api-runtime@127.0.0.1:5432/gymflow_p3a_app_v2
+          AUTH_DATABASE_URL: postgresql+asyncpg://auth_p3a_runtime:ci-auth-runtime@127.0.0.1:5432/gymflow_p3a_app_v2
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import asyncio
+
+          from fastapi import Depends
+          from httpx import ASGITransport, AsyncClient
+          from sqlalchemy.ext.asyncio import AsyncSession
+
+          from app.core.database import get_db
+          from app.core.deps import Staff, require_org_admin
+          from app.core.security import create_access_token
+          from app.main import app
+          from app.routers.organizations import (
+              _get_profile_or_forbidden,
+              _update_profile_or_forbidden,
+          )
+          from app.schemas.organization import OrganizationUpdate
+
+          ALPHA_ORG = '31111111-1111-4111-8111-111111111111'
+          BETA_ORG = '32222222-2222-4222-8222-222222222222'
+          ALPHA_OWNER = 'caaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+          PROFILE_FIELDS = {
+              'name', 'business_type', 'tagline', 'description',
+              'year_established', 'website_url', 'social_links',
+          }
+
+          @app.get('/__p3a/profile-only')
+          async def p3a_profile_only(
+              current_staff: Staff = Depends(require_org_admin),
+              db: AsyncSession = Depends(get_db),
+          ):
+              del current_staff
+              return await _get_profile_or_forbidden(db)
+
+          @app.patch('/__p3a/profile-only')
+          async def p3a_update_profile_only(
+              data: OrganizationUpdate,
+              current_staff: Staff = Depends(require_org_admin),
+              db: AsyncSession = Depends(get_db),
+          ):
+              del current_staff
+              update_data = data.model_dump(exclude_unset=True)
+              organization_updates = {
+                  key: value
+                  for key, value in update_data.items()
+                  if key in PROFILE_FIELDS
+              }
+              return await _update_profile_or_forbidden(db, organization_updates)
+
+          def token(*, org_id: str = ALPHA_ORG, role: str = 'owner') -> str:
+              return create_access_token(
+                  owner_id=ALPHA_OWNER,
+                  org_id=org_id,
+                  email='app-alpha-owner@example.test',
+                  role=role,
+                  principal_type='owner',
+              )
+
+          async def main() -> None:
+              async with AsyncClient(
+                  transport=ASGITransport(app=app, raise_app_exceptions=False),
+                  base_url='http://p3a.test',
+              ) as client:
+                  headers = {'Authorization': f'Bearer {token()}'}
+
+                  response = await client.get('/__p3a/profile-only', headers=headers)
+                  assert response.status_code == 200, response.text
+                  payload = response.json()
+                  assert payload['id'] == ALPHA_ORG, payload
+                  assert payload['name'] == 'Application Alpha', payload
+                  assert payload['tagline'] == 'alpha-before', payload
+                  assert payload['year_established'] == 2001, payload
+
+                  response = await client.patch(
+                      '/__p3a/profile-only',
+                      headers=headers,
+                      json={
+                          'name': 'Application Alpha Hardened',
+                          'tagline': None,
+                          'year_established': 2003,
+                          'website_url': 'https://alpha.example.test',
+                      },
+                  )
+                  assert response.status_code == 200, response.text
+                  payload = response.json()
+                  assert payload['name'] == 'Application Alpha Hardened', payload
+                  assert payload['tagline'] is None, payload
+                  assert payload['year_established'] == 2003, payload
+
+                  for body in (
+                      {'year_established': 1799},
+                      {'year_established': 9999},
+                      {'tier': 'elite'},
+                  ):
+                      response = await client.patch(
+                          '/organizations/profile', headers=headers, json=body
+                      )
+                      assert response.status_code == 422, (
+                          body, response.status_code, response.text
+                      )
+
+                  response = await client.patch(
+                      '/organizations/profile',
+                      headers={'Authorization': f'Bearer {token(role="trainer")}'},
+                      json={'tagline': 'wrong-role'},
+                  )
+                  assert response.status_code == 403, response.text
+
+                  response = await client.patch(
+                      '/organizations/profile',
+                      headers={'Authorization': f'Bearer {token(org_id=BETA_ORG)}'},
+                      json={'tagline': 'cross-tenant'},
+                  )
+                  assert response.status_code == 403, response.text
+                  assert response.json()['detail'] == 'Organization profile access denied'
+
+          asyncio.run(main())
+          PY
+
+      - name: Verify only allowed tenant-root state persisted
+        run: |
+          set -euo pipefail
+          observed=$(PGPASSWORD='ci-migration-owner' psql -X -A -t -F '|' -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p3a_app_v2 \
+            -c "SELECT id,name,COALESCE(tagline,'<NULL>'),year_established,tier,is_active FROM public.organizations ORDER BY id")
+          printf '%s\n' "$observed"
+          printf '%s\n' "$observed" | grep -Fqx \
+            '31111111-1111-4111-8111-111111111111|Application Alpha Hardened|<NULL>|2003|basic|t'
+          printf '%s\n' "$observed" | grep -Fqx \
+            '32222222-2222-4222-8222-222222222222|Application Beta|beta-before|2002|basic|t'
+
+      - name: Reprove cluster identity graph
+        env:
+          DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:ci-migration-owner@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py

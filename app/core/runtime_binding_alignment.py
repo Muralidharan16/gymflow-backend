@@ -21,12 +21,15 @@ def validate_runtime_binding_cluster_setting_alignment(
     contract: RuntimeBindingContract | None = None,
     bundle: ContractBundle | None = None,
 ) -> tuple[ContractViolation, ...]:
-    """Require LOGIN defaults to preserve every inherited P2B role default.
+    """Require LOGIN defaults to preserve every directly inherited P2B default.
 
     P2D deployment LOGINs can add stricter operational defaults, but they may
     not contradict a setting owned by any directly inherited capability role.
-    Composite auth LOGINs are therefore checked against app_runtime as well as
-    auth_runtime without changing the P2B capability-role contract.
+    P3A keeps auth isolated from app_runtime, so auth LOGIN settings are checked
+    only against its direct auth_runtime/app_user capabilities; those capability
+    roles intentionally own no cluster defaults today. API, worker, and lifecycle
+    maintenance bindings continue to preserve the defaults owned by their direct
+    runtime capability roles.
     """
 
     runtime_contract = contract or load_runtime_binding_contract()

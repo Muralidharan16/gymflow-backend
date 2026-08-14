@@ -35,6 +35,7 @@ import logging
 import time
 from typing import AsyncGenerator, Optional
 
+from fastapi import Request
 import sqlalchemy as sa
 from sqlalchemy import create_engine, event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -273,7 +274,8 @@ from app.core.pool_manager import pool_manager
 pool_manager.set_initial_pool(async_engine, AsyncSessionLocal)
 
 
-async def get_db(request=None) -> AsyncGenerator[AsyncSession, None]:  # type: ignore[misc]
+async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
+    """Yield an API session initialized from the verified HTTP request context."""
     from app.core.concurrency import adaptive_controller
 
     active_sessionmaker = pool_manager.current_sessionmaker or AsyncSessionLocal

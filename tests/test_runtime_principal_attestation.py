@@ -78,8 +78,9 @@ def test_runtime_binding_contract_matches_p2b_p2c_role_model() -> None:
         "app_runtime", "app_user"
     }
     assert set(contract.bindings["auth"].direct_capabilities) == {
-        "auth_runtime", "app_runtime", "app_user"
+        "auth_runtime", "app_user"
     }
+    assert "app_runtime" not in contract.bindings["auth"].direct_capabilities
     assert contract.bindings["worker"].direct_capabilities == ("worker_runtime",)
     assert contract.bindings["maintenance"].direct_capabilities == (
         "lifecycle_maintenance_runtime",

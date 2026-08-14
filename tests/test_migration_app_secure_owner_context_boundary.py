@@ -47,9 +47,21 @@ def _app_secure_ddl_categories(path: pathlib.Path) -> set[str]:
 _P2D_MIGRATION = "9e4f5a6b7c8d_worker_geocoding_runtime_boundary.py"
 _P2F_REMEDIATION_MIGRATION = "af5b6c7d8e9f_platform_maintenance_control_plane.py"
 _P2F_DEK_MIGRATION = "b06c7d8e9f0a_tenant_dek_lookup_boundary.py"
-APP_SECURE_FILES.add(_P2D_MIGRATION)
-APP_SECURE_FILES.add(_P2F_REMEDIATION_MIGRATION)
-APP_SECURE_FILES.add(_P2F_DEK_MIGRATION)
+_P3A_PROFILE_MIGRATION = "c17d8e9f0a1b_organization_profile_authorization.py"
+_P3A_ONBOARDING_MIGRATION = "c27d8e9f0a1c_organization_onboarding_authorization.py"
+_P3A_PRINCIPAL_BINDING_MIGRATION = "c37d8e9f0a1d_organization_profile_principal_binding.py"
+_P3A_AUTH_DECOUPLING_MIGRATION = "c47d8e9f0a1e_p3a_auth_runtime_decoupling.py"
+APP_SECURE_FILES.update(
+    {
+        _P2D_MIGRATION,
+        _P2F_REMEDIATION_MIGRATION,
+        _P2F_DEK_MIGRATION,
+        _P3A_PROFILE_MIGRATION,
+        _P3A_ONBOARDING_MIGRATION,
+        _P3A_PRINCIPAL_BINDING_MIGRATION,
+        _P3A_AUTH_DECOUPLING_MIGRATION,
+    }
+)
 
 
 def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
@@ -96,6 +108,16 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # contract.  This historical category detector intentionally remains
         # schema/view/policy scoped rather than reclassifying old migrations.
         _P2F_DEK_MIGRATION: set(),
+        # P3A's dedicated profile migrations are function/ACL contracts.  C27
+        # additionally exposes app_secure schema USAGE to auth_runtime for the
+        # bounded onboarding function, and removes it on downgrade.
+        _P3A_PROFILE_MIGRATION: set(),
+        _P3A_ONBOARDING_MIGRATION: {
+            "grant_schema",
+            "revoke_schema",
+        },
+        _P3A_PRINCIPAL_BINDING_MIGRATION: set(),
+        _P3A_AUTH_DECOUPLING_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {
