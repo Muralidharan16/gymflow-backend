@@ -56,7 +56,7 @@ def _policy_row(bind):
             SELECT
                 policy_data.polcmd::text AS command,
                 policy_data.polpermissive AS permissive,
-                policy_data.polroles,
+                policy_data.polroles = ARRAY[0::oid] AS public_only,
                 pg_catalog.pg_get_expr(
                     policy_data.polqual,
                     policy_data.polrelid,
@@ -262,12 +262,8 @@ def _require_policy_shape(bind, *, forward: bool) -> None:
         raise RuntimeError("p_branch_insert command/permissive posture drifted")
     if row["using_expr"] is not None:
         raise RuntimeError("INSERT policy unexpectedly has USING expression")
-
-    # Empty/public policy role set is represented by oid 0.  Do not silently
-    # narrow or redirect the policy to another database role here; the ACL is
-    # what controls who may reach this relation.
-    if list(row["polroles"] or []) != [0]:
-        raise RuntimeError(f"p_branch_insert role target drifted: {row['polroles']!r}")
+    if not bool(row["public_only"]):
+        raise RuntimeError("p_branch_insert policy role target is no longer PUBLIC-only")
 
     source = _normalized(row["check_expr"])
     for token in ("auth.role()", "superadmin", "system"):
