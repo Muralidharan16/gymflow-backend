@@ -7,6 +7,7 @@ from app.core.database import get_db
 from app.core.deps import require_org_admin, Staff
 from app.models.organization import OrganizationRegistration
 from app.repositories.organization_profile import (
+    OrganizationProfileAuthorizationError,
     get_current_organization_profile,
     update_current_organization_profile,
 )
@@ -91,6 +92,29 @@ def _profile_response(
     )
 
 
+async def _get_profile_or_forbidden(db: AsyncSession) -> dict | None:
+    try:
+        return await get_current_organization_profile(db)
+    except OrganizationProfileAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization profile access denied",
+        ) from exc
+
+
+async def _update_profile_or_forbidden(
+    db: AsyncSession,
+    patch: dict,
+) -> dict | None:
+    try:
+        return await update_current_organization_profile(db, patch)
+    except OrganizationProfileAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization profile access denied",
+        ) from exc
+
+
 @router.post("/registrations", response_model=Response[RegistrationResponse])
 async def add_registration(
     data: RegistrationCreate,
@@ -150,7 +174,7 @@ async def get_org_profile(
     bound to app.current_org_id. app_runtime intentionally has no direct
     organizations SELECT privilege.
     """
-    org = await get_current_organization_profile(db)
+    org = await _get_profile_or_forbidden(db)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
 
@@ -188,12 +212,12 @@ async def update_org_profile(
         reg_updates["PAN"] = update_data.pop("pan_number")
 
     if update_data:
-        org = await update_current_organization_profile(db, update_data)
+        org = await _update_profile_or_forbidden(db, update_data)
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
         await db.commit()
     else:
-        org = await get_current_organization_profile(db)
+        org = await _get_profile_or_forbidden(db)
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
 
@@ -237,7 +261,7 @@ async def update_org_profile(
 
     # Re-read through the bounded capability instead of ORM refresh(), which
     # would require whole-row organizations SELECT.
-    org = await get_current_organization_profile(db)
+    org = await _get_profile_or_forbidden(db)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
 
