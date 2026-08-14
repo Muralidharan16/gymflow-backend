@@ -58,6 +58,10 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         "grant_view",
         "comment_view",
     }
+    view_and_policy_contract = view_contract | {
+        "create_policy",
+        "drop_policy",
+    }
     expected = {
         "0022_rbac_phase1_roles_extensions.py": {
             "create_schema",
@@ -67,10 +71,12 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "comment_schema",
             "drop_schema",
         },
-        "0025_rbac_p4_bsr_expand.py": view_contract,
-        "0027_rbac_p6_perm_snapshots.py": view_contract,
-        "0029_rbac_p8_contract.py": view_contract,
+        "0025_rbac_p4_bsr_expand.py": view_and_policy_contract,
+        "0027_rbac_p6_perm_snapshots.py": view_and_policy_contract,
+        "0029_rbac_p8_contract.py": view_and_policy_contract,
         "6f708192a3b4_address_runtime_privilege_boundary.py": {
+            "create_policy",
+            "drop_policy",
             "grant_schema",
             "revoke_schema",
         },
