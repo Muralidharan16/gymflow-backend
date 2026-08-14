@@ -1,0 +1,32 @@
+name: P3A Router Error Rename
+
+on:
+  push:
+    branches:
+      - hardening/p3a-organization-profile-authorization
+    paths:
+      - .github/workflows/p3a-router-error-rename.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+      - name: Rename domain exception reference exactly
+        run: |
+          set -euo pipefail
+          test "$(grep -o 'OrganizationProfileAuthorizationError' app/routers/organizations.py | wc -l)" -eq 3
+          sed -i 's/OrganizationProfileAuthorizationError/ProfileAuthorizationError/g' app/routers/organizations.py
+          python -m py_compile app/routers/organizations.py app/repositories/organization_profile.py
+          git diff --check
+          git rm .github/workflows/p3a-router-error-rename.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/routers/organizations.py
+          git commit -m 'refactor: align profile authorization error name'
+          git push origin HEAD:hardening/p3a-organization-profile-authorization
