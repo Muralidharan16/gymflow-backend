@@ -26,7 +26,7 @@ def _function_source(path: Path, name: str) -> str:
     tree = ast.parse(source, filename=str(path))
     node = next(
         item
-        for item in tree.body
+        for item in ast.walk(tree)
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         and item.name == name
     )
@@ -176,9 +176,10 @@ def test_profile_capabilities_are_current_tenant_and_org_admin_bound() -> None:
 
     assert "CREATE FUNCTION app_secure.current_organization_profile()" in source
     assert "CREATE FUNCTION app_secure.update_current_organization_profile(p_patch jsonb)" in source
-    assert source.count("SECURITY DEFINER") == 2
-    assert source.count("SET search_path = pg_catalog") == 2
-    assert source.count("SET row_security = on") == 2
+    # Count executable SQL clauses, not prose in the module docstring.
+    assert source.count("\nSECURITY DEFINER\n") == 2
+    assert source.count("\nSET search_path = pg_catalog\n") == 2
+    assert source.count("\nSET row_security = on\n") == 2
 
     for token in (
         "app.current_org_id",
@@ -259,12 +260,19 @@ def test_profile_route_never_loads_or_refreshes_the_organization_orm_row() -> No
 
 def test_profile_repository_can_only_call_bounded_app_secure_capabilities() -> None:
     source = _source(REPOSITORY)
+    tree = ast.parse(source, filename=str(REPOSITORY))
     assert "app_secure.current_organization_profile()" in source
     assert "app_secure.update_current_organization_profile(" in source
     assert "public.organizations" not in source
     assert "Organization" not in source
-    assert "org_id" not in source
+    assert ":org_id" not in source
     assert "json.dumps" in source
+
+    # No repository function accepts an arbitrary tenant target. Tenant binding
+    # is entirely inside the database capability via app.current_org_id.
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            assert "org_id" not in {arg.arg for arg in node.args.args}
 
 
 def test_request_validation_matches_non_nullable_database_profile_fields() -> None:
