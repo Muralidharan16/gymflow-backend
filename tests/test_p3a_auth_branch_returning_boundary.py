@@ -12,6 +12,15 @@ def _source() -> str:
     return MIGRATION.read_text(encoding="utf-8")
 
 
+def _literal_text() -> str:
+    tree = ast.parse(_source(), filename=str(MIGRATION))
+    return " ".join(
+        item.value
+        for item in ast.walk(tree)
+        if isinstance(item, ast.Constant) and isinstance(item.value, str)
+    )
+
+
 def _function_source(name: str) -> str:
     source = _source()
     tree = ast.parse(source, filename=str(MIGRATION))
@@ -34,7 +43,7 @@ def test_only_insert_returning_columns_are_readable_by_auth() -> None:
     source = _source()
     assert '_RETURNING_COLUMNS = ("search_normalized_name", "created_at", "updated_at")' in source
     assert '_EXPECTED_TABLE_ACL = {"INSERT", "UPDATE"}' in source
-    normalized = " ".join(source.split())
+    normalized_literals = " ".join(_literal_text().split())
     grant = (
         "GRANT SELECT (search_normalized_name, created_at, updated_at) "
         "ON TABLE public.org_branches TO auth_runtime"
@@ -43,8 +52,8 @@ def test_only_insert_returning_columns_are_readable_by_auth() -> None:
         "REVOKE SELECT (search_normalized_name, created_at, updated_at) "
         "ON TABLE public.org_branches FROM auth_runtime"
     )
-    assert grant in normalized
-    assert revoke in normalized
+    assert grant in normalized_literals
+    assert revoke in normalized_literals
     assert "auth_runtime unexpectedly has broad org_branches SELECT" in source
 
 
