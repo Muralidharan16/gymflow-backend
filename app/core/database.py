@@ -252,7 +252,11 @@ async def initialize_request_session(session: AsyncSession, request=None) -> Non
         org_id = getattr(state, "org_id", None)
         gym_id = getattr(state, "gym_id", None)
         role = getattr(state, "role", "unknown")
-        trace_id = getattr(state, "otel_trace_id", None) or getattr( state, "correlation_id", "unknown" )
+        trace_id = getattr(state, "otel_trace_id", None) or getattr(
+            state,
+            "correlation_id",
+            "unknown",
+        )
 
     await SessionContextInitializer.initialize(
         session,
