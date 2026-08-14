@@ -2,7 +2,3 @@
 
 pytest
 pytest-asyncio
-# Three legacy Platform Billing integration tests still use psycopg2's synchronous
-# DB-API directly. Keep that compatibility dependency out of production runtime
-# requirements while those tests are migrated to Psycopg 3.
-psycopg2-binary==2.9.12
