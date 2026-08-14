@@ -12,6 +12,7 @@ import logging
 import time
 from typing import AsyncGenerator
 
+from fastapi import Request
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -63,8 +64,8 @@ AuthSessionLocal = (
 )
 
 
-async def get_auth_db(request=None) -> AsyncGenerator[AsyncSession, None]:  # type: ignore[misc]
-    """Yield the bounded auth/bootstrap session."""
+async def get_auth_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
+    """Yield the bounded auth/bootstrap session with verified request context."""
     if AuthSessionLocal is None:
         raise RuntimeError(
             "AUTH_DATABASE_URL is required for authentication/bootstrap database access"
