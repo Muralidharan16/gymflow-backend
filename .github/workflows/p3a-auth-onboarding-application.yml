@@ -64,7 +64,7 @@ jobs:
           python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
           diff -u requirements-test.lock /tmp/resolved.txt
 
-      - name: Install PG16 and provision reduced auth login
+      - name: Install PG16 and provision reduced runtime logins
         run: |
           set -euo pipefail
           bash scripts/ci/install_pg16_test_stack.sh
@@ -81,8 +81,21 @@ jobs:
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO auth_p3a_runtime
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE ROLE app_p3a_runtime LOGIN PASSWORD 'ci-app-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE app_p3a_runtime SET row_security='on';
+          ALTER ROLE app_p3a_runtime SET statement_timeout='5s';
+          ALTER ROLE app_p3a_runtime SET lock_timeout='2s';
+          ALTER ROLE app_p3a_runtime SET idle_in_transaction_session_timeout='15s';
+          GRANT app_runtime TO app_p3a_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_p3a_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
           CREATE DATABASE gymflow_p3a_onboarding OWNER migration_owner;
-          GRANT CONNECT ON DATABASE gymflow_p3a_onboarding TO auth_p3a_runtime;
+          GRANT CONNECT ON DATABASE gymflow_p3a_onboarding
+            TO auth_p3a_runtime, app_p3a_runtime;
           SQL
           bash scripts/ci/verify_cluster_roles.sh
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3a_onboarding
@@ -286,10 +299,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Tenant-root and onboarding-owned state remains directly inspectable by
-          # migration_owner. Do not re-grant it access to tenant RLS relations.
+          # Verify tenant-root/onboarding-owned state with migration_owner only.
+          # Tenant RLS relations are verified separately through app_runtime below;
+          # never infer their durability from owner visibility under FORCE RLS.
           PGPASSWORD='ci-migration-owner' psql -X -A -t -F '|' -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U migration_owner -d gymflow_p3a_onboarding <<'SQL' > /tmp/state.txt
+            -h 127.0.0.1 -U migration_owner -d gymflow_p3a_onboarding <<'SQL' > /tmp/root-state.txt
           SELECT
               o.id,
               o.profile_completed,
@@ -297,18 +311,81 @@ jobs:
               COALESCE(o.tagline,'<NULL>'),
               ow.onboarding_completed,
               (SELECT count(*) FROM public.trial_subscriptions t WHERE t.organization_id=o.id),
-              (SELECT count(*) FROM public.org_branches b WHERE b.org_id=o.id),
-              (SELECT count(*) FROM public.organization_addresses a WHERE a.org_id=o.id),
-              (SELECT count(*) FROM public.org_branch_state s WHERE s.org_id=o.id),
               (SELECT count(*) FROM public.audit_logs al
                  WHERE al.organization_id=o.id AND al.action='ONBOARDING_COMPLETED')
           FROM public.organizations o
           JOIN public.owners ow ON ow.org_id=o.id
           ORDER BY o.id;
           SQL
-          cat /tmp/state.txt
-          grep -Fqx '41111111-1111-4111-8111-111111111111|t|+919876543210|production-ready|t|1|1|1|1|1' /tmp/state.txt
-          grep -Fqx '42222222-2222-4222-8222-222222222222|f|<NULL>|<NULL>|f|0|0|0|0|0' /tmp/state.txt
+          cat /tmp/root-state.txt
+          grep -Fqx '41111111-1111-4111-8111-111111111111|t|+919876543210|production-ready|t|1|1' /tmp/root-state.txt
+          grep -Fqx '42222222-2222-4222-8222-222222222222|f|<NULL>|<NULL>|f|0|0' /tmp/root-state.txt
+
+          # Verify branch/address/state durability through an actual reduced
+          # application login carrying only app_runtime + app_user. This proves
+          # the committed rows through the same tenant/RLS boundary used by the API
+          # instead of broadening migration_owner or bypassing FORCE RLS.
+          PGPASSWORD='ci-app-runtime' psql -X -A -t -F '|' -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_p3a_runtime -d gymflow_p3a_onboarding <<'SQL' > /tmp/tenant-state.txt
+          DO $$
+          BEGIN
+            IF current_user <> 'app_p3a_runtime'
+               OR NOT pg_catalog.pg_has_role(current_user,'app_runtime','MEMBER')
+               OR pg_catalog.pg_has_role(current_user,'auth_runtime','MEMBER')
+               OR pg_catalog.pg_has_role(current_user,'worker_runtime','MEMBER')
+               OR pg_catalog.pg_has_role(current_user,'lifecycle_maintenance_runtime','MEMBER') THEN
+              RAISE EXCEPTION 'durable-state verifier crossed runtime identity boundary';
+            END IF;
+          END
+          $$;
+
+          BEGIN;
+          SELECT pg_catalog.set_config(
+              'app.current_org_id','41111111-1111-4111-8111-111111111111',true
+          );
+          SELECT pg_catalog.set_config(
+              'app.current_user_id','daaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true
+          );
+          SELECT pg_catalog.set_config(
+              'app.current_principal_type','legacy_gym_owner',true
+          );
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT pg_catalog.set_config('app.current_gym_id','',true);
+          SELECT
+              '41111111-1111-4111-8111-111111111111',
+              (SELECT count(*) FROM public.org_branches b
+                 WHERE b.org_id='41111111-1111-4111-8111-111111111111'::uuid),
+              (SELECT count(*) FROM public.organization_addresses a
+                 WHERE a.org_id='41111111-1111-4111-8111-111111111111'::uuid),
+              (SELECT count(*) FROM public.org_branch_state s
+                 WHERE s.org_id='41111111-1111-4111-8111-111111111111'::uuid);
+          ROLLBACK;
+
+          BEGIN;
+          SELECT pg_catalog.set_config(
+              'app.current_org_id','42222222-2222-4222-8222-222222222222',true
+          );
+          SELECT pg_catalog.set_config(
+              'app.current_user_id','dbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',true
+          );
+          SELECT pg_catalog.set_config(
+              'app.current_principal_type','legacy_gym_owner',true
+          );
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT pg_catalog.set_config('app.current_gym_id','',true);
+          SELECT
+              '42222222-2222-4222-8222-222222222222',
+              (SELECT count(*) FROM public.org_branches b
+                 WHERE b.org_id='42222222-2222-4222-8222-222222222222'::uuid),
+              (SELECT count(*) FROM public.organization_addresses a
+                 WHERE a.org_id='42222222-2222-4222-8222-222222222222'::uuid),
+              (SELECT count(*) FROM public.org_branch_state s
+                 WHERE s.org_id='42222222-2222-4222-8222-222222222222'::uuid);
+          ROLLBACK;
+          SQL
+          cat /tmp/tenant-state.txt
+          grep -Fqx '41111111-1111-4111-8111-111111111111|1|1|1' /tmp/tenant-state.txt
+          grep -Fqx '42222222-2222-4222-8222-222222222222|0|0|0' /tmp/tenant-state.txt
 
           # branch_contacts is a FORCE-RLS tenant relation. Verify it through the
           # existing bounded RLS execution role with explicit per-tenant context,
