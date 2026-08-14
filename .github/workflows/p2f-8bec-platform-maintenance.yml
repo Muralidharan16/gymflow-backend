@@ -1,0 +1,224 @@
+name: P2F 8bec826 Exact Platform Maintenance Boundary
+
+on:
+  push:
+    branches:
+      - certification/p2f-8bec826
+    paths:
+      - .github/workflows/p2f-8bec-platform-maintenance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2f-platform-maintenance-8bec826
+  cancel-in-progress: false
+
+env:
+  EXPECTED_HEAD: 8bec826b979f6cac14fb17603b4cd645f4779ec8
+  EXPECTED_TREE: 1f0648a89a2b23d35110956d7f278966984e3f78
+  EXPECTED_BASE: 43e03954723583601ee123505c5ce155b0bba162
+  HARDENING_BRANCH: hardening/complete-migration-lineage
+
+jobs:
+  platform-maintenance:
+    name: Literal SHA API-clean startup and bounded maintenance execution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:p2f-migration-owner@127.0.0.1:5432/gymflow_p2f_platform_maintenance_test
+      MIGRATION_PASSWORD: p2f-migration-owner
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: p2f-platform-maintenance-not-production
+      AWS_ACCESS_KEY_ID: p2f-maintenance
+      AWS_SECRET_ACCESS_KEY: p2f-maintenance
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-p2f-platform-maintenance
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+      EVIDENCE_DIR: /tmp/p2f-8bec/platform-maintenance
+    steps:
+      - name: Checkout literal candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: 8bec826b979f6cac14fb17603b4cd645f4779ec8
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prove exact source
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain=v1)"
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install exact locked test environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > "$EVIDENCE_DIR/resolved-test-environment.txt"
+          diff -u requirements-test.lock "$EVIDENCE_DIR/resolved-test-environment.txt"
+      - name: Certify static platform-maintenance architecture
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+          python -m py_compile app/core/supervisor.py app/core/celery_app.py app/tasks/platform_maintenance.py alembic/versions/af5b6c7d8e9f_platform_maintenance_control_plane.py
+          python -m pytest --noconftest -q tests/test_platform_maintenance_control_plane.py tests/test_migration_app_secure_owner_context_boundary.py
+          python -s scripts/verify_runtime_identity_routing.py
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/migration_semantics_gate.py
+      - name: Install virgin PostgreSQL 16 and Redis
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          sudo apt-get install -y redis-server
+          sudo systemctl start redis-server
+          redis-cli ping
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='migration_owner') THEN RAISE EXCEPTION 'cluster not virgin'; END IF;
+          END $$;
+          SQL
+      - name: Bootstrap canonical roles and deployment logins
+        run: |
+          set -euo pipefail
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'p2f-migration-owner';
+          CREATE ROLE app_platform_test_runtime LOGIN PASSWORD 'p2f-api-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_platform_test_runtime LOGIN PASSWORD 'p2f-auth-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE maintenance_platform_test_runtime LOGIN PASSWORD 'p2f-maint-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE app_platform_test_runtime SET row_security='on'; ALTER ROLE app_platform_test_runtime SET statement_timeout='5s'; ALTER ROLE app_platform_test_runtime SET lock_timeout='2s'; ALTER ROLE app_platform_test_runtime SET idle_in_transaction_session_timeout='15s';
+          ALTER ROLE auth_platform_test_runtime SET row_security='on'; ALTER ROLE auth_platform_test_runtime SET statement_timeout='5s'; ALTER ROLE auth_platform_test_runtime SET lock_timeout='2s'; ALTER ROLE auth_platform_test_runtime SET idle_in_transaction_session_timeout='15s';
+          ALTER ROLE maintenance_platform_test_runtime SET row_security='on'; ALTER ROLE maintenance_platform_test_runtime SET statement_timeout='15s'; ALTER ROLE maintenance_platform_test_runtime SET lock_timeout='2s'; ALTER ROLE maintenance_platform_test_runtime SET idle_in_transaction_session_timeout='30s';
+          GRANT app_runtime TO app_platform_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_platform_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_platform_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_platform_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_platform_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO maintenance_platform_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_p2f_platform_maintenance_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p2f_platform_maintenance_test TO app_platform_test_runtime,auth_platform_test_runtime,maintenance_platform_test_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p2f_platform_maintenance_test
+      - name: Fresh Alembic HEAD through reduced migration identity
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+      - name: Prove helper-only access and all four helpers fail closed without context
+        run: |
+          set -euo pipefail
+          if PGPASSWORD='p2f-maint-runtime' psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U maintenance_platform_test_runtime -d gymflow_p2f_platform_maintenance_test -c "UPDATE public.active_idempotency_keys SET status='FAILED'"; then echo 'maintenance leaked direct DML' >&2; exit 1; fi
+          if PGPASSWORD='p2f-api-runtime' psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_platform_test_runtime -d gymflow_p2f_platform_maintenance_test -c "SELECT app_secure.reclaim_stale_idempotency_keys(30,10)"; then echo 'API executes maintenance helper' >&2; exit 1; fi
+          for helper_sql in "SELECT app_secure.reclaim_stale_idempotency_keys(30,10)" "SELECT app_secure.archive_expired_idempotency_keys(48,10)" "SELECT * FROM app_secure.claim_due_geocoding_reverification(10)" "SELECT app_secure.cleanup_expired_places_cache(10)"; do
+            if PGPASSWORD='p2f-maint-runtime' psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U maintenance_platform_test_runtime -d gymflow_p2f_platform_maintenance_test -c "$helper_sql"; then echo "helper ran without platform context: $helper_sql" >&2; exit 1; fi
+          done
+      - name: Seed real maintenance targets
+        run: |
+          set -euo pipefail
+          PGPASSWORD='p2f-migration-owner' psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_p2f_platform_maintenance_test <<'SQL'
+          INSERT INTO public.active_idempotency_keys(tenant_id,idempotency_key,status,heartbeat_at,owner_worker_id,partition_name,created_at) VALUES
+          ('11111111-1111-4111-8111-111111111111','p2f-stale','IN_PROGRESS',pg_catalog.clock_timestamp()-interval '10 minutes','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','p0',pg_catalog.clock_timestamp()-interval '10 minutes'),
+          ('11111111-1111-4111-8111-111111111111','p2f-completed','COMPLETED',pg_catalog.clock_timestamp()-interval '3 days',NULL,'p0',pg_catalog.clock_timestamp()-interval '3 days'),
+          ('11111111-1111-4111-8111-111111111111','p2f-fresh','IN_PROGRESS',pg_catalog.clock_timestamp(),'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','p0',pg_catalog.clock_timestamp());
+          INSERT INTO public.google_places_cache(place_id,latitude,longitude,expires_at) VALUES
+          ('p2f-expired-place',11.94,79.80,pg_catalog.clock_timestamp()-interval '100 days'),
+          ('p2f-current-place',11.95,79.81,pg_catalog.clock_timestamp()+interval '20 days');
+          SQL
+      - name: Execute bounded helpers with context and verify exact mutations
+        run: |
+          set -euo pipefail
+          PGPASSWORD='p2f-maint-runtime' psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U maintenance_platform_test_runtime -d gymflow_p2f_platform_maintenance_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.internal_maintenance','platform',true);
+          SELECT app_secure.reclaim_stale_idempotency_keys(30,500);
+          SELECT app_secure.archive_expired_idempotency_keys(48,1000);
+          SELECT * FROM app_secure.claim_due_geocoding_reverification(50);
+          SELECT app_secure.cleanup_expired_places_cache(1000);
+          COMMIT;
+          SQL
+          PGPASSWORD='p2f-migration-owner' psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_p2f_platform_maintenance_test <<'SQL'
+          DO $$ BEGIN
+            IF (SELECT status FROM public.active_idempotency_keys WHERE tenant_id='11111111-1111-4111-8111-111111111111' AND idempotency_key='p2f-stale') <> 'FAILED' THEN RAISE EXCEPTION 'stale anchor not FAILED'; END IF;
+            IF EXISTS (SELECT 1 FROM public.active_idempotency_keys WHERE tenant_id='11111111-1111-4111-8111-111111111111' AND idempotency_key='p2f-completed') THEN RAISE EXCEPTION 'completed anchor not archived'; END IF;
+            IF (SELECT status FROM public.active_idempotency_keys WHERE tenant_id='11111111-1111-4111-8111-111111111111' AND idempotency_key='p2f-fresh') <> 'IN_PROGRESS' THEN RAISE EXCEPTION 'fresh anchor changed'; END IF;
+            IF EXISTS (SELECT 1 FROM public.google_places_cache WHERE place_id='p2f-expired-place') THEN RAISE EXCEPTION 'expired cache not removed'; END IF;
+            IF NOT EXISTS (SELECT 1 FROM public.google_places_cache WHERE place_id='p2f-current-place') THEN RAISE EXCEPTION 'current cache removed'; END IF;
+          END $$;
+          SQL
+      - name: Execute real maintenance Python integration
+        env:
+          ENVIRONMENT: production
+          DOERS_PROCESS_PROFILE: maintenance
+          CELERY_WORKER_PROFILE: maintenance
+          DATABASE_URL: ''
+          AUTH_DATABASE_URL: ''
+          WORKER_DATABASE_URL: ''
+          MAINTENANCE_DATABASE_URL: postgresql+asyncpg://maintenance_platform_test_runtime:p2f-maint-runtime@127.0.0.1:5432/gymflow_p2f_platform_maintenance_test
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import asyncio
+          from app.tasks.platform_maintenance import _run_archive_expired_idempotency,_run_geocoding_reverification,_run_places_cache_cleanup,_run_reclaim_stale_idempotency
+          assert asyncio.run(_run_reclaim_stale_idempotency()) == 0
+          assert asyncio.run(_run_archive_expired_idempotency()) == 0
+          assert asyncio.run(_run_geocoding_reverification()) == 0
+          assert asyncio.run(_run_places_cache_cleanup()) == 0
+          PY
+      - name: Boot real production API past readiness and reject supervisor DB failures
+        env:
+          ENVIRONMENT: production
+          DOERS_PROCESS_PROFILE: api
+          CELERY_WORKER_PROFILE: ''
+          DATABASE_URL: postgresql+asyncpg://app_platform_test_runtime:p2f-api-runtime@127.0.0.1:5432/gymflow_p2f_platform_maintenance_test
+          AUTH_DATABASE_URL: postgresql+asyncpg://auth_platform_test_runtime:p2f-auth-runtime@127.0.0.1:5432/gymflow_p2f_platform_maintenance_test
+          WORKER_DATABASE_URL: ''
+          MAINTENANCE_DATABASE_URL: ''
+        run: |
+          set -euo pipefail
+          LOG="$EVIDENCE_DIR/uvicorn.log"
+          uvicorn app.main:app --host 127.0.0.1 --port 8765 > "$LOG" 2>&1 &
+          pid=$!; ready=0
+          for _ in $(seq 1 30); do if curl -fsS http://127.0.0.1:8765/openapi.json > "$EVIDENCE_DIR/openapi.json"; then ready=1; break; fi; if ! kill -0 "$pid" 2>/dev/null; then break; fi; sleep 1; done
+          if [ "$ready" -ne 1 ]; then cat "$LOG"; kill "$pid" 2>/dev/null || true; exit 1; fi
+          sleep 5
+          kill "$pid"; wait "$pid" || true
+          cat "$LOG"
+          if grep -Eiq 'Supervisor worker failed|permission denied for table|UndefinedColumn|worker .* crashed|CRITICAL.*Worker' "$LOG"; then exit 1; fi
+          if grep -Eiq 'zombie_reclaim|anchor_key_archive|maps_stale_sweep|maps_retry_sweep|places_cache_cleanup' "$LOG"; then exit 1; fi
+      - name: Final identity and ref seal
+        env:
+          DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:p2f-migration-owner@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain=v1)"
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/p2f-main-final" "+refs/heads/${HARDENING_BRANCH}:refs/remotes/origin/p2f-hardening-final"
+          test "$(git rev-parse refs/remotes/origin/p2f-main-final)" = "$EXPECTED_BASE"
+          test "$(git rev-parse refs/remotes/origin/p2f-hardening-final)" = "$EXPECTED_HEAD"
+          printf 'success\n' > "$EVIDENCE_DIR/status.txt"
+          find "$EVIDENCE_DIR" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE_DIR/SHA256SUMS"
+      - name: Upload platform-maintenance evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: p2f-platform-maintenance-${{ env.EXPECTED_HEAD }}
+          path: /tmp/p2f-8bec/platform-maintenance/
+          if-no-files-found: error
+          retention-days: 30
