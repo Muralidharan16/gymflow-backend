@@ -8,10 +8,12 @@ def test_canonical_alignment_passes() -> None:
     assert validate_runtime_binding_cluster_setting_alignment() == ()
 
 
-def test_auth_settings_follow_inherited_app_runtime_defaults() -> None:
+def test_auth_settings_follow_dedicated_auth_runtime_defaults() -> None:
     contract = load_runtime_binding_contract()
     auth = contract.bindings["auth"]
-    assert "app_runtime" in auth.direct_capabilities
+    assert auth.runtime_capability == "auth_runtime"
+    assert auth.direct_capabilities == ("auth_runtime", "app_user")
+    assert "app_runtime" not in auth.direct_capabilities
     assert auth.session_settings["statement_timeout"] == "5s"
     assert auth.session_settings["lock_timeout"] == "2s"
     assert auth.session_settings["row_security"] == "on"
