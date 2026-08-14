@@ -4,13 +4,15 @@ Revision ID: c17d8e9f0a1b
 Revises: b06c7d8e9f0a
 Create Date: 2026-08-14
 
-Ordinary API runtime must not receive base-table SELECT/UPDATE on the tenant-root
-organizations table. Profile reads and writes are exposed through current-tenant
-SECURITY DEFINER capabilities owned by the reduced app_security_owner role.
+Normal API runtime must not receive base-table SELECT/UPDATE on the tenant-root
+``organizations`` table. Profile reads and writes are exposed through
+current-tenant SECURITY DEFINER capabilities owned by the reduced
+``app_security_owner`` role.
 
-The pre-tenant auth/bootstrap identity historically held table-wide UPDATE on
-organizations. P3A narrows that UPDATE capability to the exact columns used by
-onboarding, while preserving its existing creation/read contract.
+The pre-tenant auth/bootstrap identity historically holds table-wide UPDATE on
+``organizations``. P3A narrows only that UPDATE capability to the exact columns
+used by onboarding while preserving the already-certified bootstrap
+SELECT/INSERT contract.
 """
 
 from __future__ import annotations
@@ -30,14 +32,13 @@ _API = "app_runtime"
 _AUTH = "auth_runtime"
 _RELATION = "public.organizations"
 
-_READ_FUNCTION = "app_secure.current_organization_profile()"
-_UPDATE_FUNCTION = "app_secure.update_current_organization_profile(jsonb)"
-
-_PREDECESSOR_SECURITY_COLUMNS = {
+_PREDECESSOR_SECURITY_COLUMN_ACL = {
     ("default_currency_code", "SELECT"),
     ("id", "SELECT"),
     ("slug", "SELECT"),
 }
+_PREDECESSOR_AUTH_RELATION_ACL = {"INSERT", "SELECT", "UPDATE"}
+_FORWARD_AUTH_RELATION_ACL = {"INSERT", "SELECT"}
 
 _PROFILE_SELECT_COLUMNS = (
     "name",
@@ -90,7 +91,7 @@ def _scalar(bind, sql: str, params: dict[str, object] | None = None):
 
 
 def _require_identity(bind) -> None:
-    row = bind.execute(
+    migration = bind.execute(
         sa.text(
             """
             SELECT session_user::text AS session_name,
@@ -106,10 +107,13 @@ def _require_identity(bind) -> None:
             """
         )
     ).mappings().one()
-    if row["session_name"] != _MIGRATION_OWNER or row["current_name"] != _MIGRATION_OWNER:
+    if (
+        migration["session_name"] != _MIGRATION_OWNER
+        or migration["current_name"] != _MIGRATION_OWNER
+    ):
         raise RuntimeError("P3A requires session_user=current_user=migration_owner")
     if any(
-        bool(row[key])
+        bool(migration[key])
         for key in (
             "rolsuper",
             "rolinherit",
@@ -121,7 +125,7 @@ def _require_identity(bind) -> None:
     ):
         raise RuntimeError("migration_owner violates the reduced migration contract")
 
-    role_rows = bind.execute(
+    rows = bind.execute(
         sa.text(
             """
             SELECT rolname, rolcanlogin, rolsuper, rolinherit, rolcreatedb,
@@ -136,12 +140,10 @@ def _require_identity(bind) -> None:
             "auth_role": _AUTH,
         },
     ).mappings().all()
-    roles = {str(row["rolname"]): row for row in role_rows}
+    roles = {str(row["rolname"]): row for row in rows}
     if set(roles) != {_SECURITY_OWNER, _API, _AUTH}:
         raise RuntimeError("P3A required managed roles are missing")
-
-    for role_name in (_SECURITY_OWNER, _API, _AUTH):
-        role = roles[role_name]
+    for role_name, role in roles.items():
         if any(
             bool(role[key])
             for key in (
@@ -163,21 +165,25 @@ def _require_identity(bind) -> None:
         "SELECT pg_catalog.pg_has_role(session_user, :role_name, 'SET')",
         {"role_name": _SECURITY_OWNER},
     ):
-        raise RuntimeError("migration_owner lacks bounded SET capability to app_security_owner")
+        raise RuntimeError("migration_owner lacks bounded SET to app_security_owner")
 
 
-def _direct_column_privileges(bind, role_name: str) -> set[tuple[str, str]]:
+def _direct_relation_acl(bind, role_name: str) -> set[str]:
     return {
-        (str(row[0]), str(row[1]))
+        str(row[0])
         for row in bind.execute(
             sa.text(
                 """
-                SELECT column_name, privilege_type
-                FROM information_schema.column_privileges
-                WHERE table_schema = 'public'
-                  AND table_name = 'organizations'
-                  AND grantee = :role_name
-                ORDER BY column_name, privilege_type
+                SELECT acl_data.privilege_type::text
+                FROM pg_catalog.pg_class AS relation_data
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                    COALESCE(relation_data.relacl, '{}'::aclitem[])
+                ) AS acl_data
+                JOIN pg_catalog.pg_roles AS grantee_role
+                  ON grantee_role.oid = acl_data.grantee
+                WHERE relation_data.oid = 'public.organizations'::regclass
+                  AND grantee_role.rolname = :role_name
+                ORDER BY acl_data.privilege_type
                 """
             ),
             {"role_name": role_name},
@@ -185,27 +191,33 @@ def _direct_column_privileges(bind, role_name: str) -> set[tuple[str, str]]:
     }
 
 
-def _has_table_privilege(bind, role_name: str, privilege: str) -> bool:
-    return bool(
-        _scalar(
-            bind,
-            """
-            SELECT pg_catalog.has_table_privilege(
-                CAST(:role_name AS name),
-                :relation,
-                :privilege
-            )
-            """,
-            {
-                "role_name": role_name,
-                "relation": _RELATION,
-                "privilege": privilege,
-            },
-        )
-    )
+def _direct_column_acl(bind, role_name: str) -> set[tuple[str, str]]:
+    return {
+        (str(row[0]), str(row[1]))
+        for row in bind.execute(
+            sa.text(
+                """
+                SELECT attribute_data.attname::text,
+                       acl_data.privilege_type::text
+                FROM pg_catalog.pg_attribute AS attribute_data
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                    COALESCE(attribute_data.attacl, '{}'::aclitem[])
+                ) AS acl_data
+                JOIN pg_catalog.pg_roles AS grantee_role
+                  ON grantee_role.oid = acl_data.grantee
+                WHERE attribute_data.attrelid = 'public.organizations'::regclass
+                  AND attribute_data.attnum > 0
+                  AND NOT attribute_data.attisdropped
+                  AND grantee_role.rolname = :role_name
+                ORDER BY attribute_data.attname, acl_data.privilege_type
+                """
+            ),
+            {"role_name": role_name},
+        ).all()
+    }
 
 
-def _has_direct_schema_usage(bind, role_name: str) -> bool:
+def _direct_schema_usage(bind, role_name: str) -> bool:
     return bool(
         _scalar(
             bind,
@@ -214,10 +226,7 @@ def _has_direct_schema_usage(bind, role_name: str) -> bool:
                 SELECT 1
                 FROM pg_catalog.pg_namespace AS namespace_data
                 CROSS JOIN LATERAL pg_catalog.aclexplode(
-                    COALESCE(
-                        namespace_data.nspacl,
-                        pg_catalog.acldefault('n', namespace_data.nspowner)
-                    )
+                    COALESCE(namespace_data.nspacl, '{}'::aclitem[])
                 ) AS acl_data
                 JOIN pg_catalog.pg_roles AS grantee_role
                   ON grantee_role.oid = acl_data.grantee
@@ -231,7 +240,7 @@ def _has_direct_schema_usage(bind, role_name: str) -> bool:
     )
 
 
-def _function_row(bind, function_name: str, nargs: int):
+def _function_row(bind, name: str, nargs: int):
     return bind.execute(
         sa.text(
             """
@@ -272,16 +281,12 @@ def _function_row(bind, function_name: str, nargs: int):
             JOIN pg_catalog.pg_roles AS owner_role
               ON owner_role.oid = procedure_data.proowner
             WHERE namespace_data.nspname = 'app_secure'
-              AND procedure_data.proname = :function_name
+              AND procedure_data.proname = :name
               AND procedure_data.pronargs = :nargs
               AND procedure_data.prokind = 'f'
             """
         ),
-        {
-            "function_name": function_name,
-            "nargs": nargs,
-            "api_role": _API,
-        },
+        {"name": name, "nargs": nargs, "api_role": _API},
     ).mappings().one_or_none()
 
 
@@ -296,114 +301,131 @@ def _require_predecessor(bind) -> None:
     )
     if owner != _MIGRATION_OWNER:
         raise RuntimeError(f"unexpected organizations owner before P3A: {owner!r}")
-
-    if not _has_direct_schema_usage(bind, _API):
+    if not _direct_schema_usage(bind, _API):
         raise RuntimeError("app_runtime must retain historical app_secure USAGE")
-
     if _function_row(bind, "current_organization_profile", 0) is not None:
         raise RuntimeError("current_organization_profile already exists before P3A")
     if _function_row(bind, "update_current_organization_profile", 1) is not None:
         raise RuntimeError("update_current_organization_profile already exists before P3A")
 
-    if _direct_column_privileges(bind, _SECURITY_OWNER) != _PREDECESSOR_SECURITY_COLUMNS:
-        raise RuntimeError("unexpected app_security_owner organizations ACLs before P3A")
+    if _direct_relation_acl(bind, _SECURITY_OWNER):
+        raise RuntimeError("app_security_owner unexpectedly has organizations table ACL")
+    if _direct_column_acl(bind, _SECURITY_OWNER) != _PREDECESSOR_SECURITY_COLUMN_ACL:
+        raise RuntimeError("app_security_owner predecessor column ACL drift")
 
-    auth_columns = _direct_column_privileges(bind, _AUTH)
-    if auth_columns:
-        raise RuntimeError(
-            f"auth_runtime has unexpected direct organizations column ACLs before P3A: {auth_columns!r}"
-        )
-    if not _has_table_privilege(bind, _AUTH, "UPDATE"):
-        raise RuntimeError("auth_runtime predecessor must retain broad organizations UPDATE")
+    if _direct_relation_acl(bind, _AUTH) != _PREDECESSOR_AUTH_RELATION_ACL:
+        raise RuntimeError("auth_runtime predecessor organizations table ACL drift")
+    if _direct_column_acl(bind, _AUTH):
+        raise RuntimeError("auth_runtime predecessor has unexpected direct column ACL")
 
-    for privilege in ("SELECT", "UPDATE", "INSERT", "DELETE"):
-        if _has_table_privilege(bind, _API, privilege):
-            raise RuntimeError(
-                f"app_runtime unexpectedly has broad organizations {privilege} before P3A"
-            )
+    if _direct_relation_acl(bind, _API) or _direct_column_acl(bind, _API):
+        raise RuntimeError("app_runtime unexpectedly has direct organizations ACL")
 
 
-def _expected_security_columns() -> set[tuple[str, str]]:
-    expected = set(_PREDECESSOR_SECURITY_COLUMNS)
-    expected.update((column, "SELECT") for column in _PROFILE_SELECT_COLUMNS)
-    expected.update((column, "UPDATE") for column in _PROFILE_UPDATE_COLUMNS)
-    return expected
+def _expected_security_column_acl() -> set[tuple[str, str]]:
+    result = set(_PREDECESSOR_SECURITY_COLUMN_ACL)
+    result.update((column, "SELECT") for column in _PROFILE_SELECT_COLUMNS)
+    result.update((column, "UPDATE") for column in _PROFILE_UPDATE_COLUMNS)
+    return result
 
 
 def _require_function_contract(
     bind,
     *,
-    function_name: str,
+    name: str,
     nargs: int,
-    expected_volatility: str,
+    volatility: str,
     required_tokens: tuple[str, ...],
 ) -> None:
-    row = _function_row(bind, function_name, nargs)
+    row = _function_row(bind, name, nargs)
     if row is None:
-        raise RuntimeError(f"P3A function {function_name} is absent")
+        raise RuntimeError(f"P3A function {name} is absent")
     if row["owner_name"] != _SECURITY_OWNER or not bool(row["prosecdef"]):
-        raise RuntimeError(f"P3A function {function_name} owner/security-definer drift")
-    if row["volatility"] != expected_volatility:
-        raise RuntimeError(f"P3A function {function_name} volatility drift")
+        raise RuntimeError(f"P3A function {name} owner/security-definer drift")
+    if row["volatility"] != volatility:
+        raise RuntimeError(f"P3A function {name} volatility drift")
     if set(row["proconfig"] or []) != {"search_path=pg_catalog", "row_security=on"}:
-        raise RuntimeError(f"P3A function {function_name} session-setting drift")
+        raise RuntimeError(f"P3A function {name} session-setting drift")
     if not bool(row["api_execute"]) or bool(row["public_execute"]):
-        raise RuntimeError(f"P3A function {function_name} EXECUTE ACL drift")
+        raise RuntimeError(f"P3A function {name} EXECUTE ACL drift")
     source = " ".join(str(row["source"]).split()).lower()
     for token in required_tokens:
         if token.lower() not in source:
-            raise RuntimeError(
-                f"P3A function {function_name} source drift: missing {token}"
-            )
+            raise RuntimeError(f"P3A function {name} source drift: missing {token}")
 
 
 def _require_forward(bind) -> None:
-    if _direct_column_privileges(bind, _SECURITY_OWNER) != _expected_security_columns():
-        raise RuntimeError("app_security_owner organizations column ACL drift after P3A")
+    if _direct_relation_acl(bind, _SECURITY_OWNER):
+        raise RuntimeError("app_security_owner gained organizations table ACL")
+    if _direct_column_acl(bind, _SECURITY_OWNER) != _expected_security_column_acl():
+        raise RuntimeError("app_security_owner organizations column ACL drift")
 
-    expected_auth = {(column, "UPDATE") for column in _AUTH_UPDATE_COLUMNS}
-    if _direct_column_privileges(bind, _AUTH) != expected_auth:
-        raise RuntimeError("auth_runtime organizations column UPDATE ACL drift after P3A")
-    if _has_table_privilege(bind, _AUTH, "UPDATE"):
-        raise RuntimeError("auth_runtime retained broad organizations UPDATE after P3A")
+    if _direct_relation_acl(bind, _AUTH) != _FORWARD_AUTH_RELATION_ACL:
+        raise RuntimeError("auth_runtime retained unexpected organizations table ACL")
+    expected_auth_columns = {(column, "UPDATE") for column in _AUTH_UPDATE_COLUMNS}
+    if _direct_column_acl(bind, _AUTH) != expected_auth_columns:
+        raise RuntimeError("auth_runtime organizations column UPDATE ACL drift")
 
-    for privilege in ("SELECT", "UPDATE", "INSERT", "DELETE"):
-        if _has_table_privilege(bind, _API, privilege):
-            raise RuntimeError(
-                f"app_runtime gained broad organizations {privilege} after P3A"
-            )
-    if _direct_column_privileges(bind, _API):
-        raise RuntimeError("app_runtime gained direct organizations column ACLs after P3A")
+    if _direct_relation_acl(bind, _API) or _direct_column_acl(bind, _API):
+        raise RuntimeError("app_runtime gained direct organizations ACL")
 
+    common_tokens = (
+        "app.current_org_id",
+        "app.current_role",
+        "app.current_gym_id",
+        "owner",
+        "admin",
+        "public.organizations",
+    )
     _require_function_contract(
         bind,
-        function_name="current_organization_profile",
+        name="current_organization_profile",
         nargs=0,
-        expected_volatility="s",
-        required_tokens=(
-            "app.current_org_id",
-            "public.organizations",
-            "organization.id",
-            "organization.logo_status",
-            "organization.cover_status",
-        ),
+        volatility="s",
+        required_tokens=common_tokens + ("organization.logo_status", "organization.cover_status"),
     )
     _require_function_contract(
         bind,
-        function_name="update_current_organization_profile",
+        name="update_current_organization_profile",
         nargs=1,
-        expected_volatility="v",
-        required_tokens=(
-            "app.current_org_id",
-            "public.organizations",
-            "p_patch",
-            "updated_at",
-            "unknown organization profile fields",
-        ),
+        volatility="v",
+        required_tokens=common_tokens
+        + ("p_patch", "unknown organization profile fields", "updated_at"),
     )
 
 
-_READ_FUNCTION_SQL = r"""
+_CONTEXT_DECLARATIONS = """
+    v_org_text text;
+    v_org_id uuid;
+    v_role text;
+    v_gym text;
+"""
+
+_CONTEXT_GUARD = r"""
+    v_org_text := pg_catalog.current_setting('app.current_org_id', true);
+    IF v_org_text IS NULL OR pg_catalog.btrim(v_org_text) = '' THEN
+        RAISE EXCEPTION 'organization profile tenant context is required'
+            USING ERRCODE = '42501';
+    END IF;
+    BEGIN
+        v_org_id := v_org_text::uuid;
+    EXCEPTION
+        WHEN invalid_text_representation THEN
+            RAISE EXCEPTION 'organization profile tenant context is invalid'
+                USING ERRCODE = '42501';
+    END;
+
+    v_role := pg_catalog.current_setting('app.current_role', true);
+    v_gym := pg_catalog.current_setting('app.current_gym_id', true);
+    IF v_role IS NULL
+       OR pg_catalog.btrim(v_role) NOT IN ('owner', 'admin')
+       OR (v_gym IS NOT NULL AND pg_catalog.btrim(v_gym) <> '') THEN
+        RAISE EXCEPTION 'organization profile admin context is required'
+            USING ERRCODE = '42501';
+    END IF;
+"""
+
+_READ_FUNCTION_SQL = f"""
 CREATE FUNCTION app_secure.current_organization_profile()
 RETURNS TABLE (
     id uuid,
@@ -430,23 +452,9 @@ SET search_path = pg_catalog
 SET row_security = on
 AS $function$
 DECLARE
-    v_org_text text;
-    v_org_id uuid;
+{_CONTEXT_DECLARATIONS}
 BEGIN
-    v_org_text := pg_catalog.current_setting('app.current_org_id', true);
-    IF v_org_text IS NULL OR pg_catalog.btrim(v_org_text) = '' THEN
-        RAISE EXCEPTION 'organization profile tenant context is required'
-            USING ERRCODE = '42501';
-    END IF;
-
-    BEGIN
-        v_org_id := v_org_text::uuid;
-    EXCEPTION
-        WHEN invalid_text_representation THEN
-            RAISE EXCEPTION 'organization profile tenant context is invalid'
-                USING ERRCODE = '42501';
-    END;
-
+{_CONTEXT_GUARD}
     RETURN QUERY
     SELECT
         organization.id,
@@ -471,7 +479,7 @@ END;
 $function$
 """
 
-_UPDATE_FUNCTION_SQL = r"""
+_UPDATE_FUNCTION_SQL = f"""
 CREATE FUNCTION app_secure.update_current_organization_profile(p_patch jsonb)
 RETURNS TABLE (
     id uuid,
@@ -498,24 +506,10 @@ SET search_path = pg_catalog
 SET row_security = on
 AS $function$
 DECLARE
-    v_org_text text;
-    v_org_id uuid;
+{_CONTEXT_DECLARATIONS}
     v_unknown jsonb;
 BEGIN
-    v_org_text := pg_catalog.current_setting('app.current_org_id', true);
-    IF v_org_text IS NULL OR pg_catalog.btrim(v_org_text) = '' THEN
-        RAISE EXCEPTION 'organization profile tenant context is required'
-            USING ERRCODE = '42501';
-    END IF;
-
-    BEGIN
-        v_org_id := v_org_text::uuid;
-    EXCEPTION
-        WHEN invalid_text_representation THEN
-            RAISE EXCEPTION 'organization profile tenant context is invalid'
-                USING ERRCODE = '42501';
-    END;
-
+{_CONTEXT_GUARD}
     IF p_patch IS NULL OR pg_catalog.jsonb_typeof(p_patch) <> 'object' THEN
         RAISE EXCEPTION 'organization profile patch must be a JSON object'
             USING ERRCODE = '22023';
@@ -530,7 +524,7 @@ BEGIN
         'website_url',
         'social_links'
     ]::text[];
-    IF v_unknown <> '{}'::jsonb THEN
+    IF v_unknown <> '{{}}'::jsonb THEN
         RAISE EXCEPTION 'unknown organization profile fields'
             USING ERRCODE = '42501';
     END IF;
@@ -538,47 +532,51 @@ BEGIN
     IF p_patch ? 'name' THEN
         IF p_patch->'name' = 'null'::jsonb
            OR pg_catalog.jsonb_typeof(p_patch->'name') <> 'string'
-           OR pg_catalog.char_length(p_patch->>'name') < 2 THEN
+           OR pg_catalog.char_length(p_patch->>'name') < 2
+           OR pg_catalog.char_length(p_patch->>'name') > 100 THEN
             RAISE EXCEPTION 'organization profile name is invalid'
                 USING ERRCODE = '22023';
         END IF;
     END IF;
-
     IF p_patch ? 'business_type'
        AND p_patch->'business_type' <> 'null'::jsonb
-       AND pg_catalog.jsonb_typeof(p_patch->'business_type') <> 'string' THEN
+       AND (
+            pg_catalog.jsonb_typeof(p_patch->'business_type') <> 'string'
+            OR pg_catalog.char_length(p_patch->>'business_type') > 50
+       ) THEN
         RAISE EXCEPTION 'organization profile business_type is invalid'
             USING ERRCODE = '22023';
     END IF;
-
     IF p_patch ? 'tagline'
        AND p_patch->'tagline' <> 'null'::jsonb
-       AND pg_catalog.jsonb_typeof(p_patch->'tagline') <> 'string' THEN
+       AND (
+            pg_catalog.jsonb_typeof(p_patch->'tagline') <> 'string'
+            OR pg_catalog.char_length(p_patch->>'tagline') > 150
+       ) THEN
         RAISE EXCEPTION 'organization profile tagline is invalid'
             USING ERRCODE = '22023';
     END IF;
-
     IF p_patch ? 'description'
        AND p_patch->'description' <> 'null'::jsonb
        AND pg_catalog.jsonb_typeof(p_patch->'description') <> 'string' THEN
         RAISE EXCEPTION 'organization profile description is invalid'
             USING ERRCODE = '22023';
     END IF;
-
     IF p_patch ? 'website_url'
        AND p_patch->'website_url' <> 'null'::jsonb
-       AND pg_catalog.jsonb_typeof(p_patch->'website_url') <> 'string' THEN
+       AND (
+            pg_catalog.jsonb_typeof(p_patch->'website_url') <> 'string'
+            OR pg_catalog.char_length(p_patch->>'website_url') > 255
+       ) THEN
         RAISE EXCEPTION 'organization profile website_url is invalid'
             USING ERRCODE = '22023';
     END IF;
-
     IF p_patch ? 'year_established'
        AND p_patch->'year_established' <> 'null'::jsonb
        AND pg_catalog.jsonb_typeof(p_patch->'year_established') <> 'number' THEN
         RAISE EXCEPTION 'organization profile year_established is invalid'
             USING ERRCODE = '22023';
     END IF;
-
     IF p_patch ? 'social_links' THEN
         IF p_patch->'social_links' = 'null'::jsonb
            OR pg_catalog.jsonb_typeof(p_patch->'social_links') <> 'object' THEN
@@ -587,45 +585,29 @@ BEGIN
         END IF;
     END IF;
 
-    IF p_patch = '{}'::jsonb THEN
-        RETURN QUERY
-        SELECT *
-        FROM app_secure.current_organization_profile();
+    IF p_patch = '{{}}'::jsonb THEN
+        RETURN QUERY SELECT * FROM app_secure.current_organization_profile();
         RETURN;
     END IF;
 
     RETURN QUERY
     UPDATE public.organizations AS organization
     SET
-        name = CASE
-            WHEN p_patch ? 'name' THEN p_patch->>'name'
-            ELSE organization.name
-        END,
-        business_type = CASE
-            WHEN p_patch ? 'business_type' THEN p_patch->>'business_type'
-            ELSE organization.business_type
-        END,
-        tagline = CASE
-            WHEN p_patch ? 'tagline' THEN p_patch->>'tagline'
-            ELSE organization.tagline
-        END,
-        description = CASE
-            WHEN p_patch ? 'description' THEN p_patch->>'description'
-            ELSE organization.description
-        END,
-        year_established = CASE
-            WHEN p_patch ? 'year_established'
-                THEN (p_patch->>'year_established')::smallint
-            ELSE organization.year_established
-        END,
-        website_url = CASE
-            WHEN p_patch ? 'website_url' THEN p_patch->>'website_url'
-            ELSE organization.website_url
-        END,
-        social_links = CASE
-            WHEN p_patch ? 'social_links' THEN p_patch->'social_links'
-            ELSE organization.social_links
-        END,
+        name = CASE WHEN p_patch ? 'name'
+                    THEN p_patch->>'name' ELSE organization.name END,
+        business_type = CASE WHEN p_patch ? 'business_type'
+                    THEN p_patch->>'business_type' ELSE organization.business_type END,
+        tagline = CASE WHEN p_patch ? 'tagline'
+                    THEN p_patch->>'tagline' ELSE organization.tagline END,
+        description = CASE WHEN p_patch ? 'description'
+                    THEN p_patch->>'description' ELSE organization.description END,
+        year_established = CASE WHEN p_patch ? 'year_established'
+                    THEN (p_patch->>'year_established')::smallint
+                    ELSE organization.year_established END,
+        website_url = CASE WHEN p_patch ? 'website_url'
+                    THEN p_patch->>'website_url' ELSE organization.website_url END,
+        social_links = CASE WHEN p_patch ? 'social_links'
+                    THEN p_patch->'social_links' ELSE organization.social_links END,
         updated_at = pg_catalog.clock_timestamp()
     WHERE organization.id = v_org_id
     RETURNING
@@ -686,16 +668,13 @@ def upgrade() -> None:
             "REVOKE ALL ON FUNCTION app_secure.current_organization_profile() FROM PUBLIC"
         )
         op.execute(
-            "REVOKE ALL ON FUNCTION "
-            "app_secure.update_current_organization_profile(jsonb) FROM PUBLIC"
+            "REVOKE ALL ON FUNCTION app_secure.update_current_organization_profile(jsonb) FROM PUBLIC"
         )
         op.execute(
-            "GRANT EXECUTE ON FUNCTION "
-            "app_secure.current_organization_profile() TO app_runtime"
+            "GRANT EXECUTE ON FUNCTION app_secure.current_organization_profile() TO app_runtime"
         )
         op.execute(
-            "GRANT EXECUTE ON FUNCTION "
-            "app_secure.update_current_organization_profile(jsonb) TO app_runtime"
+            "GRANT EXECUTE ON FUNCTION app_secure.update_current_organization_profile(jsonb) TO app_runtime"
         )
     finally:
         _reset_role(bind)
