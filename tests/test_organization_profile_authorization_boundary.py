@@ -215,6 +215,15 @@ def test_profile_capabilities_are_current_tenant_and_org_admin_bound() -> None:
     )
 
 
+def test_profile_db_capability_enforces_the_same_year_range_as_the_api() -> None:
+    source = _source(MIGRATION)
+    assert "organization profile year_established is invalid" in source
+    assert "pg_catalog.jsonb_typeof(p_patch->'year_established') <> 'number'" in source
+    assert "pg_catalog.trunc((p_patch->>'year_established')::numeric)" in source
+    assert "(p_patch->>'year_established')::numeric < 1800" in source
+    assert "pg_catalog.date_part('year', CURRENT_DATE)" in source
+
+
 def test_api_runtime_receives_no_direct_organizations_acl_or_escalation() -> None:
     source = _source(MIGRATION)
     upper = re.sub(r"\s+", " ", source).upper()
