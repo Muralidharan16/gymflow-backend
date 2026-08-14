@@ -81,11 +81,12 @@ async def cleanup_lifecycle_fixture() -> None:
 async def lifecycle_setup(auth_db_session):
     """Seed lifecycle prerequisites through the same bounded identities as production.
 
-    Tenant-root and actor records are administrative fixture evidence. First
-    branch/state creation is an auth/bootstrap capability under FORCE RLS, so it
-    must use the dedicated bounded auth identity with explicit tenant and typed
-    principal context. Lifecycle behavior itself continues to run through the
-    reduced application runtime identity below.
+    Tenant-root and actor records are administrative fixture evidence. Branch/state
+    bootstrap is executed as discrete auth operations, matching the real onboarding
+    path instead of batching multiple branch INSERTs into one SQLAlchemy
+    ``insertmanyvalues`` statement with a broader synthetic RETURNING projection.
+    Lifecycle behavior itself continues to run through the reduced application
+    runtime identity below.
     """
     org_id = uuid.uuid4()
     owner_id = uuid.uuid4()
@@ -188,6 +189,8 @@ async def lifecycle_setup(auth_db_session):
         search_epoch_ulid="01AN4V07BY79KA1307SR1XF31A",
     )
     b1.state = s1
+    auth_db_session.add(b1)
+    await auth_db_session.commit()
 
     b2 = OrgBranch(
         id=b2_id,
@@ -207,8 +210,7 @@ async def lifecycle_setup(auth_db_session):
         search_epoch_ulid="01AN4V07BY79KA1307SR1XF31B",
     )
     b2.state = s2
-
-    auth_db_session.add_all([b1, b2])
+    auth_db_session.add(b2)
     await auth_db_session.commit()
 
     yield {
