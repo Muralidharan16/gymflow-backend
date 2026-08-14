@@ -8,10 +8,17 @@ from app.core.config import settings
 
 
 WORKER_QUEUE = "worker"
+# Historical queue label retained for deployment compatibility.  The process is
+# the isolated maintenance control plane and now hosts both lifecycle and
+# narrowly bounded platform-maintenance tasks.
 MAINTENANCE_QUEUE = "lifecycle-maintenance"
 MAINTENANCE_TASKS = (
     "app.tasks.branch_lifecycle_sweeps.watchdog",
     "app.tasks.branch_lifecycle_sweeps.reconciliation",
+    "app.tasks.platform_maintenance.reclaim_stale_idempotency",
+    "app.tasks.platform_maintenance.archive_expired_idempotency",
+    "app.tasks.platform_maintenance.geocoding_reverification",
+    "app.tasks.platform_maintenance.cleanup_places_cache",
 )
 
 celery_app = Celery(
@@ -104,6 +111,26 @@ celery_app.conf.beat_schedule = {
     "reconciliation-sweep": {
         "task": "app.tasks.branch_lifecycle_sweeps.reconciliation",
         "schedule": crontab(minute="*/15"),
+        "options": {"queue": MAINTENANCE_QUEUE},
+    },
+    "platform-idempotency-zombie-reclaim": {
+        "task": "app.tasks.platform_maintenance.reclaim_stale_idempotency",
+        "schedule": crontab(minute="*"),
+        "options": {"queue": MAINTENANCE_QUEUE},
+    },
+    "platform-idempotency-anchor-archive": {
+        "task": "app.tasks.platform_maintenance.archive_expired_idempotency",
+        "schedule": crontab(minute=20, hour="*/6"),
+        "options": {"queue": MAINTENANCE_QUEUE},
+    },
+    "platform-geocoding-reverification": {
+        "task": "app.tasks.platform_maintenance.geocoding_reverification",
+        "schedule": crontab(minute="*/5"),
+        "options": {"queue": MAINTENANCE_QUEUE},
+    },
+    "platform-places-cache-cleanup": {
+        "task": "app.tasks.platform_maintenance.cleanup_places_cache",
+        "schedule": crontab(hour=4, minute=10),
         "options": {"queue": MAINTENANCE_QUEUE},
     },
 }
