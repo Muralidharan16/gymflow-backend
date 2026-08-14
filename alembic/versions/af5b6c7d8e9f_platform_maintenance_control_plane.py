@@ -514,14 +514,18 @@ def upgrade() -> None:
                     USING ERRCODE = '42501';
             END IF;
 
-            WITH target AS (
+            -- Unlike the claim/update helpers above, cache eviction is an
+            -- idempotent delete.  A locking SELECT would require UPDATE
+            -- privilege on the cache table even though no column is updated.
+            -- Materialize the deterministic bounded victim set and let DELETE
+            -- take the write locks using the exact SELECT + DELETE capability.
+            WITH target AS MATERIALIZED (
                 SELECT place_id
                 FROM public.google_places_cache
                 WHERE expires_at < pg_catalog.clock_timestamp()
                     - pg_catalog.make_interval(days => 90)
                 ORDER BY expires_at, place_id
                 LIMIT p_batch_size
-                FOR UPDATE SKIP LOCKED
             )
             DELETE FROM public.google_places_cache AS cache
             USING target
