@@ -37,7 +37,12 @@ MAINTENANCE_DATABASE_NAMES = frozenset({
     "maintenance_async_engine",
     "update_session_context",
 })
-MAINTENANCE_TASKS = frozenset({"branch_lifecycle_sweeps.py"})
+# Closed maintenance-identity inventory.  New task files must be reviewed and
+# added explicitly; never replace this with a wildcard or directory-level rule.
+MAINTENANCE_TASKS = frozenset({
+    "branch_lifecycle_sweeps.py",
+    "platform_maintenance.py",
+})
 AUTH_BOUNDARY_ENDPOINTS = frozenset({
     "signup",
     "verify",
