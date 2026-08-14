@@ -66,7 +66,12 @@ def _require_identity(bind) -> None:
     if set(by_name) != {_SECURITY_OWNER, _MAINTENANCE_ROLE}:
         raise RuntimeError("required platform-maintenance roles are missing")
     for name, role in by_name.items():
-        if role["rolcanlogin"] or role["rolsuper"] or role["rolinherit"] or role["rolbypassrls"]:
+        if (
+            role["rolcanlogin"]
+            or role["rolsuper"]
+            or role["rolinherit"]
+            or role["rolbypassrls"]
+        ):
             raise RuntimeError(
                 f"managed role {name} violates NOLOGIN/NOINHERIT/NOBYPASSRLS"
             )
@@ -266,9 +271,14 @@ def _require_forward_contract(bind) -> None:
             raise RuntimeError(
                 f"platform maintenance function {function_name} EXECUTE ACL drifted"
             )
-        if "app.internal_maintenance" not in (row["prosrc"] or ""):
+        body = (row["prosrc"] or "").lower()
+        if (
+            "app.internal_maintenance" not in body
+            or "is distinct from 'platform'" not in body
+        ):
             raise RuntimeError(
-                f"platform maintenance function {function_name} lost context gate"
+                f"platform maintenance function {function_name} lost fail-closed "
+                "context gate"
             )
 
 
@@ -298,7 +308,9 @@ def upgrade() -> None:
         ON TABLE public.google_places_cache TO app_security_owner
     """)
 
-    # Policies are table-owner DDL and remain under migration_owner.
+    # Policy predicates are already fail closed because a NULL expression is
+    # not truthy under RLS. The procedural helper guards below must use
+    # IS DISTINCT FROM so an absent GUC cannot become a PL/pgSQL NULL IF.
     op.execute("""
         CREATE POLICY platform_maintenance_geolocation
         ON public.branch_geolocation_state
@@ -337,7 +349,7 @@ def upgrade() -> None:
         BEGIN
             IF pg_catalog.current_setting(
                    'app.internal_maintenance', true
-               ) <> 'platform'
+               ) IS DISTINCT FROM 'platform'
                OR p_stale_seconds < 30
                OR p_stale_seconds > 3600
                OR p_batch_size < 1
@@ -385,7 +397,7 @@ def upgrade() -> None:
         BEGIN
             IF pg_catalog.current_setting(
                    'app.internal_maintenance', true
-               ) <> 'platform'
+               ) IS DISTINCT FROM 'platform'
                OR p_retention_hours < 24
                OR p_retention_hours > 720
                OR p_batch_size < 1
@@ -428,7 +440,7 @@ def upgrade() -> None:
         BEGIN
             IF pg_catalog.current_setting(
                    'app.internal_maintenance', true
-               ) <> 'platform'
+               ) IS DISTINCT FROM 'platform'
                OR p_batch_size < 1
                OR p_batch_size > 500 THEN
                 RAISE EXCEPTION 'invalid platform geocoding claim command'
@@ -495,7 +507,7 @@ def upgrade() -> None:
         BEGIN
             IF pg_catalog.current_setting(
                    'app.internal_maintenance', true
-               ) <> 'platform'
+               ) IS DISTINCT FROM 'platform'
                OR p_batch_size < 1
                OR p_batch_size > 5000 THEN
                 RAISE EXCEPTION 'invalid platform places-cache cleanup command'
