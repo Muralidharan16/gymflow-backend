@@ -48,7 +48,15 @@ jobs:
           bash scripts/ci/bootstrap_cluster_roles.sh
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
           ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE auth_p3a_diag LOGIN PASSWORD 'ci-auth-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE auth_p3a_diag SET row_security='on';
+          GRANT auth_runtime TO auth_p3a_diag
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_p3a_diag
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           CREATE DATABASE gymflow_c87_diag OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_c87_diag TO auth_p3a_diag;
           SQL
           bash scripts/ci/verify_cluster_roles.sh
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_c87_diag
@@ -63,12 +71,74 @@ jobs:
           sed -i 's/ci-migration-owner/<redacted>/g' /tmp/c87-alembic.log
           exit "$status"
 
+      - name: Capture live branch-state RLS evidence
+        if: steps.migrate.outcome == 'success'
+        run: |
+          set -euo pipefail
+          {
+            echo '=== POLICY INVENTORY ==='
+            PGPASSWORD='ci-migration-owner' psql -X -A -F '|' -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U migration_owner -d gymflow_c87_diag <<'SQL'
+          SELECT
+              p.polname,
+              CASE WHEN p.polpermissive THEN 'PERMISSIVE' ELSE 'RESTRICTIVE' END,
+              p.polcmd,
+              array_to_string(
+                  ARRAY(
+                      SELECT CASE
+                          WHEN role_oid = 0 THEN 'PUBLIC'
+                          ELSE pg_catalog.pg_get_userbyid(role_oid)::text
+                      END
+                      FROM unnest(p.polroles) AS role_oid
+                      ORDER BY 1
+                  ),
+                  ','
+              ) AS roles,
+              COALESCE(pg_catalog.pg_get_expr(p.polqual,p.polrelid,true)::text,'<NULL>'),
+              COALESCE(pg_catalog.pg_get_expr(p.polwithcheck,p.polrelid,true)::text,'<NULL>')
+          FROM pg_catalog.pg_policy AS p
+          WHERE p.polrelid = 'public.org_branch_state'::regclass
+          ORDER BY p.polname;
+          SQL
+
+            echo '=== AUTH LOGIN + CONTEXT PREDICATE ==='
+            PGPASSWORD='ci-auth-runtime' psql -X -A -F '|' -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U auth_p3a_diag -d gymflow_c87_diag <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_user_id','daaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_org_id','41111111-1111-4111-8111-111111111111',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT
+              current_user::text,
+              session_user::text,
+              (current_user = session_user) AS same_identity,
+              pg_catalog.pg_has_role(session_user,'auth_runtime','MEMBER') AS auth_member,
+              auth.role() AS request_role,
+              NULLIF(pg_catalog.current_setting('app.current_gym_id',true),'') IS NULL AS no_gym,
+              NULLIF(pg_catalog.current_setting('app.current_principal_type',true),'') IN ('owner','legacy_gym_owner') AS owner_type,
+              NULLIF(pg_catalog.current_setting('app.current_user_id',true),'') IS NOT NULL AS has_user,
+              NULLIF(pg_catalog.current_setting('app.current_org_id',true),'')::text AS org_id;
+          ROLLBACK;
+          SQL
+          } > /tmp/c87-rls-evidence.txt
+          sed -i 's/ci-auth-runtime/<redacted>/g' /tmp/c87-rls-evidence.txt
+
       - name: Upload C87 failure evidence
         if: steps.migrate.outcome == 'failure'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: p3a-c87-alembic-${{ github.sha }}
           path: /tmp/c87-alembic.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload C87 RLS evidence
+        if: steps.migrate.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p3a-c87-rls-${{ github.sha }}
+          path: /tmp/c87-rls-evidence.txt
           if-no-files-found: error
           retention-days: 1
 
