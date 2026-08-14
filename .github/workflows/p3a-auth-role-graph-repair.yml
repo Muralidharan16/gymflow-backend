@@ -29,11 +29,12 @@ jobs:
           from pathlib import Path
 
           root = Path('.github/workflows')
+          self_name = 'p3a-auth-role-graph-repair.yml'
           changed = []
           occurrences = 0
 
           for path in sorted(root.glob('*.yml')):
-              if path.name == 'p3a-auth-role-graph-repair.yml':
+              if path.name == self_name:
                   continue
               lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
               out = []
@@ -44,7 +45,6 @@ jobs:
                   if 'GRANT app_runtime TO auth_' in line and 'runtime' in line:
                       occurrences += 1
                       file_changed = True
-                      # Handle the two-line canonical GRANT form used by newer gates.
                       if ';' not in line:
                           if i + 1 >= len(lines) or 'WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;' not in lines[i + 1]:
                               raise SystemExit(f'unexpected multiline auth app_runtime grant in {path}:{i+1}')
@@ -64,6 +64,8 @@ jobs:
 
           remaining = []
           for path in sorted(root.glob('*.yml')):
+              if path.name == self_name:
+                  continue
               text = path.read_text(encoding='utf-8')
               if 'GRANT app_runtime TO auth_' in text:
                   remaining.append(str(path))
