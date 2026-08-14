@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import re
 import sys
 
 _BASELINE_PATH = pathlib.Path(__file__).with_name(
@@ -26,6 +27,22 @@ _SPEC.loader.exec_module(_BASELINE)
 for _name, _value in vars(_BASELINE).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
+
+# Preserve the historical detector but extend the collected closed inventory to
+# cover policy DDL introduced by later app_secure migrations.  This deliberately
+# detects the DDL rather than omitting it from the allowlist.
+_BASELINE_APP_SECURE_DDL_CATEGORIES = _app_secure_ddl_categories
+
+
+def _app_secure_ddl_categories(path: pathlib.Path) -> set[str]:
+    categories = set(_BASELINE_APP_SECURE_DDL_CATEGORIES(path))
+    text = re.sub(r"\s+", " ", "\n".join(_string_constants(_tree(path))))
+    if re.search(r"\bCREATE\s+POLICY\b", text, re.IGNORECASE):
+        categories.add("create_policy")
+    if re.search(r"\bDROP\s+POLICY\b", text, re.IGNORECASE):
+        categories.add("drop_policy")
+    return categories
+
 
 _P2D_MIGRATION = "9e4f5a6b7c8d_worker_geocoding_runtime_boundary.py"
 _P2F_REMEDIATION_MIGRATION = "af5b6c7d8e9f_platform_maintenance_control_plane.py"
