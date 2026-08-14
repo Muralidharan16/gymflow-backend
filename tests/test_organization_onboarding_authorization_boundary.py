@@ -157,6 +157,9 @@ def test_onboarding_reuses_exact_predecessor_owner_acl_without_accumulation() ->
     forward = _function_source(MIGRATION, "_require_forward")
 
     assert "_direct_column_acl_detail" in source
+    assert "acl_data.is_grantable" in source
+    assert "grantor_role.rolname" in source
+    assert "direct column ACL contains an unresolved grantor" in source
     assert "_PREDECESSOR_OWNER_SELECT_ACL" in predecessor
     assert "_PREDECESSOR_OWNER_SELECT_ACL" in forward
     assert "ON TABLE public.owners TO app_security_owner" not in upgrade
