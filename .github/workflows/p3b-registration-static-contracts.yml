@@ -45,6 +45,7 @@ jobs:
             alembic/versions/e07d8e9f0a25_p3b_registration_dek_capabilities.py \
             alembic/versions/f07d8e9f0a26_p3b_registration_create_capability.py \
             alembic/versions/g07d8e9f0a27_p3b_registration_replace_capability.py \
+            alembic/versions/h07d8e9f0a28_p3b_registration_replace_conflict_key_acl.py \
             app/core/aws_kms.py \
             app/core/registration_crypto.py \
             app/repositories/organization_registrations.py \
@@ -65,7 +66,8 @@ jobs:
             tests/test_p3b_registration_key_service.py \
             tests/test_p3b_registration_mutation_repository.py \
             tests/test_p3b_registration_read_boundary.py \
-            tests/test_p3b_registration_replace_capability.py
+            tests/test_p3b_registration_replace_capability.py \
+            tests/test_p3b_registration_replace_conflict_key_acl.py
           python -m pytest --noconftest -q \
             tests/test_aws_kms_provider.py \
             tests/test_p3b_organization_registration_service.py \
@@ -77,6 +79,7 @@ jobs:
             tests/test_p3b_registration_key_service.py \
             tests/test_p3b_registration_mutation_repository.py \
             tests/test_p3b_registration_read_boundary.py \
-            tests/test_p3b_registration_replace_capability.py
+            tests/test_p3b_registration_replace_capability.py \
+            tests/test_p3b_registration_replace_conflict_key_acl.py
           python -s scripts/verify_alembic_graph.py
           python -s scripts/migration_semantics_gate.py
