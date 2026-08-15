@@ -1,0 +1,122 @@
+name: Browser Session Security Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+      - hardening/complete-migration-lineage
+      - hardening/p3a-organization-profile-authorization
+      - hardening/production-attack-surface
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-session-security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser-session-security:
+    name: Browser session security boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://ci_api:ci_api@db.invalid:5432/doers
+      AUTH_DATABASE_URL: postgresql+asyncpg://ci_auth:ci_auth@db.invalid:5432/doers
+      WORKER_DATABASE_URL: ''
+      MAINTENANCE_DATABASE_URL: ''
+      REDIS_URL: redis://redis.invalid:6379/0
+      CELERY_BROKER_URL: redis://redis.invalid:6379/1
+      CELERY_RESULT_BACKEND: redis://redis.invalid:6379/2
+      DOERS_PROCESS_PROFILE: api
+      CELERY_WORKER_PROFILE: ''
+      SECRET_KEY: ci-production-secret-key-0123456789abcdef
+      INTERNAL_CONTROL_TOKEN: ci-internal-control-token-abcdef0123456789
+      BACKEND_BASE_URL: https://api.example.invalid
+      FRONTEND_URL: https://app.example.invalid
+      CORS_ORIGINS: https://app.example.invalid
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      CDN_BASE_URL: https://cdn.example.invalid
+      ENVIRONMENT: production
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+
+      - name: Compile browser-session security surface
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            app/core/browser_session.py \
+            app/core/security.py \
+            app/core/middleware.py \
+            app/services/auth_service.py \
+            app/routers/auth.py \
+            app/routers/onboarding.py \
+            app/schemas/auth.py \
+            tests/security/test_browser_session_boundary.py
+
+      - name: Run browser-session security regressions
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q tests/security/test_browser_session_boundary.py
+
+      - name: Prove browser auth JSON contains no bearer credentials
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import inspect
+          from app.routers import auth
+
+          source = inspect.getsource(auth)
+          forbidden = (
+              '"access_token": tokens.access_token',
+              '"refresh_token": tokens.refresh_token',
+              '"access_token": sync_data',
+              '"refresh_token": sync_data',
+              'await request.json()',
+          )
+          for fragment in forbidden:
+              assert fragment not in source, fragment
+          assert '@router.post("/logout")' in source
+          assert '@router.post("/signup-status")' in source
+          PY
+
+      - name: Prove refresh rotation is verified and serialized
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import inspect
+          from app.services.auth_service import AuthService
+
+          source = inspect.getsource(AuthService.refresh_token)
+          assert source.index('verify_token(raw_refresh_token, "refresh")') < source.index('select(AuthSession)')
+          assert '.with_for_update()' in source
+          assert 'reused_session=db_session' in source
+          assert 'subject_id = uuid.UUID' in source
+          assert 'claimed_family_id' in source
+          PY

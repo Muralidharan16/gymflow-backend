@@ -1,23 +1,33 @@
 import uuid
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 import logging
+
 from fastapi import HTTPException, status
-from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
-from app.models.organization import Organization
-from app.models.gym import Gym, FacilityType
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.browser_session import mark_family_revoked
+from app.core.redis import get_redis_utils
+from app.core.security import (
+    create_access_token,
+    create_refresh_token,
+    hash_password,
+    hash_token,
+    verify_password,
+    verify_token,
+)
 from app.models.auth import Owner
 from app.models.auth_session import AuthSession, AuthSessionFamily
-from app.models.enums import StaffRole, OrgTier
-from app.schemas.auth import SignupRequest, LoginRequest, TokenResponse, RefreshRequest
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from app.core.redis import get_redis_utils
+from app.models.gym import Gym, FacilityType
+from app.models.organization import Organization
+from app.schemas.auth import LoginRequest, SignupRequest, TokenResponse
 from app.utils.email_utils import send_verification_email
-import secrets
+from app.utils.slug import generate_slug
+
 import hashlib
 import hmac
-from app.utils.slug import generate_slug
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -34,33 +44,27 @@ class AuthService:
         redis_utils = get_redis_utils()
         email = data.email.strip().lower()
 
-        # 1. Rate limiting by IP
         rate_key = f"ratelimit:signup:{ip_address}"
         if await redis_utils.is_rate_limited(rate_key, limit=5, ttl=600):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many signup attempts. Try again in 10 minutes."
+                detail="Too many signup attempts. Try again in 10 minutes.",
             )
 
-        # 2. Check email existence (anti-enumeration: return success even if exists)
         q = select(Owner).where(Owner.email == email)
         result = await self.session.execute(q)
         if result.scalar_one_or_none():
             return {
                 "status": "success",
-                "message": "Verification email sent. Please check your inbox."
+                "message": "Verification email sent. Please check your inbox.",
             }
 
-        # 3. Hash password
         hashed_pw = hash_password(data.password)
-
-        # 4. Generate magic link token
         raw_token = secrets.token_urlsafe(48)
         token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
         signup_poll_token = secrets.token_urlsafe(32)
         signup_poll_token_hash = hashlib.sha256(signup_poll_token.encode("utf-8")).hexdigest()
 
-        # 5. Store in Redis
         pending_key = f"signup:pending:{token_hash}"
         email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()
         email_lookup_key = f"signup:email:{email_hash}"
@@ -73,7 +77,7 @@ class AuthService:
             "facility_type": data.facility_type,
             "signup_poll_token_hash": signup_poll_token_hash,
             "resend_count": 0,
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
         try:
@@ -83,16 +87,14 @@ class AuthService:
             logger.exception("Redis failure during signup")
             raise HTTPException(status_code=500, detail="Something went wrong. Please try again.")
 
-        # 6. Send verification email
         email_sent = await send_verification_email(
             email=email,
             owner_name=data.owner_name,
             org_name=data.org_name,
-            raw_token=raw_token
+            raw_token=raw_token,
         )
 
         if not email_sent:
-            # Cleanup Redis on email failure
             await redis_utils.delete_keys_safe([pending_key, email_lookup_key])
             raise HTTPException(status_code=500, detail="Something went wrong. Please try again.")
 
@@ -111,15 +113,11 @@ class AuthService:
         return hmac.compare_digest(expected_hash, actual_hash)
 
     async def verify(self, token: str) -> dict:
-        """
-        Validate token, create account atomically, and return owner/org data for JWT issuance.
-        """
+        """Validate a magic token and atomically create the tenant account."""
         redis_utils = get_redis_utils()
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-
         pending_key = f"signup:pending:{token_hash}"
 
-        # Read first; consume the token only after account creation commits.
         raw_payload = await redis_utils.client.get(pending_key)
         if not raw_payload:
             return {"error": "expired"}
@@ -129,7 +127,6 @@ class AuthService:
         email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()
         email_lookup_key = f"signup:email:{email_hash}"
 
-        # 2. Check if already registered (race condition guard)
         q = select(Owner).where(Owner.email == email)
         result = await self.session.execute(q)
         existing_owner = result.scalar_one_or_none()
@@ -137,18 +134,11 @@ class AuthService:
             await redis_utils.delete_keys_safe([pending_key, email_lookup_key])
             return {"error": "already_registered"}
 
-        # 3. Atomic account creation
-        # FIX: The SELECT above already opened a transaction on this session.
-        # Use begin_nested() (SAVEPOINT) instead of begin() to avoid
-        # "A transaction is already begun on this Session" error.
         org = None
         owner = None
         try:
             async with self.session.begin_nested():
-                # a. Create Organization
                 base_slug = generate_slug(data["org_name"])
-                
-                # Check for slug collision
                 slug = base_slug
                 counter = 1
                 while True:
@@ -162,48 +152,43 @@ class AuthService:
                 org = Organization(
                     name=data["org_name"],
                     slug=slug,
-                    business_type=data["facility_type"]
+                    business_type=data["facility_type"],
                 )
                 self.session.add(org)
-                await self.session.flush()  # get org.id
+                await self.session.flush()
 
-                # b. Create Gym
                 gym = Gym(
                     org_id=org.id,
                     name=data["org_name"],
                     facility_type=data["facility_type"],
-                    gymu_id=f"GYM-{str(uuid.uuid4())[:8].upper()}"
+                    gymu_id=f"GYM-{str(uuid.uuid4())[:8].upper()}",
                 )
-                # Link to FacilityType reference table
-                facility_type_q = select(FacilityType).where(FacilityType.system_name == data["facility_type"])
+                facility_type_q = select(FacilityType).where(
+                    FacilityType.system_name == data["facility_type"]
+                )
                 facility_type_res = await self.session.execute(facility_type_q)
                 primary_type = facility_type_res.scalar_one_or_none()
                 if primary_type:
                     gym.facility_types.append(primary_type)
-                    
                 self.session.add(gym)
 
-                # c. Create Owner
                 owner = Owner(
                     org_id=org.id,
                     owner_name=data["owner_name"],
                     email=email,
                     hashed_password=data["hashed_password"],
-                    email_verified=True
+                    email_verified=True,
                 )
                 self.session.add(owner)
-                await self.session.flush()  # get owner.id
+                await self.session.flush()
 
-            # Commit the outer transaction (the one opened by the SELECT above)
             await self.session.commit()
-
         except Exception:
             logger.exception("Atomic account creation failed")
             await self.session.rollback()
             return {"error": "server_error"}
 
         await redis_utils.delete_keys_safe([pending_key, email_lookup_key])
-
         return {
             "owner": owner,
             "org": org,
@@ -211,26 +196,21 @@ class AuthService:
         }
 
     async def resend_verification(self, email: str) -> dict:
-        """
-        Resend magic link if within limits.
-        """
+        """Resend a magic link if within the anti-abuse limits."""
         redis_utils = get_redis_utils()
         email = email.strip().lower()
         email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()
 
-        # 1. Rate limiting (3 per hour per email)
         resend_rate_key = f"ratelimit:resend:{email_hash}"
         if await redis_utils.is_rate_limited(resend_rate_key, limit=3, ttl=3600):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Maximum resend limit reached. Please restart signup after 10 minutes."
+                detail="Maximum resend limit reached. Please restart signup after 10 minutes.",
             )
 
-        # 2. Lookup existing pending signup
         email_lookup_key = f"signup:email:{email_hash}"
         old_token_hash = await redis_utils.client.get(email_lookup_key)
         if not old_token_hash:
-            # Anti-enumeration
             return {"status": "success", "message": "Verification email resent."}
 
         pending_key = f"signup:pending:{old_token_hash}"
@@ -238,18 +218,14 @@ class AuthService:
         if not raw_data:
             return {"status": "success", "message": "Verification email resent."}
 
-        # 3. Check resend count
         if raw_data.get("resend_count", 0) >= 3:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Maximum resend limit reached. Please restart signup after 10 minutes."
+                detail="Maximum resend limit reached. Please restart signup after 10 minutes.",
             )
 
-        # 4. Generate new token
         new_raw_token = secrets.token_urlsafe(48)
         new_token_hash = hashlib.sha256(new_raw_token.encode("utf-8")).hexdigest()
-
-        # 5. Store a replacement token while keeping the old token valid until email succeeds.
         new_data = {**raw_data, "resend_count": raw_data.get("resend_count", 0) + 1}
         new_pending_key = f"signup:pending:{new_token_hash}"
 
@@ -260,12 +236,11 @@ class AuthService:
             logger.exception("Redis failure during resend")
             raise HTTPException(status_code=500, detail="Something went wrong. Please try again.")
 
-        # 6. Send new email
         email_sent = await send_verification_email(
             email=new_data["email"],
             owner_name=new_data["owner_name"],
             org_name=new_data["org_name"],
-            raw_token=new_raw_token
+            raw_token=new_raw_token,
         )
 
         if not email_sent:
@@ -274,150 +249,195 @@ class AuthService:
             raise HTTPException(status_code=500, detail="Something went wrong. Please try again.")
 
         await redis_utils.delete_keys_safe([pending_key])
-
         return {"status": "success", "message": "Verification email resent."}
 
+    @staticmethod
+    def _tokens_for_owner(owner: Owner, family_id: uuid.UUID) -> TokenResponse:
+        return TokenResponse(
+            access_token=create_access_token(
+                owner.id,
+                owner.org_id,
+                owner.email,
+                family_id=str(family_id),
+            ),
+            refresh_token=create_refresh_token(owner.id, family_id=str(family_id)),
+            onboarding_completed=owner.onboarding_completed,
+        )
+
+    async def issue_session(self, owner: Owner) -> TokenResponse:
+        """Create a new durable browser session family and family-bound token pair."""
+        family = AuthSessionFamily(org_id=owner.org_id, user_id=owner.id)
+        self.session.add(family)
+        await self.session.flush()
+
+        tokens = self._tokens_for_owner(owner, family.id)
+        self.session.add(
+            AuthSession(
+                user_id=owner.id,
+                org_id=owner.org_id,
+                token_family_id=family.id,
+                refresh_token_hash=hash_token(tokens.refresh_token),
+                token_version_snapshot=1,
+            )
+        )
+        await self.session.commit()
+        return tokens
+
     async def login(self, data: LoginRequest) -> TokenResponse:
-        """Secure login with credential verification and brute-force protection."""
+        """Authenticate an owner and create a family-bound browser session."""
         email = data.email.strip().lower()
         login_lock_key = f"login_lock:{email}"
         attempts_key = f"login_attempts:{email}"
-
-        # 1. Check if account is locked
         redis_utils = get_redis_utils()
+
         if await redis_utils.client.get(login_lock_key):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Account locked due to multiple failed attempts. Try again later."
+                detail="Account locked due to multiple failed attempts. Try again later.",
             )
 
-        # 2. Get owner
         q = select(Owner).where(Owner.email == email)
         result = await self.session.execute(q)
         owner = result.scalar_one_or_none()
 
-        # 3. Verify credentials
         if not owner or not verify_password(data.password, owner.hashed_password):
             attempts = await redis_utils.client.incr(attempts_key)
             if attempts == 1:
                 await redis_utils.client.expire(attempts_key, 600)
-
             if attempts >= 5:
                 await redis_utils.client.setex(login_lock_key, 1800, "1")
                 await redis_utils.client.delete(attempts_key)
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Too many failed attempts. Account locked for 30 minutes."
+                    detail="Too many failed attempts. Account locked for 30 minutes.",
                 )
-
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid credentials. {5 - attempts} attempts remaining."
+                detail=f"Invalid credentials. {5 - attempts} attempts remaining.",
             )
 
-        # 4. Check if verified
         if not owner.email_verified:
             raise HTTPException(status_code=403, detail="Email not verified")
 
-        # 5. Successful login — reset attempts
         await redis_utils.client.delete(attempts_key)
+        return await self.issue_session(owner)
 
-        # 6. Issue tokens
-        access_token = create_access_token(owner.id, owner.org_id, owner.email)
-        refresh_token = create_refresh_token(owner.id)
+    async def _revoke_family(
+        self,
+        family: AuthSessionFamily,
+        *,
+        reused_session: AuthSession | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        family.revoked_at = family.revoked_at or now
+        if reused_session is not None:
+            reused_session.reuse_detected_at = reused_session.reuse_detected_at or now
+            reused_session.compromised_at = reused_session.compromised_at or now
+        await self.session.commit()
+        try:
+            await mark_family_revoked(str(family.id))
+        except Exception:
+            # DB revocation is authoritative. Redis is a fast rejection signal only.
+            logger.exception("Failed to publish session-family revocation marker")
 
-        # 7. Store refresh token hash in DB
-        rt_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-        
-        family = AuthSessionFamily(
-            org_id=owner.org_id,
-            user_id=owner.id
+    async def refresh_token(self, raw_refresh_token: str) -> TokenResponse:
+        """Rotate a refresh token under a row lock and detect replay/reuse."""
+        try:
+            payload = verify_token(raw_refresh_token, "refresh")
+            subject_id = uuid.UUID(str(payload.get("sub")))
+            claimed_family_raw = payload.get("f_id")
+            claimed_family_id = (
+                uuid.UUID(str(claimed_family_raw))
+                if claimed_family_raw is not None
+                else None
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=401, detail="Invalid refresh token claims") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail="Invalid or expired refresh token") from exc
+
+        token_hash = hash_token(raw_refresh_token)
+        result = await self.session.execute(
+            select(AuthSession)
+            .where(AuthSession.refresh_token_hash == token_hash)
+            .with_for_update()
         )
-        self.session.add(family)
-        await self.session.flush()
+        db_session = result.scalar_one_or_none()
+        if db_session is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-        auth_session = AuthSession(
+        family_result = await self.session.execute(
+            select(AuthSessionFamily)
+            .where(AuthSessionFamily.id == db_session.token_family_id)
+            .with_for_update()
+        )
+        family = family_result.scalar_one_or_none()
+        if family is None:
+            raise HTTPException(status_code=401, detail="Session family missing")
+
+        if db_session.revoked_at is not None:
+            await self._revoke_family(family, reused_session=db_session)
+            raise HTTPException(status_code=401, detail="Session compromised. Please login again.")
+
+        if family.revoked_at is not None:
+            raise HTTPException(status_code=401, detail="Session revoked")
+
+        if subject_id != db_session.user_id:
+            await self._revoke_family(family, reused_session=db_session)
+            raise HTTPException(status_code=401, detail="Session compromised. Please login again.")
+
+        # Legacy DB-backed refresh tokens without f_id may rotate exactly once.
+        # All newly-issued tokens are family-bound.
+        if claimed_family_id is not None and claimed_family_id != family.id:
+            await self._revoke_family(family, reused_session=db_session)
+            raise HTTPException(status_code=401, detail="Session compromised. Please login again.")
+
+        owner_result = await self.session.execute(select(Owner).where(Owner.id == db_session.user_id))
+        owner = owner_result.scalar_one_or_none()
+        if owner is None:
+            await self._revoke_family(family, reused_session=db_session)
+            raise HTTPException(status_code=401, detail="User not found")
+
+        tokens = self._tokens_for_owner(owner, family.id)
+        now = datetime.now(timezone.utc)
+        db_session.revoked_at = now
+
+        replacement = AuthSession(
             user_id=owner.id,
             org_id=owner.org_id,
             token_family_id=family.id,
-            refresh_token_hash=rt_hash,
-            token_version_snapshot=1
+            parent_session_id=db_session.id,
+            refresh_token_hash=hash_token(tokens.refresh_token),
+            token_version_snapshot=db_session.token_version_snapshot + 1,
         )
-        self.session.add(auth_session)
+        self.session.add(replacement)
+        await self.session.flush()
+        db_session.replaced_by_session_id = replacement.id
         await self.session.commit()
+        return tokens
 
-        return TokenResponse(
-            access_token=access_token, 
-            refresh_token=refresh_token,
-            onboarding_completed=owner.onboarding_completed
+    async def revoke_refresh_family(self, raw_refresh_token: str | None) -> str | None:
+        """Revoke the durable family identified by a refresh cookie, even if JWT-expired."""
+        if not raw_refresh_token:
+            return None
+
+        result = await self.session.execute(
+            select(AuthSession)
+            .where(AuthSession.refresh_token_hash == hash_token(raw_refresh_token))
+            .with_for_update()
         )
+        db_session = result.scalar_one_or_none()
+        if db_session is None:
+            return None
 
-    async def refresh_token(self, refresh_token: str) -> TokenResponse:
-        """Implements refresh token rotation as per spec."""
-        rt_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-
-        q = select(AuthSession).where(
-            AuthSession.refresh_token_hash == rt_hash,
-            AuthSession.revoked_at.is_(None)
+        family_result = await self.session.execute(
+            select(AuthSessionFamily)
+            .where(AuthSessionFamily.id == db_session.token_family_id)
+            .with_for_update()
         )
-        result = await self.session.execute(q)
-        db_rt = result.scalar_one_or_none()
+        family = family_result.scalar_one_or_none()
+        if family is None:
+            return None
 
-        if not db_rt:
-            # Check for token reuse
-            q_any = select(AuthSession).where(AuthSession.refresh_token_hash == rt_hash)
-            result_any = await self.session.execute(q_any)
-            reused_session = result_any.scalar_one_or_none()
-            if reused_session:
-                q_family = select(AuthSessionFamily).where(AuthSessionFamily.id == reused_session.token_family_id)
-                res_fam = await self.session.execute(q_family)
-                family = res_fam.scalar_one()
-                family.revoked_at = datetime.now(timezone.utc)
-                reused_session.reuse_detected_at = datetime.now(timezone.utc)
-                await self.session.commit()
-                raise HTTPException(status_code=401, detail="Session compromised. Please login again.")
-                
-            raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
-
-        q_family = select(AuthSessionFamily).where(AuthSessionFamily.id == db_rt.token_family_id)
-        res_fam = await self.session.execute(q_family)
-        family = res_fam.scalar_one()
-        if family.revoked_at:
-             raise HTTPException(status_code=401, detail="Session revoked")
-
-        # Get owner data for new access token
-        q_owner = select(Owner).where(Owner.id == db_rt.user_id)
-        owner_result = await self.session.execute(q_owner)
-        owner = owner_result.scalar_one_or_none()
-
-        if not owner:
-            raise HTTPException(status_code=401, detail="User not found")
-
-        # Rotate tokens
-        new_access = create_access_token(owner.id, owner.org_id, owner.email)
-        new_refresh = create_refresh_token(owner.id)
-        new_rt_hash = hashlib.sha256(new_refresh.encode("utf-8")).hexdigest()
-
-        # FIX: same pattern — use begin_nested() since SELECT above opened a transaction
-        async with self.session.begin_nested():
-            db_rt.revoked_at = datetime.now(timezone.utc)
-            
-            new_db_rt = AuthSession(
-                user_id=owner.id,
-                org_id=owner.org_id,
-                token_family_id=family.id,
-                parent_session_id=db_rt.id,
-                refresh_token_hash=new_rt_hash,
-                token_version_snapshot=db_rt.token_version_snapshot + 1
-            )
-            self.session.add(new_db_rt)
-            await self.session.flush()
-            db_rt.replaced_by_session_id = new_db_rt.id
-
-        await self.session.commit()
-
-        return TokenResponse(
-            access_token=new_access, 
-            refresh_token=new_refresh,
-            onboarding_completed=owner.onboarding_completed
-        )
+        await self._revoke_family(family)
+        return str(family.id)
