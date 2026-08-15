@@ -41,14 +41,17 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             alembic/versions/c97d8e9f0a23_p3b_registration_read_boundary.py \
+            alembic/versions/d07d8e9f0a24_p3b_registration_envelope_storage.py \
             app/core/aws_kms.py \
             app/repositories/organization_registrations.py \
             app/routers/organizations.py \
             app/services/gym_service.py \
             tests/test_aws_kms_provider.py \
+            tests/test_p3b_registration_envelope_storage.py \
             tests/test_p3b_registration_read_boundary.py
           python -m pytest --noconftest -q \
             tests/test_aws_kms_provider.py \
+            tests/test_p3b_registration_envelope_storage.py \
             tests/test_p3b_registration_read_boundary.py
           python -s scripts/verify_alembic_graph.py
           python -s scripts/migration_semantics_gate.py
