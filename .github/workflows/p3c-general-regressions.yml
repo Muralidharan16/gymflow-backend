@@ -230,6 +230,8 @@ jobs:
             tests/test_p3c_atomic_service_behavior.py
 
       - name: Prove certified P3A helper regression surface remains importable
+        env:
+          DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
         run: |
           set -euo pipefail
           python - <<'PY'
