@@ -46,6 +46,7 @@ jobs:
             alembic/versions/f07d8e9f0a26_p3b_registration_create_capability.py \
             alembic/versions/g07d8e9f0a27_p3b_registration_replace_capability.py \
             alembic/versions/h07d8e9f0a28_p3b_registration_replace_conflict_key_acl.py \
+            alembic/versions/i07d8e9f0a29_p3b_registration_legacy_backfill_capabilities.py \
             app/core/aws_kms.py \
             app/core/registration_crypto.py \
             app/repositories/organization_registrations.py \
@@ -56,7 +57,9 @@ jobs:
             app/services/gym_service.py \
             app/services/organization_registration_service.py \
             app/services/registration_key_service.py \
+            scripts/p3b_backfill_legacy_registrations.py \
             tests/test_aws_kms_provider.py \
+            tests/test_p3b_legacy_backfill_command.py \
             tests/test_p3b_organization_registration_service.py \
             tests/test_p3b_registration_create_capability.py \
             tests/test_p3b_registration_crypto.py \
@@ -64,12 +67,14 @@ jobs:
             tests/test_p3b_registration_envelope_storage.py \
             tests/test_p3b_registration_key_repository.py \
             tests/test_p3b_registration_key_service.py \
+            tests/test_p3b_registration_legacy_backfill_capabilities.py \
             tests/test_p3b_registration_mutation_repository.py \
             tests/test_p3b_registration_read_boundary.py \
             tests/test_p3b_registration_replace_capability.py \
             tests/test_p3b_registration_replace_conflict_key_acl.py
           python -m pytest --noconftest -q \
             tests/test_aws_kms_provider.py \
+            tests/test_p3b_legacy_backfill_command.py \
             tests/test_p3b_organization_registration_service.py \
             tests/test_p3b_registration_create_capability.py \
             tests/test_p3b_registration_crypto.py \
@@ -77,6 +82,7 @@ jobs:
             tests/test_p3b_registration_envelope_storage.py \
             tests/test_p3b_registration_key_repository.py \
             tests/test_p3b_registration_key_service.py \
+            tests/test_p3b_registration_legacy_backfill_capabilities.py \
             tests/test_p3b_registration_mutation_repository.py \
             tests/test_p3b_registration_read_boundary.py \
             tests/test_p3b_registration_replace_capability.py \
