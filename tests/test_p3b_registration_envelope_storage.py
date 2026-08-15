@@ -78,14 +78,29 @@ def test_metadata_constraints_pin_crypto_format_and_business_uniqueness() -> Non
     assert "UNIQUE (id, org_id)" in source
 
 
-def test_secure_payload_has_tenant_binding_key_fk_and_forced_rls() -> None:
+def test_secure_payload_binds_registration_and_key_to_same_tenant_domain() -> None:
+    source = _source()
     upgrade = _function_source("upgrade")
+    forward = _function_source("_require_forward")
 
+    assert "uq_key_registry_version_tenant_table" in source
+    assert "UNIQUE (key_version, tenant_id, table_name)" in upgrade
+    assert "key_scope varchar(100) NOT NULL DEFAULT 'organization_registrations'" in upgrade
     assert "FOREIGN KEY (registration_id, tenant_id)" in upgrade
     assert "REFERENCES public.organization_registrations (id, org_id)" in upgrade
-    assert "FOREIGN KEY (key_version)" in upgrade
-    assert "REFERENCES public.encryption_key_registry (key_version)" in upgrade
+    assert "FOREIGN KEY (key_version, tenant_id, key_scope)" in upgrade
+    assert "REFERENCES public.encryption_key_registry" in upgrade
+    assert "(key_version, tenant_id, table_name)" in upgrade
+    assert "key_scope = 'organization_registrations'" in upgrade
     assert "ON DELETE RESTRICT" in upgrade
+    assert "P3B tenant/domain key binding constraint is missing" in forward
+    assert "fk_org_reg_payload_key_scope" in forward
+    assert "ck_org_reg_payload_key_scope" in forward
+
+
+def test_secure_payload_has_forced_tenant_rls() -> None:
+    upgrade = _function_source("upgrade")
+
     assert "ENABLE ROW LEVEL SECURITY" in upgrade
     assert "FORCE ROW LEVEL SECURITY" in upgrade
     assert "p3b_tenant_isolation_registration_payloads_secure" in upgrade
@@ -103,7 +118,7 @@ def test_secure_payload_header_must_match_key_version_fk() -> None:
     assert "pg_catalog.get_byte(payload_encrypted, 2)::bigint * 256" in source
     assert "pg_catalog.get_byte(payload_encrypted, 3)::bigint" in source
     assert ") = key_version::bigint" in source
-    assert "P3B secure registration payload envelope check is missing" in forward
+    assert "_CK_PAYLOAD_ENVELOPE" in forward
 
 
 def test_runtime_roles_receive_no_direct_secure_storage_acl() -> None:
@@ -145,10 +160,8 @@ def test_security_owner_marker_access_is_exact_and_install_privileges_are_revoke
     install = _function_source("_install_marker_trigger")
     forward = _function_source("_require_forward")
 
-    assert (
-        "GRANT INSERT ON TABLE public.p3b_registration_envelope_rows "
-        '"\n            "TO app_security_owner"'
-    ) in install
+    assert "GRANT INSERT ON TABLE public.p3b_registration_envelope_rows" in install
+    assert "TO app_security_owner" in install
     assert "GRANT TRIGGER ON TABLE public.organization_registration_payloads_secure" in install
     assert "REVOKE TRIGGER ON TABLE public.organization_registration_payloads_secure" in install
     assert "GRANT CREATE ON SCHEMA app_secure TO app_security_owner" in install
@@ -172,6 +185,7 @@ def test_downgrade_loss_detection_does_not_bypass_forced_tenant_relations() -> N
     assert downgrade.index("ALTER COLUMN id_number_encrypted SET NOT NULL") < downgrade.index(
         "DROP TABLE public.organization_registration_payloads_secure"
     )
+    assert "DROP CONSTRAINT uq_key_registry_version_tenant_table" in downgrade
     assert "CASCADE" not in downgrade
 
 
@@ -184,10 +198,8 @@ def test_marker_trigger_is_invoker_only_and_not_publicly_executable() -> None:
     assert "SECURITY DEFINER" not in install
     assert "SET search_path = pg_catalog" in install
     assert "SET row_security = on" in install
-    assert (
-        "REVOKE ALL ON FUNCTION "
-        '"\n                "app_secure.track_registration_envelope_row() FROM PUBLIC"'
-    ) in install
+    assert "REVOKE ALL ON FUNCTION" in install
+    assert "app_secure.track_registration_envelope_row() FROM PUBLIC" in install
     assert "AFTER INSERT ON public.organization_registration_payloads_secure" in install
     assert "INSERT INTO public.p3b_registration_envelope_rows" in install
     assert "ON CONFLICT" not in install
