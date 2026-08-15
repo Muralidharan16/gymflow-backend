@@ -91,6 +91,48 @@ def test_service_generates_record_id_before_encryption_when_not_supplied(monkeyp
     assert captured == {"encrypt_id": generated, "create_id": generated}
 
 
+def test_replace_uses_exact_existing_record_id_for_aad_and_database_target(monkeypatch) -> None:
+    events: list[tuple] = []
+
+    async def fake_encrypt(session, *, registration_id, normalized_identifier):
+        events.append(("encrypt", registration_id, normalized_identifier))
+        return SimpleNamespace(payload=b"replacement", key_version=13)
+
+    async def fake_replace(session, **kwargs):
+        events.append(("replace", kwargs))
+        return "replaced"
+
+    monkeypatch.setattr(service, "encrypt_current_registration_identifier", fake_encrypt)
+    monkeypatch.setattr(service, "replace_organization_registration_envelope", fake_replace)
+
+    result = asyncio.run(
+        service.replace_secure_organization_registration(
+            object(),
+            registration_id=REGISTRATION_ID,
+            id_type="PAN",
+            normalized_identifier="ABCDE4321F",
+            masked_identifier="XXXXXX4321",
+            country_code="IN",
+            entity_type="P",
+        )
+    )
+
+    assert result == "replaced"
+    assert events[0] == ("encrypt", REGISTRATION_ID, "ABCDE4321F")
+    assert events[1] == (
+        "replace",
+        {
+            "registration_id": REGISTRATION_ID,
+            "id_type": "PAN",
+            "id_number_masked": "XXXXXX4321",
+            "country_code": "IN",
+            "entity_type": "P",
+            "payload_encrypted": b"replacement",
+            "key_version": 13,
+        },
+    )
+
+
 def test_service_does_not_normalize_or_mask_domain_identifiers_itself() -> None:
     source = service.__file__
     text = open(source, encoding="utf-8").read()
