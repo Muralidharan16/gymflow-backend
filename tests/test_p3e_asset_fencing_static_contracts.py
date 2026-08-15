@@ -76,6 +76,7 @@ def test_asset_migrations_keep_reduced_role_and_sql_namespace_contracts() -> Non
     o07 = _source("alembic/versions/o07d8e9f0a2f_p3e_asset_delete_capability.py")
     p07 = _source("alembic/versions/p07d8e9f0a30_p3e_asset_cleanup_jobs.py")
     combined = "\n".join((n07, o07, p07)).lower()
+    normalized_p07 = " ".join(p07.lower().split())
 
     assert "bypassrls" in combined  # role contract is explicitly inspected
     assert " bypassrls;" not in combined
@@ -98,8 +99,8 @@ def test_asset_migrations_keep_reduced_role_and_sql_namespace_contracts() -> Non
     assert "capture_organization_asset_key_cleanup" in p07
     assert "capture_organization_asset_job_cleanup" in p07
     assert "dispatchable_organization_asset_cleanup" in p07
-    assert "revoke execute on function" in p07
-    assert "from migration_owner" in p07
+    assert "revoke execute on function" in normalized_p07
+    assert "from migration_owner" in normalized_p07
 
 
 def test_p3e_fresh_database_harness_targets_asset_cleanup_head() -> None:
