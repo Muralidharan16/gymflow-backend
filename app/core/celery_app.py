@@ -76,11 +76,11 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(hour=0, minute=0),
     },
     "expire-subscriptions": {
-        "task": "app.tasks.expire_subs.run",
+        "task": "expire_subscriptions",
         "schedule": crontab(hour=0, minute=5),
     },
     "member-reminders": {
-        "task": "app.tasks.reminders.run",
+        "task": "send_daily_reminders",
         "schedule": crontab(hour=10, minute=0),
     },
     "daily-digest": {
