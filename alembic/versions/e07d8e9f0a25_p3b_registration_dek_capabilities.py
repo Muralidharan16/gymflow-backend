@@ -436,7 +436,7 @@ BEGIN
 
     PERFORM pg_catalog.pg_advisory_xact_lock(
         pg_catalog.hashtextextended(
-            v_org_id::text || ':{_KEY_SCOPE}',
+            v_org_id::text || '|{_KEY_SCOPE}',
             0
         )
     );
