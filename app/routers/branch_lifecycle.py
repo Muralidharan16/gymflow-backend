@@ -5,7 +5,12 @@ from uuid import UUID
 from typing import List
 
 from app.core.database import get_db
-from app.core.deps import get_current_active_staff, Staff, BranchAccessGuard
+from app.core.deps import (
+    get_current_active_staff,
+    Staff,
+    BranchAccessGuard,
+    resolve_authoritative_branch_scope,
+)
 from app.schemas.branch_lifecycle import (
     BranchTransitionRequest,
     BranchStatusStateResponse,
@@ -18,26 +23,6 @@ from app.services.branch_lifecycle_service import BranchLifecycleService
 router = APIRouter(prefix="/branches", tags=["Branch Lifecycle Control Plane"])
 
 
-def _branch_scope_ids(current_staff: Staff) -> list[UUID] | None:
-    """Return normalized branch scope for branch-scoped read roles.
-
-    ``manager`` and ``trainer`` are branch-scoped roles. Their scope must be
-    determined by the signed ``branch_ids`` claim, never by the optional gym_id
-    claim alone. Invalid branch identifiers fail closed by being ignored; an
-    empty resulting scope therefore exposes no branch rows.
-    """
-    if current_staff.role not in ("manager", "trainer"):
-        return None
-
-    branch_ids: list[UUID] = []
-    for raw_branch_id in current_staff.branch_ids:
-        try:
-            branch_ids.append(UUID(str(raw_branch_id)))
-        except (TypeError, ValueError, AttributeError):
-            continue
-    return branch_ids
-
-
 @router.get("", summary="List all branches for the organization")
 async def list_branches(
     current_staff: Staff = Depends(get_current_active_staff),
@@ -47,7 +32,10 @@ async def list_branches(
     from app.models.address import OrganizationAddress
     from app.utils.encryption import decrypt_data
 
-    scoped_branch_ids = _branch_scope_ids(current_staff)
+    # Branch-scoped roles are bounded by both the signed token claim and the
+    # current active PostgreSQL assignment. This prevents stale JWT or Redis
+    # role-cache state from preserving visibility after revocation.
+    scoped_branch_ids = await resolve_authoritative_branch_scope(current_staff, db)
 
     stmt = (
         select(OrgBranch, OrgBranchState, OrganizationAddress)
@@ -59,7 +47,7 @@ async def list_branches(
     if scoped_branch_ids is not None:
         if not scoped_branch_ids:
             return {"data": []}
-        stmt = stmt.where(OrgBranch.id.in_(scoped_branch_ids))
+        stmt = stmt.where(OrgBranch.id.in_(list(scoped_branch_ids)))
 
     rows = (await db.execute(stmt)).all()
 
@@ -74,7 +62,7 @@ async def list_branches(
     )
     if scoped_branch_ids is not None:
         contact_stmt = contact_stmt.where(
-            BranchContactORM.branch_id.in_(scoped_branch_ids)
+            BranchContactORM.branch_id.in_(list(scoped_branch_ids))
         )
     contacts = (await db.execute(contact_stmt)).scalars().all()
 
