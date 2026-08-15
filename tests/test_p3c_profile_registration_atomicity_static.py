@@ -64,15 +64,14 @@ def test_patch_route_uses_service_managed_session_dependency() -> None:
     assert "Depends(get_db)" not in rendered
 
 
-def test_registration_material_rejects_server_mask_before_crypto() -> None:
+def test_router_has_no_shape_guess_for_masked_identifier() -> None:
     source = ROUTER.read_text()
     tree = ast.parse(source)
     material = _function(tree, "_registration_material")
-    calls = _call_names(material)
 
-    assert "_looks_like_server_mask" in calls
-    rendered = ast.unparse(material)
-    assert "Masked organization registration identifiers cannot be submitted" in rendered
+    assert "_looks_like_server_mask" not in source
+    assert "MaskedRegistrationIdentifierError" in source
+    assert "RegistrationCreate" in _call_names(material)
 
 
 def test_atomic_service_is_the_only_transaction_owner() -> None:
@@ -91,6 +90,22 @@ def test_atomic_service_is_the_only_transaction_owner() -> None:
     assert "list_current_organization_registrations" in calls
     assert "create_secure_organization_registration" in calls
     assert "replace_secure_organization_registration" in calls
+
+
+def test_atomic_service_compares_exact_mask_and_orders_registration_before_profile_update() -> None:
+    source = SERVICE.read_text()
+    tree = ast.parse(source)
+    mutation = _function(tree, "mutate_organization_profile_atomically")
+    rendered = ast.unparse(mutation)
+
+    assert "requested.normalized_identifier == str(existing['id_number_masked'])" in rendered
+    assert "MaskedRegistrationIdentifierError" in rendered
+    assert rendered.index("create_secure_organization_registration") < rendered.index(
+        "update_current_organization_profile"
+    )
+    assert rendered.index("replace_secure_organization_registration") < rendered.index(
+        "update_current_organization_profile"
+    )
 
 
 def test_atomic_service_has_no_raw_registration_or_organization_dml() -> None:
