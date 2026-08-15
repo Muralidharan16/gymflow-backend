@@ -75,7 +75,8 @@ def test_asset_migrations_keep_reduced_role_and_sql_namespace_contracts() -> Non
     n07 = _source("alembic/versions/n07d8e9f0a2e_p3e_fenced_organization_asset_jobs.py")
     o07 = _source("alembic/versions/o07d8e9f0a2f_p3e_asset_delete_capability.py")
     p07 = _source("alembic/versions/p07d8e9f0a30_p3e_asset_cleanup_jobs.py")
-    combined = "\n".join((n07, o07, p07)).lower()
+    q07 = _source("alembic/versions/q07d8e9f0a31_p3e_asset_claim_ambiguity.py")
+    combined = "\n".join((n07, o07, p07, q07)).lower()
     normalized_p07 = " ".join(p07.lower().split())
 
     assert "bypassrls" in combined  # role contract is explicitly inspected
@@ -104,8 +105,10 @@ def test_asset_migrations_keep_reduced_role_and_sql_namespace_contracts() -> Non
     assert "revoke usage on schema app_secure from migration_owner" in normalized_p07
     assert "revoke execute on function" in normalized_p07
     assert "from migration_owner" in normalized_p07
+    assert "attempt_count = job.attempt_count + 1" in q07
+    assert "no acl, ownership, rls, or role graph change" in q07.lower()
 
 
-def test_p3e_fresh_database_harness_targets_asset_cleanup_head() -> None:
+def test_p3e_fresh_database_harness_targets_asset_claim_correction_head() -> None:
     source = _source("scripts/ci/prepare_p3e_pg16.sh")
-    assert "p07d8e9f0a30" in source
+    assert "q07d8e9f0a31" in source

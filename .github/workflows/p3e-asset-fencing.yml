@@ -79,6 +79,7 @@ jobs:
             alembic/versions/n07d8e9f0a2e_p3e_fenced_organization_asset_jobs.py \
             alembic/versions/o07d8e9f0a2f_p3e_asset_delete_capability.py \
             alembic/versions/p07d8e9f0a30_p3e_asset_cleanup_jobs.py \
+            alembic/versions/q07d8e9f0a31_p3e_asset_claim_ambiguity.py \
             app/tasks/base_image.py \
             app/tasks/logos.py \
             app/tasks/covers.py \
