@@ -34,6 +34,10 @@ class OrganizationProfileTransactionStateError(RuntimeError):
     """The atomic service was entered with an already-open transaction."""
 
 
+class MaskedRegistrationIdentifierError(ValueError):
+    """A client attempted to submit the exact masked identifier returned by the API."""
+
+
 @dataclass(frozen=True, slots=True)
 class RegistrationMutationPlan:
     id_type: str
@@ -57,8 +61,14 @@ async def mutate_organization_profile_atomically(
 ) -> OrganizationProfileMutationResult:
     """Commit the P3A profile and P3B registration mutation as one unit.
 
+    Registration work is intentionally composed before the P3A profile UPDATE.
+    The P3B path may call external KMS, so this ordering avoids holding the
+    organization profile/root row lock while waiting on network I/O.  P3A still
+    executes inside the same transaction; if its authorization or mutation fails,
+    all registration/key/payload database work rolls back.
+
     The caller must provide a service-managed request session with no active
-    transaction.  Any authorization, validation, KMS, key-state, uniqueness,
+    transaction. Any authorization, validation, KMS, key-state, uniqueness,
     concurrency, cancellation, final-read or commit failure exits the transaction
     context exceptionally and therefore rolls back every database mutation made
     by this operation.
@@ -70,14 +80,6 @@ async def mutate_organization_profile_atomically(
         )
 
     async with session.begin():
-        if profile_patch:
-            profile = await update_current_organization_profile(session, profile_patch)
-        else:
-            profile = await get_current_organization_profile(session)
-
-        if profile is None:
-            raise OrganizationProfileNotFoundError
-
         if registration_updates:
             registrations = await list_current_organization_registrations(session)
             by_business_key = {
@@ -94,6 +96,18 @@ async def mutate_organization_profile_atomically(
                     requested.country_code.strip().upper(),
                 )
                 existing = by_business_key.get(business_key)
+
+                # Compare to the exact value the bounded read capability returned.
+                # Do not guess mask syntax: legitimate identifiers beginning with
+                # X remain valid unless they literally equal this tenant's stored
+                # masked representation.
+                if existing is not None and requested.normalized_identifier == str(
+                    existing["id_number_masked"]
+                ):
+                    raise MaskedRegistrationIdentifierError(
+                        "masked registration identifiers are read-only representations"
+                    )
+
                 if existing is None:
                     registration = await create_secure_organization_registration(
                         session,
@@ -117,8 +131,17 @@ async def mutate_organization_profile_atomically(
                 by_business_key[business_key] = {
                     "id": registration.id,
                     "id_type": registration.id_type,
+                    "id_number_masked": registration.id_number_masked,
                     "country_code": registration.country_code,
                 }
+
+        if profile_patch:
+            profile = await update_current_organization_profile(session, profile_patch)
+        else:
+            profile = await get_current_organization_profile(session)
+
+        if profile is None:
+            raise OrganizationProfileNotFoundError
 
         final_profile = await get_current_organization_profile(session)
         if final_profile is None:
