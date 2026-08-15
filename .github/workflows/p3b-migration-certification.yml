@@ -98,10 +98,13 @@ jobs:
           set -euo pipefail
           # Schema fingerprinting is infrastructure introspection, not a
           # migration/runtime capability. Keep reduced migration_owner untouched.
+          # PostgreSQL 16 emits per-dump random \restrict/\unrestrict guard
+          # tokens; strip only those non-semantic guards before equivalence diff.
           sudo -u postgres pg_dump \
             -d gymflow_p3b_migration_cert \
             --schema-only --no-owner --no-comments \
-            | sed '/^--/d;/^$/d' > /tmp/p3b-base-1.sql
+            | sed '/^--/d;/^$/d' \
+            | grep -v -E '^\\(restrict|unrestrict) ' > /tmp/p3b-base-1.sql
           test -s /tmp/p3b-base-1.sql
 
       - name: Upgrade to final P3B HEAD and capture final fingerprint
@@ -116,7 +119,8 @@ jobs:
           sudo -u postgres pg_dump \
             -d gymflow_p3b_migration_cert \
             --schema-only --no-owner --no-comments \
-            | sed '/^--/d;/^$/d' > /tmp/p3b-head-1.sql
+            | sed '/^--/d;/^$/d' \
+            | grep -v -E '^\\(restrict|unrestrict) ' > /tmp/p3b-head-1.sql
           test -s /tmp/p3b-head-1.sql
 
       - name: Downgrade exactly to P3A boundary and prove equivalence
@@ -132,7 +136,8 @@ jobs:
           sudo -u postgres pg_dump \
             -d gymflow_p3b_migration_cert \
             --schema-only --no-owner --no-comments \
-            | sed '/^--/d;/^$/d' > /tmp/p3b-base-2.sql
+            | sed '/^--/d;/^$/d' \
+            | grep -v -E '^\\(restrict|unrestrict) ' > /tmp/p3b-base-2.sql
           diff -u /tmp/p3b-base-1.sql /tmp/p3b-base-2.sql
 
       - name: Reupgrade to final P3B HEAD and prove equivalence
@@ -147,7 +152,8 @@ jobs:
           sudo -u postgres pg_dump \
             -d gymflow_p3b_migration_cert \
             --schema-only --no-owner --no-comments \
-            | sed '/^--/d;/^$/d' > /tmp/p3b-head-2.sql
+            | sed '/^--/d;/^$/d' \
+            | grep -v -E '^\\(restrict|unrestrict) ' > /tmp/p3b-head-2.sql
           diff -u /tmp/p3b-head-1.sql /tmp/p3b-head-2.sql
 
       - name: Reprove cluster identity graph
