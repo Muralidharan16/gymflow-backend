@@ -32,6 +32,22 @@ def test_envelope_storage_is_single_expand_step_after_p3b_read_boundary() -> Non
     assert "new ciphertext is deliberately stored in a separate FORCE-RLS" in source
 
 
+def test_catalog_attestation_does_not_require_app_secure_schema_usage() -> None:
+    source = _source()
+    function_exists = _function_source("_function_exists")
+    marker_lookup = _function_source("_marker_function_row")
+
+    assert "to_regprocedure" not in source
+    for function_source in (function_exists, marker_lookup):
+        assert "pg_catalog.pg_proc" in function_source
+        assert "pg_catalog.pg_namespace" in function_source
+        assert "namespace_data.nspname = 'app_secure'" in function_source
+        assert "procedure_data.proname" in function_source
+        assert "procedure_data.pronargs = 0" in function_source
+
+    assert "GRANT USAGE ON SCHEMA app_secure TO migration_owner" not in source
+
+
 def test_new_envelope_ciphertext_never_lands_in_legacy_registration_relation() -> None:
     upgrade = _function_source("upgrade")
 
@@ -74,6 +90,20 @@ def test_secure_payload_has_tenant_binding_key_fk_and_forced_rls() -> None:
     assert "FORCE ROW LEVEL SECURITY" in upgrade
     assert "p3b_tenant_isolation_registration_payloads_secure" in upgrade
     assert "app.current_org_id" in upgrade
+
+
+def test_secure_payload_header_must_match_key_version_fk() -> None:
+    source = _source()
+    forward = _function_source("_require_forward")
+
+    assert "ck_org_reg_payload_envelope_key_version" in source
+    assert "pg_catalog.octet_length(payload_encrypted) >= 32" in source
+    assert "pg_catalog.get_byte(payload_encrypted, 0)::bigint * 16777216" in source
+    assert "pg_catalog.get_byte(payload_encrypted, 1)::bigint * 65536" in source
+    assert "pg_catalog.get_byte(payload_encrypted, 2)::bigint * 256" in source
+    assert "pg_catalog.get_byte(payload_encrypted, 3)::bigint" in source
+    assert ") = key_version::bigint" in source
+    assert "P3B secure registration payload envelope check is missing" in forward
 
 
 def test_expand_step_adds_no_runtime_or_security_owner_payload_acl() -> None:
