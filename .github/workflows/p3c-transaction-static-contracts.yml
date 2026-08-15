@@ -58,10 +58,12 @@ jobs:
             app/core/service_managed_database.py \
             app/services/organization_profile_mutation_service.py \
             app/routers/organizations.py \
-            tests/test_p3c_profile_registration_atomicity_static.py
+            tests/test_p3c_profile_registration_atomicity_static.py \
+            tests/test_p3c_atomic_service_behavior.py
 
-      - name: Run P3C static contracts
+      - name: Run P3C static and transaction-owner contracts
         run: |
           set -euo pipefail
           python -m pytest --noconftest -q \
-            tests/test_p3c_profile_registration_atomicity_static.py
+            tests/test_p3c_profile_registration_atomicity_static.py \
+            tests/test_p3c_atomic_service_behavior.py
