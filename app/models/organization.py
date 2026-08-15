@@ -99,19 +99,52 @@ class OrganizationRegistration(Base, TimestampMixin):
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
     )
-    
-    id_type: Mapped[str] = mapped_column(String(20), nullable=False)        # 'PAN', 'VAT', 'EIN', 'GST'
-    id_number_encrypted: Mapped[str] = mapped_column(Text, nullable=False)   # AES-256 Encrypted
-    id_number_masked: Mapped[str] = mapped_column(String(20), nullable=False)  # 'XXXXXX1234'
-    country_code: Mapped[str] = mapped_column(String(2), nullable=False)     # 'IN', 'US'
-    entity_type: Mapped[Optional[str]] = mapped_column(String(1), nullable=True) # PAN 4th char: 'P', 'C', 'F'
-    
+
+    id_type: Mapped[str] = mapped_column(String(20), nullable=False)  # PAN, VAT, EIN, GST
+    # Legacy Fernet payload retained only for the P3B expand/backfill window.
+    # New crypto_version=1 ciphertext lives in the separate secure payload table
+    # and this field is NULL.
+    id_number_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    id_number_masked: Mapped[str] = mapped_column(String(50), nullable=False)
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    entity_type: Mapped[Optional[str]] = mapped_column(String(1), nullable=True)  # PAN 4th char
+    crypto_version: Mapped[int] = mapped_column(
+        SMALLINT,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     verified_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_org_reg_org_id", "org_id"),
-        UniqueConstraint("country_code", "id_type", "id_number_encrypted", name="uix_org_reg_type_country"),
+        # Retained until the P3B contract migration removes the legacy
+        # randomized-ciphertext uniqueness artifact.
+        UniqueConstraint(
+            "country_code",
+            "id_type",
+            "id_number_encrypted",
+            name="uix_org_reg_type_country",
+        ),
+        UniqueConstraint(
+            "org_id",
+            "country_code",
+            "id_type",
+            name="uq_org_reg_org_country_type",
+        ),
+        UniqueConstraint("id", "org_id", name="uq_org_reg_id_org"),
+        CheckConstraint(
+            "(crypto_version = 0 AND id_number_encrypted IS NOT NULL) OR "
+            "(crypto_version = 1 AND id_number_encrypted IS NULL)",
+            name="ck_org_reg_crypto_material",
+        ),
+        CheckConstraint(
+            "id_type = upper(btrim(id_type)) AND id_type <> '' AND "
+            "country_code = upper(btrim(country_code)) AND length(country_code) = 2",
+            name="ck_org_reg_canonical_identity",
+        ),
     )
 
 class OrganizationAssetAudit(Base, TimestampMixin):
