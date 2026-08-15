@@ -13,8 +13,10 @@ The capability may only advance due trial rows according to database time:
 active -> soft_locked and soft_locked -> hard_locked. It writes the corresponding
 audit row in the same PostgreSQL transaction and returns only organization IDs
 plus the new status so the maintenance task may perform best-effort cache
-invalidation after commit. No ordinary worker, API, or auth role receives direct
-table authority.
+invalidation after commit. Ordinary workers and maintenance retain zero direct
+trial/audit table ACL. The dedicated auth_runtime keeps only its exact inherited
+onboarding contract: SELECT/INSERT on trial_subscriptions and INSERT on audit_logs;
+it never receives EXECUTE on this maintenance capability.
 """
 
 from __future__ import annotations
@@ -31,8 +33,14 @@ depends_on = None
 _MIGRATION_OWNER = "migration_owner"
 _SECURITY_OWNER = "app_security_owner"
 _MAINTENANCE_ROLE = "lifecycle_maintenance_runtime"
+_BACKGROUND_ROLES = (_MAINTENANCE_ROLE, "worker_runtime")
+_AUTH_ROLE = "auth_runtime"
 _TRIAL_TABLE = "public.trial_subscriptions"
 _AUDIT_TABLE = "public.audit_logs"
+_AUTH_SENSITIVE_TABLE_ACL = {
+    _TRIAL_TABLE: {"SELECT", "INSERT"},
+    _AUDIT_TABLE: {"INSERT"},
+}
 _FUNCTION_NAME = "advance_trial_lifecycles"
 _FUNCTION_SIGNATURE = "app_secure.advance_trial_lifecycles(integer)"
 _TRIAL_SELECT = {"id", "organization_id", "status", "trial_end", "hard_lock_at"}
@@ -141,6 +149,16 @@ def _function_row(bind):
                    procedure.oid,
                    'EXECUTE'
                ) AS worker_execute,
+               pg_catalog.has_function_privilege(
+                   :auth_role,
+                   procedure.oid,
+                   'EXECUTE'
+               ) AS auth_execute,
+               pg_catalog.has_function_privilege(
+                   'app_runtime',
+                   procedure.oid,
+                   'EXECUTE'
+               ) AS app_execute,
                EXISTS (
                    SELECT 1
                    FROM pg_catalog.aclexplode(
@@ -164,6 +182,7 @@ def _function_row(bind):
     """), {
         "function_name": _FUNCTION_NAME,
         "maintenance_role": _MAINTENANCE_ROLE,
+        "auth_role": _AUTH_ROLE,
     }).mappings().one_or_none()
 
 
@@ -179,7 +198,7 @@ def _require_relation_contract(bind) -> None:
 
 
 def _require_no_direct_background_authority(bind) -> None:
-    for role_name in (_MAINTENANCE_ROLE, "worker_runtime", "auth_runtime"):
+    for role_name in _BACKGROUND_ROLES:
         for relation_name in (_TRIAL_TABLE, _AUDIT_TABLE):
             if _direct_table_privileges(bind, relation_name, role_name):
                 raise RuntimeError(
@@ -198,9 +217,31 @@ def _require_no_direct_background_authority(bind) -> None:
                     )
 
 
+def _require_exact_auth_onboarding_authority(bind) -> None:
+    for relation_name, expected in _AUTH_SENSITIVE_TABLE_ACL.items():
+        observed = _direct_table_privileges(bind, relation_name, _AUTH_ROLE)
+        if observed != expected:
+            raise RuntimeError(
+                f"auth_runtime inherited onboarding ACL drift on {relation_name}: "
+                f"expected={sorted(expected)!r}, observed={sorted(observed)!r}"
+            )
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+            if _column_privileges(
+                bind,
+                relation_name,
+                _AUTH_ROLE,
+                privilege,
+            ):
+                raise RuntimeError(
+                    f"auth_runtime has unexpected column-level {privilege} ACL "
+                    f"on {relation_name}"
+                )
+
+
 def _require_predecessor(bind) -> None:
     _require_relation_contract(bind)
     _require_no_direct_background_authority(bind)
+    _require_exact_auth_onboarding_authority(bind)
     if _function_row(bind) is not None:
         raise RuntimeError("P3E trial lifecycle capability already exists")
 
@@ -218,6 +259,7 @@ def _require_predecessor(bind) -> None:
 def _require_forward(bind) -> None:
     _require_relation_contract(bind)
     _require_no_direct_background_authority(bind)
+    _require_exact_auth_onboarding_authority(bind)
 
     if _direct_table_privileges(bind, _TRIAL_TABLE, _SECURITY_OWNER):
         raise RuntimeError("app_security_owner leaked trial table-wide ACL")
@@ -261,6 +303,8 @@ def _require_forward(bind) -> None:
     if (
         not bool(row["maintenance_execute"])
         or bool(row["worker_execute"])
+        or bool(row["auth_execute"])
+        or bool(row["app_execute"])
         or bool(row["public_execute"])
     ):
         raise RuntimeError("P3E trial function EXECUTE ACL drifted")
