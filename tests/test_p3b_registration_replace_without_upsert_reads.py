@@ -61,8 +61,12 @@ def test_correction_does_not_grant_or_revoke_payload_or_registration_acl() -> No
 
 
 def test_replace_function_preserves_principal_key_and_verification_contracts() -> None:
-    source = _source()
+    principal_guard = _function_source("_principal_guard_sql")
     function_builder = _function_source("_replace_function")
+
+    # The principal SQL is deliberately assembled by a dedicated helper.  Pin the
+    # guard where the literals actually live instead of requiring Python source
+    # interpolation to duplicate them in the function-builder body.
     for token in (
         "app.current_org_id",
         "app.current_user_id",
@@ -71,6 +75,11 @@ def test_replace_function_preserves_principal_key_and_verification_contracts() -
         "app.current_gym_id",
         "public.owners",
         "public.organization_users",
+    ):
+        assert token in principal_guard
+
+    for token in (
+        "_principal_guard_sql()",
         "public.encryption_key_registry",
         "key_data.key_status = 'ACTIVE'",
         "id_number_encrypted = NULL",
