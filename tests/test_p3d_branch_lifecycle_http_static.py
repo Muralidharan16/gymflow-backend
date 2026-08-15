@@ -35,11 +35,11 @@ def test_state_and_history_http_reads_use_branch_access_guard() -> None:
     assert "OrgBranchState.org_id == current_staff.org_id" in state
 
 
-def test_branch_list_applies_explicit_branch_scope_before_contact_lookup() -> None:
+def test_branch_list_uses_live_assignment_scope_before_contact_lookup() -> None:
     source = _function_source("list_branches")
-    assert "scoped_branch_ids = _branch_scope_ids(current_staff)" in source
-    assert "OrgBranch.id.in_(scoped_branch_ids)" in source
-    assert "BranchContactORM.branch_id.in_(scoped_branch_ids)" in source
+    assert "await resolve_authoritative_branch_scope(current_staff, db)" in source
+    assert "OrgBranch.id.in_(list(scoped_branch_ids))" in source
+    assert "BranchContactORM.branch_id.in_(list(scoped_branch_ids))" in source
     assert 'return {"data": []}' in source
 
 
