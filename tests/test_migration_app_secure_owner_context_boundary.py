@@ -51,6 +51,16 @@ _P3A_PROFILE_MIGRATION = "c17d8e9f0a1b_organization_profile_authorization.py"
 _P3A_ONBOARDING_MIGRATION = "c27d8e9f0a1c_organization_onboarding_authorization.py"
 _P3A_PRINCIPAL_BINDING_MIGRATION = "c37d8e9f0a1d_organization_profile_principal_binding.py"
 _P3A_AUTH_DECOUPLING_MIGRATION = "c47d8e9f0a1e_p3a_auth_runtime_decoupling.py"
+_P3B_READ_MIGRATION = "c97d8e9f0a23_p3b_registration_read_boundary.py"
+_P3B_STORAGE_MIGRATION = "d07d8e9f0a24_p3b_registration_envelope_storage.py"
+_P3B_DEK_MIGRATION = "e07d8e9f0a25_p3b_registration_dek_capabilities.py"
+_P3B_CREATE_MIGRATION = "f07d8e9f0a26_p3b_registration_create_capability.py"
+_P3B_REPLACE_MIGRATION = "g07d8e9f0a27_p3b_registration_replace_capability.py"
+_P3B_BACKFILL_MIGRATION = "i07d8e9f0a29_p3b_registration_legacy_backfill_capabilities.py"
+_P3B_REPLACE_CORRECTION_MIGRATION = (
+    "j07d8e9f0a2a_p3b_registration_replace_without_upsert_reads.py"
+)
+_P3B_CONTRACT_MIGRATION = "k07d8e9f0a2b_p3b_registration_contract.py"
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -60,6 +70,14 @@ APP_SECURE_FILES.update(
         _P3A_ONBOARDING_MIGRATION,
         _P3A_PRINCIPAL_BINDING_MIGRATION,
         _P3A_AUTH_DECOUPLING_MIGRATION,
+        _P3B_READ_MIGRATION,
+        _P3B_STORAGE_MIGRATION,
+        _P3B_DEK_MIGRATION,
+        _P3B_CREATE_MIGRATION,
+        _P3B_REPLACE_MIGRATION,
+        _P3B_BACKFILL_MIGRATION,
+        _P3B_REPLACE_CORRECTION_MIGRATION,
+        _P3B_CONTRACT_MIGRATION,
     }
 )
 
@@ -73,6 +91,14 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         "comment_view",
     }
     view_and_policy_contract = view_contract | {
+        "create_policy",
+        "drop_policy",
+    }
+    function_install_contract = {
+        "grant_schema",
+        "revoke_schema",
+    }
+    function_install_with_policy_contract = function_install_contract | {
         "create_policy",
         "drop_policy",
     }
@@ -118,6 +144,17 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         },
         _P3A_PRINCIPAL_BINDING_MIGRATION: set(),
         _P3A_AUTH_DECOUPLING_MIGRATION: set(),
+        # P3B function owners receive schema CREATE only inside installation
+        # windows, then lose it immediately. C97/D07 additionally create the two
+        # FORCE-RLS tenant policies that begin the registration/storage boundary.
+        _P3B_READ_MIGRATION: function_install_with_policy_contract,
+        _P3B_STORAGE_MIGRATION: function_install_with_policy_contract,
+        _P3B_DEK_MIGRATION: function_install_contract,
+        _P3B_CREATE_MIGRATION: function_install_contract,
+        _P3B_REPLACE_MIGRATION: function_install_contract,
+        _P3B_BACKFILL_MIGRATION: function_install_contract,
+        _P3B_REPLACE_CORRECTION_MIGRATION: function_install_contract,
+        _P3B_CONTRACT_MIGRATION: function_install_contract,
         A1.name: view_contract,
     }
     actual = {
