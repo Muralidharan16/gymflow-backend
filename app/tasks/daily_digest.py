@@ -1,107 +1,20 @@
-import asyncio
-import logging
-from datetime import datetime, timedelta
-from decimal import Decimal
-from typing import List, Dict, Any
+"""Fail-closed compatibility stub for the legacy global daily digest.
+
+The historical implementation scanned every gym under ``worker_runtime`` and
+then opened fresh worker sessions without tenant context. P3E removes it from
+Beat and keeps the registered name fail-closed so stale broker messages cannot
+recover that authority path.
+"""
 
 from celery import shared_task
-from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.core.database import worker_async_session_maker
-from app.models.gym import Gym
-from app.models.member import Member
-from app.models.attendance import AttendanceLog
-from app.models.payment import Payment, PaymentStatus
-from app.utils.pdf import generate_digest_pdf
-
-logger = logging.getLogger(__name__)
 
 
-async def generate_daily_digest_for_gym(gym: Gym, target_date: datetime) -> Dict[str, Any]:
-    start_of_day = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_of_day = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-    
-    async with worker_async_session_maker() as session:
-        checkins_query = select(func.count(AttendanceLog.id)).where(
-            AttendanceLog.gym_id == gym.id,
-            AttendanceLog.granted == True,
-            AttendanceLog.check_in_time >= start_of_day,
-            AttendanceLog.check_in_time <= end_of_day
-        )
-        checkins_result = await session.execute(checkins_query)
-        checkins_count = checkins_result.scalar() or 0
-        unique_members_query = select(func.count(AttendanceLog.member_id.distinct())).where(
-            AttendanceLog.gym_id == gym.id,
-            AttendanceLog.granted == True,
-            AttendanceLog.check_in_time >= start_of_day,
-            AttendanceLog.check_in_time <= end_of_day
-        )
-        unique_result = await session.execute(unique_members_query)
-        unique_members = unique_result.scalar() or 0
-        revenue_query = select(func.sum(Payment.amount)).where(
-            Payment.gym_id == gym.id,
-            Payment.status == PaymentStatus.COMPLETED,
-            Payment.payment_date >= start_of_day,
-            Payment.payment_date <= end_of_day
-        )
-        revenue_result = await session.execute(revenue_query)
-        revenue = revenue_result.scalar() or Decimal('0')
-        new_members_query = select(func.count(Member.id)).where(
-            Member.gym_id == gym.id,
-            Member.is_active == True,
-            Member.created_at >= start_of_day,
-            Member.created_at <= end_of_day
-        )
-        new_members_result = await session.execute(new_members_query)
-        new_members = new_members_result.scalar() or 0
-        return {
-            "gym_name": gym.name,
-            "date": target_date.strftime("%Y-%m-%d"),
-            "checkins": checkins_count,
-            "unique_members": unique_members,
-            "new_members": new_members,
-            "revenue": float(revenue),
-            "revenue_formatted": f"₹{revenue:,.2f}"
-        }
-
-
-async def daily_digest_task() -> int:
-    yesterday = datetime.now() - timedelta(days=1)
-    logger.info(f"Generating daily digest for {yesterday.strftime('%Y-%m-%d')}")
-    
-    async with worker_async_session_maker() as session:
-        gyms_query = select(Gym).where(Gym.is_active == True)
-        gyms_result = await session.execute(gyms_query)
-        gyms = gyms_result.scalars().all()
-        processed_count = 0
-        for gym in gyms:
-            try:
-                stats = await generate_daily_digest_for_gym(gym, yesterday)
-                pdf_bytes = generate_digest_pdf(
-                    gym_name=stats["gym_name"],
-                    date_str=stats["date"],
-                    stats={
-                        "Total Check-ins": stats["checkins"],
-                        "Unique Members": stats["unique_members"],
-                        "New Members": stats["new_members"],
-                        "Revenue": stats["revenue_formatted"]
-                    }
-                )
-                logger.info(f"Generated digest for {gym.name}: {len(pdf_bytes)} bytes")
-                processed_count += 1
-            except Exception as e:
-                logger.error(f"Failed to generate digest for gym {gym.id}: {str(e)}")
-                continue
-        return processed_count
+_DISABLED_MESSAGE = (
+    "Legacy global daily digest is disabled by P3E pending a "
+    "tenant-bound durable digest dispatcher"
+)
 
 
 @shared_task(name="app.tasks.daily_digest.run")
 def run():
-    try:
-        count = asyncio.run(daily_digest_task())
-        logger.info(f"Daily digest task completed: processed {count} gyms")
-        return f"Processed {count} gyms"
-    except Exception as e:
-        logger.error(f"Daily digest task failed: {str(e)}")
-        raise
+    raise RuntimeError(_DISABLED_MESSAGE)
