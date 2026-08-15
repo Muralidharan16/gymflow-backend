@@ -28,6 +28,7 @@ branch_labels = None
 depends_on = None
 
 _MIGRATION_OWNER = "migration_owner"
+_SECURITY_OWNER = "app_security_owner"
 _REGISTRATION = "public.organization_registrations"
 _PAYLOAD = "public.organization_registration_payloads_secure"
 _MARKER = "public.p3b_registration_envelope_rows"
@@ -70,6 +71,26 @@ def _require_identity(bind) -> None:
         raise RuntimeError("P3B registration envelope storage requires migration_owner")
     if any(bool(value) for value in row[2:]):
         raise RuntimeError("migration_owner violates the reduced role contract")
+
+    security_owner = bind.execute(
+        sa.text(
+            """
+            SELECT rolcanlogin, rolsuper, rolinherit, rolcreatedb,
+                   rolcreaterole, rolreplication, rolbypassrls
+            FROM pg_catalog.pg_roles
+            WHERE rolname = :role_name
+            """
+        ),
+        {"role_name": _SECURITY_OWNER},
+    ).one_or_none()
+    if security_owner is None or any(bool(value) for value in security_owner):
+        raise RuntimeError("app_security_owner violates the reduced role contract")
+    if not _scalar(
+        bind,
+        "SELECT pg_catalog.pg_has_role(session_user, :role_name, 'SET')",
+        {"role_name": _SECURITY_OWNER},
+    ):
+        raise RuntimeError("migration_owner lacks bounded SET to app_security_owner")
 
 
 def _relation_state(bind, relation: str):
@@ -195,6 +216,7 @@ def _marker_function_row(bind):
             """
             SELECT owner_role.rolname::text AS owner_name,
                    procedure_data.prosecdef,
+                   procedure_data.provolatile::text AS volatility,
                    procedure_data.proconfig,
                    EXISTS (
                        SELECT 1
@@ -215,27 +237,34 @@ def _marker_function_row(bind):
             WHERE namespace_data.nspname = 'app_secure'
               AND procedure_data.proname = :function_name
               AND procedure_data.pronargs = 0
+              AND procedure_data.prokind = 'f'
             """
         ),
         {"function_name": _MARKER_FUNCTION_NAME},
     ).mappings().one_or_none()
 
 
-def _has_direct_dml(bind, role_name: str, relation: str) -> bool:
-    return any(
-        bool(
-            _scalar(
-                bind,
-                "SELECT pg_catalog.has_table_privilege(:role, :relation, :privilege)",
-                {
-                    "role": role_name,
-                    "relation": relation,
-                    "privilege": privilege,
-                },
-            )
-        )
-        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE")
-    )
+def _direct_table_acl(bind, role_name: str, relation: str) -> set[str]:
+    return {
+        str(row[0])
+        for row in bind.execute(
+            sa.text(
+                """
+                SELECT acl_data.privilege_type::text
+                FROM pg_catalog.pg_class AS relation_data
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                    relation_data.relacl
+                ) AS acl_data
+                JOIN pg_catalog.pg_roles AS grantee_role
+                  ON grantee_role.oid = acl_data.grantee
+                WHERE relation_data.oid = pg_catalog.to_regclass(:relation)
+                  AND grantee_role.rolname = :role_name
+                ORDER BY acl_data.privilege_type
+                """
+            ),
+            {"relation": relation, "role_name": role_name},
+        ).all()
+    }
 
 
 def _require_c97_boundary(bind) -> None:
@@ -331,23 +360,108 @@ def _require_forward(bind) -> None:
     marker_function = _marker_function_row(bind)
     if (
         marker_function is None
-        or marker_function["owner_name"] != _MIGRATION_OWNER
-        or not marker_function["prosecdef"]
+        or marker_function["owner_name"] != _SECURITY_OWNER
+        or bool(marker_function["prosecdef"])
+        or marker_function["volatility"] != "v"
         or set(marker_function["proconfig"] or [])
         != {"search_path=pg_catalog", "row_security=on"}
         or marker_function["public_execute"]
     ):
         raise RuntimeError("P3B envelope marker function contract drifted")
 
-    for role_name in ("app_runtime", "auth_runtime", "app_security_owner"):
-        if _has_direct_dml(bind, role_name, _PAYLOAD):
+    for role_name in ("app_runtime", "auth_runtime"):
+        if _direct_table_acl(bind, role_name, _PAYLOAD):
             raise RuntimeError(
-                f"{role_name} unexpectedly has direct secure registration payload DML"
+                f"{role_name} unexpectedly has direct secure registration payload ACL"
             )
-        if _has_direct_dml(bind, role_name, _MARKER):
+        if _direct_table_acl(bind, role_name, _MARKER):
             raise RuntimeError(
-                f"{role_name} unexpectedly has direct envelope marker DML"
+                f"{role_name} unexpectedly has direct envelope marker ACL"
             )
+
+    if _direct_table_acl(bind, _SECURITY_OWNER, _PAYLOAD):
+        raise RuntimeError("app_security_owner retained direct secure payload ACL")
+    if _direct_table_acl(bind, _SECURITY_OWNER, _MARKER) != {"INSERT"}:
+        raise RuntimeError("app_security_owner marker ACL must be exactly INSERT")
+
+
+def _install_marker_trigger(bind) -> None:
+    had_create = bool(
+        _scalar(
+            bind,
+            "SELECT pg_catalog.has_schema_privilege(:role_name, 'app_secure', 'CREATE')",
+            {"role_name": _SECURITY_OWNER},
+        )
+    )
+
+    # SECURITY INVOKER keeps the trigger from becoming a privilege-escalation
+    # path. migration_owner owns the marker table; the non-login security owner
+    # receives exactly INSERT because future bounded writer capabilities execute
+    # as this role. TRIGGER and schema CREATE are installation-only privileges.
+    bind.execute(
+        sa.text(
+            "GRANT INSERT ON TABLE public.p3b_registration_envelope_rows "
+            "TO app_security_owner"
+        )
+    )
+    bind.execute(
+        sa.text(
+            "GRANT TRIGGER ON TABLE public.organization_registration_payloads_secure "
+            "TO app_security_owner"
+        )
+    )
+    if not had_create:
+        bind.execute(sa.text("GRANT CREATE ON SCHEMA app_secure TO app_security_owner"))
+
+    bind.execute(sa.text("SET LOCAL ROLE app_security_owner"))
+    try:
+        bind.execute(
+            sa.text(
+                """
+                CREATE FUNCTION app_secure.track_registration_envelope_row()
+                RETURNS trigger
+                LANGUAGE plpgsql
+                VOLATILE
+                SECURITY INVOKER
+                SET search_path = pg_catalog
+                SET row_security = on
+                AS $function$
+                BEGIN
+                    INSERT INTO public.p3b_registration_envelope_rows (registration_id)
+                    VALUES (NEW.registration_id);
+                    RETURN NEW;
+                END;
+                $function$
+                """
+            )
+        )
+        bind.execute(
+            sa.text(
+                "REVOKE ALL ON FUNCTION "
+                "app_secure.track_registration_envelope_row() FROM PUBLIC"
+            )
+        )
+        bind.execute(
+            sa.text(
+                """
+                CREATE TRIGGER trg_p3b_track_registration_envelope_row
+                AFTER INSERT ON public.organization_registration_payloads_secure
+                FOR EACH ROW
+                EXECUTE FUNCTION app_secure.track_registration_envelope_row()
+                """
+            )
+        )
+    finally:
+        bind.execute(sa.text("RESET ROLE"))
+
+    bind.execute(
+        sa.text(
+            "REVOKE TRIGGER ON TABLE public.organization_registration_payloads_secure "
+            "FROM app_security_owner"
+        )
+    )
+    if not had_create:
+        bind.execute(sa.text("REVOKE CREATE ON SCHEMA app_secure FROM app_security_owner"))
 
 
 def upgrade() -> None:
@@ -465,7 +579,7 @@ def upgrade() -> None:
     )
 
     # The marker is deliberately outside RLS and contains only registration
-    # UUIDs. No runtime/security role can read or mutate it. It exists solely so
+    # UUIDs. No runtime role can read or mutate it. It exists solely so
     # migration_owner can prove that a downgrade is lossless without bypassing
     # the FORCE-RLS secure payload relation.
     bind.execute(
@@ -488,41 +602,7 @@ def upgrade() -> None:
             "REVOKE ALL ON TABLE public.p3b_registration_envelope_rows FROM PUBLIC"
         )
     )
-    bind.execute(
-        sa.text(
-            """
-            CREATE FUNCTION app_secure.track_registration_envelope_row()
-            RETURNS trigger
-            LANGUAGE plpgsql
-            SECURITY DEFINER
-            SET search_path = pg_catalog
-            SET row_security = on
-            AS $function$
-            BEGIN
-                INSERT INTO public.p3b_registration_envelope_rows (registration_id)
-                VALUES (NEW.registration_id)
-                ON CONFLICT (registration_id) DO NOTHING;
-                RETURN NEW;
-            END;
-            $function$
-            """
-        )
-    )
-    bind.execute(
-        sa.text(
-            "REVOKE ALL ON FUNCTION app_secure.track_registration_envelope_row() FROM PUBLIC"
-        )
-    )
-    bind.execute(
-        sa.text(
-            """
-            CREATE TRIGGER trg_p3b_track_registration_envelope_row
-            AFTER INSERT ON public.organization_registration_payloads_secure
-            FOR EACH ROW
-            EXECUTE FUNCTION app_secure.track_registration_envelope_row()
-            """
-        )
-    )
+    _install_marker_trigger(bind)
 
     _require_forward(bind)
 
@@ -558,11 +638,16 @@ def downgrade() -> None:
             "DROP TABLE public.organization_registration_payloads_secure RESTRICT"
         )
     )
-    bind.execute(
-        sa.text(
-            "DROP FUNCTION app_secure.track_registration_envelope_row() RESTRICT"
+    bind.execute(sa.text("SET LOCAL ROLE app_security_owner"))
+    try:
+        bind.execute(
+            sa.text(
+                "DROP FUNCTION app_secure.track_registration_envelope_row() RESTRICT"
+            )
         )
-    )
+    finally:
+        bind.execute(sa.text("RESET ROLE"))
+
     bind.execute(
         sa.text(
             """
