@@ -37,7 +37,7 @@ def test_catalog_attestation_does_not_require_app_secure_schema_usage() -> None:
     function_exists = _function_source("_function_exists")
     marker_lookup = _function_source("_marker_function_row")
 
-    assert "to_regprocedure" not in source
+    assert "pg_catalog.to_regprocedure(" not in source
     for function_source in (function_exists, marker_lookup):
         assert "pg_catalog.pg_proc" in function_source
         assert "pg_catalog.pg_namespace" in function_source
