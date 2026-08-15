@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.aws_kms import AWSKMSUnavailableError, EncryptedDataKey
 from app.core.database import SessionContextInitializer
 from app.repositories.organization_profile import ProfileAuthorizationError
+from app.repositories.organization_registrations import RegistrationAuthorizationError
 import app.services.organization_profile_mutation_service as mutation_service
 from app.services.organization_profile_mutation_service import RegistrationMutationPlan
 import app.services.registration_key_service as registration_key_service
@@ -233,8 +234,8 @@ async def _run() -> None:
         assert _DeterministicKMS.generate_calls == 1
         assert _DeterministicKMS.decrypt_calls >= 1
 
-        # Combined replace: profile and registration commit together and a new
-        # identifier cannot inherit verification from the old identifier.
+        # Combined replace: registration/KMS runs before the profile UPDATE, both
+        # commit together, and the new identifier cannot inherit verification.
         _mark_pan_verified()
         async with sessions() as session:
             await _initialize_owner(session)
@@ -250,17 +251,17 @@ async def _run() -> None:
         assert registration[6] is False
         assert registration[7] is None
         assert payload is not None
-        before_kms_failure = (name, registration, payload)
+        stable = (name, registration, payload)
 
-        # Real P3B KMS-path failure occurs after the P3A profile UPDATE.  The
-        # explicit P3C transaction must restore profile, metadata and payload.
+        # KMS fails before the profile root UPDATE, avoiding a root lock across
+        # network failure. No registration/key/profile state may escape.
         _DeterministicKMS.fail_decrypt = True
         async with sessions() as session:
             await _initialize_owner(session)
             try:
                 await mutation_service.mutate_organization_profile_atomically(
                     session,
-                    profile_patch={"name": "MUST ROLLBACK KMS"},
+                    profile_patch={"name": "MUST NOT REACH PROFILE"},
                     registration_updates=(_pan("KLMNO9012P"),),
                 )
             except AWSKMSUnavailableError as exc:
@@ -269,17 +270,42 @@ async def _run() -> None:
                 raise AssertionError("injected KMS failure unexpectedly committed")
             assert not session.in_transaction()
         _DeterministicKMS.fail_decrypt = False
-        assert _snapshot() == before_kms_failure
+        assert _snapshot() == stable
 
-        # Cancellation is a BaseException path.  It must roll back the real P3A
-        # update, leave the P3B row/payload untouched, and keep the same session
-        # reusable with request context reapplied on the next transaction.
-        original_replace = mutation_service.replace_secure_organization_registration
+        # Inject failure after the real P3B replace and real P3A UPDATE. This is
+        # the decisive two-sided rollback proof, not a mocked transaction-only
+        # assertion.
+        original_get_profile = mutation_service.get_current_organization_profile
 
-        async def _cancel_replace(*args, **kwargs):
+        async def _fail_final_profile_read(*args, **kwargs):
+            raise RuntimeError("injected post-write read failure")
+
+        mutation_service.get_current_organization_profile = _fail_final_profile_read
+        try:
+            async with sessions() as session:
+                await _initialize_owner(session)
+                try:
+                    await mutation_service.mutate_organization_profile_atomically(
+                        session,
+                        profile_patch={"name": "MUST ROLLBACK BOTH"},
+                        registration_updates=(_pan("PQRST3456U"),),
+                    )
+                except RuntimeError as exc:
+                    assert "injected post-write read failure" in str(exc)
+                else:
+                    raise AssertionError("post-write failure unexpectedly committed")
+                assert not session.in_transaction()
+        finally:
+            mutation_service.get_current_organization_profile = original_get_profile
+        assert _snapshot() == stable
+
+        # Cancellation after both real writes must roll back and leave the same
+        # session reusable. Transaction-begin context reapplication is thereby
+        # proved on the same pooled SQLAlchemy session.
+        async def _cancel_final_profile_read(*args, **kwargs):
             raise asyncio.CancelledError
 
-        mutation_service.replace_secure_organization_registration = _cancel_replace
+        mutation_service.get_current_organization_profile = _cancel_final_profile_read
         try:
             async with sessions() as session:
                 await _initialize_owner(session)
@@ -287,7 +313,7 @@ async def _run() -> None:
                     await mutation_service.mutate_organization_profile_atomically(
                         session,
                         profile_patch={"name": "MUST ROLLBACK CANCEL"},
-                        registration_updates=(_pan("PQRST3456U"),),
+                        registration_updates=(_pan("UVWXY7890Z"),),
                     )
                 except asyncio.CancelledError:
                     pass
@@ -295,7 +321,7 @@ async def _run() -> None:
                     raise AssertionError("injected cancellation unexpectedly committed")
                 assert not session.in_transaction()
 
-                # Same session, new transaction, same verified principal context.
+                mutation_service.get_current_organization_profile = original_get_profile
                 recovery = await mutation_service.mutate_organization_profile_atomically(
                     session,
                     profile_patch={"name": "Alpha After Cancel"},
@@ -303,14 +329,15 @@ async def _run() -> None:
                 )
                 assert recovery.profile["name"] == "Alpha After Cancel"
         finally:
-            mutation_service.replace_secure_organization_registration = original_replace
+            mutation_service.get_current_organization_profile = original_get_profile
         name, registration, payload = _snapshot()
         assert name == "Alpha After Cancel"
-        assert registration == before_kms_failure[1]
-        assert payload == before_kms_failure[2]
+        assert registration == stable[1]
+        assert payload == stable[2]
 
-        # An unrelated owner cannot use an Alpha tenant context.  P3A rejects
-        # the first business mutation and the transaction leaves all state intact.
+        # An unrelated owner cannot use Alpha tenant context. With P3B composed
+        # first, either bounded registration or profile capability may be the
+        # first intersection check; in all cases no state may persist.
         before_auth_failure = _snapshot()
         async with sessions() as session:
             await _initialize_owner(session, org_id=ALPHA_ORG, user_id=BETA_OWNER)
@@ -318,17 +345,18 @@ async def _run() -> None:
                 await mutation_service.mutate_organization_profile_atomically(
                     session,
                     profile_patch={"name": "MUST ROLLBACK AUTH"},
-                    registration_updates=(_pan("UVWXY7890Z"),),
+                    registration_updates=(_pan("ZZZZZ0000Z"),),
                 )
-            except ProfileAuthorizationError:
+            except (ProfileAuthorizationError, RegistrationAuthorizationError):
                 pass
             else:
                 raise AssertionError("cross-tenant principal unexpectedly mutated Alpha")
             assert not session.in_transaction()
         assert _snapshot() == before_auth_failure
 
-        # Two concurrent combined mutations must serialize through the P3A root
-        # row rather than commit a mixed profile/registration pair.
+        # Two concurrent combined mutations must serialize through the same
+        # registration/root resources and finish as one complete pair, never a
+        # profile value from one request with registration state from the other.
         pair_a = ("Concurrency Pair A", _pan("AAAAA1111A"))
         pair_b = ("Concurrency Pair B", _pan("BBBBB2222B"))
 
