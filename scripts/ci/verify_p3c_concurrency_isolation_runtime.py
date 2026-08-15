@@ -109,8 +109,8 @@ def _snapshot() -> tuple[str, list[tuple], int, int]:
                     SELECT count(*)
                     FROM public.encryption_key_registry
                     WHERE tenant_id = %s
-                      AND key_scope = 'organization_registrations'
-                      AND status = 'ACTIVE'
+                      AND table_name = 'organization_registrations'
+                      AND key_status = 'ACTIVE'
                     """,
                     (ORG_ID,),
                 )
