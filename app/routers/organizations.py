@@ -14,6 +14,7 @@ from app.core.deps import require_org_admin, Staff
 from app.repositories.organization_profile import (
     ProfileAuthorizationError,
     get_current_organization_profile,
+    update_current_organization_profile,
 )
 from app.repositories.organization_registration_mutations import (
     CreatedOrganizationRegistration,
@@ -225,6 +226,27 @@ async def _raise_registration_write_http(
 async def _get_profile_or_forbidden(db: AsyncSession) -> dict | None:
     try:
         return await get_current_organization_profile(db)
+    except ProfileAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization profile access denied",
+        ) from exc
+
+
+async def _update_profile_or_forbidden(
+    db: AsyncSession,
+    patch: dict,
+) -> dict | None:
+    """Preserve the certified P3A direct profile helper regression surface.
+
+    P3C's real PATCH endpoint deliberately does not call this helper; the atomic
+    composition service invokes the same P3A repository capability inside its
+    single transaction. Keeping this wrapper unchanged lets the certified P3A
+    application boundary continue to prove that capability independently.
+    """
+
+    try:
+        return await update_current_organization_profile(db, patch)
     except ProfileAuthorizationError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
