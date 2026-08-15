@@ -64,6 +64,16 @@ def test_patch_route_uses_service_managed_session_dependency() -> None:
     assert "Depends(get_db)" not in rendered
 
 
+def test_certified_p3a_helper_surface_is_preserved_but_not_used_by_p3c_patch() -> None:
+    source = ROUTER.read_text()
+    tree = ast.parse(source)
+    helper = _function(tree, "_update_profile_or_forbidden")
+    patch = _function(tree, "update_org_profile")
+
+    assert "update_current_organization_profile" in _call_names(helper)
+    assert "_update_profile_or_forbidden" not in _call_names(patch)
+
+
 def test_router_has_no_shape_guess_for_masked_identifier() -> None:
     source = ROUTER.read_text()
     tree = ast.parse(source)
@@ -92,7 +102,7 @@ def test_atomic_service_is_the_only_transaction_owner() -> None:
     assert "replace_secure_organization_registration" in calls
 
 
-def test_atomic_service_compares_exact_mask_and_orders_registration_before_profile_update() -> None:
+def test_atomic_service_establishes_both_read_authorizations_before_kms_and_profile_lock() -> None:
     source = SERVICE.read_text()
     tree = ast.parse(source)
     mutation = _function(tree, "mutate_organization_profile_atomically")
@@ -100,12 +110,15 @@ def test_atomic_service_compares_exact_mask_and_orders_registration_before_profi
 
     assert "requested.normalized_identifier == str(existing['id_number_masked'])" in rendered
     assert "MaskedRegistrationIdentifierError" in rendered
-    assert rendered.index("create_secure_organization_registration") < rendered.index(
-        "update_current_organization_profile"
-    )
-    assert rendered.index("replace_secure_organization_registration") < rendered.index(
-        "update_current_organization_profile"
-    )
+
+    p3a_read = rendered.index("get_current_organization_profile")
+    p3b_read = rendered.index("list_current_organization_registrations")
+    create = rendered.index("create_secure_organization_registration")
+    replace = rendered.index("replace_secure_organization_registration")
+    profile_update = rendered.index("update_current_organization_profile")
+
+    assert p3a_read < p3b_read < create < profile_update
+    assert p3a_read < p3b_read < replace < profile_update
 
 
 def test_atomic_service_has_no_raw_registration_or_organization_dml() -> None:
