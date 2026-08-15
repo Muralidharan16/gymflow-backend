@@ -22,6 +22,7 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3c_atomic_test
       MIGRATION_PASSWORD: ci-migration-owner
+      P3B_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3c_atomic_test
       REDIS_URL: redis://127.0.0.1:6379/0
       CELERY_BROKER_URL: redis://127.0.0.1:6379/1
       CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
