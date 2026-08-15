@@ -106,11 +106,11 @@ def test_secure_payload_header_must_match_key_version_fk() -> None:
     assert "P3B secure registration payload envelope check is missing" in forward
 
 
-def test_expand_step_adds_no_runtime_or_security_owner_payload_acl() -> None:
+def test_runtime_roles_receive_no_direct_secure_storage_acl() -> None:
     source = _source()
     upper = re.sub(r"\s+", " ", source).upper()
 
-    for role in ("APP_RUNTIME", "AUTH_RUNTIME", "APP_SECURITY_OWNER"):
+    for role in ("APP_RUNTIME", "AUTH_RUNTIME"):
         assert not re.search(
             rf"GRANT\s+(?:SELECT|INSERT|UPDATE|DELETE|TRUNCATE|ALL).*?"
             rf"ORGANIZATION_REGISTRATION_PAYLOADS_SECURE.*?TO\s+{role}",
@@ -141,6 +141,25 @@ def test_expand_step_adds_no_runtime_or_security_owner_payload_acl() -> None:
     )
 
 
+def test_security_owner_marker_access_is_exact_and_install_privileges_are_revoked() -> None:
+    install = _function_source("_install_marker_trigger")
+    forward = _function_source("_require_forward")
+
+    assert (
+        "GRANT INSERT ON TABLE public.p3b_registration_envelope_rows "
+        '"\n            "TO app_security_owner"'
+    ) in install
+    assert "GRANT TRIGGER ON TABLE public.organization_registration_payloads_secure" in install
+    assert "REVOKE TRIGGER ON TABLE public.organization_registration_payloads_secure" in install
+    assert "GRANT CREATE ON SCHEMA app_secure TO app_security_owner" in install
+    assert "REVOKE CREATE ON SCHEMA app_secure FROM app_security_owner" in install
+    assert "SET LOCAL ROLE app_security_owner" in install
+    assert "RESET ROLE" in install
+
+    assert '_direct_table_acl(bind, _SECURITY_OWNER, _PAYLOAD)' in forward
+    assert '_direct_table_acl(bind, _SECURITY_OWNER, _MARKER) != {"INSERT"}' in forward
+
+
 def test_downgrade_loss_detection_does_not_bypass_forced_tenant_relations() -> None:
     predecessor = _function_source("_require_predecessor")
     downgrade = _function_source("downgrade")
@@ -156,22 +175,24 @@ def test_downgrade_loss_detection_does_not_bypass_forced_tenant_relations() -> N
     assert "CASCADE" not in downgrade
 
 
-def test_migration_owner_only_marker_tracks_secure_payload_transactionally() -> None:
-    upgrade = _function_source("upgrade")
+def test_marker_trigger_is_invoker_only_and_not_publicly_executable() -> None:
+    install = _function_source("_install_marker_trigger")
+    forward = _function_source("_require_forward")
 
-    assert "CREATE TABLE public.p3b_registration_envelope_rows" in upgrade
-    assert "FOREIGN KEY (registration_id)" in upgrade
-    assert "REFERENCES public.organization_registration_payloads_secure" in upgrade
-    assert "ON UPDATE CASCADE" in upgrade
-    assert "ON DELETE CASCADE" in upgrade
-    assert "CREATE FUNCTION app_secure.track_registration_envelope_row()" in upgrade
-    assert "SECURITY DEFINER" in upgrade
-    assert "SET search_path = pg_catalog" in upgrade
-    assert "SET row_security = on" in upgrade
+    assert "CREATE FUNCTION app_secure.track_registration_envelope_row()" in install
+    assert "SECURITY INVOKER" in install
+    assert "SECURITY DEFINER" not in install
+    assert "SET search_path = pg_catalog" in install
+    assert "SET row_security = on" in install
     assert (
-        "REVOKE ALL ON FUNCTION app_secure.track_registration_envelope_row() FROM PUBLIC"
-        in " ".join(upgrade.split())
-    )
-    assert "AFTER INSERT ON public.organization_registration_payloads_secure" in upgrade
-    assert "INSERT INTO public.p3b_registration_envelope_rows" in upgrade
-    assert "ON CONFLICT (registration_id) DO NOTHING" in upgrade
+        "REVOKE ALL ON FUNCTION "
+        '"\n                "app_secure.track_registration_envelope_row() FROM PUBLIC"'
+    ) in install
+    assert "AFTER INSERT ON public.organization_registration_payloads_secure" in install
+    assert "INSERT INTO public.p3b_registration_envelope_rows" in install
+    assert "ON CONFLICT" not in install
+
+    assert 'marker_function["owner_name"] != _SECURITY_OWNER' in forward
+    assert 'or bool(marker_function["prosecdef"])' in forward
+    assert 'marker_function["volatility"] != "v"' in forward
+    assert 'or marker_function["public_execute"]' in forward
