@@ -94,8 +94,10 @@ def test_secure_payload_binds_registration_and_key_to_same_tenant_domain() -> No
     assert "key_scope = 'organization_registrations'" in upgrade
     assert "ON DELETE RESTRICT" in upgrade
     assert "P3B tenant/domain key binding constraint is missing" in forward
-    assert "fk_org_reg_payload_key_scope" in forward
-    assert "ck_org_reg_payload_key_scope" in forward
+    assert "fk_org_reg_payload_key_scope" in source
+    assert "ck_org_reg_payload_key_scope" in source
+    assert "_FK_PAYLOAD_KEY_SCOPE" in forward
+    assert "_CK_PAYLOAD_SCOPE" in forward
 
 
 def test_secure_payload_has_forced_tenant_rls() -> None:
