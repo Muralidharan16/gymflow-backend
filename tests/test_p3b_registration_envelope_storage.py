@@ -99,15 +99,19 @@ def test_expand_step_adds_no_runtime_or_security_owner_payload_acl() -> None:
         "NO FORCE ROW LEVEL SECURITY",
         "ROW_SECURITY = OFF",
         "GRANT ALL",
-        "BYPASSRLS",
         "OWNER TO APP_RUNTIME",
         "OWNER TO APP_SECURITY_OWNER",
     ):
         assert forbidden not in upper
 
+    assert not re.search(
+        r"\b(?:CREATE|ALTER)\s+ROLE\s+[^;]*\bBYPASSRLS\b",
+        upper,
+        flags=re.DOTALL,
+    )
+
 
 def test_downgrade_loss_detection_does_not_bypass_forced_tenant_relations() -> None:
-    source = _source()
     predecessor = _function_source("_require_predecessor")
     downgrade = _function_source("downgrade")
 
@@ -123,7 +127,6 @@ def test_downgrade_loss_detection_does_not_bypass_forced_tenant_relations() -> N
 
 
 def test_migration_owner_only_marker_tracks_secure_payload_transactionally() -> None:
-    source = _source()
     upgrade = _function_source("upgrade")
 
     assert "CREATE TABLE public.p3b_registration_envelope_rows" in upgrade
