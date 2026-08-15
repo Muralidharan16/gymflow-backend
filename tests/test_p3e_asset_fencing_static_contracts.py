@@ -71,15 +71,16 @@ def test_asset_maintenance_only_dispatches_opaque_ids() -> None:
     assert '"organization-asset-cleanup-dispatch"' in celery
 
 
-def test_asset_migrations_keep_reduced_role_and_sql_namespace_contracts() -> None:
+def test_asset_migrations_keep_reduced_role_and_identity_domain_contracts() -> None:
     n07 = _source("alembic/versions/n07d8e9f0a2e_p3e_fenced_organization_asset_jobs.py")
     o07 = _source("alembic/versions/o07d8e9f0a2f_p3e_asset_delete_capability.py")
     p07 = _source("alembic/versions/p07d8e9f0a30_p3e_asset_cleanup_jobs.py")
     q07 = _source("alembic/versions/q07d8e9f0a31_p3e_asset_claim_ambiguity.py")
-    combined = "\n".join((n07, o07, p07, q07)).lower()
+    r07 = _source("alembic/versions/r07d8e9f0a32_p3e_modern_owner_asset_provenance.py")
+    combined = "\n".join((n07, o07, p07, q07, r07)).lower()
     normalized_p07 = " ".join(p07.lower().split())
 
-    assert "bypassrls" in combined  # role contract is explicitly inspected
+    assert "bypassrls" in combined
     assert " bypassrls;" not in combined
     assert "alter role" not in combined
     assert "row_security = on" in combined
@@ -116,7 +117,23 @@ def test_asset_migrations_keep_reduced_role_and_sql_namespace_contracts() -> Non
     ):
         assert token in q07
 
+    # Legacy gym-owner provenance is preserved; modern owner provenance is a
+    # separate, FK-backed domain and the audit row cannot claim both actors.
+    assert '"organizations_logo_updated_by_fkey"' in r07
+    assert '("organizations", "logo_updated_by", "gym_owners", "id")' in r07
+    assert '"organizations_cover_updated_by_fkey"' in r07
+    assert '("organizations", "cover_updated_by", "gym_owners", "id")' in r07
+    assert '"organization_asset_audit_changed_by_fkey"' in r07
+    assert '("organization_asset_audit", "changed_by", "gym_owners", "id")' in r07
+    assert "logo_updated_by_owner_id" in r07
+    assert "cover_updated_by_owner_id" in r07
+    assert "changed_by_owner_id" in r07
+    assert '"owners", "id"' in r07
+    assert "changed_by IS NULL OR changed_by_owner_id IS NULL" in r07
+    assert "logo_updated_by = NULL" in r07
+    assert "cover_updated_by = NULL" in r07
 
-def test_p3e_fresh_database_harness_targets_asset_claim_correction_head() -> None:
+
+def test_p3e_fresh_database_harness_targets_modern_owner_provenance_head() -> None:
     source = _source("scripts/ci/prepare_p3e_pg16.sh")
-    assert "q07d8e9f0a31" in source
+    assert "r07d8e9f0a32" in source

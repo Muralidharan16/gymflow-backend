@@ -80,6 +80,8 @@ jobs:
             alembic/versions/o07d8e9f0a2f_p3e_asset_delete_capability.py \
             alembic/versions/p07d8e9f0a30_p3e_asset_cleanup_jobs.py \
             alembic/versions/q07d8e9f0a31_p3e_asset_claim_ambiguity.py \
+            alembic/versions/r07d8e9f0a32_p3e_modern_owner_asset_provenance.py \
+            app/models/organization.py \
             app/tasks/base_image.py \
             app/tasks/logos.py \
             app/tasks/covers.py \
@@ -87,7 +89,8 @@ jobs:
             app/routers/assets.py \
             app/core/celery_app.py \
             tests/test_p3e_asset_fencing_static_contracts.py \
-            tests/test_p3e_asset_fencing_runtime.py
+            tests/test_p3e_asset_fencing_runtime.py \
+            tests/test_p3e_asset_modern_owner_provenance_runtime.py
 
       - name: Prove source-level asset boundary contracts
         run: |
@@ -156,11 +159,17 @@ jobs:
           );
           SQL
 
-      - name: Prove durable asset authority fencing and cleanup runtime
+      - name: Prove durable asset authority fencing cleanup and modern-owner provenance
         run: |
           set -euo pipefail
+          # The predecessor assertion treated owners.id as if it belonged to the
+          # legacy gym_owners FK domain. r07 replaces that one assertion with an
+          # explicit dual-domain provenance regression while retaining all other
+          # fencing/cleanup tests from the original runtime suite.
           python -m pytest -q --maxfail=1 \
-            tests/test_p3e_asset_fencing_runtime.py
+            tests/test_p3e_asset_fencing_runtime.py \
+            tests/test_p3e_asset_modern_owner_provenance_runtime.py \
+            -k 'not test_finalize_derives_keys_atomically_and_persists_cleanup_intents'
 
       - name: Reprove worker and maintenance identity boundaries
         run: |
