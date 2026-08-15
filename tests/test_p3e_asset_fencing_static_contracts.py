@@ -106,7 +106,15 @@ def test_asset_migrations_keep_reduced_role_and_sql_namespace_contracts() -> Non
     assert "revoke execute on function" in normalized_p07
     assert "from migration_owner" in normalized_p07
     assert "attempt_count = job.attempt_count + 1" in q07
-    assert "no acl, ownership, rls, or role graph change" in q07.lower()
+    assert "_claim_contract" in q07
+    for token in (
+        "worker_execute",
+        "api_execute",
+        "auth_execute",
+        "maintenance_execute",
+        "public_execute",
+    ):
+        assert token in q07
 
 
 def test_p3e_fresh_database_harness_targets_asset_claim_correction_head() -> None:
