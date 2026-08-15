@@ -9,6 +9,10 @@ capabilities. It never receives direct encryption-key table or sequence ACLs.
 The security owner retains only the exact column/sequence privileges required
 inside SECURITY DEFINER functions. First-key installation is serialized per
 organization/domain and returns the existing winner under a concurrent race.
+
+Registration DEKs also persist the exact KMS wrapping-key identifier returned
+by AWS. Historical decrypt can therefore specify the original KMS key instead
+of relying only on ciphertext metadata or the currently configured alias.
 """
 
 from __future__ import annotations
@@ -28,9 +32,11 @@ _API = "app_runtime"
 _KEY_TABLE = "public.encryption_key_registry"
 _KEY_SEQUENCE = "public.encryption_key_registry_key_version_seq"
 _KEY_SCOPE = "organization_registrations"
+_WRAPPING_KEY_COLUMN = "wrapping_key_id"
+_WRAPPING_KEY_CHECK = "ck_key_registry_registration_wrapping_key"
 _FUNCTIONS = {
     "current_registration_dek": 0,
-    "install_registration_dek": 1,
+    "install_registration_dek": 2,
     "lookup_registration_dek": 1,
 }
 _PREDECESSOR_SECURITY_COLUMN_ACL = {
@@ -41,10 +47,12 @@ _PREDECESSOR_SECURITY_COLUMN_ACL = {
 _FORWARD_SECURITY_COLUMN_ACL = _PREDECESSOR_SECURITY_COLUMN_ACL | {
     ("table_name", "SELECT"),
     ("key_status", "SELECT"),
+    ("wrapping_key_id", "SELECT"),
     ("tenant_id", "INSERT"),
     ("table_name", "INSERT"),
     ("encrypted_dek", "INSERT"),
     ("key_status", "INSERT"),
+    ("wrapping_key_id", "INSERT"),
 }
 
 
@@ -105,6 +113,43 @@ def _require_identity(bind) -> None:
         {"role_name": _SECURITY_OWNER},
     ):
         raise RuntimeError("migration_owner lacks bounded SET to app_security_owner")
+
+
+def _column(bind, column_name: str):
+    return bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.format_type(
+                       attribute_data.atttypid,
+                       attribute_data.atttypmod
+                   )::text AS data_type,
+                   NOT attribute_data.attnotnull AS is_nullable
+            FROM pg_catalog.pg_attribute AS attribute_data
+            WHERE attribute_data.attrelid = pg_catalog.to_regclass(:relation)
+              AND attribute_data.attname = :column_name
+              AND attribute_data.attnum > 0
+              AND NOT attribute_data.attisdropped
+            """
+        ),
+        {"relation": _KEY_TABLE, "column_name": column_name},
+    ).mappings().one_or_none()
+
+
+def _constraint_exists(bind, name: str) -> bool:
+    return bool(
+        _scalar(
+            bind,
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_constraint AS constraint_data
+                WHERE constraint_data.conrelid = pg_catalog.to_regclass(:relation)
+                  AND constraint_data.conname = :name
+            )
+            """,
+            {"relation": _KEY_TABLE, "name": name},
+        )
+    )
 
 
 def _column_acl(bind, role_name: str) -> set[tuple[str, str]]:
@@ -279,7 +324,11 @@ def _principal_guard_sql(label: str) -> str:
 
 _CURRENT_FUNCTION = f"""
 CREATE FUNCTION app_secure.current_registration_dek()
-RETURNS TABLE (key_version integer, encrypted_dek bytea)
+RETURNS TABLE (
+    key_version integer,
+    encrypted_dek bytea,
+    wrapping_key_id text
+)
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
@@ -298,7 +347,9 @@ DECLARE
 BEGIN
 {_principal_guard_sql('registration DEK current lookup')}
     RETURN QUERY
-    SELECT key_data.key_version, key_data.encrypted_dek
+    SELECT key_data.key_version,
+           key_data.encrypted_dek,
+           key_data.wrapping_key_id::text
     FROM public.encryption_key_registry AS key_data
     WHERE key_data.tenant_id = v_org_id
       AND key_data.table_name = '{_KEY_SCOPE}'
@@ -311,7 +362,7 @@ $function$
 
 _LOOKUP_FUNCTION = f"""
 CREATE FUNCTION app_secure.lookup_registration_dek(p_key_version integer)
-RETURNS bytea
+RETURNS TABLE (encrypted_dek bytea, wrapping_key_id text)
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
@@ -327,7 +378,6 @@ DECLARE
     v_org_id uuid;
     v_user_id uuid;
     v_authorized boolean := FALSE;
-    v_encrypted_dek bytea;
 BEGIN
 {_principal_guard_sql('registration DEK historical lookup')}
     IF p_key_version IS NULL OR p_key_version < 1 THEN
@@ -335,21 +385,27 @@ BEGIN
             USING ERRCODE = '22023';
     END IF;
 
-    SELECT key_data.encrypted_dek
-      INTO v_encrypted_dek
+    RETURN QUERY
+    SELECT key_data.encrypted_dek,
+           key_data.wrapping_key_id::text
       FROM public.encryption_key_registry AS key_data
      WHERE key_data.tenant_id = v_org_id
        AND key_data.table_name = '{_KEY_SCOPE}'
        AND key_data.key_version = p_key_version;
-
-    RETURN v_encrypted_dek;
 END;
 $function$
 """
 
 _INSTALL_FUNCTION = f"""
-CREATE FUNCTION app_secure.install_registration_dek(p_encrypted_dek bytea)
-RETURNS TABLE (key_version integer, encrypted_dek bytea)
+CREATE FUNCTION app_secure.install_registration_dek(
+    p_encrypted_dek bytea,
+    p_wrapping_key_id text
+)
+RETURNS TABLE (
+    key_version integer,
+    encrypted_dek bytea,
+    wrapping_key_id text
+)
 LANGUAGE plpgsql
 VOLATILE
 SECURITY DEFINER
@@ -371,6 +427,12 @@ BEGIN
         RAISE EXCEPTION 'registration DEK ciphertext is required'
             USING ERRCODE = '22023';
     END IF;
+    IF p_wrapping_key_id IS NULL
+       OR pg_catalog.btrim(p_wrapping_key_id) = ''
+       OR pg_catalog.length(p_wrapping_key_id) > 2048 THEN
+        RAISE EXCEPTION 'registration DEK wrapping key identity is invalid'
+            USING ERRCODE = '22023';
+    END IF;
 
     PERFORM pg_catalog.pg_advisory_xact_lock(
         pg_catalog.hashtextextended(
@@ -380,7 +442,9 @@ BEGIN
     );
 
     RETURN QUERY
-    SELECT key_data.key_version, key_data.encrypted_dek
+    SELECT key_data.key_version,
+           key_data.encrypted_dek,
+           key_data.wrapping_key_id::text
       FROM public.encryption_key_registry AS key_data
      WHERE key_data.tenant_id = v_org_id
        AND key_data.table_name = '{_KEY_SCOPE}'
@@ -394,17 +458,28 @@ BEGIN
     BEGIN
         RETURN QUERY
         INSERT INTO public.encryption_key_registry (
-            tenant_id, table_name, encrypted_dek, key_status
+            tenant_id,
+            table_name,
+            encrypted_dek,
+            key_status,
+            wrapping_key_id
         ) VALUES (
-            v_org_id, '{_KEY_SCOPE}', p_encrypted_dek, 'ACTIVE'
+            v_org_id,
+            '{_KEY_SCOPE}',
+            p_encrypted_dek,
+            'ACTIVE',
+            pg_catalog.btrim(p_wrapping_key_id)
         )
         RETURNING encryption_key_registry.key_version,
-                  encryption_key_registry.encrypted_dek;
+                  encryption_key_registry.encrypted_dek,
+                  encryption_key_registry.wrapping_key_id::text;
         RETURN;
     EXCEPTION
         WHEN unique_violation THEN
             RETURN QUERY
-            SELECT key_data.key_version, key_data.encrypted_dek
+            SELECT key_data.key_version,
+                   key_data.encrypted_dek,
+                   key_data.wrapping_key_id::text
               FROM public.encryption_key_registry AS key_data
              WHERE key_data.tenant_id = v_org_id
                AND key_data.table_name = '{_KEY_SCOPE}'
@@ -421,6 +496,10 @@ $function$
 
 
 def _require_predecessor(bind) -> None:
+    if _column(bind, _WRAPPING_KEY_COLUMN) is not None:
+        raise RuntimeError("P3B DEK wrapping-key column unexpectedly already exists")
+    if _constraint_exists(bind, _WRAPPING_KEY_CHECK):
+        raise RuntimeError("P3B DEK wrapping-key check unexpectedly already exists")
     if _column_acl(bind, _SECURITY_OWNER) != _PREDECESSOR_SECURITY_COLUMN_ACL:
         raise RuntimeError("P3B DEK predecessor security-owner column ACL drift")
     if _column_acl(bind, _API):
@@ -436,6 +515,16 @@ def _require_predecessor(bind) -> None:
 
 
 def _require_forward(bind) -> None:
+    wrapping_key = _column(bind, _WRAPPING_KEY_COLUMN)
+    if (
+        wrapping_key is None
+        or wrapping_key["data_type"] != "character varying(2048)"
+        or not wrapping_key["is_nullable"]
+    ):
+        raise RuntimeError("P3B DEK wrapping-key column contract drift")
+    if not _constraint_exists(bind, _WRAPPING_KEY_CHECK):
+        raise RuntimeError("P3B DEK wrapping-key check is missing")
+
     if _column_acl(bind, _SECURITY_OWNER) != _FORWARD_SECURITY_COLUMN_ACL:
         raise RuntimeError("P3B DEK security-owner column ACL drift")
     if _column_acl(bind, _API):
@@ -470,12 +559,13 @@ def _require_forward(bind) -> None:
             "public.organization_users",
             "public.encryption_key_registry",
             _KEY_SCOPE,
+            "wrapping_key_id",
         ):
             if token not in source:
                 raise RuntimeError(f"P3B DEK function {name} lost token {token}")
 
     install_source = " ".join(
-        str(_function_row(bind, "install_registration_dek", 1)["source"]).split()
+        str(_function_row(bind, "install_registration_dek", 2)["source"]).split()
     ).lower()
     for token in ("pg_advisory_xact_lock", "hashtextextended", "unique_violation"):
         if token not in install_source:
@@ -499,10 +589,10 @@ def _install_functions(bind) -> None:
             bind.execute(sa.text(function_sql))
         bind.execute(sa.text("REVOKE ALL ON FUNCTION app_secure.current_registration_dek() FROM PUBLIC"))
         bind.execute(sa.text("REVOKE ALL ON FUNCTION app_secure.lookup_registration_dek(integer) FROM PUBLIC"))
-        bind.execute(sa.text("REVOKE ALL ON FUNCTION app_secure.install_registration_dek(bytea) FROM PUBLIC"))
+        bind.execute(sa.text("REVOKE ALL ON FUNCTION app_secure.install_registration_dek(bytea,text) FROM PUBLIC"))
         bind.execute(sa.text("GRANT EXECUTE ON FUNCTION app_secure.current_registration_dek() TO app_runtime"))
         bind.execute(sa.text("GRANT EXECUTE ON FUNCTION app_secure.lookup_registration_dek(integer) TO app_runtime"))
-        bind.execute(sa.text("GRANT EXECUTE ON FUNCTION app_secure.install_registration_dek(bytea) TO app_runtime"))
+        bind.execute(sa.text("GRANT EXECUTE ON FUNCTION app_secure.install_registration_dek(bytea,text) TO app_runtime"))
     finally:
         bind.execute(sa.text("RESET ROLE"))
 
@@ -518,8 +608,29 @@ def upgrade() -> None:
     bind.execute(
         sa.text(
             """
-            GRANT SELECT (table_name, key_status),
-                  INSERT (tenant_id, table_name, encrypted_dek, key_status)
+            ALTER TABLE public.encryption_key_registry
+                ADD COLUMN wrapping_key_id varchar(2048),
+                ADD CONSTRAINT ck_key_registry_registration_wrapping_key CHECK (
+                    table_name <> 'organization_registrations'
+                    OR (
+                        wrapping_key_id IS NOT NULL
+                        AND pg_catalog.btrim(wrapping_key_id) <> ''
+                    )
+                )
+            """
+        )
+    )
+    bind.execute(
+        sa.text(
+            """
+            GRANT SELECT (table_name, key_status, wrapping_key_id),
+                  INSERT (
+                      tenant_id,
+                      table_name,
+                      encrypted_dek,
+                      key_status,
+                      wrapping_key_id
+                  )
             ON TABLE public.encryption_key_registry
             TO app_security_owner
             """
@@ -540,9 +651,23 @@ def downgrade() -> None:
     _require_identity(bind)
     _require_forward(bind)
 
+    if _scalar(
+        bind,
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM public.encryption_key_registry
+            WHERE table_name = 'organization_registrations'
+        )
+        """,
+    ):
+        raise RuntimeError(
+            "P3B DEK downgrade would discard registration wrapping-key identity"
+        )
+
     bind.execute(sa.text("SET LOCAL ROLE app_security_owner"))
     try:
-        bind.execute(sa.text("DROP FUNCTION app_secure.install_registration_dek(bytea)"))
+        bind.execute(sa.text("DROP FUNCTION app_secure.install_registration_dek(bytea,text)"))
         bind.execute(sa.text("DROP FUNCTION app_secure.lookup_registration_dek(integer)"))
         bind.execute(sa.text("DROP FUNCTION app_secure.current_registration_dek()"))
     finally:
@@ -557,10 +682,25 @@ def downgrade() -> None:
     bind.execute(
         sa.text(
             """
-            REVOKE SELECT (table_name, key_status),
-                   INSERT (tenant_id, table_name, encrypted_dek, key_status)
+            REVOKE SELECT (table_name, key_status, wrapping_key_id),
+                   INSERT (
+                       tenant_id,
+                       table_name,
+                       encrypted_dek,
+                       key_status,
+                       wrapping_key_id
+                   )
             ON TABLE public.encryption_key_registry
             FROM app_security_owner
+            """
+        )
+    )
+    bind.execute(
+        sa.text(
+            """
+            ALTER TABLE public.encryption_key_registry
+                DROP CONSTRAINT ck_key_registry_registration_wrapping_key,
+                DROP COLUMN wrapping_key_id
             """
         )
     )
