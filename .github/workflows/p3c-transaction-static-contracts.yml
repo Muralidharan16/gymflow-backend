@@ -31,6 +31,7 @@ jobs:
       S3_BUCKET_NAME: gymflow-p3c-test
       ENVIRONMENT: test
       PYTHONDONTWRITEBYTECODE: '1'
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
 
     steps:
       - name: Checkout
@@ -56,9 +57,11 @@ jobs:
           python -m py_compile \
             app/core/service_managed_database.py \
             app/services/organization_profile_mutation_service.py \
-            app/routers/organizations.py
+            app/routers/organizations.py \
+            tests/test_p3c_profile_registration_atomicity_static.py
 
       - name: Run P3C static contracts
         run: |
           set -euo pipefail
-          pytest -q tests/test_p3c_profile_registration_atomicity_static.py
+          python -m pytest --noconftest -q \
+            tests/test_p3c_profile_registration_atomicity_static.py
