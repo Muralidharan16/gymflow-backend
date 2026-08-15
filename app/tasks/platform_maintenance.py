@@ -1,6 +1,6 @@
 """Cross-tenant platform maintenance owned by the isolated maintenance process.
 
-These tasks never receive direct table privileges.  They install transaction-local
+These tasks never receive direct table privileges. They install transaction-local
 maintenance context and invoke bounded ``app_secure`` SECURITY DEFINER functions.
 Geocoding work itself remains tenant-bound on the ordinary worker queue.
 """
@@ -28,6 +28,26 @@ async def _prepare_platform_maintenance_session(session) -> None:
         role="platform_maintenance",
         trace_id="platform-maintenance",
     )
+
+
+async def _run_expire_legacy_member_subscriptions() -> int:
+    async with maintenance_async_session_maker() as session:
+        await _prepare_platform_maintenance_session(session)
+        try:
+            result = await session.scalar(
+                sa.text(
+                    "SELECT app_secure.expire_legacy_member_subscriptions(500)"
+                )
+            )
+            await session.commit()
+            count = int(result or 0)
+            if count:
+                logger.info("Expired %s legacy member subscriptions", count)
+            return count
+        except Exception:
+            await session.rollback()
+            logger.exception("Legacy member-subscription expiry failed")
+            raise
 
 
 async def _run_reclaim_stale_idempotency() -> int:
@@ -84,8 +104,6 @@ async def _run_geocoding_reverification() -> int:
                     )
                 )
             ).mappings().all()
-            # Commit the durable claim before broker dispatch.  A failed dispatch
-            # remains reclaimable after the bounded next_retry_at lease expires.
             await session.commit()
         except Exception:
             await session.rollback()
@@ -115,6 +133,18 @@ async def _run_places_cache_cleanup() -> int:
             await session.rollback()
             logger.exception("Platform places cache cleanup failed")
             raise
+
+
+@shared_task(
+    name="app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=5,
+)
+def expire_legacy_member_subscriptions() -> int:
+    return asyncio.run(_run_expire_legacy_member_subscriptions())
 
 
 @shared_task(

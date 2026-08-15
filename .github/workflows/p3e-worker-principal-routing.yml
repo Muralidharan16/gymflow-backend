@@ -72,7 +72,7 @@ jobs:
           diff -u requirements-test.lock /tmp/resolved.txt
 
       - name: Prepare fresh P3E PostgreSQL 16 boundary
-        run: bash scripts/ci/prepare_p3d_pg16.sh
+        run: bash scripts/ci/prepare_p3e_pg16.sh
 
       - name: Prove worker and maintenance authority routing
         run: |

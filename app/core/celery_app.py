@@ -8,13 +8,14 @@ from app.core.config import settings
 
 
 WORKER_QUEUE = "worker"
-# Historical queue label retained for deployment compatibility.  The process is
+# Historical queue label retained for deployment compatibility. The process is
 # the isolated maintenance control plane and now hosts both lifecycle and
 # narrowly bounded platform-maintenance tasks.
 MAINTENANCE_QUEUE = "lifecycle-maintenance"
 MAINTENANCE_TASKS = (
     "app.tasks.branch_lifecycle_sweeps.watchdog",
     "app.tasks.branch_lifecycle_sweeps.reconciliation",
+    "app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
     "app.tasks.platform_maintenance.reclaim_stale_idempotency",
     "app.tasks.platform_maintenance.archive_expired_idempotency",
     "app.tasks.platform_maintenance.geocoding_reverification",
@@ -76,8 +77,9 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(hour=0, minute=0),
     },
     "expire-subscriptions": {
-        "task": "expire_subscriptions",
+        "task": "app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
         "schedule": crontab(hour=0, minute=5),
+        "options": {"queue": MAINTENANCE_QUEUE},
     },
     "member-reminders": {
         "task": "send_daily_reminders",
