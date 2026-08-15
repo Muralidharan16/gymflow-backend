@@ -59,5 +59,7 @@ class DoersSettingsSchema(BaseSettings):
     AWS_ACCESS_KEY_ID: str = Field(..., alias="AWS_ACCESS_KEY_ID")
     AWS_SECRET_ACCESS_KEY: str = Field(..., alias="AWS_SECRET_ACCESS_KEY")
     AWS_REGION_NAME: str = "us-east-1"
+    AWS_KMS_KEY_ID: str = ""
+    AWS_KMS_ENDPOINT_URL: str = ""
     S3_BUCKET_NAME: str = "gymflow-local-bucket"
     CDN_BASE_URL: str = "https://cdn.gymflow.local"
