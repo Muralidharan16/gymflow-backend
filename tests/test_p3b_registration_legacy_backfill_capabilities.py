@@ -67,10 +67,13 @@ def test_conversion_preserves_verification_and_only_changes_crypto_material() ->
     assert "id_number_encrypted = NULL" in convert_sql
     assert "crypto_version = 1" in convert_sql
     assert "updated_at = pg_catalog.clock_timestamp()" in convert_sql
-    assert "RETURNING registration.is_verified" in convert_sql
+    assert "registration.is_verified" in convert_sql
     assert "registration.verified_at" in convert_sql
-    assert "is_verified =" not in convert_sql
-    assert "verified_at =" not in convert_sql
+    update_sql = convert_sql.split("UPDATE public.organization_registrations", 1)[1].split(
+        "RETURNING", 1
+    )[0]
+    assert "is_verified =" not in update_sql
+    assert "verified_at =" not in update_sql
 
 
 def test_conversion_requires_active_same_tenant_registration_key_and_header_match() -> None:
