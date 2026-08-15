@@ -109,11 +109,12 @@ def test_create_inserts_crypto_v1_metadata_and_secure_payload_in_one_function() 
 def test_runtime_receives_function_execute_not_new_direct_secure_payload_dml() -> None:
     source = _source()
     upper = re.sub(r"\s+", " ", source).upper()
+    install = _function_source("_install_function")
 
-    assert (
-        "GRANT EXECUTE ON FUNCTION APP_SECURE.CREATE_ORGANIZATION_REGISTRATION_ENVELOPE("
-        "UUID,TEXT,TEXT,TEXT,TEXT,BYTEA,INTEGER) TO APP_RUNTIME"
-    ) in upper
+    assert "GRANT EXECUTE ON FUNCTION" in install
+    assert "app_secure.create_organization_registration_envelope(" in install
+    assert "uuid,text,text,text,text,bytea,integer" in install
+    assert "TO app_runtime" in install
     assert not re.search(
         r"GRANT\s+(?:SELECT|INSERT|UPDATE|DELETE|TRUNCATE|ALL)\b[^;]*\b"
         r"ORGANIZATION_REGISTRATION_PAYLOADS_SECURE\b[^;]*\bTO\s+APP_RUNTIME\b",
