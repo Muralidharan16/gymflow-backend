@@ -5,7 +5,12 @@ from uuid import UUID
 from typing import List
 
 from app.core.database import get_db
-from app.core.deps import get_current_active_staff, Staff, BranchAccessGuard
+from app.core.deps import (
+    get_current_active_staff,
+    Staff,
+    BranchAccessGuard,
+    resolve_authoritative_branch_scope,
+)
 from app.schemas.branch_lifecycle import (
     BranchTransitionRequest,
     BranchStatusStateResponse,
@@ -27,6 +32,11 @@ async def list_branches(
     from app.models.address import OrganizationAddress
     from app.utils.encryption import decrypt_data
 
+    # Branch-scoped roles are bounded by both the signed token claim and the
+    # current active PostgreSQL assignment. This prevents stale JWT or Redis
+    # role-cache state from preserving visibility after revocation.
+    scoped_branch_ids = await resolve_authoritative_branch_scope(current_staff, db)
+
     stmt = (
         select(OrgBranch, OrgBranchState, OrganizationAddress)
         .join(OrgBranchState, OrgBranch.id == OrgBranchState.branch_id)
@@ -34,6 +44,11 @@ async def list_branches(
         .where(OrgBranch.org_id == current_staff.org_id)
         .where(OrgBranchState.deleted_at.is_(None))
     )
+    if scoped_branch_ids is not None:
+        if not scoped_branch_ids:
+            return {"data": []}
+        stmt = stmt.where(OrgBranch.id.in_(list(scoped_branch_ids)))
+
     rows = (await db.execute(stmt)).all()
 
     # Branch contacts are the canonical branch-level contact source. Do not
@@ -45,6 +60,10 @@ async def list_branches(
         BranchContactORM.deleted_at.is_(None),
         BranchContactORM.is_primary.is_(True),
     )
+    if scoped_branch_ids is not None:
+        contact_stmt = contact_stmt.where(
+            BranchContactORM.branch_id.in_(list(scoped_branch_ids))
+        )
     contacts = (await db.execute(contact_stmt)).scalars().all()
 
     branch_contacts = {}
@@ -177,7 +196,11 @@ async def get_branch_history(
 
 
 def _require_maintenance_operator(current_staff: Staff) -> None:
-    if current_staff.role not in ("owner", "admin", "superadmin", "compliance"):
+    # Cross-tenant watchdog/reconciliation work is a control-plane operation.
+    # Tenant owners/admins must never be able to trigger global maintenance,
+    # even though the actual database work executes under a separate bounded
+    # maintenance identity.
+    if current_staff.role not in ("superadmin", "compliance"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied.",

@@ -66,7 +66,7 @@ class StaffRolesService:
         """Install the migration-0025 read capability for this transaction only.
 
         Callers must complete their application authorization (org admin or
-        verified branch/self scope) before invoking this method.  ``is_local``
+        verified branch/self scope) before invoking this method. ``is_local``
         keeps the capability from surviving commit/rollback or leaking through
         the connection pool.
         """
@@ -87,9 +87,38 @@ class StaffRolesService:
         except Exception:
             logger.exception("Failed to delete branch roles cache from Redis")
 
-    async def get_user_branch_roles(self, user_id: UUID, org_id: UUID) -> Dict[str, List[str]]:
+    @staticmethod
+    def _group_branch_roles(db_roles: List[BranchStaffRole]) -> Dict[str, List[str]]:
+        branch_roles: Dict[str, List[str]] = {}
+        for role_assignment in db_roles:
+            branch_id = str(role_assignment.branch_id)
+            branch_roles.setdefault(branch_id, []).append(role_assignment.role.value)
+        return branch_roles
+
+    async def get_authoritative_user_branch_roles(
+        self,
+        user_id: UUID,
+        org_id: UUID,
+    ) -> Dict[str, List[str]]:
+        """Read current active branch roles directly from PostgreSQL.
+
+        Authorization must never depend on the Redis role cache. Role revocation
+        is a security boundary, so callers that decide access use this method
+        after installing the transaction-local staff-role read capability. The
+        query excludes revoked, not-yet-effective, and expired assignments.
         """
-        Fetches active branch roles for a user, checking Redis cache first, falling back to PostgreSQL.
+        db_roles = await self.repo.list_user_staff_roles(
+            user_id,
+            org_id,
+            include_inactive=False,
+        )
+        return self._group_branch_roles(db_roles)
+
+    async def get_user_branch_roles(self, user_id: UUID, org_id: UUID) -> Dict[str, List[str]]:
+        """Fetch active branch roles for non-authoritative/read-optimization use.
+
+        The cache is deliberately not an authorization authority. Security-
+        sensitive callers must use ``get_authoritative_user_branch_roles``.
         """
         cache_key = self._get_cache_key(user_id)
         try:
@@ -99,18 +128,8 @@ class StaffRolesService:
         except Exception:
             logger.exception("Redis read failure during get_user_branch_roles")
 
-        # Fallback to Database. The caller must have installed the transaction-
-        # local app.can_read_staff_roles capability after authorization.
-        db_roles = await self.repo.list_user_staff_roles(user_id, org_id, include_inactive=False)
+        branch_roles = await self.get_authoritative_user_branch_roles(user_id, org_id)
 
-        branch_roles = {}
-        for r in db_roles:
-            b_str = str(r.branch_id)
-            if b_str not in branch_roles:
-                branch_roles[b_str] = []
-            branch_roles[b_str].append(r.role.value)
-
-        # Set cache
         try:
             await redis_client.set(cache_key, json.dumps(branch_roles), ex=3600)
         except Exception:
