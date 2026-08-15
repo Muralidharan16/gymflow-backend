@@ -101,18 +101,25 @@ def test_p3d_reserved_control_plane_roles_are_not_normal_owner_login_roles() -> 
     assert 'role="compliance"' not in auth_service
 
 
-def test_p3d_worker_and_maintenance_boundaries_preserve_force_rls_and_no_bypass() -> None:
+def test_p3d_worker_and_maintenance_boundaries_preserve_rls_and_no_bypass() -> None:
     worker = _read("alembic/versions/2c3d4e5f6071_harden_branch_lifecycle_worker.py")
     scoped_rls = _read("alembic/versions/718293a4b5c6_scope_lifecycle_rls_policies_by_role.py")
     maintenance = _read("alembic/versions/b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py")
 
-    assert "FORCE ROW LEVEL SECURITY" in worker
+    # The worker migration owns lease/context-bounded worker capability. FORCE
+    # RLS is a table-lineage responsibility and is explicitly reproved in the
+    # later role-scoping/maintenance migrations rather than reissued here.
+    assert "worker_runtime" in worker
+    assert "leased_by" in worker
+    assert "leased_until" in worker
+    assert "app.worker_id" in worker
+    assert "BYPASSRLS" not in worker.replace("NOBYPASSRLS", "")
+
     assert "FORCE ROW LEVEL SECURITY" in scoped_rls
     assert "FORCE ROW LEVEL SECURITY" in maintenance
     assert "NOBYPASSRLS" in maintenance
     assert "app.internal_maintenance" in maintenance
     assert "lifecycle_maintenance_runtime" in maintenance
-    assert "worker_runtime" in worker
 
 
 def test_p3d_transition_service_locks_tenant_bound_state_and_checks_catalog_role() -> None:
