@@ -203,20 +203,20 @@ register_asset_endpoints(router, "logo")
 register_asset_endpoints(router, "cover")
 
 
-@router.post("/mock-s3/upload")
-async def mock_s3_upload(
-    file: UploadFile,
-    key: str = Form(...)
-):
-    """
-    Simulation endpoint capturing client browser uploads in local development.
-    Writes payload straight to our local file system Mock S3.
-    """
-    try:
-        s3 = get_s3_client()
-        content = await file.read()
-        s3.put_object(Bucket=settings.S3_BUCKET_NAME, Key=key, Body=content)
-        return FastApiResponse(status_code=204)
-    except Exception as e:
-        logger.error(f"Local simulated S3 upload failed: {str(e)}")
-        raise HTTPException(status_code=500, detail="Local mock upload failed")
+# Local direct-upload simulation is deliberately not registered outside the
+# development environment. Production must use the signed S3 upload contract.
+if settings.ENVIRONMENT == "development":
+    @router.post("/mock-s3/upload", include_in_schema=False)
+    async def mock_s3_upload(
+        file: UploadFile,
+        key: str = Form(...)
+    ):
+        """Capture browser uploads in the local development Mock S3 only."""
+        try:
+            s3 = get_s3_client()
+            content = await file.read()
+            s3.put_object(Bucket=settings.S3_BUCKET_NAME, Key=key, Body=content)
+            return FastApiResponse(status_code=204)
+        except Exception as e:
+            logger.error(f"Local simulated S3 upload failed: {str(e)}")
+            raise HTTPException(status_code=500, detail="Local mock upload failed")

@@ -17,6 +17,7 @@ class DoersSettingsSchema(BaseSettings):
     CELERY_WORKER_PROFILE: str = ""
 
     SECRET_KEY: str
+    INTERNAL_CONTROL_TOKEN: str = ""
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 

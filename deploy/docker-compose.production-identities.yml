@@ -5,6 +5,7 @@ services:
       CELERY_WORKER_PROFILE: ""
       WORKER_DATABASE_URL: ""
       MAINTENANCE_DATABASE_URL: ""
+      INTERNAL_CONTROL_TOKEN: ${INTERNAL_CONTROL_TOKEN:?INTERNAL_CONTROL_TOKEN is required for production API}
 
   celery-worker:
     environment:

@@ -1,0 +1,142 @@
+name: Production Attack Surface Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+      - hardening/p3a-organization-profile-authorization
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-attack-surface-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-attack-surface:
+    name: Production attack-surface boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://ci_api:ci_api@db.invalid:5432/doers
+      AUTH_DATABASE_URL: postgresql+asyncpg://ci_auth:ci_auth@db.invalid:5432/doers
+      WORKER_DATABASE_URL: ''
+      MAINTENANCE_DATABASE_URL: ''
+      REDIS_URL: redis://redis.invalid:6379/0
+      CELERY_BROKER_URL: redis://redis.invalid:6379/1
+      CELERY_RESULT_BACKEND: redis://redis.invalid:6379/2
+      DOERS_PROCESS_PROFILE: api
+      CELERY_WORKER_PROFILE: ''
+      SECRET_KEY: ci-production-secret-key-0123456789abcdef
+      INTERNAL_CONTROL_TOKEN: ci-internal-control-token-abcdef0123456789
+      BACKEND_BASE_URL: https://api.example.invalid
+      FRONTEND_URL: https://app.example.invalid
+      CORS_ORIGINS: https://app.example.invalid
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      CDN_BASE_URL: https://cdn.example.invalid
+      ENVIRONMENT: production
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+
+      - name: Compile production security surface
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            app/core/config.py \
+            app/core/control_plane.py \
+            app/core/drain.py \
+            app/core/settings_schema.py \
+            app/main.py \
+            app/routers/assets.py \
+            tests/security/test_production_attack_surface.py
+
+      - name: Run production attack-surface regressions
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q tests/security/test_production_attack_surface.py
+
+      - name: Prove valid production API configuration starts fail-closed contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from app.core.config import settings
+
+          assert settings.is_production
+          assert settings.process_profile == "api"
+          assert settings.FRONTEND_URL == "https://app.example.invalid"
+          assert settings.BACKEND_BASE_URL == "https://api.example.invalid"
+          assert settings.cors_origins_list == ["https://app.example.invalid"]
+          assert len(settings.INTERNAL_CONTROL_TOKEN) >= 32
+          PY
+
+      - name: Prove development mock S3 route is absent in production
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from app.routers.assets import router
+
+          paths = {route.path for route in router.routes}
+          assert "/organizations/mock-s3/upload" not in paths, paths
+          PY
+
+      - name: Reject unsafe production configuration matrix
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+
+          baseline = os.environ.copy()
+          secret = baseline["SECRET_KEY"]
+          cases = {
+              "http_frontend": {"FRONTEND_URL": "http://app.example.invalid"},
+              "localhost_frontend": {"FRONTEND_URL": "https://localhost"},
+              "http_backend": {"BACKEND_BASE_URL": "http://api.example.invalid"},
+              "wildcard_cors": {"CORS_ORIGINS": "*"},
+              "cors_mismatch": {"CORS_ORIGINS": "https://other.example.invalid"},
+              "short_control_token": {"INTERNAL_CONTROL_TOKEN": "too-short"},
+              "reused_control_token": {"INTERNAL_CONTROL_TOKEN": secret},
+              "placeholder_secret": {
+                  "SECRET_KEY": "replace-with-a-long-random-production-secret"
+              },
+          }
+
+          for name, overrides in cases.items():
+              env = baseline.copy()
+              env.update(overrides)
+              result = subprocess.run(
+                  [sys.executable, "-c", "from app.core.config import settings"],
+                  env=env,
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              if result.returncode == 0:
+                  raise AssertionError(f"unsafe production configuration unexpectedly accepted: {name}")
+          PY

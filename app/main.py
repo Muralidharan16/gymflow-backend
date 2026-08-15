@@ -4,14 +4,15 @@ app/main.py
 FastAPI application entrypoint for the Doers SaaS platform.
 
 Middleware order (add_middleware is applied bottom-to-top, so innermost first):
-  TenantMiddleware            ← innermost (runs last on request, first on response)
+  TenantMiddleware                 ← innermost (runs last on request, first on response)
   IdempotencyMiddleware
   AdaptiveWriteThrottler
   RedisRateLimiterMiddleware
   OpenTelemetryTraceMiddleware
   CorrelationIdMiddleware
-  SecurityHeadersMiddleware   ← outermost
-  CORSMiddleware              ← very outermost
+  SecurityHeadersMiddleware
+  CORSMiddleware
+  InternalControlPlaneMiddleware   ← outermost; intercepts only internal lifecycle control
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
+from app.core.control_plane import InternalControlPlaneMiddleware
 from app.core.middleware import (
     AdaptiveWriteThrottler,
     CorrelationIdMiddleware,
@@ -137,6 +139,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Deployment lifecycle control must run before user/tenant middleware so the
+# orchestrator never needs an application JWT and the drain request itself is
+# not counted as an in-flight user request.
+app.add_middleware(InternalControlPlaneMiddleware)
 
 # ── Static storage ─────────────────────────────────────────────────────────
 
@@ -180,14 +186,6 @@ app.include_router(finance_payment_boundary.router)
 @app.get("/")
 async def root():
     return {"message": "Doers SaaS API v2.0 — Enterprise Edition"}
-
-
-@app.get("/_system/preStop")
-async def system_pre_stop():
-    from app.core.drain import drain_coordinator
-    # Triggers draining sequence (readiness check will start failing, blocks until requests complete)
-    await drain_coordinator.trigger_drain()
-    return {"status": "drained"}
 
 
 @app.get("/health")

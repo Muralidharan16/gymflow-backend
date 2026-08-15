@@ -27,6 +27,16 @@ API and auth are separate database identities even though they live in the same 
 
 Do not place all database URLs in one shared production secret bundle and rely on application code to choose the correct one. Secret distribution is part of the security boundary.
 
+## Internal lifecycle control
+
+The API process requires a dedicated `INTERNAL_CONTROL_TOKEN` in production. It must be a random value of at least 32 characters, must be distinct from `SECRET_KEY`, and must be delivered only to the API process and the trusted deployment orchestrator.
+
+Graceful drain is an internal control-plane operation, not a user API. The orchestrator must invoke **`POST /_system/preStop`** from the API container's loopback interface and send the exact token in the `X-DOERS-Internal-Token` header. The path is intercepted before tenant/user middleware, is not exposed in OpenAPI, rejects every other HTTP method, rejects non-loopback callers even when they know the token, and uses `Cache-Control: no-store`. Never put the control token in a URL, query string, repository file, image, or application log.
+
+A Kubernetes deployment should use an `exec` lifecycle hook (for example, a local HTTP client inside the API container calling `127.0.0.1`) or an equivalent in-process-network-namespace mechanism capable of sending the POST method and header. Do not use an unauthenticated `httpGet` lifecycle hook or route this control path through an ingress/load balancer.
+
+Production also requires `FRONTEND_URL`, `BACKEND_BASE_URL`, and every CORS origin to be explicit HTTPS origins. Localhost, loopback, wildcard/empty CORS configuration, credentials in URLs, query strings, and fragments are rejected at startup. `CORS_ORIGINS` must explicitly include the configured frontend origin.
+
 ## Startup expectations
 
 1. Infrastructure provisions PostgreSQL capability roles using the canonical cluster-role bootstrap.
@@ -34,5 +44,7 @@ Do not place all database URLs in one shared production secret bundle and rely o
 3. Alembic runs separately as `migration_owner` and reaches the single repository HEAD.
 4. API/worker/maintenance startup attestation verifies the live PostgreSQL principal before work begins.
 5. RLS remains enabled and forced on governed tenant tables; no production process disables it.
+6. The API process receives the dedicated internal-control secret; non-API processes do not need it.
+7. Production web/CORS origins pass the fail-closed HTTPS origin validation before traffic is accepted.
 
-A green application health check is not a substitute for these identity proofs.
+A green application health check is not a substitute for these identity and control-plane proofs.
