@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import struct
 from contextlib import contextmanager
 
 import psycopg
@@ -11,8 +12,9 @@ BETA_ORG = "22222222-2222-4222-8222-222222222222"
 ALPHA_OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 BETA_OWNER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 REGISTRATION_ID = "aaaaaaaa-2222-4aaa-8aaa-aaaaaaaaaaaa"
-OPAQUE_CIPHERTEXT = "opaque-ci-ciphertext-never-decrypted"
 MASKED_ID = "XXXXXX1234"
+WRAPPED_DEK = b"kms-wrapped-registration-read-dek"
+WRAPPING_KEY_ID = "arn:aws:kms:us-east-1:111122223333:key/p3b-read"
 
 
 @contextmanager
@@ -90,30 +92,36 @@ def _seed() -> None:
                     (ALPHA_OWNER, ALPHA_ORG, BETA_OWNER, BETA_ORG),
                 )
 
+    # Final P3B forbids legacy metadata-only rows. Seed the read proof through
+    # the same principal-bound DEK + atomic create capabilities used by normal
+    # application traffic.
+    with _connection("P3B_API_DSN") as connection:
         with connection.transaction():
             with connection.cursor() as cursor:
+                _set_context(cursor, org_id=ALPHA_ORG, user_id=ALPHA_OWNER)
                 cursor.execute(
-                    "SELECT pg_catalog.set_config('app.current_org_id', %s, true)",
-                    (ALPHA_ORG,),
+                    "SELECT * FROM app_secure.install_registration_dek(%s, %s)",
+                    (WRAPPED_DEK, WRAPPING_KEY_ID),
                 )
+                key_row = cursor.fetchone()
+                assert key_row is not None
+                key_version = int(key_row[0])
+                payload = struct.pack(">I", key_version) + b"p3b-read-envelope-payload-padding"
                 cursor.execute(
                     """
-                    INSERT INTO public.organization_registrations (
-                        id, org_id, id_type, id_number_encrypted,
-                        id_number_masked, country_code, entity_type,
-                        is_verified, verified_at
-                    ) VALUES (
-                        %s::uuid, %s::uuid, 'PAN', %s, %s,
-                        'IN', 'P', TRUE, CURRENT_TIMESTAMP
+                    SELECT *
+                    FROM app_secure.create_organization_registration_envelope(
+                        %s::uuid, 'PAN', %s, 'IN', 'P', %s, %s
                     )
                     """,
-                    (
-                        REGISTRATION_ID,
-                        ALPHA_ORG,
-                        OPAQUE_CIPHERTEXT,
-                        MASKED_ID,
-                    ),
+                    (REGISTRATION_ID, MASKED_ID, payload, key_version),
                 )
+                created = cursor.fetchone()
+                assert created is not None
+                assert str(created[0]) == REGISTRATION_ID
+                assert created[1:5] == ("PAN", MASKED_ID, "IN", "P")
+                assert created[5] is False
+                assert created[6] is None
 
 
 def _prove_catalog_contract() -> None:
@@ -216,11 +224,7 @@ def _prove_valid_and_isolated_reads() -> None:
     with _connection("P3B_API_DSN") as connection:
         with connection.transaction():
             with connection.cursor() as cursor:
-                _set_context(
-                    cursor,
-                    org_id=ALPHA_ORG,
-                    user_id=ALPHA_OWNER,
-                )
+                _set_context(cursor, org_id=ALPHA_ORG, user_id=ALPHA_OWNER)
                 cursor.execute(
                     """
                     SELECT id, id_type, id_number_masked, country_code,
@@ -235,8 +239,8 @@ def _prove_valid_and_isolated_reads() -> None:
                 assert row[1] == "PAN"
                 assert row[2] == MASKED_ID
                 assert row[3] == "IN"
-                assert row[4] is True
-                assert OPAQUE_CIPHERTEXT not in repr(row)
+                assert row[4] is False
+                assert row[5] is None
 
                 cursor.execute(
                     "SELECT app_secure.current_organization_has_registration()"
@@ -245,11 +249,7 @@ def _prove_valid_and_isolated_reads() -> None:
 
         with connection.transaction():
             with connection.cursor() as cursor:
-                _set_context(
-                    cursor,
-                    org_id=BETA_ORG,
-                    user_id=BETA_OWNER,
-                )
+                _set_context(cursor, org_id=BETA_ORG, user_id=BETA_OWNER)
                 cursor.execute(
                     "SELECT count(*) FROM app_secure.current_organization_registrations()"
                 )
@@ -269,27 +269,17 @@ def _prove_fail_closed_contexts() -> None:
         )
         _expect_42501(
             connection,
-            context={
-                "org_id": "not-a-uuid",
-                "user_id": ALPHA_OWNER,
-            },
+            context={"org_id": "not-a-uuid", "user_id": ALPHA_OWNER},
             sql="SELECT * FROM app_secure.current_organization_registrations()",
         )
         _expect_42501(
             connection,
-            context={
-                "org_id": ALPHA_ORG,
-                "user_id": BETA_OWNER,
-            },
+            context={"org_id": ALPHA_ORG, "user_id": BETA_OWNER},
             sql="SELECT * FROM app_secure.current_organization_registrations()",
         )
         _expect_42501(
             connection,
-            context={
-                "org_id": ALPHA_ORG,
-                "user_id": ALPHA_OWNER,
-                "role": "trainer",
-            },
+            context={"org_id": ALPHA_ORG, "user_id": ALPHA_OWNER, "role": "trainer"},
             sql="SELECT * FROM app_secure.current_organization_registrations()",
         )
         _expect_42501(
