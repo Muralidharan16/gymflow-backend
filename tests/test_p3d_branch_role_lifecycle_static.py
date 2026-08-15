@@ -48,30 +48,41 @@ def test_p3d_tenant_transition_route_delegates_verified_org_and_role() -> None:
     assert "BranchLifecycleService" in transition
 
 
-def test_p3d_branch_reads_are_role_state_tenant_and_branch_scoped() -> None:
+def test_p3d_branch_reads_intersect_token_scope_with_live_assignments() -> None:
     router = _read("app/routers/branch_lifecycle.py")
     assert router.count("BranchAccessGuard()") >= 2
 
     list_route = _function_source("app/routers/branch_lifecycle.py", "list_branches")
-    assert "_branch_scope_ids(current_staff)" in list_route
-    assert "OrgBranch.id.in_(scoped_branch_ids)" in list_route
-    assert "BranchContactORM.branch_id.in_(scoped_branch_ids)" in list_route
+    assert "await resolve_authoritative_branch_scope(current_staff, db)" in list_route
+    assert "OrgBranch.id.in_(list(scoped_branch_ids))" in list_route
+    assert "BranchContactORM.branch_id.in_(list(scoped_branch_ids))" in list_route
 
     deps = _read("app/core/deps.py")
-    for state in (
-        "active",
-        "temporarily_closed",
-        "under_renovation",
-        "compliance_suspended",
-        "permanently_closed",
-    ):
-        assert state in deps
+    assert 'BRANCH_SCOPED_ROLES = frozenset({"manager", "trainer", "receptionist", "auditor"})' in deps
+    assert "return claimed_scope & live_scope" in deps
+    assert "get_authoritative_user_branch_roles" in deps
     assert "OrgBranchState.org_id == staff.org_id" in deps
 
     guard = _function_source("app/core/deps.py", "__call__")
-    assert 'role in ("manager", "trainer")' in guard
-    assert "str(branch_id) not in staff.branch_ids" in guard
-    assert 'role in ("manager", "trainer") and staff.gym_id is not None' not in guard
+    assert "resolve_authoritative_branch_scope(staff, db)" in guard
+    assert "branch_id not in live_scope" in guard
+
+
+def test_p3d_security_authorization_does_not_trust_redis_role_cache() -> None:
+    service = _read("app/services/staff_roles_service.py")
+    authoritative = _function_source(
+        "app/services/staff_roles_service.py",
+        "get_authoritative_user_branch_roles",
+    )
+    cached = _function_source("app/services/staff_roles_service.py", "get_user_branch_roles")
+    dependency = _function_source("app/core/deps.py", "dependency")
+
+    assert "repo.list_user_staff_roles" in authoritative
+    assert "redis_client" not in authoritative
+    assert "get_authoritative_user_branch_roles" in dependency
+    assert "get_user_branch_roles" not in dependency
+    assert "Security-sensitive callers must use" in service
+    assert "redis_client.get" in cached
 
 
 def test_p3d_global_maintenance_enqueue_is_control_plane_only() -> None:
@@ -106,24 +117,18 @@ def test_p3d_worker_and_maintenance_boundaries_pin_actual_rls_ownership() -> Non
     scoped_rls = _read("alembic/versions/718293a4b5c6_scope_lifecycle_rls_policies_by_role.py")
     maintenance = _read("alembic/versions/b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py")
 
-    # Worker migration owns lease/context-bound worker capability and does not
-    # introduce a bypass identity.
     assert "worker_runtime" in worker
     assert "leased_by" in worker
     assert "leased_until" in worker
     assert "app.worker_id" in worker
     assert "BYPASSRLS" not in worker.replace("NOBYPASSRLS", "")
 
-    # 718293 owns policy-role scoping, preserving predicates and keeping worker
-    # policies dedicated rather than composing API policies into worker reads.
     assert '"p_branch_select": "app_runtime"' in scoped_rls
     assert '"p_branch_insert": "auth_runtime"' in scoped_rls
     assert "lifecycle_worker_branch_read" in scoped_rls
     assert "lifecycle_worker_outbox_select" in scoped_rls
     assert "ALTER POLICY" in scoped_rls
 
-    # b5c6 is the migration that explicitly re-proves live ENABLE+FORCE RLS for
-    # the maintenance relations while bounding the separate maintenance role.
     assert "def _require_force_rls" in maintenance
     assert "_require_force_rls(bind, _STATE)" in maintenance
     assert "_require_force_rls(bind, _WATCHDOG)" in maintenance
