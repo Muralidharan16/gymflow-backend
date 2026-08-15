@@ -17,11 +17,10 @@ concurrency:
 
 jobs:
   p3b-registration-replace-runtime:
-    name: Atomic registration replacement and legacy conversion
+    name: Legacy conversion and final envelope replacement
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 55
     env:
-      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_replace_test
       MIGRATION_PASSWORD: ci-migration-owner
       REDIS_URL: redis://127.0.0.1:6379/0
       CELERY_BROKER_URL: redis://127.0.0.1:6379/1
@@ -55,7 +54,7 @@ jobs:
       - name: Install PostgreSQL 16
         run: bash scripts/ci/install_pg16_test_stack.sh
 
-      - name: Bootstrap reduced runtime identities
+      - name: Bootstrap reduced runtime identities and isolated databases
         run: |
           set -euo pipefail
           bash scripts/ci/bootstrap_cluster_roles.sh
@@ -71,26 +70,46 @@ jobs:
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO app_p3b_runtime
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          CREATE DATABASE gymflow_p3b_replace_test OWNER migration_owner;
-          GRANT CONNECT ON DATABASE gymflow_p3b_replace_test TO app_p3b_runtime;
+          CREATE DATABASE gymflow_p3b_replace_legacy OWNER migration_owner;
+          CREATE DATABASE gymflow_p3b_replace_final OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p3b_replace_legacy TO app_p3b_runtime;
+          GRANT CONNECT ON DATABASE gymflow_p3b_replace_final TO app_p3b_runtime;
           SQL
           bash scripts/ci/verify_cluster_roles.sh
-          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3b_replace_test
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3b_replace_legacy
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3b_replace_final
 
-      - name: Fresh Alembic HEAD
+      - name: Prove legacy-to-envelope replacement in the j07 migration window
+        env:
+          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_replace_legacy
+          P3B_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_replace_legacy
+          P3B_API_DSN: postgresql://app_p3b_runtime:ci-api-runtime@127.0.0.1:5432/gymflow_p3b_replace_legacy
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade j07d8e9f0a2a
+          python -m py_compile \
+            scripts/ci/verify_p3b_registration_replace_boundary.py \
+            scripts/ci/verify_p3b_registration_contract_boundary.py
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect predecessor
+          python -s scripts/ci/verify_p3b_registration_replace_boundary.py
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect final
+
+      - name: Prove replacement on final envelope-only HEAD
+        env:
+          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_replace_final
+          P3B_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_replace_final
+          P3B_API_DSN: postgresql://app_p3b_runtime:ci-api-runtime@127.0.0.1:5432/gymflow_p3b_replace_final
         run: |
           set -euo pipefail
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
-
-      - name: Prove atomic registration replacement boundary
-        env:
-          P3B_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_replace_test
-          P3B_API_DSN: postgresql://app_p3b_runtime:ci-api-runtime@127.0.0.1:5432/gymflow_p3b_replace_test
-        run: |
-          set -euo pipefail
-          python -m py_compile scripts/ci/verify_p3b_registration_replace_boundary.py
-          python -s scripts/ci/verify_p3b_registration_replace_boundary.py
+          python -m py_compile \
+            scripts/ci/verify_p3b_registration_replace_final_boundary.py \
+            scripts/ci/verify_p3b_registration_contract_boundary.py
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect final
+          python -s scripts/ci/verify_p3b_registration_replace_final_boundary.py
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect final
 
       - name: Reprove cluster identity graph
         env:
