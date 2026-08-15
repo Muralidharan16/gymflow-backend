@@ -90,17 +90,13 @@ jobs:
         run: |
           set -euo pipefail
           for role in app_test_runtime auth_test_runtime worker_test_runtime lifecycle_maintenance_test_runtime; do
-            sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -v role_name="$role" <<'SQL'
-          DO $$
-          DECLARE r record;
-          BEGIN
-            SELECT * INTO r FROM pg_catalog.pg_roles WHERE rolname = :'role_name';
-            IF r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolinherit OR r.rolreplication OR r.rolbypassrls THEN
-              RAISE EXCEPTION 'unsafe P3D test login attributes for %', :'role_name';
-            END IF;
-          END
-          $$;
-          SQL
+            unsafe="$(sudo -u postgres psql -X -At -v ON_ERROR_STOP=1 -d postgres -c "
+              SELECT count(*)
+                FROM pg_catalog.pg_roles
+               WHERE rolname = '${role}'
+                 AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolinherit OR rolreplication OR rolbypassrls)
+            ")"
+            test "$unsafe" = "0"
           done
 
       - name: Reprove cluster identity graph
