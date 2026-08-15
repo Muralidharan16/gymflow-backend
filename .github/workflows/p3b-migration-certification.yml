@@ -96,7 +96,7 @@ jobs:
       - name: Capture normalized P3A boundary schema and ACL fingerprint
         run: |
           set -euo pipefail
-          pg_dump -X -h 127.0.0.1 -U migration_owner \
+          pg_dump -h 127.0.0.1 -U migration_owner \
             -d gymflow_p3b_migration_cert \
             --schema-only --no-owner --no-comments \
             | sed '/^--/d;/^$/d' > /tmp/p3b-base-1.sql
@@ -111,7 +111,7 @@ jobs:
           test "$(psql -X -At -h 127.0.0.1 -U migration_owner \
             -d gymflow_p3b_migration_cert \
             -c "SELECT count(*) FROM public.organizations WHERE id='77777777-7777-4777-8777-777777777771'::uuid")" = '1'
-          pg_dump -X -h 127.0.0.1 -U migration_owner \
+          pg_dump -h 127.0.0.1 -U migration_owner \
             -d gymflow_p3b_migration_cert \
             --schema-only --no-owner --no-comments \
             | sed '/^--/d;/^$/d' > /tmp/p3b-head-1.sql
@@ -127,7 +127,7 @@ jobs:
           test "$(psql -X -At -h 127.0.0.1 -U migration_owner \
             -d gymflow_p3b_migration_cert \
             -c "SELECT count(*) FROM public.organizations WHERE id='77777777-7777-4777-8777-777777777771'::uuid")" = '1'
-          pg_dump -X -h 127.0.0.1 -U migration_owner \
+          pg_dump -h 127.0.0.1 -U migration_owner \
             -d gymflow_p3b_migration_cert \
             --schema-only --no-owner --no-comments \
             | sed '/^--/d;/^$/d' > /tmp/p3b-base-2.sql
@@ -142,7 +142,7 @@ jobs:
           test "$(psql -X -At -h 127.0.0.1 -U migration_owner \
             -d gymflow_p3b_migration_cert \
             -c "SELECT count(*) FROM public.organizations WHERE id='77777777-7777-4777-8777-777777777771'::uuid")" = '1'
-          pg_dump -X -h 127.0.0.1 -U migration_owner \
+          pg_dump -h 127.0.0.1 -U migration_owner \
             -d gymflow_p3b_migration_cert \
             --schema-only --no-owner --no-comments \
             | sed '/^--/d;/^$/d' > /tmp/p3b-head-2.sql
