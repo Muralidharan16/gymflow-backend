@@ -65,6 +65,7 @@ def main() -> None:
                         allowed.append(privilege)
                 effective[role] = allowed
 
+            role_list = list(ROLES)
             cursor.execute(
                 """
                 SELECT member_role.rolname::text AS member,
@@ -77,11 +78,11 @@ def main() -> None:
                   ON member_role.oid = membership.member
                 JOIN pg_catalog.pg_roles AS granted_role
                   ON granted_role.oid = membership.roleid
-                WHERE member_role.rolname IN %s
-                   OR granted_role.rolname IN %s
+                WHERE member_role.rolname = ANY(%s::text[])
+                   OR granted_role.rolname = ANY(%s::text[])
                 ORDER BY member, granted
                 """,
-                (ROLES, ROLES),
+                (role_list, role_list),
             )
             memberships = [
                 {
