@@ -32,12 +32,17 @@ _REGISTRATION = "public.organization_registrations"
 _PAYLOAD = "public.organization_registration_payloads_secure"
 _MARKER = "public.p3b_registration_envelope_rows"
 _PAYLOAD_POLICY = "p3b_tenant_isolation_registration_payloads_secure"
-_MARKER_FUNCTION = "app_secure.track_registration_envelope_row()"
+_MARKER_FUNCTION_NAME = "track_registration_envelope_row"
 _MARKER_TRIGGER = "trg_p3b_track_registration_envelope_row"
+_C97_FUNCTION_NAMES = (
+    "current_organization_registrations",
+    "current_organization_has_registration",
+)
 _UQ_BUSINESS_KEY = "uq_org_reg_org_country_type"
 _UQ_ID_TENANT = "uq_org_reg_id_org"
 _CK_CRYPTO = "ck_org_reg_crypto_material"
 _CK_CANONICAL = "ck_org_reg_canonical_identity"
+_CK_PAYLOAD_ENVELOPE = "ck_org_reg_payload_envelope_key_version"
 
 
 def _scalar(bind, sql: str, params: dict[str, object] | None = None):
@@ -143,6 +148,29 @@ def _policy_exists(bind, relation: str, name: str) -> bool:
     )
 
 
+def _function_exists(bind, function_name: str) -> bool:
+    # Do not resolve app_secure through to_regprocedure(): reduced
+    # migration_owner intentionally has no USAGE on that schema. PostgreSQL
+    # system catalogs are sufficient to attest an exact zero-argument function.
+    return bool(
+        _scalar(
+            bind,
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_proc AS procedure_data
+                JOIN pg_catalog.pg_namespace AS namespace_data
+                  ON namespace_data.oid = procedure_data.pronamespace
+                WHERE namespace_data.nspname = 'app_secure'
+                  AND procedure_data.proname = :function_name
+                  AND procedure_data.pronargs = 0
+            )
+            """,
+            {"function_name": function_name},
+        )
+    )
+
+
 def _trigger_exists(bind) -> bool:
     return bool(
         _scalar(
@@ -184,10 +212,12 @@ def _marker_function_row(bind):
               ON namespace_data.oid = procedure_data.pronamespace
             JOIN pg_catalog.pg_roles AS owner_role
               ON owner_role.oid = procedure_data.proowner
-            WHERE procedure_data.oid = pg_catalog.to_regprocedure(:signature)
+            WHERE namespace_data.nspname = 'app_secure'
+              AND procedure_data.proname = :function_name
+              AND procedure_data.pronargs = 0
             """
         ),
-        {"signature": _MARKER_FUNCTION},
+        {"function_name": _MARKER_FUNCTION_NAME},
     ).mappings().one_or_none()
 
 
@@ -223,16 +253,11 @@ def _require_c97_boundary(bind) -> None:
         "p3b_tenant_isolation_organization_registrations",
     ):
         raise RuntimeError("P3B c97 registration tenant policy is missing")
-    for signature in (
-        "app_secure.current_organization_registrations()",
-        "app_secure.current_organization_has_registration()",
-    ):
-        if not _scalar(
-            bind,
-            "SELECT pg_catalog.to_regprocedure(:signature) IS NOT NULL",
-            {"signature": signature},
-        ):
-            raise RuntimeError(f"P3B c97 capability missing: {signature}")
+    for function_name in _C97_FUNCTION_NAMES:
+        if not _function_exists(bind, function_name):
+            raise RuntimeError(
+                f"P3B c97 capability missing: app_secure.{function_name}()"
+            )
 
 
 def _require_predecessor(bind) -> None:
@@ -289,6 +314,8 @@ def _require_forward(bind) -> None:
         raise RuntimeError("P3B secure registration payload RLS/owner contract drifted")
     if not _policy_exists(bind, _PAYLOAD, _PAYLOAD_POLICY):
         raise RuntimeError("P3B secure registration payload tenant policy is missing")
+    if not _constraint_exists(bind, _PAYLOAD, _CK_PAYLOAD_ENVELOPE):
+        raise RuntimeError("P3B secure registration payload envelope check is missing")
 
     marker_state = _relation_state(bind, _MARKER)
     if (
@@ -380,7 +407,16 @@ def upgrade() -> None:
                     REFERENCES public.encryption_key_registry (key_version)
                     ON DELETE RESTRICT,
                 CONSTRAINT ck_org_reg_payload_schema_version
-                    CHECK (schema_version = 1)
+                    CHECK (schema_version = 1),
+                CONSTRAINT ck_org_reg_payload_envelope_key_version CHECK (
+                    pg_catalog.octet_length(payload_encrypted) >= 32
+                    AND (
+                        pg_catalog.get_byte(payload_encrypted, 0)::bigint * 16777216
+                        + pg_catalog.get_byte(payload_encrypted, 1)::bigint * 65536
+                        + pg_catalog.get_byte(payload_encrypted, 2)::bigint * 256
+                        + pg_catalog.get_byte(payload_encrypted, 3)::bigint
+                    ) = key_version::bigint
+                )
             ) WITH (fillfactor = 90)
             """
         )
