@@ -30,6 +30,8 @@ depends_on = None
 _MIGRATION_OWNER = "migration_owner"
 _SECURITY_OWNER = "app_security_owner"
 _REGISTRATION = "public.organization_registrations"
+_KEY_REGISTRY = "public.encryption_key_registry"
+_KEY_SCOPE = "organization_registrations"
 _PAYLOAD = "public.organization_registration_payloads_secure"
 _MARKER = "public.p3b_registration_envelope_rows"
 _PAYLOAD_POLICY = "p3b_tenant_isolation_registration_payloads_secure"
@@ -41,9 +43,12 @@ _C97_FUNCTION_NAMES = (
 )
 _UQ_BUSINESS_KEY = "uq_org_reg_org_country_type"
 _UQ_ID_TENANT = "uq_org_reg_id_org"
+_UQ_KEY_SCOPE = "uq_key_registry_version_tenant_table"
 _CK_CRYPTO = "ck_org_reg_crypto_material"
 _CK_CANONICAL = "ck_org_reg_canonical_identity"
+_CK_PAYLOAD_SCOPE = "ck_org_reg_payload_key_scope"
 _CK_PAYLOAD_ENVELOPE = "ck_org_reg_payload_envelope_key_version"
+_FK_PAYLOAD_KEY_SCOPE = "fk_org_reg_payload_key_scope"
 
 
 def _scalar(bind, sql: str, params: dict[str, object] | None = None):
@@ -307,8 +312,14 @@ def _require_predecessor(bind) -> None:
     if masked is None or masked["data_type"] != "character varying(20)":
         raise RuntimeError("legacy registration mask column contract drifted")
 
-    for name in (_UQ_BUSINESS_KEY, _UQ_ID_TENANT, _CK_CRYPTO, _CK_CANONICAL):
-        if _constraint_exists(bind, _REGISTRATION, name):
+    for relation, name in (
+        (_REGISTRATION, _UQ_BUSINESS_KEY),
+        (_REGISTRATION, _UQ_ID_TENANT),
+        (_REGISTRATION, _CK_CRYPTO),
+        (_REGISTRATION, _CK_CANONICAL),
+        (_KEY_REGISTRY, _UQ_KEY_SCOPE),
+    ):
+        if _constraint_exists(bind, relation, name):
             raise RuntimeError(f"unexpected pre-existing P3B constraint {name}")
 
 
@@ -332,6 +343,8 @@ def _require_forward(bind) -> None:
     for name in (_UQ_BUSINESS_KEY, _UQ_ID_TENANT, _CK_CRYPTO, _CK_CANONICAL):
         if not _constraint_exists(bind, _REGISTRATION, name):
             raise RuntimeError(f"P3B registration constraint missing: {name}")
+    if not _constraint_exists(bind, _KEY_REGISTRY, _UQ_KEY_SCOPE):
+        raise RuntimeError("P3B tenant/domain key binding constraint is missing")
 
     state = _relation_state(bind, _PAYLOAD)
     if (
@@ -343,8 +356,13 @@ def _require_forward(bind) -> None:
         raise RuntimeError("P3B secure registration payload RLS/owner contract drifted")
     if not _policy_exists(bind, _PAYLOAD, _PAYLOAD_POLICY):
         raise RuntimeError("P3B secure registration payload tenant policy is missing")
-    if not _constraint_exists(bind, _PAYLOAD, _CK_PAYLOAD_ENVELOPE):
-        raise RuntimeError("P3B secure registration payload envelope check is missing")
+    for name in (
+        _CK_PAYLOAD_SCOPE,
+        _CK_PAYLOAD_ENVELOPE,
+        _FK_PAYLOAD_KEY_SCOPE,
+    ):
+        if not _constraint_exists(bind, _PAYLOAD, name):
+            raise RuntimeError(f"P3B secure registration payload constraint missing: {name}")
 
     marker_state = _relation_state(bind, _MARKER)
     if (
@@ -496,6 +514,15 @@ def upgrade() -> None:
             """
         )
     )
+    bind.execute(
+        sa.text(
+            """
+            ALTER TABLE public.encryption_key_registry
+                ADD CONSTRAINT uq_key_registry_version_tenant_table
+                UNIQUE (key_version, tenant_id, table_name)
+            """
+        )
+    )
 
     bind.execute(
         sa.text(
@@ -505,6 +532,7 @@ def upgrade() -> None:
                 tenant_id uuid NOT NULL,
                 payload_encrypted bytea NOT NULL,
                 key_version integer NOT NULL,
+                key_scope varchar(100) NOT NULL DEFAULT 'organization_registrations',
                 schema_version smallint NOT NULL DEFAULT 1,
                 created_at timestamp with time zone NOT NULL
                     DEFAULT pg_catalog.clock_timestamp(),
@@ -516,10 +544,14 @@ def upgrade() -> None:
                     FOREIGN KEY (registration_id, tenant_id)
                     REFERENCES public.organization_registrations (id, org_id)
                     ON DELETE CASCADE,
-                CONSTRAINT fk_org_reg_payload_key_version
-                    FOREIGN KEY (key_version)
-                    REFERENCES public.encryption_key_registry (key_version)
+                CONSTRAINT fk_org_reg_payload_key_scope
+                    FOREIGN KEY (key_version, tenant_id, key_scope)
+                    REFERENCES public.encryption_key_registry
+                        (key_version, tenant_id, table_name)
                     ON DELETE RESTRICT,
+                CONSTRAINT ck_org_reg_payload_key_scope CHECK (
+                    key_scope = 'organization_registrations'
+                ),
                 CONSTRAINT ck_org_reg_payload_schema_version
                     CHECK (schema_version = 1),
                 CONSTRAINT ck_org_reg_payload_envelope_key_version CHECK (
@@ -636,6 +668,14 @@ def downgrade() -> None:
     bind.execute(
         sa.text(
             "DROP TABLE public.organization_registration_payloads_secure RESTRICT"
+        )
+    )
+    bind.execute(
+        sa.text(
+            """
+            ALTER TABLE public.encryption_key_registry
+                DROP CONSTRAINT uq_key_registry_version_tenant_table
+            """
         )
     )
     bind.execute(sa.text("SET LOCAL ROLE app_security_owner"))
