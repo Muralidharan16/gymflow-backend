@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 
@@ -17,6 +18,7 @@ def test_backfill_requires_explicit_principal_manifest_and_reduced_runtime_login
     assert '"org_id", "user_id", "principal_type", "role"' in source
     assert "manifest contains duplicate organization" in source
     assert "pg_has_role(session_user, 'app_runtime', 'MEMBER')" in source
+    assert "role_data.rolbypassrls" in source
     assert 'row[0] in {"migration_owner", "app_security_owner"}' in source
     assert "app.current_gym_id" in source
     assert '("app.current_gym_id", "")' in source
@@ -88,6 +90,10 @@ def test_backfill_has_no_tenant_discovery_or_owner_escalation_sql() -> None:
         "SET ROLE APP_SECURITY_OWNER",
         "SET ROLE MIGRATION_OWNER",
         "ROW_SECURITY = OFF",
-        "BYPASSRLS",
     ):
         assert forbidden not in upper
+    assert not re.search(
+        r"\b(?:CREATE|ALTER)\s+ROLE\s+[^;]*\bBYPASSRLS\b",
+        upper,
+        flags=re.DOTALL,
+    )
