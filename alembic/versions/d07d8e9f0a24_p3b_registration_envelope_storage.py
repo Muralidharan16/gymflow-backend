@@ -4,10 +4,16 @@ Revision ID: d07d8e9f0a24
 Revises: c97d8e9f0a23
 Create Date: 2026-08-15
 
-The legacy registration table remains readable during the P3B expand window,
-so new ciphertext is deliberately stored in a separate FORCE-RLS relation with
-no runtime ACL. The metadata row records only the masked identifier and crypto
-version. Downgrade refuses any state that the predecessor cannot represent.
+The legacy registration table remains directly mutable during the P3B expand
+window, so new ciphertext is deliberately stored in a separate FORCE-RLS
+relation with no runtime ACL. The metadata row records only the masked
+identifier and crypto version.
+
+FORCE RLS also applies to migration_owner. This revision therefore never
+weakens RLS to inspect tenant data during downgrade. A migration-owner-only,
+non-secret marker relation is maintained transactionally by a trigger on the
+secure payload table. Downgrade uses that marker plus PostgreSQL constraint
+validation to fail closed whenever predecessor representation would lose data.
 """
 
 from __future__ import annotations
@@ -24,7 +30,10 @@ depends_on = None
 _MIGRATION_OWNER = "migration_owner"
 _REGISTRATION = "public.organization_registrations"
 _PAYLOAD = "public.organization_registration_payloads_secure"
+_MARKER = "public.p3b_registration_envelope_rows"
 _PAYLOAD_POLICY = "p3b_tenant_isolation_registration_payloads_secure"
+_MARKER_FUNCTION = "app_secure.track_registration_envelope_row()"
+_MARKER_TRIGGER = "trg_p3b_track_registration_envelope_row"
 _UQ_BUSINESS_KEY = "uq_org_reg_org_country_type"
 _UQ_ID_TENANT = "uq_org_reg_id_org"
 _CK_CRYPTO = "ck_org_reg_crypto_material"
@@ -77,9 +86,15 @@ def _column(bind, relation: str, column: str):
     return bind.execute(
         sa.text(
             """
-            SELECT pg_catalog.format_type(attribute_data.atttypid, attribute_data.atttypmod)::text AS data_type,
+            SELECT pg_catalog.format_type(
+                       attribute_data.atttypid,
+                       attribute_data.atttypmod
+                   )::text AS data_type,
                    NOT attribute_data.attnotnull AS is_nullable,
-                   pg_catalog.pg_get_expr(default_data.adbin, default_data.adrelid)::text AS default_expression
+                   pg_catalog.pg_get_expr(
+                       default_data.adbin,
+                       default_data.adrelid
+                   )::text AS default_expression
             FROM pg_catalog.pg_attribute AS attribute_data
             LEFT JOIN pg_catalog.pg_attrdef AS default_data
               ON default_data.adrelid = attribute_data.attrelid
@@ -128,6 +143,71 @@ def _policy_exists(bind, relation: str, name: str) -> bool:
     )
 
 
+def _trigger_exists(bind) -> bool:
+    return bool(
+        _scalar(
+            bind,
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_trigger AS trigger_data
+                WHERE trigger_data.tgrelid = pg_catalog.to_regclass(:relation)
+                  AND trigger_data.tgname = :trigger_name
+                  AND NOT trigger_data.tgisinternal
+            )
+            """,
+            {"relation": _PAYLOAD, "trigger_name": _MARKER_TRIGGER},
+        )
+    )
+
+
+def _marker_function_row(bind):
+    return bind.execute(
+        sa.text(
+            """
+            SELECT owner_role.rolname::text AS owner_name,
+                   procedure_data.prosecdef,
+                   procedure_data.proconfig,
+                   EXISTS (
+                       SELECT 1
+                       FROM pg_catalog.aclexplode(
+                           COALESCE(
+                               procedure_data.proacl,
+                               pg_catalog.acldefault('f', procedure_data.proowner)
+                           )
+                       ) AS acl_data
+                       WHERE acl_data.grantee = 0
+                         AND acl_data.privilege_type = 'EXECUTE'
+                   ) AS public_execute
+            FROM pg_catalog.pg_proc AS procedure_data
+            JOIN pg_catalog.pg_namespace AS namespace_data
+              ON namespace_data.oid = procedure_data.pronamespace
+            JOIN pg_catalog.pg_roles AS owner_role
+              ON owner_role.oid = procedure_data.proowner
+            WHERE procedure_data.oid = pg_catalog.to_regprocedure(:signature)
+            """
+        ),
+        {"signature": _MARKER_FUNCTION},
+    ).mappings().one_or_none()
+
+
+def _has_direct_dml(bind, role_name: str, relation: str) -> bool:
+    return any(
+        bool(
+            _scalar(
+                bind,
+                "SELECT pg_catalog.has_table_privilege(:role, :relation, :privilege)",
+                {
+                    "role": role_name,
+                    "relation": relation,
+                    "privilege": privilege,
+                },
+            )
+        )
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE")
+    )
+
+
 def _require_c97_boundary(bind) -> None:
     state = _relation_state(bind, _REGISTRATION)
     if (
@@ -159,6 +239,10 @@ def _require_predecessor(bind) -> None:
     _require_c97_boundary(bind)
     if _relation_state(bind, _PAYLOAD) is not None:
         raise RuntimeError("P3B secure registration payload relation already exists")
+    if _relation_state(bind, _MARKER) is not None:
+        raise RuntimeError("P3B envelope marker relation already exists")
+    if _marker_function_row(bind) is not None:
+        raise RuntimeError("P3B envelope marker function already exists")
     if _column(bind, _REGISTRATION, "crypto_version") is not None:
         raise RuntimeError("P3B registration crypto_version already exists")
 
@@ -172,40 +256,6 @@ def _require_predecessor(bind) -> None:
     for name in (_UQ_BUSINESS_KEY, _UQ_ID_TENANT, _CK_CRYPTO, _CK_CANONICAL):
         if _constraint_exists(bind, _REGISTRATION, name):
             raise RuntimeError(f"unexpected pre-existing P3B constraint {name}")
-
-    noncanonical = _scalar(
-        bind,
-        """
-        SELECT EXISTS (
-            SELECT 1
-            FROM public.organization_registrations
-            WHERE id_type <> pg_catalog.upper(pg_catalog.btrim(id_type))
-               OR id_type = ''
-               OR country_code <> pg_catalog.upper(pg_catalog.btrim(country_code))
-               OR pg_catalog.length(country_code) <> 2
-        )
-        """,
-    )
-    if noncanonical:
-        raise RuntimeError(
-            "organization registration identity metadata must be canonical before P3B"
-        )
-
-    duplicate = _scalar(
-        bind,
-        """
-        SELECT EXISTS (
-            SELECT 1
-            FROM public.organization_registrations
-            GROUP BY org_id, country_code, id_type
-            HAVING pg_catalog.count(*) > 1
-        )
-        """,
-    )
-    if duplicate:
-        raise RuntimeError(
-            "duplicate organization registration type/country rows must be reconciled before P3B"
-        )
 
 
 def _require_forward(bind) -> None:
@@ -240,18 +290,36 @@ def _require_forward(bind) -> None:
     if not _policy_exists(bind, _PAYLOAD, _PAYLOAD_POLICY):
         raise RuntimeError("P3B secure registration payload tenant policy is missing")
 
+    marker_state = _relation_state(bind, _MARKER)
+    if (
+        marker_state is None
+        or marker_state["owner_name"] != _MIGRATION_OWNER
+        or marker_state["relrowsecurity"]
+        or marker_state["relforcerowsecurity"]
+    ):
+        raise RuntimeError("P3B envelope marker relation contract drifted")
+
+    if not _trigger_exists(bind):
+        raise RuntimeError("P3B envelope marker trigger is missing")
+    marker_function = _marker_function_row(bind)
+    if (
+        marker_function is None
+        or marker_function["owner_name"] != _MIGRATION_OWNER
+        or not marker_function["prosecdef"]
+        or set(marker_function["proconfig"] or [])
+        != {"search_path=pg_catalog", "row_security=on"}
+        or marker_function["public_execute"]
+    ):
+        raise RuntimeError("P3B envelope marker function contract drifted")
+
     for role_name in ("app_runtime", "auth_runtime", "app_security_owner"):
-        if _scalar(
-            bind,
-            """
-            SELECT pg_catalog.has_table_privilege(
-                :role_name, :relation, 'SELECT,INSERT,UPDATE,DELETE'
-            )
-            """,
-            {"role_name": role_name, "relation": _PAYLOAD},
-        ):
+        if _has_direct_dml(bind, role_name, _PAYLOAD):
             raise RuntimeError(
                 f"{role_name} unexpectedly has direct secure registration payload DML"
+            )
+        if _has_direct_dml(bind, role_name, _MARKER):
+            raise RuntimeError(
+                f"{role_name} unexpectedly has direct envelope marker DML"
             )
 
 
@@ -260,6 +328,9 @@ def upgrade() -> None:
     _require_identity(bind)
     _require_predecessor(bind)
 
+    # PostgreSQL validates the new CHECK/UNIQUE constraints against the whole
+    # relation internally. We intentionally do not bypass FORCE RLS for a
+    # migration-owner pre-scan; incompatible legacy rows make this DDL fail.
     bind.execute(
         sa.text(
             """
@@ -357,6 +428,66 @@ def upgrade() -> None:
         )
     )
 
+    # The marker is deliberately outside RLS and contains only registration
+    # UUIDs. No runtime/security role can read or mutate it. It exists solely so
+    # migration_owner can prove that a downgrade is lossless without bypassing
+    # the FORCE-RLS secure payload relation.
+    bind.execute(
+        sa.text(
+            """
+            CREATE TABLE public.p3b_registration_envelope_rows (
+                registration_id uuid PRIMARY KEY,
+                CONSTRAINT fk_p3b_registration_envelope_marker
+                    FOREIGN KEY (registration_id)
+                    REFERENCES public.organization_registration_payloads_secure
+                        (registration_id)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """
+        )
+    )
+    bind.execute(
+        sa.text(
+            "REVOKE ALL ON TABLE public.p3b_registration_envelope_rows FROM PUBLIC"
+        )
+    )
+    bind.execute(
+        sa.text(
+            """
+            CREATE FUNCTION app_secure.track_registration_envelope_row()
+            RETURNS trigger
+            LANGUAGE plpgsql
+            SECURITY DEFINER
+            SET search_path = pg_catalog
+            SET row_security = on
+            AS $function$
+            BEGIN
+                INSERT INTO public.p3b_registration_envelope_rows (registration_id)
+                VALUES (NEW.registration_id)
+                ON CONFLICT (registration_id) DO NOTHING;
+                RETURN NEW;
+            END;
+            $function$
+            """
+        )
+    )
+    bind.execute(
+        sa.text(
+            "REVOKE ALL ON FUNCTION app_secure.track_registration_envelope_row() FROM PUBLIC"
+        )
+    )
+    bind.execute(
+        sa.text(
+            """
+            CREATE TRIGGER trg_p3b_track_registration_envelope_row
+            AFTER INSERT ON public.organization_registration_payloads_secure
+            FOR EACH ROW
+            EXECUTE FUNCTION app_secure.track_registration_envelope_row()
+            """
+        )
+    )
+
     _require_forward(bind)
 
 
@@ -365,29 +496,35 @@ def downgrade() -> None:
     _require_identity(bind)
     _require_forward(bind)
 
-    incompatible = _scalar(
+    if _scalar(
         bind,
-        """
-        SELECT EXISTS (
-            SELECT 1
-            FROM public.organization_registrations
-            WHERE crypto_version <> 0
-               OR id_number_encrypted IS NULL
-               OR pg_catalog.length(id_number_masked) > 20
-        ) OR EXISTS (
-            SELECT 1
-            FROM public.organization_registration_payloads_secure
-        )
-        """,
-    )
-    if incompatible:
+        "SELECT EXISTS (SELECT 1 FROM public.p3b_registration_envelope_rows)",
+    ):
         raise RuntimeError(
-            "P3B downgrade would discard or misrepresent envelope registration data"
+            "P3B downgrade would discard KMS-backed registration envelope data"
         )
 
+    # These predecessor conversions are themselves full-relation validation.
+    # They fail rather than truncate data or silently convert a crypto-v1 row.
+    bind.execute(
+        sa.text(
+            """
+            ALTER TABLE public.organization_registrations
+                ALTER COLUMN id_number_masked TYPE varchar(20),
+                ALTER COLUMN id_number_encrypted SET NOT NULL
+            """
+        )
+    )
+
+    bind.execute(sa.text("DROP TABLE public.p3b_registration_envelope_rows RESTRICT"))
     bind.execute(
         sa.text(
             "DROP TABLE public.organization_registration_payloads_secure RESTRICT"
+        )
+    )
+    bind.execute(
+        sa.text(
+            "DROP FUNCTION app_secure.track_registration_envelope_row() RESTRICT"
         )
     )
     bind.execute(
@@ -398,9 +535,7 @@ def downgrade() -> None:
                 DROP CONSTRAINT uq_org_reg_org_country_type,
                 DROP CONSTRAINT ck_org_reg_canonical_identity,
                 DROP CONSTRAINT ck_org_reg_crypto_material,
-                DROP COLUMN crypto_version,
-                ALTER COLUMN id_number_masked TYPE varchar(20),
-                ALTER COLUMN id_number_encrypted SET NOT NULL
+                DROP COLUMN crypto_version
             """
         )
     )
