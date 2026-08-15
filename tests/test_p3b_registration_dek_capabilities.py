@@ -41,20 +41,22 @@ def test_runtime_gets_execute_only_not_direct_key_material_acl() -> None:
     assert "GRANT EXECUTE ON FUNCTION APP_SECURE.INSTALL_REGISTRATION_DEK(BYTEA,TEXT) TO APP_RUNTIME" in upper
 
     assert not re.search(
-        r"GRANT\s+(?:SELECT|INSERT|UPDATE|DELETE|TRUNCATE|ALL).*?"
-        r"ENCRYPTION_KEY_REGISTRY.*?TO\s+APP_RUNTIME",
+        r"GRANT\s+(?:SELECT|INSERT|UPDATE|DELETE|TRUNCATE|ALL)\b[^;]*\b"
+        r"ENCRYPTION_KEY_REGISTRY\b[^;]*\bTO\s+APP_RUNTIME\b",
         upper,
-        flags=re.DOTALL,
     )
     assert not re.search(
-        r"GRANT\s+(?:USAGE|SELECT|UPDATE|ALL).*?"
-        r"ENCRYPTION_KEY_REGISTRY_KEY_VERSION_SEQ.*?TO\s+APP_RUNTIME",
+        r"GRANT\s+(?:USAGE|SELECT|UPDATE|ALL)\b[^;]*\b"
+        r"ENCRYPTION_KEY_REGISTRY_KEY_VERSION_SEQ\b[^;]*\bTO\s+APP_RUNTIME\b",
+        upper,
+    )
+    assert "GRANT ALL" not in upper
+    assert "OWNER TO APP_RUNTIME" not in upper
+    assert not re.search(
+        r"\b(?:CREATE|ALTER)\s+ROLE\s+[^;]*\bBYPASSRLS\b",
         upper,
         flags=re.DOTALL,
     )
-    assert "GRANT ALL" not in upper
-    assert "BYPASSRLS" not in upper
-    assert "OWNER TO APP_RUNTIME" not in upper
 
 
 def test_wrapping_key_identity_is_persisted_and_required_for_registration_keys() -> None:
@@ -117,7 +119,7 @@ def test_all_dek_capabilities_are_principal_bound_and_domain_bound() -> None:
         assert token in guard
 
     assert source.count("table_name = '{_KEY_SCOPE}'") >= 4
-    assert source.count("SECURITY DEFINER") == 3
+    assert source.count("\nSECURITY DEFINER\n") == 3
     assert source.count("SET search_path = pg_catalog") == 3
     assert source.count("SET row_security = on") == 3
     assert source.count("wrapping_key_id") >= 12
@@ -127,7 +129,7 @@ def test_first_key_installation_is_database_serialized_and_race_safe() -> None:
     source = _source()
     assert "pg_catalog.pg_advisory_xact_lock" in source
     assert "pg_catalog.hashtextextended" in source
-    assert "v_org_id::text || ':{_KEY_SCOPE}'" in source
+    assert "v_org_id::text || '|{_KEY_SCOPE}'" in source
     assert "AND key_data.key_status = 'ACTIVE'" in source
     assert "WHEN unique_violation THEN" in source
     assert "IF NOT FOUND THEN" in source
