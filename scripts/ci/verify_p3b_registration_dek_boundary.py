@@ -15,6 +15,9 @@ BETA_OWNER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 ALPHA_KEY = b"kms-wrapped-alpha-registration-dek"
 BETA_KEY_A = b"kms-wrapped-beta-registration-dek-a"
 BETA_KEY_B = b"kms-wrapped-beta-registration-dek-b"
+ALPHA_KMS_KEY = "arn:aws:kms:us-east-1:111122223333:key/alpha-registration"
+BETA_KMS_KEY_A = "arn:aws:kms:us-east-1:111122223333:key/beta-registration-a"
+BETA_KMS_KEY_B = "arn:aws:kms:us-east-1:111122223333:key/beta-registration-b"
 
 
 @contextmanager
@@ -126,10 +129,12 @@ def _prove_catalog_acl() -> None:
                 ("encrypted_dek", "SELECT"),
                 ("table_name", "SELECT"),
                 ("key_status", "SELECT"),
+                ("wrapping_key_id", "SELECT"),
                 ("tenant_id", "INSERT"),
                 ("table_name", "INSERT"),
                 ("encrypted_dek", "INSERT"),
                 ("key_status", "INSERT"),
+                ("wrapping_key_id", "INSERT"),
             }
 
             cursor.execute(
@@ -149,8 +154,7 @@ def _prove_catalog_acl() -> None:
 
             cursor.execute(
                 """
-                SELECT ns.nspname::text,
-                       procedure_data.proname::text,
+                SELECT procedure_data.proname::text,
                        owner_role.rolname::text,
                        procedure_data.prosecdef,
                        procedure_data.provolatile::text,
@@ -170,12 +174,12 @@ def _prove_catalog_acl() -> None:
                 """
             )
             rows = cursor.fetchall()
-            assert [row[1] for row in rows] == [
+            assert [row[0] for row in rows] == [
                 "current_registration_dek",
                 "install_registration_dek",
                 "lookup_registration_dek",
             ]
-            for _, name, owner, security_definer, volatility, config in rows:
+            for name, owner, security_definer, volatility, config in rows:
                 assert owner == "app_security_owner"
                 assert security_definer is True
                 assert volatility == ("v" if name == "install_registration_dek" else "s")
@@ -194,50 +198,67 @@ def _prove_alpha_install_and_lookup() -> int:
                 assert cursor.fetchall() == []
 
                 cursor.execute(
-                    "SELECT * FROM app_secure.install_registration_dek(%s)",
-                    (ALPHA_KEY,),
+                    "SELECT * FROM app_secure.install_registration_dek(%s, %s)",
+                    (ALPHA_KEY, ALPHA_KMS_KEY),
                 )
                 installed = cursor.fetchone()
                 assert installed is not None
                 key_version = int(installed[0])
-                assert installed[1] == ALPHA_KEY
+                assert installed == (key_version, ALPHA_KEY, ALPHA_KMS_KEY)
 
                 cursor.execute("SELECT * FROM app_secure.current_registration_dek()")
-                assert cursor.fetchone() == (key_version, ALPHA_KEY)
+                assert cursor.fetchone() == (key_version, ALPHA_KEY, ALPHA_KMS_KEY)
 
                 cursor.execute(
-                    "SELECT app_secure.lookup_registration_dek(%s)",
+                    "SELECT * FROM app_secure.lookup_registration_dek(%s)",
                     (key_version,),
                 )
-                assert cursor.fetchone()[0] == ALPHA_KEY
+                assert cursor.fetchone() == (ALPHA_KEY, ALPHA_KMS_KEY)
 
                 cursor.execute(
-                    "SELECT * FROM app_secure.install_registration_dek(%s)",
-                    (b"should-not-replace-active-alpha-key",),
+                    "SELECT * FROM app_secure.install_registration_dek(%s, %s)",
+                    (
+                        b"should-not-replace-active-alpha-key",
+                        "arn:aws:kms:us-east-1:111122223333:key/should-not-win",
+                    ),
                 )
-                assert cursor.fetchone() == (key_version, ALPHA_KEY)
+                assert cursor.fetchone() == (key_version, ALPHA_KEY, ALPHA_KMS_KEY)
                 return key_version
 
 
-def _install_beta_concurrently(payload: bytes, barrier: threading.Barrier):
+def _install_beta_concurrently(
+    payload: bytes,
+    wrapping_key_id: str,
+    barrier: threading.Barrier,
+):
     with _connection("P3B_API_DSN") as connection:
         with connection.transaction():
             with connection.cursor() as cursor:
                 _set_context(cursor, org_id=BETA_ORG, user_id=BETA_OWNER)
                 barrier.wait(timeout=10)
                 cursor.execute(
-                    "SELECT * FROM app_secure.install_registration_dek(%s)",
-                    (payload,),
+                    "SELECT * FROM app_secure.install_registration_dek(%s, %s)",
+                    (payload, wrapping_key_id),
                 )
                 return cursor.fetchone()
 
 
-def _prove_concurrent_first_install_converges() -> tuple[int, bytes]:
+def _prove_concurrent_first_install_converges() -> tuple[int, bytes, str]:
     barrier = threading.Barrier(2)
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
-            executor.submit(_install_beta_concurrently, BETA_KEY_A, barrier),
-            executor.submit(_install_beta_concurrently, BETA_KEY_B, barrier),
+            executor.submit(
+                _install_beta_concurrently,
+                BETA_KEY_A,
+                BETA_KMS_KEY_A,
+                barrier,
+            ),
+            executor.submit(
+                _install_beta_concurrently,
+                BETA_KEY_B,
+                BETA_KMS_KEY_B,
+                barrier,
+            ),
         ]
         results = [future.result(timeout=20) for future in futures]
 
@@ -245,13 +266,18 @@ def _prove_concurrent_first_install_converges() -> tuple[int, bytes]:
     assert results[0] is not None
     key_version = int(results[0][0])
     winner = bytes(results[0][1])
-    assert winner in {BETA_KEY_A, BETA_KEY_B}
+    wrapping_key_id = str(results[0][2])
+    expected_pairs = {
+        (BETA_KEY_A, BETA_KMS_KEY_A),
+        (BETA_KEY_B, BETA_KMS_KEY_B),
+    }
+    assert (winner, wrapping_key_id) in expected_pairs
 
     with _connection("P3B_MIGRATION_DSN") as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT key_version, encrypted_dek, key_status
+                SELECT key_version, encrypted_dek, wrapping_key_id, key_status
                 FROM public.encryption_key_registry
                 WHERE tenant_id = %s::uuid
                   AND table_name = 'organization_registrations'
@@ -259,8 +285,10 @@ def _prove_concurrent_first_install_converges() -> tuple[int, bytes]:
                 """,
                 (BETA_ORG,),
             )
-            assert cursor.fetchall() == [(key_version, winner, "ACTIVE")]
-    return key_version, winner
+            assert cursor.fetchall() == [
+                (key_version, winner, wrapping_key_id, "ACTIVE")
+            ]
+    return key_version, winner, wrapping_key_id
 
 
 def _prove_tenant_and_context_isolation(alpha_key_version: int) -> None:
@@ -269,22 +297,34 @@ def _prove_tenant_and_context_isolation(alpha_key_version: int) -> None:
             with connection.cursor() as cursor:
                 _set_context(cursor, org_id=BETA_ORG, user_id=BETA_OWNER)
                 cursor.execute(
-                    "SELECT app_secure.lookup_registration_dek(%s)",
+                    "SELECT * FROM app_secure.lookup_registration_dek(%s)",
                     (alpha_key_version,),
                 )
-                assert cursor.fetchone()[0] is None
+                assert cursor.fetchall() == []
 
     owner_context = {"org_id": ALPHA_ORG, "user_id": ALPHA_OWNER}
     _expect_sqlstate(
         "22023",
         context=owner_context,
-        sql="SELECT * FROM app_secure.install_registration_dek(%s)",
-        params=(b"",),
+        sql="SELECT * FROM app_secure.install_registration_dek(%s, %s)",
+        params=(b"", ALPHA_KMS_KEY),
     )
     _expect_sqlstate(
         "22023",
         context=owner_context,
-        sql="SELECT app_secure.lookup_registration_dek(0)",
+        sql="SELECT * FROM app_secure.install_registration_dek(%s, %s)",
+        params=(b"wrapped", "   "),
+    )
+    _expect_sqlstate(
+        "22023",
+        context=owner_context,
+        sql="SELECT * FROM app_secure.install_registration_dek(%s, %s)",
+        params=(b"wrapped", "x" * 2049),
+    )
+    _expect_sqlstate(
+        "22023",
+        context=owner_context,
+        sql="SELECT * FROM app_secure.lookup_registration_dek(0)",
     )
     _expect_sqlstate(
         "42501",
@@ -320,7 +360,10 @@ def _prove_api_has_no_direct_registry_or_sequence_access() -> None:
     _expect_sqlstate(
         "42501",
         context=None,
-        sql="SELECT key_version FROM public.encryption_key_registry LIMIT 1",
+        sql=(
+            "SELECT key_version, encrypted_dek, wrapping_key_id "
+            "FROM public.encryption_key_registry LIMIT 1"
+        ),
     )
     _expect_sqlstate(
         "42501",
