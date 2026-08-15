@@ -101,22 +101,32 @@ def test_p3d_reserved_control_plane_roles_are_not_normal_owner_login_roles() -> 
     assert 'role="compliance"' not in auth_service
 
 
-def test_p3d_worker_and_maintenance_boundaries_preserve_rls_and_no_bypass() -> None:
+def test_p3d_worker_and_maintenance_boundaries_pin_actual_rls_ownership() -> None:
     worker = _read("alembic/versions/2c3d4e5f6071_harden_branch_lifecycle_worker.py")
     scoped_rls = _read("alembic/versions/718293a4b5c6_scope_lifecycle_rls_policies_by_role.py")
     maintenance = _read("alembic/versions/b5c6d7e8f9a0_bound_lifecycle_maintenance_runtime.py")
 
-    # The worker migration owns lease/context-bounded worker capability. FORCE
-    # RLS is a table-lineage responsibility and is explicitly reproved in the
-    # later role-scoping/maintenance migrations rather than reissued here.
+    # Worker migration owns lease/context-bound worker capability and does not
+    # introduce a bypass identity.
     assert "worker_runtime" in worker
     assert "leased_by" in worker
     assert "leased_until" in worker
     assert "app.worker_id" in worker
     assert "BYPASSRLS" not in worker.replace("NOBYPASSRLS", "")
 
-    assert "FORCE ROW LEVEL SECURITY" in scoped_rls
-    assert "FORCE ROW LEVEL SECURITY" in maintenance
+    # 718293 owns policy-role scoping, preserving predicates and keeping worker
+    # policies dedicated rather than composing API policies into worker reads.
+    assert '"p_branch_select": "app_runtime"' in scoped_rls
+    assert '"p_branch_insert": "auth_runtime"' in scoped_rls
+    assert "lifecycle_worker_branch_read" in scoped_rls
+    assert "lifecycle_worker_outbox_select" in scoped_rls
+    assert "ALTER POLICY" in scoped_rls
+
+    # b5c6 is the migration that explicitly re-proves live ENABLE+FORCE RLS for
+    # the maintenance relations while bounding the separate maintenance role.
+    assert "def _require_force_rls" in maintenance
+    assert "_require_force_rls(bind, _STATE)" in maintenance
+    assert "_require_force_rls(bind, _WATCHDOG)" in maintenance
     assert "NOBYPASSRLS" in maintenance
     assert "app.internal_maintenance" in maintenance
     assert "lifecycle_maintenance_runtime" in maintenance
