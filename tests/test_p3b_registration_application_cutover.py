@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ROUTER = ROOT / "app/routers/organizations.py"
 SERVICE = ROOT / "app/services/organization_registration_service.py"
+ATOMIC_SERVICE = ROOT / "app/services/organization_profile_mutation_service.py"
 MUTATION_REPOSITORY = ROOT / "app/repositories/organization_registration_mutations.py"
 BACKFILL = ROOT / "scripts/p3b_backfill_legacy_registrations.py"
 
@@ -52,11 +53,21 @@ def test_normal_http_registration_path_has_no_legacy_orm_or_fernet_crypto() -> N
         assert forbidden not in normal_runtime
 
 
-def test_http_post_and_profile_registration_updates_use_secure_services() -> None:
+def test_http_registration_paths_use_certified_secure_services_after_p3c_cutover() -> None:
     router = _text(ROUTER)
+    atomic_service = _text(ATOMIC_SERVICE)
+
+    # Standalone registration creation remains a direct P3B HTTP operation.
     assert "create_secure_organization_registration(" in router
-    assert "replace_secure_organization_registration(" in router
     assert "list_current_organization_registrations(" in router
+
+    # P3C deliberately removes direct replacement from the router. Both P3B secure
+    # mutation services are composed by the single P3C transaction owner instead.
+    assert "mutate_organization_profile_atomically(" in router
+    assert "replace_secure_organization_registration(" not in router
+    assert "create_secure_organization_registration(" in atomic_service
+    assert "replace_secure_organization_registration(" in atomic_service
+
     assert "RegistrationCreate(" in router
     assert "mask_id_number(identifier)" in router
 
@@ -80,19 +91,30 @@ def test_http_maps_only_explicit_registration_boundary_failures() -> None:
     assert "Organization registration encryption service is unavailable" in router
 
 
-def test_profile_and_registration_mutations_remain_separate_p3c_boundary() -> None:
+def test_p3c_composes_p3b_mutations_without_router_owned_transaction() -> None:
     router = _text(ROUTER)
-    patch_source = router.split("async def update_org_profile", 1)[1]
-    assert "P3C alone owns cross-domain atomic composition" in patch_source
-    profile_commit = patch_source.index("await db.commit()")
-    registration_service = min(
-        index for index in (
-            patch_source.find("create_secure_organization_registration("),
-            patch_source.find("replace_secure_organization_registration("),
-        )
-        if index >= 0
+    tree = ast.parse(router, filename=str(ROUTER))
+    patch = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "update_org_profile"
     )
-    assert profile_commit < registration_service
+    assert patch.end_lineno is not None
+    patch_source = "".join(
+        router.splitlines(keepends=True)[patch.lineno - 1 : patch.end_lineno]
+    )
+    atomic_service = _text(ATOMIC_SERVICE)
+
+    assert "mutate_organization_profile_atomically(" in patch_source
+    assert "await db.commit()" not in patch_source
+    assert "await db.rollback()" not in patch_source
+    assert "create_secure_organization_registration(" not in patch_source
+    assert "replace_secure_organization_registration(" not in patch_source
+
+    assert "async with session.begin():" in atomic_service
+    assert "create_secure_organization_registration(" in atomic_service
+    assert "replace_secure_organization_registration(" in atomic_service
+    assert "update_current_organization_profile(" in atomic_service
 
 
 def test_legacy_decrypt_is_confined_to_explicit_one_time_backfill_command() -> None:

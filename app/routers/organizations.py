@@ -9,6 +9,7 @@ from app.core.aws_kms import (
     RegistrationKMSConfigurationError,
 )
 from app.core.database import get_db
+from app.core.service_managed_database import get_service_managed_db
 from app.core.deps import require_org_admin, Staff
 from app.repositories.organization_profile import (
     ProfileAuthorizationError,
@@ -33,12 +34,17 @@ from app.schemas.organization import (
     LogoUploadUrlResponse, LogoConfirmRequest, LogoStatusResponse
 )
 from app.schemas.common import Response
+from app.services.organization_profile_mutation_service import (
+    MaskedRegistrationIdentifierError,
+    OrganizationProfileNotFoundError,
+    OrganizationProfileTransactionStateError,
+    RegistrationMutationPlan,
+    mutate_organization_profile_atomically,
+)
 from app.services.organization_registration_service import (
     create_secure_organization_registration,
-    replace_secure_organization_registration,
 )
 from app.utils.encryption import mask_id_number
-import uuid
 from app.utils.s3 import get_s3_client
 from app.core.config import settings
 from app.tasks.logos import process_org_logo
@@ -129,7 +135,7 @@ def _registration_material(
     id_number: str,
     country_code: str,
 ) -> tuple[str, str, str, str, str | None]:
-    """Apply the public registration schema before bounded crypto/database work."""
+    """Apply public validation before bounded crypto/database work."""
 
     try:
         validated = RegistrationCreate(
@@ -160,36 +166,37 @@ def _registration_material(
     )
 
 
-async def _raise_registration_write_http(
-    db: AsyncSession,
-    exc: Exception,
-) -> None:
-    """Rollback a failed registration transaction and expose a stable HTTP error."""
+def _registration_write_http_exception(exc: Exception) -> HTTPException:
+    """Map bounded registration failures without controlling a transaction."""
 
-    await db.rollback()
+    if isinstance(exc, MaskedRegistrationIdentifierError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Masked organization registration identifiers cannot be submitted",
+        )
     if isinstance(
         exc,
         (RegistrationMutationAuthorizationError, RegistrationKeyAuthorizationError),
     ):
-        raise HTTPException(
+        return HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Organization registration access denied",
-        ) from exc
+        )
     if isinstance(exc, RegistrationMutationValidationError):
-        raise HTTPException(
+        return HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid organization registration identifier",
-        ) from exc
+        )
     if isinstance(exc, RegistrationConflictError):
-        raise HTTPException(
+        return HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Organization registration already exists",
-        ) from exc
+        )
     if isinstance(exc, RegistrationTargetNotFoundError):
-        raise HTTPException(
+        return HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Organization registration changed concurrently; retry the request",
-        ) from exc
+        )
     if isinstance(
         exc,
         (
@@ -199,11 +206,21 @@ async def _raise_registration_write_http(
             RegistrationKMSConfigurationError,
         ),
     ):
-        raise HTTPException(
+        return HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Organization registration encryption service is unavailable",
-        ) from exc
+        )
     raise exc
+
+
+async def _raise_registration_write_http(
+    db: AsyncSession,
+    exc: Exception,
+) -> None:
+    """Preserve P3B standalone-write rollback behavior and stable HTTP mapping."""
+
+    await db.rollback()
+    raise _registration_write_http_exception(exc) from exc
 
 
 async def _get_profile_or_forbidden(db: AsyncSession) -> dict | None:
@@ -220,6 +237,14 @@ async def _update_profile_or_forbidden(
     db: AsyncSession,
     patch: dict,
 ) -> dict | None:
+    """Preserve the certified P3A direct profile helper regression surface.
+
+    P3C's real PATCH endpoint deliberately does not call this helper; the atomic
+    composition service invokes the same P3A repository capability inside its
+    single transaction. Keeping this wrapper unchanged lets the certified P3A
+    application boundary continue to prove that capability independently.
+    """
+
     try:
         return await update_current_organization_profile(db, patch)
     except ProfileAuthorizationError as exc:
@@ -302,109 +327,91 @@ async def get_org_profile(
 async def update_org_profile(
     data: OrganizationUpdate,
     current_staff: Staff = Depends(require_org_admin),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_service_managed_db),
 ):
-    """
-    Update organization branding and profile details.
+    """Atomically update the P3A profile and P3B registration state.
 
-    P3A applies organization-table fields through its bounded capability. P3B
-    applies registration changes through separate KMS-backed create/replace
-    capabilities. These domains intentionally remain separate transactions;
-    P3C alone owns cross-domain atomic composition.
+    P3C owns exactly one SQLAlchemy transaction for this combined business
+    mutation. The router validates public registration syntax before the
+    transaction; the service then composes only the certified P3A/P3B
+    capabilities and compares any candidate mask to the tenant's exact bounded
+    masked-read value. Any profile, registration, KMS, authorization,
+    concurrency, cancellation or commit failure rolls the whole unit back.
     """
+
     update_data = data.model_dump(exclude_unset=True)
-
-    reg_updates = {}
+    raw_registration_updates: dict[str, str | None] = {}
     if "business_id" in update_data:
-        reg_updates["BUSINESS_ID"] = update_data.pop("business_id")
+        raw_registration_updates["BUSINESS_ID"] = update_data.pop("business_id")
     if "gst_number" in update_data:
-        reg_updates["GST"] = update_data.pop("gst_number")
+        raw_registration_updates["GST"] = update_data.pop("gst_number")
     if "pan_number" in update_data:
-        reg_updates["PAN"] = update_data.pop("pan_number")
+        raw_registration_updates["PAN"] = update_data.pop("pan_number")
 
-    if update_data:
-        org = await _update_profile_or_forbidden(db, update_data)
-        if not org:
-            raise HTTPException(status_code=404, detail="Organization not found")
-        await db.commit()
-    else:
-        org = await _get_profile_or_forbidden(db)
-        if not org:
-            raise HTTPException(status_code=404, detail="Organization not found")
+    # Preserve the existing API meaning: omitted/null/empty registration
+    # convenience fields do not mutate stored registration state. Validate all
+    # actual identifier changes before opening the database transaction.
+    registration_plans: list[RegistrationMutationPlan] = []
+    for requested_type, requested_identifier in raw_registration_updates.items():
+        if not requested_identifier:
+            continue
+        requested_country = "IN" if requested_type in {"GST", "PAN"} else "US"
+        (
+            id_type,
+            identifier,
+            masked,
+            country_code,
+            entity_type,
+        ) = _registration_material(
+            id_type=requested_type,
+            id_number=requested_identifier,
+            country_code=requested_country,
+        )
+        registration_plans.append(
+            RegistrationMutationPlan(
+                id_type=id_type,
+                normalized_identifier=identifier,
+                masked_identifier=masked,
+                country_code=country_code,
+                entity_type=entity_type,
+            )
+        )
 
-    pending_registration_updates = [
-        (id_type, id_number)
-        for id_type, id_number in reg_updates.items()
-        if id_number
-    ]
-    if pending_registration_updates:
-        registrations = await _get_registrations_or_forbidden(db)
-        by_business_key = {
-            (
-                str(registration["id_type"]).strip().upper(),
-                str(registration["country_code"]).strip().upper(),
-            ): registration
-            for registration in registrations
-        }
+    try:
+        result = await mutate_organization_profile_atomically(
+            db,
+            profile_patch=update_data,
+            registration_updates=tuple(registration_plans),
+        )
+    except OrganizationProfileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Organization not found") from exc
+    except ProfileAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization profile access denied",
+        ) from exc
+    except RegistrationAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization registration access denied",
+        ) from exc
+    except (
+        MaskedRegistrationIdentifierError,
+        RegistrationMutationAuthorizationError,
+        RegistrationMutationValidationError,
+        RegistrationKeyStateError,
+        RegistrationConflictError,
+        RegistrationTargetNotFoundError,
+        RegistrationKeyAuthorizationError,
+        AWSKMSUnavailableError,
+        AWSKMSContractError,
+        RegistrationKMSConfigurationError,
+    ) as exc:
+        raise _registration_write_http_exception(exc) from exc
+    except OrganizationProfileTransactionStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Organization profile transaction could not be started",
+        ) from exc
 
-        try:
-            for requested_type, requested_identifier in pending_registration_updates:
-                requested_country = (
-                    "IN" if requested_type in {"GST", "PAN"} else "US"
-                )
-                (
-                    id_type,
-                    identifier,
-                    masked,
-                    country_code,
-                    entity_type,
-                ) = _registration_material(
-                    id_type=requested_type,
-                    id_number=requested_identifier,
-                    country_code=requested_country,
-                )
-                existing = by_business_key.get((id_type, country_code))
-                if existing is None:
-                    registration = await create_secure_organization_registration(
-                        db,
-                        id_type=id_type,
-                        normalized_identifier=identifier,
-                        masked_identifier=masked,
-                        country_code=country_code,
-                        entity_type=entity_type,
-                    )
-                else:
-                    registration = await replace_secure_organization_registration(
-                        db,
-                        registration_id=uuid.UUID(str(existing["id"])),
-                        id_type=id_type,
-                        normalized_identifier=identifier,
-                        masked_identifier=masked,
-                        country_code=country_code,
-                        entity_type=entity_type,
-                    )
-                by_business_key[(id_type, country_code)] = {
-                    "id": registration.id,
-                    "id_type": registration.id_type,
-                    "country_code": registration.country_code,
-                }
-            await db.commit()
-        except (
-            RegistrationMutationAuthorizationError,
-            RegistrationMutationValidationError,
-            RegistrationKeyStateError,
-            RegistrationConflictError,
-            RegistrationTargetNotFoundError,
-            RegistrationKeyAuthorizationError,
-            AWSKMSUnavailableError,
-            AWSKMSContractError,
-            RegistrationKMSConfigurationError,
-        ) as exc:
-            await _raise_registration_write_http(db, exc)
-
-    org = await _get_profile_or_forbidden(db)
-    if not org:
-        raise HTTPException(status_code=404, detail="Organization not found")
-
-    registrations = await _get_registrations_or_forbidden(db)
-    return Response(data=_profile_response(org, registrations))
+    return Response(data=_profile_response(result.profile, result.registrations))

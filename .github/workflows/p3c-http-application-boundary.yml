@@ -1,0 +1,116 @@
+name: P3C HTTP Application Boundary
+
+on:
+  pull_request:
+    branches:
+      - hardening/p3b-organization-registrations
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p3c-http-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p3c-http-application-boundary:
+    name: FastAPI atomic profile-registration boundary on reduced runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3c_http
+      MIGRATION_PASSWORD: ci-migration-owner
+      P3B_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3c_http
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p3c-http-not-production
+      AWS_ACCESS_KEY_ID: ci-p3c
+      AWS_SECRET_ACCESS_KEY: ci-p3c
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-p3c-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Install PostgreSQL 16 and bootstrap reduced API identity
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE app_p3c_http_runtime LOGIN PASSWORD 'ci-p3c-http-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE app_p3c_http_runtime SET row_security='on';
+          ALTER ROLE app_p3c_http_runtime SET statement_timeout='5s';
+          ALTER ROLE app_p3c_http_runtime SET lock_timeout='2s';
+          ALTER ROLE app_p3c_http_runtime SET idle_in_transaction_session_timeout='15s';
+          GRANT app_runtime TO app_p3c_http_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_p3c_http_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_p3c_http OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p3c_http TO app_p3c_http_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3c_http
+
+      - name: Establish certified P3B database contract with no P3C migration
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/migration_semantics_gate.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'k07d8e9f0a2b'
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect final
+
+      - name: Exercise real FastAPI P3C application boundary
+        env:
+          DATABASE_URL: postgresql+asyncpg://app_p3c_http_runtime:ci-p3c-http-runtime@127.0.0.1:5432/gymflow_p3c_http
+          P3C_HTTP_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3c_http
+          PYTHONPATH: .
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/ci/verify_p3c_http_application_boundary.py
+          python -s scripts/ci/verify_p3c_http_application_boundary.py
+
+      - name: Reprove P3A helper and P3B final boundary remain available
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from app.routers.organizations import _get_profile_or_forbidden, _update_profile_or_forbidden
+          assert callable(_get_profile_or_forbidden)
+          assert callable(_update_profile_or_forbidden)
+          PY
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect final
+
+      - name: Reprove cluster identity graph
+        env:
+          DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:ci-migration-owner@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py
