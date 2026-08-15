@@ -102,6 +102,9 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         "create_policy",
         "drop_policy",
     }
+    function_install_with_create_policy_contract = function_install_contract | {
+        "create_policy",
+    }
     expected = {
         "0022_rbac_phase1_roles_extensions.py": {
             "create_schema",
@@ -145,10 +148,11 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         _P3A_PRINCIPAL_BINDING_MIGRATION: set(),
         _P3A_AUTH_DECOUPLING_MIGRATION: set(),
         # P3B function owners receive schema CREATE only inside installation
-        # windows, then lose it immediately. C97/D07 additionally create the two
-        # FORCE-RLS tenant policies that begin the registration/storage boundary.
+        # windows, then lose it immediately. C97 explicitly drops/recreates its
+        # policy during downgrade; D07 creates the payload policy and removes it
+        # by dropping the payload table, so there is no standalone DROP POLICY DDL.
         _P3B_READ_MIGRATION: function_install_with_policy_contract,
-        _P3B_STORAGE_MIGRATION: function_install_with_policy_contract,
+        _P3B_STORAGE_MIGRATION: function_install_with_create_policy_contract,
         _P3B_DEK_MIGRATION: function_install_contract,
         _P3B_CREATE_MIGRATION: function_install_contract,
         _P3B_REPLACE_MIGRATION: function_install_contract,
