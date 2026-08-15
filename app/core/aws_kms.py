@@ -18,6 +18,7 @@ from app.core.crypto import KMSCircuitBreakerError, _guardrails, kms_bulkhead
 
 
 _PURPOSE = "doers-envelope-dek-v1"
+_REGISTRATION_DOMAIN = "organization_registrations"
 
 
 @dataclass(slots=True)
@@ -42,12 +43,14 @@ class AWSKMSProvider:
         region_name: str,
         tenant_id: str,
         data_domain: str,
+        endpoint_url: str | None = None,
         client: Any | None = None,
     ) -> None:
         key_id = key_id.strip()
         region_name = region_name.strip()
         tenant_id = tenant_id.strip()
         data_domain = data_domain.strip()
+        endpoint_url = endpoint_url.strip() if endpoint_url else None
         if not key_id:
             raise ValueError("AWS KMS key id is required")
         if not region_name:
@@ -66,7 +69,11 @@ class AWSKMSProvider:
         }
         # Use the normal boto3 credential provider chain. Production should use
         # workload/IAM-role credentials rather than embedding credentials here.
-        self._client = client or boto3.client("kms", region_name=region_name)
+        self._client = client or boto3.client(
+            "kms",
+            region_name=region_name,
+            endpoint_url=endpoint_url,
+        )
 
     @property
     def encryption_context(self) -> dict[str, str]:
@@ -129,3 +136,30 @@ class AWSKMSProvider:
         if not isinstance(plaintext, (bytes, bytearray)) or len(plaintext) != 32:
             raise RuntimeError("AWS KMS returned an invalid decrypted AES-256 data key")
         return bytes(plaintext)
+
+
+def registration_kms_provider(
+    tenant_id: str,
+    *,
+    client: Any | None = None,
+) -> AWSKMSProvider:
+    """Build the fixed-domain P3B provider and reject unsafe configuration."""
+
+    from app.core.config import settings
+
+    key_id = settings.AWS_KMS_KEY_ID.strip()
+    if not key_id:
+        raise RuntimeError("AWS_KMS_KEY_ID is required for registration encryption")
+
+    endpoint_url = settings.AWS_KMS_ENDPOINT_URL.strip()
+    if settings.is_production and endpoint_url:
+        raise RuntimeError("AWS_KMS_ENDPOINT_URL is forbidden in production")
+
+    return AWSKMSProvider(
+        key_id=key_id,
+        region_name=settings.AWS_REGION_NAME,
+        tenant_id=str(tenant_id),
+        data_domain=_REGISTRATION_DOMAIN,
+        endpoint_url=endpoint_url or None,
+        client=client,
+    )
