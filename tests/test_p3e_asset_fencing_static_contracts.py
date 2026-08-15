@@ -99,6 +99,9 @@ def test_asset_migrations_keep_reduced_role_and_sql_namespace_contracts() -> Non
     assert "capture_organization_asset_key_cleanup" in p07
     assert "capture_organization_asset_job_cleanup" in p07
     assert "dispatchable_organization_asset_cleanup" in p07
+    assert "has_schema_privilege" in p07
+    assert "grant usage on schema app_secure to migration_owner" in normalized_p07
+    assert "revoke usage on schema app_secure from migration_owner" in normalized_p07
     assert "revoke execute on function" in normalized_p07
     assert "from migration_owner" in normalized_p07
 

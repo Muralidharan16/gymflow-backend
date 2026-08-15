@@ -85,6 +85,12 @@ def _require_forward(bind) -> None:
     """), {"relation": _CLEANUP_TABLE}).scalar_one_or_none()
     if owner != _MIGRATION_OWNER:
         raise RuntimeError("organization_asset_cleanup_jobs owner drifted")
+    if bind.execute(sa.text("""
+        SELECT pg_catalog.has_schema_privilege(
+            'migration_owner', 'app_secure', 'USAGE'
+        )
+    """)).scalar_one():
+        raise RuntimeError("migration_owner retained app_secure USAGE")
     for role_name in (
         "app_runtime", "auth_runtime", _WORKER_ROLE, _MAINTENANCE_ROLE
     ):
@@ -345,7 +351,9 @@ def upgrade() -> None:
         FROM PUBLIC
     """)
     # migration_owner owns the trigger target tables but not these reduced-owner
-    # functions. Grant EXECUTE only for trigger installation, then revoke it.
+    # functions/schema. Grant only the privileges PostgreSQL requires for
+    # trigger installation, then revoke them before the migration completes.
+    op.execute("GRANT USAGE ON SCHEMA app_secure TO migration_owner")
     op.execute("""
         GRANT EXECUTE ON FUNCTION
             app_secure.capture_organization_asset_key_cleanup(),
@@ -378,6 +386,7 @@ def upgrade() -> None:
             app_secure.capture_organization_asset_job_cleanup()
         FROM migration_owner
     """)
+    op.execute("REVOKE USAGE ON SCHEMA app_secure FROM migration_owner")
 
     op.execute(r"""
         CREATE FUNCTION app_secure.claim_organization_asset_cleanup(
