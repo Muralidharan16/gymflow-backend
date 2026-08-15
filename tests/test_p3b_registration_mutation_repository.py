@@ -67,9 +67,11 @@ def test_mutation_repository_maps_only_explicit_database_contract_states() -> No
     assert "RegistrationMutationValidationError" in source
     assert 'state == "23503"' in source
     assert "RegistrationKeyStateError" in source
+    assert 'state == "P0002"' in source
     assert "RegistrationTargetNotFoundError" in source
     assert 'state == "23505"' in source
     assert "RegistrationConflictError" in source
+    assert "target or key" not in source
     assert "str(exc)" not in source
 
 
