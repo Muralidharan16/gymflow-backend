@@ -61,11 +61,11 @@ async def mutate_organization_profile_atomically(
 ) -> OrganizationProfileMutationResult:
     """Commit the P3A profile and P3B registration mutation as one unit.
 
-    Registration work is intentionally composed before the P3A profile UPDATE.
-    The P3B path may call external KMS, so this ordering avoids holding the
-    organization profile/root row lock while waiting on network I/O.  P3A still
-    executes inside the same transaction; if its authorization or mutation fails,
-    all registration/key/payload database work rolls back.
+    P3A read authorization is established first without taking the profile UPDATE
+    lock.  P3B read authorization is then established before registration crypto.
+    Only after both certified boundaries have admitted the principal may external
+    KMS/envelope work run.  The P3A UPDATE remains after registration/KMS work so
+    the organization root row is not locked across network I/O.
 
     The caller must provide a service-managed request session with no active
     transaction. Any authorization, validation, KMS, key-state, uniqueness,
@@ -80,6 +80,10 @@ async def mutate_organization_profile_atomically(
         )
 
     async with session.begin():
+        initial_profile = await get_current_organization_profile(session)
+        if initial_profile is None:
+            raise OrganizationProfileNotFoundError
+
         if registration_updates:
             registrations = await list_current_organization_registrations(session)
             by_business_key = {
@@ -138,7 +142,7 @@ async def mutate_organization_profile_atomically(
         if profile_patch:
             profile = await update_current_organization_profile(session, profile_patch)
         else:
-            profile = await get_current_organization_profile(session)
+            profile = initial_profile
 
         if profile is None:
             raise OrganizationProfileNotFoundError
