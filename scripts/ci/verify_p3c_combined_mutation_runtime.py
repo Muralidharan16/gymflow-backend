@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.aws_kms import AWSKMSUnavailableError, EncryptedDataKey
 from app.core.database import SessionContextInitializer
 from app.repositories.organization_profile import ProfileAuthorizationError
-from app.repositories.organization_registrations import RegistrationAuthorizationError
 import app.services.organization_profile_mutation_service as mutation_service
 from app.services.organization_profile_mutation_service import RegistrationMutationPlan
 import app.services.registration_key_service as registration_key_service
@@ -207,7 +206,7 @@ async def _run() -> None:
         assert registration is None
         assert payload is None
 
-        # Registration-only: profile remains unchanged while the real P3B DEK,
+        # Registration-only: P3A is authorized first, then the real P3B DEK,
         # envelope crypto and create capability commit in the same service UoW.
         async with sessions() as session:
             await _initialize_owner(session)
@@ -234,8 +233,8 @@ async def _run() -> None:
         assert _DeterministicKMS.generate_calls == 1
         assert _DeterministicKMS.decrypt_calls >= 1
 
-        # Combined replace: registration/KMS runs before the profile UPDATE, both
-        # commit together, and the new identifier cannot inherit verification.
+        # Combined replace: both read boundaries authorize before KMS, then
+        # registration/KMS runs before the profile UPDATE. Both commit together.
         _mark_pan_verified()
         async with sessions() as session:
             await _initialize_owner(session)
@@ -253,8 +252,8 @@ async def _run() -> None:
         assert payload is not None
         stable = (name, registration, payload)
 
-        # KMS fails before the profile root UPDATE, avoiding a root lock across
-        # network failure. No registration/key/profile state may escape.
+        # KMS fails after both read authorizations but before the profile root
+        # UPDATE, avoiding a root lock across network failure.
         _DeterministicKMS.fail_decrypt = True
         async with sessions() as session:
             await _initialize_owner(session)
@@ -272,12 +271,17 @@ async def _run() -> None:
         _DeterministicKMS.fail_decrypt = False
         assert _snapshot() == stable
 
-        # Inject failure after the real P3B replace and real P3A UPDATE. This is
-        # the decisive two-sided rollback proof, not a mocked transaction-only
-        # assertion.
+        # Inject failure only on the second P3A read: the preauthorization read
+        # succeeds, then real P3B replace + real P3A UPDATE execute, and the final
+        # read fails. The whole database unit must roll back.
         original_get_profile = mutation_service.get_current_organization_profile
+        post_write_reads = 0
 
         async def _fail_final_profile_read(*args, **kwargs):
+            nonlocal post_write_reads
+            post_write_reads += 1
+            if post_write_reads == 1:
+                return await original_get_profile(*args, **kwargs)
             raise RuntimeError("injected post-write read failure")
 
         mutation_service.get_current_organization_profile = _fail_final_profile_read
@@ -297,12 +301,19 @@ async def _run() -> None:
                 assert not session.in_transaction()
         finally:
             mutation_service.get_current_organization_profile = original_get_profile
+        assert post_write_reads == 2
         assert _snapshot() == stable
 
-        # Cancellation after both real writes must roll back and leave the same
-        # session reusable. Transaction-begin context reapplication is thereby
-        # proved on the same pooled SQLAlchemy session.
+        # Cancellation on the second P3A read occurs after both real writes. It
+        # must roll back and leave the same session reusable with GUC context
+        # reapplied on the next transaction.
+        cancel_reads = 0
+
         async def _cancel_final_profile_read(*args, **kwargs):
+            nonlocal cancel_reads
+            cancel_reads += 1
+            if cancel_reads == 1:
+                return await original_get_profile(*args, **kwargs)
             raise asyncio.CancelledError
 
         mutation_service.get_current_organization_profile = _cancel_final_profile_read
@@ -330,15 +341,18 @@ async def _run() -> None:
                 assert recovery.profile["name"] == "Alpha After Cancel"
         finally:
             mutation_service.get_current_organization_profile = original_get_profile
+        assert cancel_reads == 2
         name, registration, payload = _snapshot()
         assert name == "Alpha After Cancel"
         assert registration == stable[1]
         assert payload == stable[2]
 
-        # An unrelated owner cannot use Alpha tenant context. With P3B composed
-        # first, either bounded registration or profile capability may be the
-        # first intersection check; in all cases no state may persist.
+        # P3A must reject an unrelated owner before P3B/KMS is reached.
         before_auth_failure = _snapshot()
+        kms_before_auth_failure = (
+            _DeterministicKMS.generate_calls,
+            _DeterministicKMS.decrypt_calls,
+        )
         async with sessions() as session:
             await _initialize_owner(session, org_id=ALPHA_ORG, user_id=BETA_OWNER)
             try:
@@ -347,16 +361,20 @@ async def _run() -> None:
                     profile_patch={"name": "MUST ROLLBACK AUTH"},
                     registration_updates=(_pan("ZZZZZ0000Z"),),
                 )
-            except (ProfileAuthorizationError, RegistrationAuthorizationError):
+            except ProfileAuthorizationError:
                 pass
             else:
                 raise AssertionError("cross-tenant principal unexpectedly mutated Alpha")
             assert not session.in_transaction()
         assert _snapshot() == before_auth_failure
+        assert (
+            _DeterministicKMS.generate_calls,
+            _DeterministicKMS.decrypt_calls,
+        ) == kms_before_auth_failure
 
-        # Two concurrent combined mutations must serialize through the same
-        # registration/root resources and finish as one complete pair, never a
-        # profile value from one request with registration state from the other.
+        # Two concurrent combined replacements must finish as one complete pair,
+        # never a profile value from one request with registration state from the
+        # other.
         pair_a = ("Concurrency Pair A", _pan("AAAAA1111A"))
         pair_b = ("Concurrency Pair B", _pan("BBBBB2222B"))
 
