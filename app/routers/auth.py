@@ -174,6 +174,8 @@ async def get_signup_status(
             "user": {
                 "email": owner.email,
                 "id": str(owner.id),
+                "org_id": str(owner.org_id),
+                "role": "owner",
                 "name": owner.owner_name,
                 "organizationName": sync_data.get("organizationName"),
             },
@@ -235,6 +237,8 @@ async def login(
         "user": {
             "id": str(owner.id),
             "email": owner.email,
+            "org_id": str(owner.org_id),
+            "role": "owner",
             "name": owner.owner_name,
             "organizationName": org_name,
         },
@@ -302,6 +306,8 @@ async def get_me(
     owner = result.scalar_one_or_none()
     if not owner:
         raise HTTPException(status_code=404, detail="Owner not found")
+    if owner.org_id != current_staff.org_id:
+        raise HTTPException(status_code=401, detail="Session organization mismatch")
 
     from app.models.organization import Organization
 
@@ -313,6 +319,8 @@ async def get_me(
         "user": {
             "id": str(owner.id),
             "email": owner.email,
+            "org_id": str(current_staff.org_id),
+            "role": current_staff.role,
             "name": owner.owner_name,
             "organizationName": org_name,
         },

@@ -146,6 +146,19 @@ def test_auth_router_does_not_serialize_browser_credentials() -> None:
     assert 'owner_id = uuid.UUID(str(sync_data.get("sub")))' in source
 
 
+def test_session_json_exposes_only_server_established_routing_metadata() -> None:
+    from app.routers import auth
+
+    source = inspect.getsource(auth)
+    assert source.count('"org_id":') >= 3
+    assert source.count('"role":') >= 3
+    assert '"org_id": str(owner.org_id)' in source
+    assert '"role": "owner"' in source
+    assert 'owner.org_id != current_staff.org_id' in source
+    assert '"org_id": str(current_staff.org_id)' in source
+    assert '"role": current_staff.role' in source
+
+
 def test_tenant_boundary_requires_access_type_and_durable_owner_family() -> None:
     from app.core import middleware
 
