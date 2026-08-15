@@ -1,0 +1,269 @@
+name: P3C General Regression Certification
+
+on:
+  pull_request:
+    branches:
+      - hardening/p3b-organization-registrations
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p3c-general-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  general-regressions:
+    name: Fresh PG16 P3C atomicity and general regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p3c-general-not-production
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Install PostgreSQL 16
+        run: bash scripts/ci/install_pg16_test_stack.sh
+
+      - name: Bootstrap canonical roles and general test logins
+        run: |
+          set -euo pipefail
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+
+          CREATE ROLE test_runner LOGIN PASSWORD 'ci-test-runner'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime LOGIN PASSWORD 'ci-auth-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-lifecycle-maintenance-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_test_runtime SET row_security='on';
+          ALTER ROLE app_test_runtime SET statement_timeout='5s';
+          ALTER ROLE app_test_runtime SET lock_timeout='2s';
+          ALTER ROLE app_test_runtime SET idle_in_transaction_session_timeout='15s';
+          ALTER ROLE auth_test_runtime SET row_security='on';
+          ALTER ROLE auth_test_runtime SET statement_timeout='5s';
+          ALTER ROLE auth_test_runtime SET lock_timeout='2s';
+          ALTER ROLE auth_test_runtime SET idle_in_transaction_session_timeout='15s';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET statement_timeout='15s';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET lock_timeout='2s';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET idle_in_transaction_session_timeout='30s';
+
+          GRANT app_runtime TO app_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_migration_test OWNER migration_owner;
+          CREATE DATABASE gymflow_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_test
+            TO app_test_runtime, auth_test_runtime, lifecycle_maintenance_test_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          set -euo pipefail
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_migration_test
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_test
+
+      - name: Fresh certified P3B HEAD on migration and test databases
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/migration_semantics_gate.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'k07d8e9f0a2b'
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          DATABASE_URL='postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test' \
+            python -s -m alembic -c alembic.ini upgrade head
+          DATABASE_URL='postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test' \
+            python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Prove P3B final catalog and runtime separation unchanged
+        env:
+          P3B_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+        run: |
+          set -euo pipefail
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect final
+
+          PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
+          DO $$
+          DECLARE runtime_record record;
+          BEGIN
+            SELECT * INTO runtime_record FROM pg_catalog.pg_roles WHERE rolname=current_user;
+            IF current_user <> 'app_test_runtime' OR current_database() <> 'gymflow_test' THEN
+              RAISE EXCEPTION 'unexpected P3C general runtime identity/database';
+            END IF;
+            IF NOT runtime_record.rolcanlogin OR runtime_record.rolsuper
+               OR runtime_record.rolcreatedb OR runtime_record.rolcreaterole
+               OR runtime_record.rolinherit OR runtime_record.rolreplication
+               OR runtime_record.rolbypassrls THEN
+              RAISE EXCEPTION 'P3C general runtime role attributes are unsafe';
+            END IF;
+            IF pg_catalog.has_table_privilege(current_user,'public.organization_registrations','SELECT')
+               OR pg_catalog.has_table_privilege(current_user,'public.organization_registrations','INSERT')
+               OR pg_catalog.has_table_privilege(current_user,'public.organization_registrations','UPDATE')
+               OR pg_catalog.has_table_privilege(current_user,'public.organization_registrations','DELETE')
+               OR pg_catalog.has_table_privilege(current_user,'public.organization_registration_payloads_secure','SELECT')
+               OR pg_catalog.has_table_privilege(current_user,'public.organization_registration_payloads_secure','INSERT')
+               OR pg_catalog.has_table_privilege(current_user,'public.organization_registration_payloads_secure','UPDATE')
+               OR pg_catalog.has_table_privilege(current_user,'public.organization_registration_payloads_secure','DELETE') THEN
+              RAISE EXCEPTION 'P3C broadened direct registration privilege';
+            END IF;
+            IF NOT pg_catalog.has_function_privilege(
+                current_user,'app_secure.current_organization_profile()','EXECUTE'
+            ) OR NOT pg_catalog.has_function_privilege(
+                current_user,'app_secure.update_current_organization_profile(jsonb)','EXECUTE'
+            ) OR NOT pg_catalog.has_function_privilege(
+                current_user,'app_secure.current_organization_registrations()','EXECUTE'
+            ) OR NOT pg_catalog.has_function_privilege(
+                current_user,
+                'app_secure.create_organization_registration_envelope(uuid,text,text,text,text,bytea,integer)',
+                'EXECUTE'
+            ) OR NOT pg_catalog.has_function_privilege(
+                current_user,
+                'app_secure.replace_organization_registration_envelope(uuid,text,text,text,text,bytea,integer)',
+                'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'P3C runtime lacks certified P3A/P3B capability intersection';
+            END IF;
+          END
+          $$;
+          SQL
+
+          PGPASSWORD="$AUTH_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U auth_test_runtime -d gymflow_test <<'SQL'
+          DO $$
+          BEGIN
+            IF pg_catalog.has_table_privilege(current_user,'public.organization_registrations','SELECT')
+               OR pg_catalog.has_function_privilege(
+                    current_user,'app_secure.current_organization_registrations()','EXECUTE'
+               ) OR pg_catalog.has_function_privilege(
+                    current_user,'app_secure.current_organization_profile()','EXECUTE'
+               ) THEN
+              RAISE EXCEPTION 'auth runtime crossed P3A/P3B ordinary application boundary';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Run P3A, P3B and P3C source contracts explicitly
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q \
+            tests/test_p3a_profile_http_authorization.py \
+            tests/test_organization_profile_authorization_boundary.py \
+            tests/test_organization_profile_principal_binding.py \
+            tests/test_organization_onboarding_authorization_boundary.py \
+            tests/test_p3a_auth_runtime_decoupling.py \
+            tests/test_p3b_registration_application_cutover.py \
+            tests/test_p3b_registration_contract.py \
+            tests/test_p3b_registration_read_boundary.py \
+            tests/test_p3b_registration_create_capability.py \
+            tests/test_p3b_registration_replace_without_upsert_reads.py \
+            tests/test_p3c_profile_registration_atomicity_static.py \
+            tests/test_p3c_atomic_service_behavior.py
+
+      - name: Prove certified P3A helper regression surface remains importable
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from app.routers.organizations import _get_profile_or_forbidden, _update_profile_or_forbidden
+          assert callable(_get_profile_or_forbidden)
+          assert callable(_update_profile_or_forbidden)
+          PY
+
+      - name: Run general regression suite fail-fast
+        id: general_pytest
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          python -m pytest -q --maxfail=1 --ignore=tests/platform_billing 2>&1 \
+            | tee /tmp/p3c-general-pytest.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload general regression failure evidence
+        if: steps.general_pytest.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p3c-general-pytest-${{ github.sha }}
+          path: /tmp/p3c-general-pytest.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Enforce general regression result
+        if: steps.general_pytest.outcome == 'failure'
+        run: exit 1
+
+      - name: Reprove cluster identity graph after regressions
+        env:
+          DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:ci-migration-owner@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py
