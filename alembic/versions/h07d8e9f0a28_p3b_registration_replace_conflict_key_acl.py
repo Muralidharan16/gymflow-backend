@@ -1,13 +1,14 @@
-"""P3B: permit only the secure payload conflict key required by replacement.
+"""P3B: permit only secure payload keys required by replacement.
 
 Revision ID: h07d8e9f0a28
 Revises: g07d8e9f0a27
 Create Date: 2026-08-15
 
 PostgreSQL's INSERT .. ON CONFLICT (registration_id) DO UPDATE path requires
-read authority on the conflict target.  The registration security owner gets
-SELECT on registration_id only; ciphertext, tenant ids and key metadata remain
-unreadable.  app_runtime receives no direct payload privilege.
+read authority on the conflict target, and FORCE RLS must evaluate the existing
+row's tenant_id during the UPDATE path. The registration security owner gets
+SELECT on registration_id and tenant_id only; ciphertext and key metadata remain
+unreadable. app_runtime receives no direct payload privilege.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ _MIGRATION_OWNER = "migration_owner"
 _SECURITY_OWNER = "app_security_owner"
 _API = "app_runtime"
 _PAYLOAD = "public.organization_registration_payloads_secure"
-_EXPECTED_SECURITY_SELECT = {"registration_id"}
+_EXPECTED_SECURITY_SELECT = {"registration_id", "tenant_id"}
 
 
 def _scalar(bind, sql: str, params: dict[str, object] | None = None):
@@ -107,7 +108,9 @@ def _require_predecessor(bind) -> None:
 
 def _require_forward(bind) -> None:
     if _select_columns(bind, _SECURITY_OWNER) != _EXPECTED_SECURITY_SELECT:
-        raise RuntimeError("app_security_owner payload SELECT must be registration_id only")
+        raise RuntimeError(
+            "app_security_owner payload SELECT must be registration_id and tenant_id only"
+        )
     if _table_select(bind, _SECURITY_OWNER):
         raise RuntimeError("app_security_owner must not have table-wide payload SELECT")
     if _select_columns(bind, _API) or _table_select(bind, _API):
@@ -120,7 +123,7 @@ def upgrade() -> None:
     _require_predecessor(bind)
     bind.execute(
         sa.text(
-            "GRANT SELECT (registration_id) "
+            "GRANT SELECT (registration_id, tenant_id) "
             "ON TABLE public.organization_registration_payloads_secure "
             "TO app_security_owner"
         )
@@ -134,7 +137,7 @@ def downgrade() -> None:
     _require_forward(bind)
     bind.execute(
         sa.text(
-            "REVOKE SELECT (registration_id) "
+            "REVOKE SELECT (registration_id, tenant_id) "
             "ON TABLE public.organization_registration_payloads_secure "
             "FROM app_security_owner"
         )
