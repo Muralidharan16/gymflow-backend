@@ -1,9 +1,10 @@
 """Production AWS KMS adapter for tenant-scoped envelope data keys.
 
 This module intentionally does not derive wrapping keys from application
-secrets. AWS KMS owns the wrapping key; P3B callers receive a plaintext
-AES-256 data key only long enough to encrypt application data and persist the
-KMS-wrapped copy in the existing encryption key registry.
+secrets. AWS KMS owns the wrapping key. New registration-key provisioning uses
+GenerateDataKeyWithoutPlaintext so concurrent losers never receive plaintext
+DEKs. When plaintext is actually required, decryption is bound to the exact
+KMS key identifier stored alongside the wrapped DEK.
 """
 
 from __future__ import annotations
@@ -22,11 +23,18 @@ _REGISTRATION_DOMAIN = "organization_registrations"
 
 
 @dataclass(slots=True)
-class GeneratedDataKey:
+class EncryptedDataKey:
+    """A durable KMS-wrapped DEK plus the exact wrapping-key identity."""
+
+    ciphertext: bytes
+    key_id: str
+
+
+@dataclass(slots=True)
+class GeneratedDataKey(EncryptedDataKey):
     """A short-lived plaintext DEK paired with its durable KMS ciphertext."""
 
     plaintext: bytearray
-    ciphertext: bytes
 
     def zeroize(self) -> None:
         for index in range(len(self.plaintext)):
@@ -102,8 +110,32 @@ class AWSKMSProvider:
                 await breaker.record_success()
                 return response
 
+    @staticmethod
+    def _wrapped_key(response: dict[str, Any]) -> EncryptedDataKey:
+        ciphertext = response.get("CiphertextBlob")
+        key_id = response.get("KeyId")
+        if not isinstance(ciphertext, (bytes, bytearray)) or not ciphertext:
+            raise RuntimeError("AWS KMS returned an invalid encrypted data key")
+        if not isinstance(key_id, str) or not key_id.strip():
+            raise RuntimeError("AWS KMS returned no wrapping key identity")
+        return EncryptedDataKey(
+            ciphertext=bytes(ciphertext),
+            key_id=key_id.strip(),
+        )
+
+    async def generate_encrypted_data_key(self) -> EncryptedDataKey:
+        """Provision an AES-256 DEK without returning plaintext key material."""
+
+        response = await self._call(
+            "generate_data_key_without_plaintext",
+            KeyId=self._key_id,
+            KeySpec="AES_256",
+            EncryptionContext=self._encryption_context,
+        )
+        return self._wrapped_key(response)
+
     async def generate_data_key(self) -> GeneratedDataKey:
-        """Generate an AES-256 DEK and its KMS-wrapped durable representation."""
+        """Generate plaintext only for workflows that immediately require it."""
 
         response = await self._call(
             "generate_data_key",
@@ -112,29 +144,40 @@ class AWSKMSProvider:
             EncryptionContext=self._encryption_context,
         )
         plaintext = response.get("Plaintext")
-        ciphertext = response.get("CiphertextBlob")
         if not isinstance(plaintext, (bytes, bytearray)) or len(plaintext) != 32:
             raise RuntimeError("AWS KMS returned an invalid AES-256 plaintext data key")
-        if not isinstance(ciphertext, (bytes, bytearray)) or not ciphertext:
-            raise RuntimeError("AWS KMS returned an invalid encrypted data key")
+        wrapped = self._wrapped_key(response)
         return GeneratedDataKey(
+            ciphertext=wrapped.ciphertext,
+            key_id=wrapped.key_id,
             plaintext=bytearray(plaintext),
-            ciphertext=bytes(ciphertext),
         )
 
-    async def decrypt_dek(self, encrypted_dek: bytes) -> bytes:
-        """Decrypt a KMS-wrapped DEK under the exact tenant/domain context."""
+    async def decrypt_dek(
+        self,
+        encrypted_dek: bytes,
+        wrapping_key_id: str,
+    ) -> bytes:
+        """Decrypt using the exact original KMS key and tenant/domain context."""
 
         if not isinstance(encrypted_dek, bytes) or not encrypted_dek:
             raise ValueError("encrypted DEK is required")
+        wrapping_key_id = wrapping_key_id.strip()
+        if not wrapping_key_id:
+            raise ValueError("wrapping KMS key id is required")
+
         response = await self._call(
             "decrypt",
             CiphertextBlob=encrypted_dek,
+            KeyId=wrapping_key_id,
             EncryptionContext=self._encryption_context,
         )
         plaintext = response.get("Plaintext")
         if not isinstance(plaintext, (bytes, bytearray)) or len(plaintext) != 32:
             raise RuntimeError("AWS KMS returned an invalid decrypted AES-256 data key")
+        response_key_id = response.get("KeyId")
+        if not isinstance(response_key_id, str) or response_key_id.strip() != wrapping_key_id:
+            raise RuntimeError("AWS KMS decrypted the DEK under an unexpected key")
         return bytes(plaintext)
 
 
