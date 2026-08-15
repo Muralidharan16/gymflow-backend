@@ -75,16 +75,16 @@ jobs:
       - name: Prepare fresh P3E PostgreSQL 16 boundary
         run: bash scripts/ci/prepare_p3e_pg16.sh
 
-      - name: Prove migration downgrade and re-upgrade contract
+      - name: Prove subscription migration downgrade and full re-upgrade contract
         run: |
           set -euo pipefail
           export DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_migration_test"
           python -s -m alembic -c alembic.ini downgrade k07d8e9f0a2b
           absent="$(PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_migration_test \
-            -c "SELECT pg_catalog.to_regprocedure('app_secure.expire_legacy_member_subscriptions(integer)') IS NULL")"
+            -c "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace WHERE n.nspname='app_secure' AND p.proname IN ('expire_legacy_member_subscriptions','advance_trial_lifecycles'))")"
           test "${absent}" = "t"
-          python -s -m alembic -c alembic.ini upgrade l07d8e9f0a2c
+          python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
 
       - name: Seed relational preconditions only

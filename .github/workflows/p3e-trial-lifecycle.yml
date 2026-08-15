@@ -82,9 +82,9 @@ jobs:
           python -s -m alembic -c alembic.ini downgrade l07d8e9f0a2c
           absent="$(PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_migration_test \
-            -c "SELECT pg_catalog.to_regprocedure('app_secure.advance_trial_lifecycles(integer)') IS NULL")"
+            -c "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace WHERE n.nspname='app_secure' AND p.proname='advance_trial_lifecycles')")"
           test "${absent}" = "t"
-          python -s -m alembic -c alembic.ini upgrade m07d8e9f0a2d
+          python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
 
       - name: Seed trial relational preconditions only
