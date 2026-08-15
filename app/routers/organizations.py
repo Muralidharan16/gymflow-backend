@@ -34,6 +34,7 @@ from app.schemas.organization import (
 )
 from app.schemas.common import Response
 from app.services.organization_profile_mutation_service import (
+    MaskedRegistrationIdentifierError,
     OrganizationProfileNotFoundError,
     OrganizationProfileTransactionStateError,
     RegistrationMutationPlan,
@@ -127,21 +128,6 @@ def _registration_response(
     )
 
 
-def _looks_like_server_mask(identifier: str) -> bool:
-    """Reject the exact shape emitted by ``mask_id_number``.
-
-    Registration convenience fields are write-only.  A client must never be
-    able to round-trip a server mask (for example ``XXXXXX1234``) as a new
-    identifier and thereby overwrite the real encrypted value.
-    """
-
-    value = identifier.strip()
-    if len(value) <= 4:
-        return False
-    prefix = value[:-4]
-    return bool(prefix) and set(prefix) == {"X"}
-
-
 def _registration_material(
     *,
     id_type: str,
@@ -149,12 +135,6 @@ def _registration_material(
     country_code: str,
 ) -> tuple[str, str, str, str, str | None]:
     """Apply public validation before bounded crypto/database work."""
-
-    if _looks_like_server_mask(id_number):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Masked organization registration identifiers cannot be submitted",
-        )
 
     try:
         validated = RegistrationCreate(
@@ -188,6 +168,11 @@ def _registration_material(
 def _registration_write_http_exception(exc: Exception) -> HTTPException:
     """Map bounded registration failures without controlling a transaction."""
 
+    if isinstance(exc, MaskedRegistrationIdentifierError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Masked organization registration identifiers cannot be submitted",
+        )
     if isinstance(
         exc,
         (RegistrationMutationAuthorizationError, RegistrationKeyAuthorizationError),
@@ -325,10 +310,11 @@ async def update_org_profile(
     """Atomically update the P3A profile and P3B registration state.
 
     P3C owns exactly one SQLAlchemy transaction for this combined business
-    mutation.  The router validates registration input before the transaction;
-    the service then composes only the certified P3A/P3B capabilities.  Any
-    profile, registration, KMS, authorization, concurrency, cancellation or
-    commit failure rolls the entire combined mutation back.
+    mutation. The router validates public registration syntax before the
+    transaction; the service then composes only the certified P3A/P3B
+    capabilities and compares any candidate mask to the tenant's exact bounded
+    masked-read value. Any profile, registration, KMS, authorization,
+    concurrency, cancellation or commit failure rolls the whole unit back.
     """
 
     update_data = data.model_dump(exclude_unset=True)
@@ -341,7 +327,7 @@ async def update_org_profile(
         raw_registration_updates["PAN"] = update_data.pop("pan_number")
 
     # Preserve the existing API meaning: omitted/null/empty registration
-    # convenience fields do not mutate stored registration state.  Validate all
+    # convenience fields do not mutate stored registration state. Validate all
     # actual identifier changes before opening the database transaction.
     registration_plans: list[RegistrationMutationPlan] = []
     for requested_type, requested_identifier in raw_registration_updates.items():
@@ -388,6 +374,7 @@ async def update_org_profile(
             detail="Organization registration access denied",
         ) from exc
     except (
+        MaskedRegistrationIdentifierError,
         RegistrationMutationAuthorizationError,
         RegistrationMutationValidationError,
         RegistrationKeyStateError,
