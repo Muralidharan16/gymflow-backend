@@ -11,12 +11,16 @@ from app.repositories.organization_profile import (
     get_current_organization_profile,
     update_current_organization_profile,
 )
+from app.repositories.organization_registrations import (
+    RegistrationAuthorizationError,
+    list_current_organization_registrations,
+)
 from app.schemas.organization import (
     RegistrationCreate, RegistrationResponse, OrganizationProfileResponse, OrganizationUpdate,
     LogoUploadUrlResponse, LogoConfirmRequest, LogoStatusResponse
 )
 from app.schemas.common import Response
-from app.utils.encryption import encrypt_data, mask_id_number, decrypt_data
+from app.utils.encryption import encrypt_data, mask_id_number
 import uuid
 from app.utils.s3 import get_s3_client
 from app.core.config import settings
@@ -28,18 +32,15 @@ router = APIRouter(prefix="/organizations", tags=["Organizations"])
 
 def _profile_response(
     org: dict,
-    registrations: list[OrganizationRegistration],
+    registrations: list[dict],
 ) -> OrganizationProfileResponse:
-    business_id = None
-    gst_number = None
-    pan_number = None
-    for registration in registrations:
-        if registration.id_type == "BUSINESS_ID":
-            business_id = decrypt_data(registration.id_number_encrypted)
-        elif registration.id_type == "GST":
-            gst_number = decrypt_data(registration.id_number_encrypted)
-        elif registration.id_type == "PAN":
-            pan_number = decrypt_data(registration.id_number_encrypted)
+    """Build the profile without decrypting registration identifiers.
+
+    P3B treats registration identifiers as write-only secrets for the normal
+    profile surface. The masked registration collection is the read contract;
+    legacy plaintext convenience fields remain present as nullable compatibility
+    fields but are deliberately never populated from encrypted storage.
+    """
 
     return OrganizationProfileResponse(
         id=org["id"],
@@ -51,12 +52,12 @@ def _profile_response(
         website_url=org["website_url"],
         social_links=org["social_links"],
         registrations=[
-            RegistrationResponse.model_validate(r, from_attributes=True)
-            for r in registrations
+            RegistrationResponse.model_validate(registration)
+            for registration in registrations
         ],
-        business_id=business_id,
-        gst_number=gst_number,
-        pan_number=pan_number,
+        business_id=None,
+        gst_number=None,
+        pan_number=None,
         logo_status=org["logo_status"],
         logo_thumb_url=(
             f"{settings.CDN_BASE_URL}/{org['logo_thumb_key']}"
@@ -115,6 +116,16 @@ async def _update_profile_or_forbidden(
         ) from exc
 
 
+async def _get_registrations_or_forbidden(db: AsyncSession) -> list[dict]:
+    try:
+        return await list_current_organization_registrations(db)
+    except RegistrationAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization registration access denied",
+        ) from exc
+
+
 @router.post("/registrations", response_model=Response[RegistrationResponse])
 async def add_registration(
     data: RegistrationCreate,
@@ -123,6 +134,10 @@ async def add_registration(
 ):
     """
     Add a business registration ID (PAN, VAT, etc.)
+
+    P3B's read boundary is already capability-mediated. Mutation remains on the
+    legacy path in this expand step and is contracted only after the dedicated
+    normalized/fingerprinted write capability is installed.
     """
     # 1. Check if same type/country already exists for this org
     q = select(OrganizationRegistration).where(
@@ -158,7 +173,7 @@ async def add_registration(
     db.add(reg)
     await db.commit()
     await db.refresh(reg)
-    
+
     return Response(data=RegistrationResponse.model_validate(reg, from_attributes=True))
 
 
@@ -168,22 +183,17 @@ async def get_org_profile(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get organization branding and registration details.
+    Get organization branding and masked registration details.
 
-    The tenant-root organization row is read through a database capability
-    bound to app.current_org_id. app_runtime intentionally has no direct
-    organizations SELECT privilege.
+    Both the tenant-root profile and registration projection are read through
+    database capabilities bound to the verified request principal. Plaintext
+    registration identifiers are not decrypted into this response.
     """
     org = await _get_profile_or_forbidden(db)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
 
-    reg_q = select(OrganizationRegistration).where(
-        OrganizationRegistration.org_id == current_staff.org_id
-    )
-    reg_res = await db.execute(reg_q)
-    registrations = reg_res.scalars().all()
-
+    registrations = await _get_registrations_or_forbidden(db)
     return Response(data=_profile_response(org, registrations))
 
 
@@ -197,8 +207,9 @@ async def update_org_profile(
     Update organization branding and profile details.
 
     P3A applies organization-table fields only through the bounded
-    current-tenant database capability. Registration mutation remains a
-    separate transaction here and is intentionally deferred to P3C.
+    current-tenant database capability. P3B hardens registration reads here;
+    registration mutation remains a separate transaction until its dedicated
+    P3B write capability lands. P3C alone owns cross-domain atomic composition.
     """
     update_data = data.model_dump(exclude_unset=True)
 
@@ -221,8 +232,7 @@ async def update_org_profile(
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
 
-    # Process registrations. P3B/P3C will replace this direct registration
-    # access with its own hardened boundary and a single atomic transaction.
+    # Mutation remains on the legacy path only for the P3B expand window.
     if reg_updates:
         for id_type, id_number in reg_updates.items():
             if not id_number:
@@ -259,16 +269,9 @@ async def update_org_profile(
                 db.add(new_reg)
         await db.commit()
 
-    # Re-read through the bounded capability instead of ORM refresh(), which
-    # would require whole-row organizations SELECT.
     org = await _get_profile_or_forbidden(db)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
 
-    reg_q = select(OrganizationRegistration).where(
-        OrganizationRegistration.org_id == current_staff.org_id
-    )
-    reg_res = await db.execute(reg_q)
-    registrations = reg_res.scalars().all()
-
+    registrations = await _get_registrations_or_forbidden(db)
     return Response(data=_profile_response(org, registrations))
