@@ -15,11 +15,23 @@ from typing import Any
 
 import boto3
 
-from app.core.crypto import KMSCircuitBreakerError, _guardrails, kms_bulkhead
+from app.core.crypto import _guardrails, kms_bulkhead
 
 
 _PURPOSE = "doers-envelope-dek-v1"
 _REGISTRATION_DOMAIN = "organization_registrations"
+
+
+class AWSKMSUnavailableError(RuntimeError):
+    """AWS KMS is operationally unavailable for a bounded crypto operation."""
+
+
+class AWSKMSContractError(RuntimeError):
+    """AWS KMS returned key material that violates the expected response contract."""
+
+
+class RegistrationKMSConfigurationError(RuntimeError):
+    """Registration KMS configuration is absent or unsafe for this environment."""
 
 
 @dataclass(slots=True)
@@ -93,19 +105,19 @@ class AWSKMSProvider:
             account="aws-kms",
         )
         if not await breaker.allow_request():
-            raise KMSCircuitBreakerError(
-                f"KMS breaker OPEN for region={self._region_name}. Rejecting operation."
+            raise AWSKMSUnavailableError(
+                f"AWS KMS circuit breaker is open for region={self._region_name}"
             )
 
         operation = getattr(self._client, operation_name)
         async with _guardrails.kms_decrypts:
             try:
                 response = await asyncio.to_thread(operation, **kwargs)
-            except KMSCircuitBreakerError:
-                raise
             except Exception as exc:
                 await breaker.record_failure()
-                raise RuntimeError(f"AWS KMS {operation_name} failed") from exc
+                raise AWSKMSUnavailableError(
+                    f"AWS KMS {operation_name} failed"
+                ) from exc
             else:
                 await breaker.record_success()
                 return response
@@ -115,9 +127,13 @@ class AWSKMSProvider:
         ciphertext = response.get("CiphertextBlob")
         key_id = response.get("KeyId")
         if not isinstance(ciphertext, (bytes, bytearray)) or not ciphertext:
-            raise RuntimeError("AWS KMS returned an invalid encrypted data key")
+            raise AWSKMSContractError(
+                "AWS KMS returned an invalid encrypted data key"
+            )
         if not isinstance(key_id, str) or not key_id.strip():
-            raise RuntimeError("AWS KMS returned no wrapping key identity")
+            raise AWSKMSContractError(
+                "AWS KMS returned no wrapping key identity"
+            )
         return EncryptedDataKey(
             ciphertext=bytes(ciphertext),
             key_id=key_id.strip(),
@@ -145,7 +161,9 @@ class AWSKMSProvider:
         )
         plaintext = response.get("Plaintext")
         if not isinstance(plaintext, (bytes, bytearray)) or len(plaintext) != 32:
-            raise RuntimeError("AWS KMS returned an invalid AES-256 plaintext data key")
+            raise AWSKMSContractError(
+                "AWS KMS returned an invalid AES-256 plaintext data key"
+            )
         wrapped = self._wrapped_key(response)
         return GeneratedDataKey(
             ciphertext=wrapped.ciphertext,
@@ -174,10 +192,14 @@ class AWSKMSProvider:
         )
         plaintext = response.get("Plaintext")
         if not isinstance(plaintext, (bytes, bytearray)) or len(plaintext) != 32:
-            raise RuntimeError("AWS KMS returned an invalid decrypted AES-256 data key")
+            raise AWSKMSContractError(
+                "AWS KMS returned an invalid decrypted AES-256 data key"
+            )
         response_key_id = response.get("KeyId")
         if not isinstance(response_key_id, str) or response_key_id.strip() != wrapping_key_id:
-            raise RuntimeError("AWS KMS decrypted the DEK under an unexpected key")
+            raise AWSKMSContractError(
+                "AWS KMS decrypted the DEK under an unexpected key"
+            )
         return bytes(plaintext)
 
 
@@ -192,11 +214,15 @@ def registration_kms_provider(
 
     key_id = settings.AWS_KMS_KEY_ID.strip()
     if not key_id:
-        raise RuntimeError("AWS_KMS_KEY_ID is required for registration encryption")
+        raise RegistrationKMSConfigurationError(
+            "AWS_KMS_KEY_ID is required for registration encryption"
+        )
 
     endpoint_url = settings.AWS_KMS_ENDPOINT_URL.strip()
     if settings.is_production and endpoint_url:
-        raise RuntimeError("AWS_KMS_ENDPOINT_URL is forbidden in production")
+        raise RegistrationKMSConfigurationError(
+            "AWS_KMS_ENDPOINT_URL is forbidden in production"
+        )
 
     return AWSKMSProvider(
         key_id=key_id,
