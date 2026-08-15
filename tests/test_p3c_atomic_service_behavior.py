@@ -69,6 +69,7 @@ def _plan() -> service.RegistrationMutationPlan:
 def test_profile_only_uses_one_transaction_and_never_calls_registration_write(monkeypatch) -> None:
     session = _FakeSession()
     calls: list[str] = []
+    profile_reads = 0
 
     async def update_profile(_session, patch):
         assert _session is session
@@ -78,8 +79,10 @@ def test_profile_only_uses_one_transaction_and_never_calls_registration_write(mo
         return {"id": uuid.uuid4(), "name": "Atomic Gym"}
 
     async def get_profile(_session):
+        nonlocal profile_reads
         assert session.active
-        calls.append("profile-read")
+        profile_reads += 1
+        calls.append(f"profile-read-{profile_reads}")
         return {"id": uuid.uuid4(), "name": "Atomic Gym"}
 
     async def list_regs(_session):
@@ -109,14 +112,20 @@ def test_profile_only_uses_one_transaction_and_never_calls_registration_write(mo
     assert session.begin_entries == 1
     assert session.commits == 1
     assert session.rollbacks == 0
-    assert calls == ["profile-update", "profile-read", "registration-read"]
+    assert calls == [
+        "profile-read-1",
+        "profile-update",
+        "profile-read-2",
+        "registration-read",
+    ]
 
 
-def test_combined_create_runs_registration_before_profile_and_commits_once(monkeypatch) -> None:
+def test_combined_create_authorizes_profile_then_registration_before_kms_and_commits_once(monkeypatch) -> None:
     session = _FakeSession()
     events: list[str] = []
     created = _registration()
-    reads = 0
+    registration_reads = 0
+    profile_reads = 0
 
     async def update_profile(_session, patch):
         assert session.active
@@ -124,16 +133,18 @@ def test_combined_create_runs_registration_before_profile_and_commits_once(monke
         return {"id": uuid.uuid4(), "name": patch["name"]}
 
     async def get_profile(_session):
+        nonlocal profile_reads
         assert session.active
-        events.append("profile-final-read")
+        profile_reads += 1
+        events.append(f"profile-read-{profile_reads}")
         return {"id": uuid.uuid4(), "name": "Atomic Gym"}
 
     async def list_regs(_session):
-        nonlocal reads
+        nonlocal registration_reads
         assert session.active
-        reads += 1
-        events.append(f"registration-read-{reads}")
-        return [] if reads == 1 else [
+        registration_reads += 1
+        events.append(f"registration-read-{registration_reads}")
+        return [] if registration_reads == 1 else [
             {
                 "id": created.id,
                 "id_type": created.id_type,
@@ -169,16 +180,51 @@ def test_combined_create_runs_registration_before_profile_and_commits_once(monke
     assert session.commits == 1
     assert session.rollbacks == 0
     assert events == [
+        "profile-read-1",
         "registration-read-1",
         "registration-create",
         "profile-update",
-        "profile-final-read",
+        "profile-read-2",
         "registration-read-2",
     ]
 
 
+def test_p3a_authorization_failure_prevents_registration_and_external_crypto_path(monkeypatch) -> None:
+    session = _FakeSession()
+
+    class _Denied(PermissionError):
+        pass
+
+    async def deny_profile(_session):
+        raise _Denied("P3A denied")
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("P3B/KMS path must not run after P3A denial")
+
+    monkeypatch.setattr(service, "get_current_organization_profile", deny_profile)
+    monkeypatch.setattr(service, "list_current_organization_registrations", forbidden)
+    monkeypatch.setattr(service, "create_secure_organization_registration", forbidden)
+    monkeypatch.setattr(service, "replace_secure_organization_registration", forbidden)
+    monkeypatch.setattr(service, "update_current_organization_profile", forbidden)
+
+    with pytest.raises(_Denied, match="P3A denied"):
+        asyncio.run(
+            service.mutate_organization_profile_atomically(
+                session,
+                profile_patch={"name": "nope"},
+                registration_updates=(_plan(),),
+            )
+        )
+
+    assert session.commits == 0
+    assert session.rollbacks == 1
+
+
 def test_registration_failure_occurs_before_profile_update_and_rolls_back(monkeypatch) -> None:
     session = _FakeSession()
+
+    async def get_profile(_session):
+        return {"id": uuid.uuid4(), "name": "before"}
 
     async def list_regs(_session):
         assert session.active
@@ -191,6 +237,7 @@ def test_registration_failure_occurs_before_profile_update_and_rolls_back(monkey
     async def forbidden_profile(*args, **kwargs):
         raise AssertionError("profile update must not run after registration failure")
 
+    monkeypatch.setattr(service, "get_current_organization_profile", get_profile)
     monkeypatch.setattr(service, "list_current_organization_registrations", list_regs)
     monkeypatch.setattr(service, "create_secure_organization_registration", fail_registration)
     monkeypatch.setattr(service, "update_current_organization_profile", forbidden_profile)
@@ -214,6 +261,15 @@ def test_failure_after_registration_and_profile_mutations_rolls_back_both(monkey
     created = _registration()
     registration_written = False
     profile_written = False
+    profile_reads = 0
+
+    async def get_profile(_session):
+        nonlocal profile_reads
+        profile_reads += 1
+        if profile_reads == 1:
+            return {"id": uuid.uuid4(), "name": "before"}
+        assert registration_written and profile_written
+        raise RuntimeError("injected final read failure")
 
     async def list_regs(_session):
         assert session.active
@@ -232,14 +288,10 @@ def test_failure_after_registration_and_profile_mutations_rolls_back_both(monkey
         profile_written = True
         return {"id": uuid.uuid4(), "name": patch["name"]}
 
-    async def fail_final_profile_read(_session):
-        assert registration_written and profile_written
-        raise RuntimeError("injected final read failure")
-
+    monkeypatch.setattr(service, "get_current_organization_profile", get_profile)
     monkeypatch.setattr(service, "list_current_organization_registrations", list_regs)
     monkeypatch.setattr(service, "create_secure_organization_registration", create_reg)
     monkeypatch.setattr(service, "update_current_organization_profile", update_profile)
-    monkeypatch.setattr(service, "get_current_organization_profile", fail_final_profile_read)
 
     with pytest.raises(RuntimeError, match="injected final read failure"):
         asyncio.run(
@@ -260,6 +312,15 @@ def test_cancellation_after_both_mutations_rolls_back_and_propagates(monkeypatch
     created = _registration()
     registration_written = False
     profile_written = False
+    profile_reads = 0
+
+    async def get_profile(_session):
+        nonlocal profile_reads
+        profile_reads += 1
+        if profile_reads == 1:
+            return {"id": uuid.uuid4(), "name": "before"}
+        assert registration_written and profile_written
+        raise asyncio.CancelledError
 
     async def list_regs(_session):
         assert session.active
@@ -276,14 +337,10 @@ def test_cancellation_after_both_mutations_rolls_back_and_propagates(monkeypatch
         profile_written = True
         return {"id": uuid.uuid4(), "name": patch["name"]}
 
-    async def cancel_final_read(_session):
-        assert registration_written and profile_written
-        raise asyncio.CancelledError
-
+    monkeypatch.setattr(service, "get_current_organization_profile", get_profile)
     monkeypatch.setattr(service, "list_current_organization_registrations", list_regs)
     monkeypatch.setattr(service, "create_secure_organization_registration", create_reg)
     monkeypatch.setattr(service, "update_current_organization_profile", update_profile)
-    monkeypatch.setattr(service, "get_current_organization_profile", cancel_final_read)
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
@@ -311,6 +368,9 @@ def test_exact_existing_mask_is_rejected_without_guessing_mask_shape(monkeypatch
         entity_type=None,
     )
 
+    async def get_profile(_session):
+        return {"id": uuid.uuid4(), "name": "before"}
+
     async def list_regs(_session):
         return [
             {
@@ -324,6 +384,7 @@ def test_exact_existing_mask_is_rejected_without_guessing_mask_shape(monkeypatch
     async def forbidden(*args, **kwargs):
         raise AssertionError("no mutation may run for exact masked resubmission")
 
+    monkeypatch.setattr(service, "get_current_organization_profile", get_profile)
     monkeypatch.setattr(service, "list_current_organization_registrations", list_regs)
     monkeypatch.setattr(service, "create_secure_organization_registration", forbidden)
     monkeypatch.setattr(service, "replace_secure_organization_registration", forbidden)
