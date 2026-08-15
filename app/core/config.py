@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import model_validator
 
@@ -17,6 +20,7 @@ _PROCESS_PROFILE_MANIFEST = (
     / "process_profiles.v1.json"
 )
 _DISABLED_ASYNC_URL = "postgresql+asyncpg://disabled@invalid.invalid/doers_disabled"
+_MIN_PRODUCTION_SECRET_LENGTH = 32
 
 
 def _process_manifest() -> dict:
@@ -24,6 +28,56 @@ def _process_manifest() -> dict:
     if raw.get("schema_version") != 1 or not isinstance(raw.get("profiles"), dict):
         raise ValueError("unsupported P2E process profile manifest")
     return raw
+
+
+def _validated_https_origin(
+    name: str,
+    value: str,
+    *,
+    allow_trailing_slash: bool,
+) -> tuple[str, int]:
+    raw = str(value or "").strip()
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a valid HTTPS origin") from exc
+
+    allowed_paths = {"", "/"} if allow_trailing_slash else {""}
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in allowed_paths
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(f"{name} must be an HTTPS origin without credentials, query, or fragment")
+
+    host = parsed.hostname.rstrip(".").lower()
+    if host == "*":
+        raise ValueError(f"{name} must use an explicit production host")
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ValueError(f"{name} must not use localhost in production")
+
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and (address.is_loopback or address.is_unspecified):
+        raise ValueError(f"{name} must not use loopback or unspecified addresses in production")
+
+    return host, port
+
+
+def _validate_production_secret(name: str, value: str) -> str:
+    normalized = str(value or "").strip()
+    if len(normalized) < _MIN_PRODUCTION_SECRET_LENGTH:
+        raise ValueError(f"{name} must be at least {_MIN_PRODUCTION_SECRET_LENGTH} characters in production")
+    if normalized.lower().startswith("replace-with-"):
+        raise ValueError(f"{name} still contains a development placeholder")
+    return normalized
 
 
 class Settings(DoersSettingsSchema):
@@ -118,6 +172,45 @@ class Settings(DoersSettingsSchema):
                 f"[{item.code}] {item.subject}: {item.message}" for item in violations
             )
             raise ValueError("Production database identity configuration is unsafe: " + detail)
+        return self
+
+    @model_validator(mode="after")
+    def validate_production_security_boundaries(self):
+        if self.ENVIRONMENT != "production" or self.process_profile != "api":
+            return self
+
+        frontend_origin = _validated_https_origin(
+            "FRONTEND_URL",
+            self.FRONTEND_URL,
+            allow_trailing_slash=True,
+        )
+        _validated_https_origin(
+            "BACKEND_BASE_URL",
+            self.BACKEND_BASE_URL,
+            allow_trailing_slash=True,
+        )
+
+        cors_origins = self.cors_origins_list
+        if not cors_origins:
+            raise ValueError("CORS_ORIGINS must contain at least one explicit production origin")
+        normalized_cors = {
+            _validated_https_origin(
+                "CORS_ORIGINS entry",
+                origin,
+                allow_trailing_slash=False,
+            )
+            for origin in cors_origins
+        }
+        if frontend_origin not in normalized_cors:
+            raise ValueError("CORS_ORIGINS must explicitly include FRONTEND_URL in production")
+
+        secret_key = _validate_production_secret("SECRET_KEY", self.SECRET_KEY)
+        control_token = _validate_production_secret(
+            "INTERNAL_CONTROL_TOKEN",
+            self.INTERNAL_CONTROL_TOKEN,
+        )
+        if hmac.compare_digest(secret_key, control_token):
+            raise ValueError("INTERNAL_CONTROL_TOKEN must be distinct from SECRET_KEY")
         return self
 
     @property

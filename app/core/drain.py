@@ -4,7 +4,7 @@ app/core/drain.py
 Kubernetes preStop drain coordination for the Doers SaaS platform.
 
 Ensures zero-downtime rollouts by:
-  1. Catching the preStop hook request at `/_system/preStop`.
+  1. Receiving the authenticated internal preStop control request.
   2. Marking the pod status as DRAINING.
   3. Intentionally failing `/health` probes (readiness checks) so the ingress/load balancer
      stops routing new requests to this pod.
@@ -57,8 +57,8 @@ class PodDrainCoordinator:
         the pod, and monitors remaining inflight requests.
         """
         async with self._lock:
-            if self._status == "DRAINING":
-                logger.warning("Pod drain already in progress.")
+            if self._status in {"DRAINING", "SHUTDOWN"}:
+                logger.warning("Pod drain ignored because lifecycle state is already %s.", self._status)
                 return
             self._status = "DRAINING"
 
