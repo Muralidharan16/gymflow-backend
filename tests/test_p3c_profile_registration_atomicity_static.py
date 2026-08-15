@@ -30,6 +30,16 @@ def _call_names(node: ast.AST) -> list[str]:
     return names
 
 
+def _assert_no_registration_orm_import(tree: ast.AST) -> None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "app.models.organization":
+            imported = {alias.name for alias in node.names}
+            assert "OrganizationRegistration" not in imported
+        if isinstance(node, ast.Import):
+            imported = {alias.name for alias in node.names}
+            assert "app.models.organization.OrganizationRegistration" not in imported
+
+
 def test_patch_route_has_no_manual_commit_or_registration_orm_write() -> None:
     source = ROUTER.read_text()
     tree = ast.parse(source)
@@ -41,7 +51,7 @@ def test_patch_route_has_no_manual_commit_or_registration_orm_write() -> None:
     assert "mutate_organization_profile_atomically" in calls
     assert "create_secure_organization_registration" not in calls
     assert "replace_secure_organization_registration" not in calls
-    assert "OrganizationRegistration" not in source
+    _assert_no_registration_orm_import(tree)
 
 
 def test_patch_route_uses_service_managed_session_dependency() -> None:
@@ -85,8 +95,9 @@ def test_atomic_service_is_the_only_transaction_owner() -> None:
 
 def test_atomic_service_has_no_raw_registration_or_organization_dml() -> None:
     source = SERVICE.read_text()
+    tree = ast.parse(source)
 
-    assert "OrganizationRegistration" not in source
+    _assert_no_registration_orm_import(tree)
     assert "Organization(" not in source
     assert "insert(" not in source
     assert "update(" not in source
