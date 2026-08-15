@@ -79,5 +79,6 @@ jobs:
           set -euo pipefail
           python -m pytest -q --maxfail=1 \
             tests/test_p3d_branch_role_lifecycle_runtime.py \
+            tests/test_p3d_branch_role_revocation_runtime.py \
             tests/test_branch_read_rls_matrix.py \
             tests/test_branch_lifecycle.py
