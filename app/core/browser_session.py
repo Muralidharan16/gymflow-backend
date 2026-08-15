@@ -16,10 +16,18 @@ from app.schemas.auth import TokenResponse
 ACCESS_COOKIE_NAME = "access_token"
 REFRESH_COOKIE_NAME = "refresh_token"
 SIGNUP_POLL_COOKIE_NAME = "signup_poll_token"
-_REFRESH_TTL_SECONDS = 7 * 24 * 60 * 60
-_ACCESS_TTL_SECONDS = 15 * 60
 _SIGNUP_POLL_TTL_SECONDS = 10 * 60
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _access_ttl_seconds() -> int:
+    """Keep the browser cookie lifetime aligned with the signed access JWT."""
+    return int(settings.ACCESS_TOKEN_EXPIRE_MINUTES) * 60
+
+
+def _refresh_ttl_seconds() -> int:
+    """Keep refresh cookies and family-revocation markers aligned with refresh JWTs."""
+    return int(settings.REFRESH_TOKEN_EXPIRE_DAYS) * 24 * 60 * 60
 
 
 def _normalized_origin(value: str) -> str:
@@ -65,7 +73,7 @@ def set_auth_cookies(response: Response, tokens: TokenResponse) -> None:
         secure=is_prod,
         samesite="lax",
         path="/",
-        max_age=_ACCESS_TTL_SECONDS,
+        max_age=_access_ttl_seconds(),
     )
     response.set_cookie(
         key=REFRESH_COOKIE_NAME,
@@ -74,7 +82,7 @@ def set_auth_cookies(response: Response, tokens: TokenResponse) -> None:
         secure=is_prod,
         samesite="lax",
         path="/auth",
-        max_age=_REFRESH_TTL_SECONDS,
+        max_age=_refresh_ttl_seconds(),
     )
     response.headers["Cache-Control"] = "no-store"
 
@@ -128,7 +136,7 @@ async def mark_family_revoked(family_id: str) -> None:
     """Publish a family-revocation marker for the maximum refresh-token lifetime."""
     await get_redis_utils().client.setex(
         f"family_revoked:{family_id}",
-        _REFRESH_TTL_SECONDS,
+        _refresh_ttl_seconds(),
         "1",
     )
 
