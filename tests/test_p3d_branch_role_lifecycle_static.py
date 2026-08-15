@@ -39,18 +39,23 @@ def test_p3d_canonical_lifecycle_states_and_admin_compatibility_are_pinned() -> 
 
 
 def test_p3d_tenant_transition_route_delegates_verified_org_and_role() -> None:
-    transition = _function_source("app/routers/branch_lifecycle.py", "transition_branch_lifecycle")
+    transition = _function_source("app/routers/branch_lifecycle.py", "transition_branch")
     assert "get_current_active_staff" in transition
     assert "get_db" in transition
-    assert "org_id=staff.org_id" in transition
-    assert "actor_id=staff.id" in transition
-    assert "actor_role=staff.role" in transition
+    assert "org_id=current_staff.org_id" in transition
+    assert "actor_id=current_staff.id" in transition
+    assert "actor_role=current_staff.role" in transition
     assert "BranchLifecycleService" in transition
 
 
-def test_p3d_branch_reads_remain_guarded_by_role_state_and_tenant() -> None:
+def test_p3d_branch_reads_are_role_state_tenant_and_branch_scoped() -> None:
     router = _read("app/routers/branch_lifecycle.py")
     assert router.count("BranchAccessGuard()") >= 2
+
+    list_route = _function_source("app/routers/branch_lifecycle.py", "list_branches")
+    assert "_branch_scope_ids(current_staff)" in list_route
+    assert "OrgBranch.id.in_(scoped_branch_ids)" in list_route
+    assert "BranchContactORM.branch_id.in_(scoped_branch_ids)" in list_route
 
     deps = _read("app/core/deps.py")
     for state in (
@@ -62,19 +67,26 @@ def test_p3d_branch_reads_remain_guarded_by_role_state_and_tenant() -> None:
     ):
         assert state in deps
     assert "OrgBranchState.org_id == staff.org_id" in deps
-    assert '"manager"' in deps
-    assert '"trainer"' in deps
+
+    guard = _function_source("app/core/deps.py", "__call__")
+    assert 'role in ("manager", "trainer")' in guard
+    assert "str(branch_id) not in staff.branch_ids" in guard
+    assert 'role in ("manager", "trainer") and staff.gym_id is not None' not in guard
 
 
-def test_p3d_control_plane_http_routes_use_dedicated_maintenance_identity() -> None:
-    watchdog = _function_source("app/routers/branch_lifecycle.py", "run_watchdog")
-    reconcile = _function_source("app/routers/branch_lifecycle.py", "reconcile_branch_lifecycle")
+def test_p3d_global_maintenance_enqueue_is_control_plane_only() -> None:
+    authorization = _function_source("app/routers/branch_lifecycle.py", "_require_maintenance_operator")
+    assert 'current_staff.role not in ("superadmin", "compliance")' in authorization
+    assert '"owner"' not in authorization
+    assert '"admin"' not in authorization
 
+    watchdog = _function_source("app/routers/branch_lifecycle.py", "trigger_watchdog_sweep")
+    reconcile = _function_source("app/routers/branch_lifecycle.py", "trigger_reconciliation_sweep")
     for source in (watchdog, reconcile):
-        assert "get_lifecycle_maintenance_db" in source
-        assert 'staff.role not in ("superadmin", "compliance")' in source
-        assert "BranchLifecycleService" in source
+        assert "_require_maintenance_operator(current_staff)" in source
+        assert ".delay()" in source
         assert "get_db" not in source
+        assert "get_lifecycle_maintenance_db" not in source
 
 
 def test_p3d_reserved_control_plane_roles_are_not_normal_owner_login_roles() -> None:
