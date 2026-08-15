@@ -112,7 +112,7 @@ def test_profile_only_uses_one_transaction_and_never_calls_registration_write(mo
     assert calls == ["profile-update", "profile-read", "registration-read"]
 
 
-def test_combined_create_commits_profile_and_registration_under_same_transaction(monkeypatch) -> None:
+def test_combined_create_runs_registration_before_profile_and_commits_once(monkeypatch) -> None:
     session = _FakeSession()
     events: list[str] = []
     created = _registration()
@@ -137,6 +137,7 @@ def test_combined_create_commits_profile_and_registration_under_same_transaction
             {
                 "id": created.id,
                 "id_type": created.id_type,
+                "id_number_masked": created.id_number_masked,
                 "country_code": created.country_code,
             }
         ]
@@ -168,38 +169,79 @@ def test_combined_create_commits_profile_and_registration_under_same_transaction
     assert session.commits == 1
     assert session.rollbacks == 0
     assert events == [
-        "profile-update",
         "registration-read-1",
         "registration-create",
+        "profile-update",
         "profile-final-read",
         "registration-read-2",
     ]
 
 
-def test_registration_failure_after_profile_update_rolls_back_the_unit(monkeypatch) -> None:
+def test_registration_failure_occurs_before_profile_update_and_rolls_back(monkeypatch) -> None:
     session = _FakeSession()
-    profile_was_updated = False
-
-    async def update_profile(_session, patch):
-        nonlocal profile_was_updated
-        assert session.active
-        profile_was_updated = True
-        return {"id": uuid.uuid4(), "name": patch["name"]}
 
     async def list_regs(_session):
         assert session.active
         return []
 
     async def fail_registration(_session, **kwargs):
-        assert profile_was_updated
         assert session.active
         raise RuntimeError("injected registration failure")
 
-    monkeypatch.setattr(service, "update_current_organization_profile", update_profile)
+    async def forbidden_profile(*args, **kwargs):
+        raise AssertionError("profile update must not run after registration failure")
+
     monkeypatch.setattr(service, "list_current_organization_registrations", list_regs)
     monkeypatch.setattr(service, "create_secure_organization_registration", fail_registration)
+    monkeypatch.setattr(service, "update_current_organization_profile", forbidden_profile)
 
     with pytest.raises(RuntimeError, match="injected registration failure"):
+        asyncio.run(
+            service.mutate_organization_profile_atomically(
+                session,
+                profile_patch={"name": "must not run"},
+                registration_updates=(_plan(),),
+            )
+        )
+
+    assert session.begin_entries == 1
+    assert session.commits == 0
+    assert session.rollbacks == 1
+
+
+def test_failure_after_registration_and_profile_mutations_rolls_back_both(monkeypatch) -> None:
+    session = _FakeSession()
+    created = _registration()
+    registration_written = False
+    profile_written = False
+
+    async def list_regs(_session):
+        assert session.active
+        return []
+
+    async def create_reg(_session, **kwargs):
+        nonlocal registration_written
+        assert session.active
+        registration_written = True
+        return created
+
+    async def update_profile(_session, patch):
+        nonlocal profile_written
+        assert registration_written
+        assert session.active
+        profile_written = True
+        return {"id": uuid.uuid4(), "name": patch["name"]}
+
+    async def fail_final_profile_read(_session):
+        assert registration_written and profile_written
+        raise RuntimeError("injected final read failure")
+
+    monkeypatch.setattr(service, "list_current_organization_registrations", list_regs)
+    monkeypatch.setattr(service, "create_secure_organization_registration", create_reg)
+    monkeypatch.setattr(service, "update_current_organization_profile", update_profile)
+    monkeypatch.setattr(service, "get_current_organization_profile", fail_final_profile_read)
+
+    with pytest.raises(RuntimeError, match="injected final read failure"):
         asyncio.run(
             service.mutate_organization_profile_atomically(
                 session,
@@ -208,30 +250,40 @@ def test_registration_failure_after_profile_update_rolls_back_the_unit(monkeypat
             )
         )
 
-    assert profile_was_updated
-    assert session.begin_entries == 1
+    assert registration_written and profile_written
     assert session.commits == 0
     assert session.rollbacks == 1
 
 
-def test_cancellation_after_profile_update_rolls_back_and_propagates(monkeypatch) -> None:
+def test_cancellation_after_both_mutations_rolls_back_and_propagates(monkeypatch) -> None:
     session = _FakeSession()
-
-    async def update_profile(_session, patch):
-        assert session.active
-        return {"id": uuid.uuid4(), "name": patch["name"]}
+    created = _registration()
+    registration_written = False
+    profile_written = False
 
     async def list_regs(_session):
         assert session.active
         return []
 
-    async def cancel_registration(_session, **kwargs):
-        assert session.active
+    async def create_reg(_session, **kwargs):
+        nonlocal registration_written
+        registration_written = True
+        return created
+
+    async def update_profile(_session, patch):
+        nonlocal profile_written
+        assert registration_written
+        profile_written = True
+        return {"id": uuid.uuid4(), "name": patch["name"]}
+
+    async def cancel_final_read(_session):
+        assert registration_written and profile_written
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(service, "update_current_organization_profile", update_profile)
     monkeypatch.setattr(service, "list_current_organization_registrations", list_regs)
-    monkeypatch.setattr(service, "create_secure_organization_registration", cancel_registration)
+    monkeypatch.setattr(service, "create_secure_organization_registration", create_reg)
+    monkeypatch.setattr(service, "update_current_organization_profile", update_profile)
+    monkeypatch.setattr(service, "get_current_organization_profile", cancel_final_read)
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
@@ -242,7 +294,50 @@ def test_cancellation_after_profile_update_rolls_back_and_propagates(monkeypatch
             )
         )
 
-    assert session.begin_entries == 1
+    assert registration_written and profile_written
+    assert session.commits == 0
+    assert session.rollbacks == 1
+
+
+def test_exact_existing_mask_is_rejected_without_guessing_mask_shape(monkeypatch) -> None:
+    session = _FakeSession()
+    existing_id = uuid.uuid4()
+    exact_mask = "XXLEGIT1234"
+    plan = service.RegistrationMutationPlan(
+        id_type="BUSINESS_ID",
+        normalized_identifier=exact_mask,
+        masked_identifier="XXXXXXX1234",
+        country_code="US",
+        entity_type=None,
+    )
+
+    async def list_regs(_session):
+        return [
+            {
+                "id": existing_id,
+                "id_type": "BUSINESS_ID",
+                "id_number_masked": exact_mask,
+                "country_code": "US",
+            }
+        ]
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("no mutation may run for exact masked resubmission")
+
+    monkeypatch.setattr(service, "list_current_organization_registrations", list_regs)
+    monkeypatch.setattr(service, "create_secure_organization_registration", forbidden)
+    monkeypatch.setattr(service, "replace_secure_organization_registration", forbidden)
+    monkeypatch.setattr(service, "update_current_organization_profile", forbidden)
+
+    with pytest.raises(service.MaskedRegistrationIdentifierError):
+        asyncio.run(
+            service.mutate_organization_profile_atomically(
+                session,
+                profile_patch={"name": "must not run"},
+                registration_updates=(plan,),
+            )
+        )
+
     assert session.commits == 0
     assert session.rollbacks == 1
 
