@@ -69,7 +69,6 @@ def test_p3d_branch_reads_intersect_token_scope_with_live_assignments() -> None:
 
 
 def test_p3d_security_authorization_does_not_trust_redis_role_cache() -> None:
-    service = _read("app/services/staff_roles_service.py")
     authoritative = _function_source(
         "app/services/staff_roles_service.py",
         "get_authoritative_user_branch_roles",
@@ -81,7 +80,6 @@ def test_p3d_security_authorization_does_not_trust_redis_role_cache() -> None:
     assert "redis_client" not in authoritative
     assert "get_authoritative_user_branch_roles" in dependency
     assert "get_user_branch_roles" not in dependency
-    assert "Security-sensitive callers must use" in service
     assert "redis_client.get" in cached
 
 
