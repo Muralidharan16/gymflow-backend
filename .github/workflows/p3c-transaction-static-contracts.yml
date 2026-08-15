@@ -1,0 +1,64 @@
+name: P3C Transaction Static Contracts
+
+on:
+  pull_request:
+    branches:
+      - hardening/p3b-organization-registrations
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p3c-static-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p3c-transaction-static:
+    name: P3C atomic transaction source contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://app_runtime:ci@127.0.0.1:5432/gymflow_p3c_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p3c-static-not-production
+      AWS_ACCESS_KEY_ID: ci-p3c
+      AWS_SECRET_ACCESS_KEY: ci-p3c
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-p3c-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install locked test environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+
+      - name: Compile P3C application slice
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            app/core/service_managed_database.py \
+            app/services/organization_profile_mutation_service.py \
+            app/routers/organizations.py
+
+      - name: Run P3C static contracts
+        run: |
+          set -euo pipefail
+          pytest -q tests/test_p3c_profile_registration_atomicity_static.py
