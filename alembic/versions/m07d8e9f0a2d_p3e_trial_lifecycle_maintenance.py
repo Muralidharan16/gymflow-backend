@@ -112,20 +112,24 @@ def _column_privileges(
     role_name: str,
     privilege: str,
 ) -> set[str]:
-    schema, name = relation_name.split(".", 1)
     return {
         str(value)
         for value in bind.execute(sa.text("""
-            SELECT column_name::text
-            FROM information_schema.column_privileges
-            WHERE table_schema = :schema
-              AND table_name = :name
-              AND grantee = :role_name
-              AND privilege_type = :privilege
-            ORDER BY column_name
+            SELECT attribute.attname::text
+            FROM pg_catalog.pg_class AS relation
+            JOIN pg_catalog.pg_attribute AS attribute
+              ON attribute.attrelid = relation.oid
+            CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS acl
+            JOIN pg_catalog.pg_roles AS grantee
+              ON grantee.oid = acl.grantee
+            WHERE relation.oid = pg_catalog.to_regclass(:relation)
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+              AND grantee.rolname = :role_name
+              AND acl.privilege_type = :privilege
+            ORDER BY attribute.attname
         """), {
-            "schema": schema,
-            "name": name,
+            "relation": relation_name,
             "role_name": role_name,
             "privilege": privilege,
         }).scalars().all()
