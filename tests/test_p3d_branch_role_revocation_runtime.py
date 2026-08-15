@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.core.redis import redis_client
+from app.core.redis import close_redis, init_redis, redis_client
 from app.core.security import create_access_token
 from test_staff_roles import client, test_data, _owner_headers
 
@@ -74,22 +74,27 @@ async def test_p3d_revoked_role_cannot_survive_stale_jwt_or_redis_cache(
     )
     assert revoke_response.status_code == 200
 
-    # Re-introduce exactly the stale role cache that a failed invalidation or a
-    # delayed cache delete could otherwise leave behind. Authorization must not
-    # consult this value.
-    await redis_client.set(
-        f"user:branch_roles:{user_id}",
-        json.dumps({str(branch_id): ["trainer"]}),
-        ex=3600,
-    )
+    # The imported test_staff_roles autouse fixture is module-local, so this
+    # P3D attack explicitly initializes the application Redis singleton only
+    # for the deliberate stale-cache injection below. Authorization must still
+    # ignore the poisoned value and rely on current PostgreSQL assignments.
+    await init_redis()
+    try:
+        await redis_client.set(
+            f"user:branch_roles:{user_id}",
+            json.dumps({str(branch_id): ["trainer"]}),
+            ex=3600,
+        )
 
-    after_list = await client.get("/branches", headers=stale_headers)
-    assert after_list.status_code == 200
-    assert str(branch_id) not in {row["id"] for row in after_list.json()["data"]}
+        after_list = await client.get("/branches", headers=stale_headers)
+        assert after_list.status_code == 200
+        assert str(branch_id) not in {row["id"] for row in after_list.json()["data"]}
 
-    after_state = await client.get(
-        f"/branches/{branch_id}/state",
-        headers=stale_headers,
-    )
-    assert after_state.status_code == 403
-    assert "authorized scope" in after_state.json()["detail"]
+        after_state = await client.get(
+            f"/branches/{branch_id}/state",
+            headers=stale_headers,
+        )
+        assert after_state.status_code == 403
+        assert "authorized scope" in after_state.json()["detail"]
+    finally:
+        await close_redis()
