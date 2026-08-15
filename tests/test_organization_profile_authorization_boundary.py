@@ -250,21 +250,26 @@ def test_profile_route_never_loads_or_refreshes_the_organization_orm_row() -> No
     source = _source(ROUTER)
     tree = ast.parse(source, filename=str(ROUTER))
 
-    assert "from app.models.organization import OrganizationRegistration\n" in source
-    assert "OrganizationRegistration, Organization" not in source
     assert "select(Organization)" not in source
     assert "db.refresh(org)" not in source
     assert "get_current_organization_profile" in source
     assert "update_current_organization_profile" in source
+    assert "list_current_organization_registrations" in source
     assert "Depends(require_org_admin)" in source
 
-    imported = {
+    model_imports = {
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
+        and node.module == "app.models.organization"
         for alias in node.names
     }
-    assert "Organization" not in imported
+    # P3A's invariant is that the profile route never reopens an Organization ORM
+    # row. P3B further removes the legacy registration ORM model and routes masked
+    # registration reads through its bounded capability; that is a strengthening,
+    # not a reason to require the retired import.
+    assert "Organization" not in model_imports
+    assert "OrganizationRegistration" not in model_imports
 
 
 def test_profile_repository_can_only_call_bounded_app_secure_capabilities() -> None:
