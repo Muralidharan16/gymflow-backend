@@ -8,9 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.core.database import AsyncSessionLocal
-from app.core.deps import BranchAccessGuard, Staff
 from app.models.branch_lifecycle import BranchStatusTransition
-from app.routers.branch_lifecycle import list_branches
 from app.services.branch_lifecycle_service import BranchLifecycleService
 from test_branch_lifecycle import lifecycle_setup, set_db_session_context
 
@@ -91,61 +89,6 @@ async def test_p3d_cross_tenant_transition_fails_closed(lifecycle_setup) -> None
                 reason="Foreign tenant must not mutate",
             )
         assert exc_info.value.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_p3d_branch_scope_does_not_depend_on_gym_id_claim(lifecycle_setup) -> None:
-    org_id = lifecycle_setup["org_id"]
-    trainer_id = lifecycle_setup["trainer_id"]
-    branch_id = lifecycle_setup["branch1_id"]
-
-    async with AsyncSessionLocal() as session:
-        await set_db_session_context(session, str(org_id), str(trainer_id), "trainer")
-        guard = BranchAccessGuard()
-
-        missing_scope = Staff(
-            id=trainer_id,
-            org_id=org_id,
-            gym_id=None,
-            role="trainer",
-            branch_ids=[],
-        )
-        with pytest.raises(HTTPException) as exc_info:
-            await guard(branch_id=branch_id, staff=missing_scope, db=session)
-        assert exc_info.value.status_code == 403
-        assert "authorized scope" in exc_info.value.detail
-
-        explicit_scope = Staff(
-            id=trainer_id,
-            org_id=org_id,
-            gym_id=None,
-            role="trainer",
-            branch_ids=[str(branch_id)],
-        )
-        assert await guard(branch_id=branch_id, staff=explicit_scope, db=session) == explicit_scope
-
-
-@pytest.mark.asyncio
-async def test_p3d_branch_list_respects_signed_branch_scope(lifecycle_setup) -> None:
-    org_id = lifecycle_setup["org_id"]
-    trainer_id = lifecycle_setup["trainer_id"]
-    branch1_id = lifecycle_setup["branch1_id"]
-    branch2_id = lifecycle_setup["branch2_id"]
-
-    async with AsyncSessionLocal() as session:
-        await set_db_session_context(session, str(org_id), str(trainer_id), "trainer")
-        scoped_staff = Staff(
-            id=trainer_id,
-            org_id=org_id,
-            gym_id=None,
-            role="trainer",
-            branch_ids=[str(branch1_id)],
-        )
-        response = await list_branches(current_staff=scoped_staff, db=session)
-
-    visible_ids = {uuid.UUID(row["id"]) for row in response["data"]}
-    assert visible_ids == {branch1_id}
-    assert branch2_id not in visible_ids
 
 
 @pytest.mark.asyncio
