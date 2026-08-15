@@ -48,6 +48,7 @@ jobs:
             alembic/versions/h07d8e9f0a28_p3b_registration_replace_conflict_key_acl.py \
             alembic/versions/i07d8e9f0a29_p3b_registration_legacy_backfill_capabilities.py \
             alembic/versions/j07d8e9f0a2a_p3b_registration_replace_without_upsert_reads.py \
+            alembic/versions/k07d8e9f0a2b_p3b_registration_contract.py \
             app/core/aws_kms.py \
             app/core/registration_crypto.py \
             app/repositories/organization_registrations.py \
@@ -63,6 +64,7 @@ jobs:
             tests/test_p3b_legacy_backfill_command.py \
             tests/test_p3b_organization_registration_service.py \
             tests/test_p3b_registration_application_cutover.py \
+            tests/test_p3b_registration_contract.py \
             tests/test_p3b_registration_create_capability.py \
             tests/test_p3b_registration_crypto.py \
             tests/test_p3b_registration_dek_capabilities.py \
@@ -80,6 +82,7 @@ jobs:
             tests/test_p3b_legacy_backfill_command.py \
             tests/test_p3b_organization_registration_service.py \
             tests/test_p3b_registration_application_cutover.py \
+            tests/test_p3b_registration_contract.py \
             tests/test_p3b_registration_create_capability.py \
             tests/test_p3b_registration_crypto.py \
             tests/test_p3b_registration_dek_capabilities.py \
