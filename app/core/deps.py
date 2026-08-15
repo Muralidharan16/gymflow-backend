@@ -173,7 +173,12 @@ class BranchAccessGuard:
                 detail="Access denied. Branch lifecycle status is not recognized.",
             )
 
-        if role in ("manager", "trainer") and staff.gym_id is not None:
+        # Branch-scoped roles must always carry explicit branch membership. Do
+        # not let an absent/malformed gym_id claim widen their scope. The
+        # branch_ids claim is signed by the issuer and remains fail-closed here;
+        # deeper staff-role mutation routes additionally revalidate the durable
+        # assignment under FORCE RLS.
+        if role in ("manager", "trainer"):
             if str(branch_id) not in staff.branch_ids:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
