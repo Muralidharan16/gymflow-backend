@@ -1,62 +1,138 @@
 import logging
-from celery import current_app
-from app.tasks.base_image import run_image_pipeline, AssetPipelineConfig
-from app.utils.s3 import get_s3_client
+import uuid
+
+import sqlalchemy as sa
+from celery import shared_task
+
 from app.core.config import settings
-from app.models.organization import Organization, AssetStatus
 from app.core.database import WorkerSyncSessionLocal
+from app.tasks.base_image import run_image_pipeline
+from app.utils.s3 import get_s3_client
+
 
 logger = logging.getLogger("doers")
 
-@current_app.task(bind=True, max_retries=3)
-def process_org_logo(self, org_id: str, upload_id: str, user_id: str, request_ip: str = None):
-    config = AssetPipelineConfig(asset_type="logo", sizes={"thumb": 64, "medium": 256, "full": 1024}, resize_strategy="pad", allow_svg=False, max_size_bytes=5_242_880, min_width=200, min_height=200)
-    run_image_pipeline(org_id=org_id, upload_id=upload_id, user_id=user_id, request_ip=request_ip, config=config)
 
-@current_app.task
-def delete_old_s3_assets(keys: list[str]):
-    s3 = get_s3_client()
-    for key in keys:
-        try:
-            s3.delete_object(Bucket=settings.S3_BUCKET_NAME, Key=key)
-        except Exception as e:
-            logger.error(f"Failed to delete old asset {key}: {str(e)}")
+@shared_task(name="app.tasks.logos.process_organization_asset")
+def process_organization_asset(job_id: str) -> bool:
+    """Process a DB-authorized organization asset job by opaque job UUID only."""
 
-@current_app.task
-def cleanup_orphaned_logos():
+    return run_image_pipeline(job_id)
+
+
+def _claim_cleanup(cleanup_id: str, lease_token: str) -> str | None:
     if WorkerSyncSessionLocal is None:
         raise RuntimeError("Worker sync database session is unavailable")
-    s3 = get_s3_client()
-    import datetime
-    threshold_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
-    paginator = s3.get_paginator('list_objects_v2')
-    orphans_to_delete = []
-    valid_keys = set()
-    offset = 0
-    batch_size = 500
     with WorkerSyncSessionLocal() as db:
-        while True:
-            orgs = db.query(Organization).with_entities(Organization.logo_key, Organization.logo_thumb_key, Organization.logo_medium_key, Organization.logo_full_key, Organization.cover_key, Organization.cover_mobile_key, Organization.cover_tablet_key, Organization.cover_desktop_key).offset(offset).limit(batch_size).all()
-            if not orgs:
-                break
-            for org in orgs:
-                valid_keys.update(k for k in org if k is not None)
-            offset += batch_size
-    for prefix in ('logos/', 'covers/', 'originals/'):
-        for page in paginator.paginate(Bucket=settings.S3_BUCKET_NAME, Prefix=prefix):
-            if 'Contents' not in page:
-                continue
-            for obj in page['Contents']:
-                if obj['LastModified'] < threshold_date and obj['Key'] not in valid_keys:
-                    orphans_to_delete.append(obj['Key'])
-    for page in paginator.paginate(Bucket=settings.S3_BUCKET_NAME, Prefix='quarantine/'):
-        if 'Contents' not in page:
-            continue
-        for obj in page['Contents']:
-            if obj['LastModified'] < threshold_date:
-                orphans_to_delete.append(obj['Key'])
-    for key in orphans_to_delete:
-        try:
-            s3.delete_object(Bucket=settings.S3_BUCKET_NAME, Key=key)
-        except Exception:
-            pass
+        key = db.scalar(
+            sa.text(
+                """
+                SELECT app_secure.claim_organization_asset_cleanup(
+                    CAST(:cleanup_id AS uuid), CAST(:lease_token AS uuid), 120
+                )
+                """
+            ),
+            {"cleanup_id": cleanup_id, "lease_token": lease_token},
+        )
+        db.commit()
+        return str(key) if key is not None else None
+
+
+def _finish_cleanup(cleanup_id: str, lease_token: str) -> bool:
+    if WorkerSyncSessionLocal is None:
+        raise RuntimeError("Worker sync database session is unavailable")
+    with WorkerSyncSessionLocal() as db:
+        completed = db.scalar(
+            sa.text(
+                """
+                SELECT app_secure.complete_organization_asset_cleanup(
+                    CAST(:cleanup_id AS uuid), CAST(:lease_token AS uuid)
+                )
+                """
+            ),
+            {"cleanup_id": cleanup_id, "lease_token": lease_token},
+        )
+        db.commit()
+        return bool(completed)
+
+
+def _fail_cleanup(cleanup_id: str, lease_token: str) -> str | None:
+    if WorkerSyncSessionLocal is None:
+        raise RuntimeError("Worker sync database session is unavailable")
+    with WorkerSyncSessionLocal() as db:
+        status = db.scalar(
+            sa.text(
+                """
+                SELECT app_secure.fail_organization_asset_cleanup(
+                    CAST(:cleanup_id AS uuid), CAST(:lease_token AS uuid),
+                    's3_delete_error'
+                )
+                """
+            ),
+            {"cleanup_id": cleanup_id, "lease_token": lease_token},
+        )
+        db.commit()
+        return str(status) if status is not None else None
+
+
+@shared_task(name="app.tasks.logos.cleanup_organization_asset")
+def cleanup_organization_asset(cleanup_id: str) -> bool:
+    """Delete exactly one S3 key obtained from a leased DB cleanup intent."""
+
+    lease_token = str(uuid.uuid4())
+    key = _claim_cleanup(cleanup_id, lease_token)
+    if key is None:
+        return True
+
+    try:
+        get_s3_client().delete_object(Bucket=settings.S3_BUCKET_NAME, Key=key)
+    except Exception:
+        status = _fail_cleanup(cleanup_id, lease_token)
+        if status == "failed":
+            logger.error(
+                "Asset cleanup %s exhausted its bounded retry budget for key %s",
+                cleanup_id,
+                key,
+                exc_info=True,
+            )
+        else:
+            logger.warning(
+                "Asset cleanup %s will be redispatched after S3 failure",
+                cleanup_id,
+                exc_info=True,
+            )
+        return False
+
+    if not _finish_cleanup(cleanup_id, lease_token):
+        # S3 DELETE is idempotent. If the lease was lost after deletion, the
+        # bounded dispatcher can safely execute the same persisted key again.
+        logger.warning("Asset cleanup %s lost its completion fence", cleanup_id)
+        return False
+    return True
+
+
+@shared_task(name="app.tasks.logos.process_org_logo")
+def process_org_logo(*_args, **_kwargs):
+    """Reject stale pre-P3E queue messages that carried trusted authority fields."""
+
+    raise RuntimeError(
+        "Legacy logo queue payloads are disabled; enqueue a durable asset job instead"
+    )
+
+
+@shared_task(name="app.tasks.logos.delete_old_s3_assets")
+def delete_old_s3_assets(*_args, **_kwargs):
+    """Reject arbitrary-key deletion messages from the legacy queue contract."""
+
+    raise RuntimeError(
+        "Arbitrary queued S3-key deletion is disabled by the P3E asset boundary"
+    )
+
+
+@shared_task(name="app.tasks.logos.cleanup_orphaned_logos")
+def cleanup_orphaned_logos(*_args, **_kwargs):
+    """Keep the legacy cross-tenant object sweep fail-closed."""
+
+    raise RuntimeError(
+        "Legacy global orphan-logo cleanup is disabled pending bounded cleanup authority"
+    )

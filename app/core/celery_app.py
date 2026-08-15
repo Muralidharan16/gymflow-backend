@@ -17,6 +17,8 @@ MAINTENANCE_TASKS = (
     "app.tasks.branch_lifecycle_sweeps.reconciliation",
     "app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
     "app.tasks.platform_maintenance.advance_trial_lifecycles",
+    "app.tasks.platform_maintenance.dispatch_organization_asset_jobs",
+    "app.tasks.platform_maintenance.dispatch_organization_asset_cleanup",
     "app.tasks.platform_maintenance.reclaim_stale_idempotency",
     "app.tasks.platform_maintenance.archive_expired_idempotency",
     "app.tasks.platform_maintenance.geocoding_reverification",
@@ -41,6 +43,11 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_always_eager=(settings.ENVIRONMENT == "development"),
     task_default_queue=WORKER_QUEUE,
+    imports=(
+        "app.tasks.logos",
+        "app.tasks.covers",
+        "app.tasks.platform_maintenance",
+    ),
     task_routes={
         task_name: {"queue": MAINTENANCE_QUEUE}
         for task_name in MAINTENANCE_TASKS
@@ -81,6 +88,16 @@ celery_app.conf.beat_schedule = {
     "expire-subscriptions": {
         "task": "app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
         "schedule": crontab(hour=0, minute=5),
+        "options": {"queue": MAINTENANCE_QUEUE},
+    },
+    "organization-asset-redispatch": {
+        "task": "app.tasks.platform_maintenance.dispatch_organization_asset_jobs",
+        "schedule": crontab(minute="*"),
+        "options": {"queue": MAINTENANCE_QUEUE},
+    },
+    "organization-asset-cleanup-dispatch": {
+        "task": "app.tasks.platform_maintenance.dispatch_organization_asset_cleanup",
+        "schedule": crontab(minute="*"),
         "options": {"queue": MAINTENANCE_QUEUE},
     },
     # Legacy reminder, daily-digest and orphan-object sweep schedules are

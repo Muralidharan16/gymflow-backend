@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _source(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
+
+
+def test_asset_api_persists_authority_before_opaque_queue_publish() -> None:
+    source = _source("app/routers/assets.py")
+    assert "app_secure.enqueue_organization_asset_job" in source
+    assert "await db.commit()" in source
+    assert "process_organization_asset.delay(str(job_id))" in source
+    assert "process_org_logo.delay" not in source
+    assert "process_org_cover.delay" not in source
+    assert 'f"quarantine/{current_staff.org_id}/{upload_id}"' in source
+    assert 'principal_type", None) != "owner"' in source
+    assert 'settings.ENVIRONMENT != "development"' in source
+    assert "delete_current_organization_asset" in source
+    assert "delete_old_s3_assets" not in source
+
+
+def test_asset_worker_uses_database_claim_and_deterministic_keys_only() -> None:
+    source = _source("app/tasks/base_image.py")
+    assert "app_secure.claim_organization_asset_job" in source
+    assert "app_secure.finalize_organization_asset_job" in source
+    assert "app_secure.fail_organization_asset_job" in source
+    assert "WorkerSyncSessionLocal" in source
+    assert "db.query(Organization)" not in source
+    assert "OrganizationAssetAudit" not in source
+    assert "asset_uuid = uuid.uuid4" not in source
+    assert 'f"originals/{org_id}/{upload_id}_original"' in source
+    assert 'f"quarantine/{org_id}/{upload_id}"' in source
+    assert "working = img.copy()" in source
+    assert "scale = max(target_width / img.width, target_height / img.height)" in source
+
+
+def test_arbitrary_key_and_legacy_authority_queue_contracts_fail_closed() -> None:
+    logos = _source("app/tasks/logos.py")
+    covers = _source("app/tasks/covers.py")
+    assert 'name="app.tasks.logos.process_organization_asset"' in logos
+    assert "def process_organization_asset(job_id: str)" in logos
+    assert "claim_organization_asset_cleanup" in logos
+    assert "complete_organization_asset_cleanup" in logos
+    assert "def delete_old_s3_assets(*_args, **_kwargs)" in logos
+    assert "Arbitrary queued S3-key deletion is disabled" in logos
+    assert "def cleanup_orphaned_logos(*_args, **_kwargs)" in logos
+    assert "Legacy global orphan-logo cleanup is disabled" in logos
+    assert "def process_org_logo(*_args, **_kwargs)" in logos
+    assert "def process_org_cover(*_args, **_kwargs)" in covers
+
+
+def test_asset_maintenance_only_dispatches_opaque_ids() -> None:
+    maintenance = _source("app/tasks/platform_maintenance.py")
+    celery = _source("app/core/celery_app.py")
+    assert "dispatchable_organization_asset_jobs(100)" in maintenance
+    assert "dispatchable_organization_asset_cleanup(200)" in maintenance
+    assert 'args=[str(row["job_id"])]' in maintenance
+    assert 'args=[str(row["cleanup_id"])]' in maintenance
+    assert "s3_key" not in maintenance
+    assert "dispatch_organization_asset_jobs" in celery
+    assert "dispatch_organization_asset_cleanup" in celery
+    assert '"app.tasks.logos"' in celery
+    assert '"app.tasks.covers"' in celery
+    assert '"app.tasks.platform_maintenance"' in celery
+    assert '"organization-asset-redispatch"' in celery
+    assert '"organization-asset-cleanup-dispatch"' in celery
+
+
+def test_asset_migrations_keep_reduced_role_and_sql_namespace_contracts() -> None:
+    n07 = _source("alembic/versions/n07d8e9f0a2e_p3e_fenced_organization_asset_jobs.py")
+    o07 = _source("alembic/versions/o07d8e9f0a2f_p3e_asset_delete_capability.py")
+    p07 = _source("alembic/versions/p07d8e9f0a30_p3e_asset_cleanup_jobs.py")
+    combined = "\n".join((n07, o07, p07)).lower()
+
+    assert "bypassrls" in combined  # role contract is explicitly inspected
+    assert " bypassrls;" not in combined
+    assert "alter role" not in combined
+    assert "row_security = on" in combined
+    assert "security definer" in combined
+    assert "for update skip locked" in combined
+    assert "grant execute on function" in combined
+    assert "grant select on table public.organization_asset_jobs to worker_runtime" not in combined
+    assert "grant update on table public.organization_asset_jobs to worker_runtime" not in combined
+    assert "pg_catalog.coalesce" not in combined
+    assert "pg_catalog.nullif" not in combined
+    assert "pg_catalog.greatest" not in combined
+
+    assert "current_principal_type" in n07
+    assert "requested_by_owner_id" in n07
+    assert "lease_token" in n07
+    assert "superseded" in n07
+    assert "delete_current_organization_asset" in o07
+    assert "capture_organization_asset_key_cleanup" in p07
+    assert "capture_organization_asset_job_cleanup" in p07
+    assert "dispatchable_organization_asset_cleanup" in p07
+    assert "revoke execute on function" in p07
+    assert "from migration_owner" in p07
+
+
+def test_p3e_fresh_database_harness_targets_asset_cleanup_head() -> None:
+    source = _source("scripts/ci/prepare_p3e_pg16.sh")
+    assert "p07d8e9f0a30" in source
