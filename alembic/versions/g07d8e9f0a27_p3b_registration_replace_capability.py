@@ -324,7 +324,7 @@ BEGIN
        AND registration.country_code = v_country_code;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'registration replacement target does not exist'
-            USING ERRCODE = '23503';
+            USING ERRCODE = 'P0002';
     END IF;
 
     INSERT INTO public.organization_registration_payloads_secure (
@@ -418,6 +418,7 @@ def _require_forward(bind) -> None:
         "is_verified = false",
         "verified_at = null",
         "on conflict (registration_id) do update",
+        "p0002",
         _KEY_SCOPE,
     ):
         if token not in source:
