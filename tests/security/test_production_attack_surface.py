@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import json
 import sys
@@ -22,6 +23,28 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _source(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def _has_internal_control_secret_validation(source: str) -> bool:
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "_validate_production_secret":
+            continue
+        if len(node.args) < 2:
+            continue
+        secret_name, secret_value = node.args[:2]
+        if (
+            isinstance(secret_name, ast.Constant)
+            and secret_name.value == "INTERNAL_CONTROL_TOKEN"
+            and isinstance(secret_value, ast.Attribute)
+            and secret_value.attr == "INTERNAL_CONTROL_TOKEN"
+            and isinstance(secret_value.value, ast.Name)
+            and secret_value.value.id == "self"
+        ):
+            return True
+    return False
 
 
 def _request(
@@ -191,6 +214,6 @@ def test_production_configuration_is_fail_closed_for_control_and_web_origins() -
     assert '"BACKEND_BASE_URL",\n            self.BACKEND_BASE_URL' in config_source
     assert "CORS_ORIGINS must explicitly include FRONTEND_URL in production" in config_source
     assert '_validate_production_secret("SECRET_KEY", self.SECRET_KEY)' in config_source
-    assert '"INTERNAL_CONTROL_TOKEN",\n                self.INTERNAL_CONTROL_TOKEN' in config_source
+    assert _has_internal_control_secret_validation(config_source)
     assert "INTERNAL_CONTROL_TOKEN must be distinct from SECRET_KEY" in config_source
     assert "${INTERNAL_CONTROL_TOKEN:?" in compose_source
