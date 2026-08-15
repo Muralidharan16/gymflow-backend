@@ -47,6 +47,7 @@ jobs:
             alembic/versions/g07d8e9f0a27_p3b_registration_replace_capability.py \
             alembic/versions/h07d8e9f0a28_p3b_registration_replace_conflict_key_acl.py \
             alembic/versions/i07d8e9f0a29_p3b_registration_legacy_backfill_capabilities.py \
+            alembic/versions/j07d8e9f0a2a_p3b_registration_replace_without_upsert_reads.py \
             app/core/aws_kms.py \
             app/core/registration_crypto.py \
             app/repositories/organization_registrations.py \
@@ -61,6 +62,7 @@ jobs:
             tests/test_aws_kms_provider.py \
             tests/test_p3b_legacy_backfill_command.py \
             tests/test_p3b_organization_registration_service.py \
+            tests/test_p3b_registration_application_cutover.py \
             tests/test_p3b_registration_create_capability.py \
             tests/test_p3b_registration_crypto.py \
             tests/test_p3b_registration_dek_capabilities.py \
@@ -71,11 +73,13 @@ jobs:
             tests/test_p3b_registration_mutation_repository.py \
             tests/test_p3b_registration_read_boundary.py \
             tests/test_p3b_registration_replace_capability.py \
-            tests/test_p3b_registration_replace_conflict_key_acl.py
+            tests/test_p3b_registration_replace_conflict_key_acl.py \
+            tests/test_p3b_registration_replace_without_upsert_reads.py
           python -m pytest --noconftest -q \
             tests/test_aws_kms_provider.py \
             tests/test_p3b_legacy_backfill_command.py \
             tests/test_p3b_organization_registration_service.py \
+            tests/test_p3b_registration_application_cutover.py \
             tests/test_p3b_registration_create_capability.py \
             tests/test_p3b_registration_crypto.py \
             tests/test_p3b_registration_dek_capabilities.py \
@@ -86,6 +90,7 @@ jobs:
             tests/test_p3b_registration_mutation_repository.py \
             tests/test_p3b_registration_read_boundary.py \
             tests/test_p3b_registration_replace_capability.py \
-            tests/test_p3b_registration_replace_conflict_key_acl.py
+            tests/test_p3b_registration_replace_conflict_key_acl.py \
+            tests/test_p3b_registration_replace_without_upsert_reads.py
           python -s scripts/verify_alembic_graph.py
           python -s scripts/migration_semantics_gate.py
