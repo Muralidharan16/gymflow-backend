@@ -51,12 +51,29 @@ def test_profile_repository_maps_only_postgres_authorization_denial() -> None:
 
 def test_router_sanitizes_profile_authorization_failure_as_403() -> None:
     source = _source(ROUTER)
+    tree = ast.parse(source, filename=str(ROUTER))
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
 
-    assert "ProfileAuthorizationError" in source
-    assert source.count("except ProfileAuthorizationError as exc:") == 2
-    assert source.count("status_code=status.HTTP_403_FORBIDDEN") >= 2
-    assert source.count('detail="Organization profile access denied"') >= 2
-    assert "str(exc)" not in source
+    # P3C adds the atomic PATCH handler as a third P3A authorization surface.
+    # Pin each bounded surface rather than an obsolete global handler count so a
+    # new route cannot silently leak the underlying database authorization error.
+    expected = {
+        "_get_profile_or_forbidden",
+        "_update_profile_or_forbidden",
+        "update_org_profile",
+    }
+    assert expected <= functions.keys()
+
+    for name in expected:
+        rendered = ast.unparse(functions[name])
+        assert "ProfileAuthorizationError" in rendered
+        assert "status.HTTP_403_FORBIDDEN" in rendered
+        assert "Organization profile access denied" in rendered
+        assert "str(exc)" not in rendered
 
 
 def test_profile_request_rejects_unknown_control_plane_fields() -> None:
