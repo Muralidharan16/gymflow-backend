@@ -91,6 +91,7 @@ jobs:
         env:
           P3C_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3c_atomic_test
           P3C_API_ASYNC_DSN: postgresql+asyncpg://app_p3c_runtime:ci-p3c-runtime@127.0.0.1:5432/gymflow_p3c_atomic_test
+          PYTHONPATH: .
         run: |
           set -euo pipefail
           python -m py_compile scripts/ci/verify_p3c_combined_mutation_runtime.py
