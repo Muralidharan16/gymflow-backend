@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   p3b-registration-legacy-backfill-runtime:
-    name: Legacy registration conversion and verification preservation
+    name: Legacy conversion, verification preservation, and final contract
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -77,11 +77,10 @@ jobs:
           bash scripts/ci/verify_cluster_roles.sh
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3b_backfill_test
 
-      - name: Fresh Alembic HEAD
+      - name: Upgrade to the explicit migration window
         run: |
           set -euo pipefail
-          python -s -m alembic -c alembic.ini upgrade head
-          python -s -m alembic -c alembic.ini current --check-heads
+          python -s -m alembic -c alembic.ini upgrade j07d8e9f0a2a
 
       - name: Prove legacy backfill boundary
         env:
@@ -89,8 +88,20 @@ jobs:
           P3B_API_DSN: postgresql://app_p3b_runtime:ci-api-runtime@127.0.0.1:5432/gymflow_p3b_backfill_test
         run: |
           set -euo pipefail
-          python -m py_compile scripts/ci/verify_p3b_registration_legacy_backfill_boundary.py
+          python -m py_compile \
+            scripts/ci/verify_p3b_registration_legacy_backfill_boundary.py \
+            scripts/ci/verify_p3b_registration_contract_boundary.py
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect predecessor
           python -s scripts/ci/verify_p3b_registration_legacy_backfill_boundary.py
+
+      - name: Close the migration window at final HEAD
+        env:
+          P3B_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_backfill_test
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect final
 
       - name: Reprove cluster identity graph
         env:
