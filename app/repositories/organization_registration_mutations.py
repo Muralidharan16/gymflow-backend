@@ -103,7 +103,6 @@ async def _execute_mutation(
     params: dict[str, object],
     *,
     action: str,
-    missing_is_target: bool = False,
 ) -> CreatedOrganizationRegistration:
     try:
         result = await session.execute(statement, params)
@@ -119,12 +118,12 @@ async def _execute_mutation(
                 "organization registration input is invalid"
             ) from exc
         if state == "23503":
-            if missing_is_target:
-                raise RegistrationTargetNotFoundError(
-                    "organization registration replacement target or key is unavailable"
-                ) from exc
             raise RegistrationKeyStateError(
                 "organization registration encryption key is unavailable"
+            ) from exc
+        if state == "P0002":
+            raise RegistrationTargetNotFoundError(
+                "organization registration replacement target does not exist"
             ) from exc
         if state == "23505":
             raise RegistrationConflictError(
@@ -188,5 +187,4 @@ async def replace_organization_registration_envelope(
             "key_version": key_version,
         },
         action="replacement",
-        missing_is_target=True,
     )
