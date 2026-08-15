@@ -17,11 +17,10 @@ concurrency:
 
 jobs:
   p3b-registration-contract-runtime:
-    name: Registration contract predecessor ACL inventory
+    name: Legacy hard-stop and j07-k07-j07-k07 contract cycle
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 55
     env:
-      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_contract_test
       MIGRATION_PASSWORD: ci-migration-owner
       REDIS_URL: redis://127.0.0.1:6379/0
       CELERY_BROKER_URL: redis://127.0.0.1:6379/1
@@ -55,30 +54,118 @@ jobs:
       - name: Install PostgreSQL 16
         run: bash scripts/ci/install_pg16_test_stack.sh
 
-      - name: Bootstrap reduced identities
+      - name: Bootstrap reduced identities and isolated databases
         run: |
           set -euo pipefail
           bash scripts/ci/bootstrap_cluster_roles.sh
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
           ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
-          CREATE DATABASE gymflow_p3b_contract_test OWNER migration_owner;
+          CREATE ROLE app_p3b_runtime LOGIN PASSWORD 'ci-api-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE app_p3b_runtime SET row_security='on';
+          ALTER ROLE app_p3b_runtime SET statement_timeout='5s';
+          ALTER ROLE app_p3b_runtime SET lock_timeout='2s';
+          ALTER ROLE app_p3b_runtime SET idle_in_transaction_session_timeout='15s';
+          GRANT app_runtime TO app_p3b_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_p3b_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_p3b_contract_block OWNER migration_owner;
+          CREATE DATABASE gymflow_p3b_contract_cycle OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p3b_contract_block TO app_p3b_runtime;
+          GRANT CONNECT ON DATABASE gymflow_p3b_contract_cycle TO app_p3b_runtime;
           SQL
           bash scripts/ci/verify_cluster_roles.sh
-          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3b_contract_test
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3b_contract_block
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3b_contract_cycle
 
-      - name: Upgrade fresh database to current P3B head
+      - name: Prove k07 refuses an unmigrated legacy row
+        env:
+          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_contract_block
+          PGPASSWORD: ci-migration-owner
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade j07d8e9f0a2a
+          psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p3b_contract_block <<'SQL'
+          BEGIN;
+          INSERT INTO public.organizations (id, name, slug, tier, is_active)
+          VALUES ('99999999-9999-4999-8999-999999999991',
+                  'P3B Contract Block', 'p3b-contract-block', 'basic', TRUE);
+          INSERT INTO public.owners (
+              id, org_id, owner_name, email, hashed_password,
+              email_verified, onboarding_completed
+          ) VALUES (
+              '99999999-9999-4999-8999-999999999992',
+              '99999999-9999-4999-8999-999999999991',
+              'Contract Owner', 'contract-block@example.test',
+              'not-a-real-password', FALSE, FALSE
+          );
+          SELECT pg_catalog.set_config(
+              'app.current_org_id',
+              '99999999-9999-4999-8999-999999999991',
+              true
+          );
+          INSERT INTO public.organization_registrations (
+              id, org_id, id_type, id_number_encrypted,
+              id_number_masked, country_code, entity_type,
+              crypto_version, is_verified, verified_at
+          ) VALUES (
+              '99999999-9999-4999-8999-999999999993',
+              '99999999-9999-4999-8999-999999999991',
+              'PAN', 'legacy-contract-ciphertext', 'XXXXXX9991',
+              'IN', 'P', 0, TRUE, CURRENT_TIMESTAMP
+          );
+          COMMIT;
+          SQL
+
+          set +e
+          python -s -m alembic -c alembic.ini upgrade head \
+            > /tmp/p3b-contract-block.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/p3b-contract-block.log
+          if [ "$rc" -eq 0 ]; then
+            echo 'FAIL: k07 accepted an unmigrated legacy registration'
+            exit 1
+          fi
+          grep -q 'ck_org_reg_envelope_only' /tmp/p3b-contract-block.log
+          actual="$(psql -X -At -h 127.0.0.1 -U migration_owner \
+            -d gymflow_p3b_contract_block \
+            -c 'SELECT version_num FROM alembic_version')"
+          test "$actual" = 'j07d8e9f0a2a'
+
+      - name: Backfill verified legacy row at j07
+        env:
+          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_contract_cycle
+          P3B_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_contract_cycle
+          P3B_API_DSN: postgresql://app_p3b_runtime:ci-api-runtime@127.0.0.1:5432/gymflow_p3b_contract_cycle
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade j07d8e9f0a2a
+          python -m py_compile \
+            scripts/ci/verify_p3b_registration_legacy_backfill_boundary.py \
+            scripts/ci/verify_p3b_registration_contract_boundary.py
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py \
+            --expect predecessor
+          python -s scripts/ci/verify_p3b_registration_legacy_backfill_boundary.py
+
+      - name: Contract, downgrade, and recontract exact boundary
+        env:
+          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_contract_cycle
+          P3B_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_contract_cycle
         run: |
           set -euo pipefail
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect final
 
-      - name: Inventory exact registration ACL predecessor
-        env:
-          P3B_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3b_contract_test
-        run: |
-          set -euo pipefail
-          python -m py_compile scripts/ci/inventory_p3b_registration_acls.py
-          python -s scripts/ci/inventory_p3b_registration_acls.py
+          python -s -m alembic -c alembic.ini downgrade j07d8e9f0a2a
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect predecessor
+
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect final
 
       - name: Reprove cluster identity graph
         env:
