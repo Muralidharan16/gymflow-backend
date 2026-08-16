@@ -56,11 +56,19 @@ jobs:
           python -m pytest --noconftest -q --maxfail=1 \
             tests/test_p4b_p4a_inherited_contracts.py
 
-      - name: Prove P4B production search credential isolation
+      - name: Prove P4B production search and telemetry isolation
         run: |
           set -euo pipefail
+          python -m py_compile \
+            app/core/config.py \
+            app/core/settings_schema.py \
+            app/observability/search_metrics.py \
+            app/services/search_provider.py \
+            tests/test_p4b_search_deployment_contract.py \
+            tests/test_p4b_search_metrics_export.py
           python -m pytest --noconftest -q --maxfail=1 \
-            tests/test_p4b_search_deployment_contract.py
+            tests/test_p4b_search_deployment_contract.py \
+            tests/test_p4b_search_metrics_export.py
 
       - name: Reprove inherited P3E workflow bootstrap guard
         run: |
