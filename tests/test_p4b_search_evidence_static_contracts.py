@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "alembic" / "versions" / "u07d8e9f0a35_p4b_search_external_evidence.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "p4b-search-evidence-pg16.yml"
 POLLER = ROOT / "app" / "tasks" / "branch_outbox_poller.py"
 SERVICE = ROOT / "app" / "services" / "branch_lifecycle_service.py"
 
@@ -118,6 +119,32 @@ def test_predecessor_security_owner_acl_is_preserved_and_disjoint_from_p4b_delta
     assert '"REVOKE SELECT (" + ",".join(_BRANCH_SELECT_COLUMNS)' in source
     assert '"GRANT SELECT (" + ",".join(_STATE_SELECT_COLUMNS)' in source
     assert '"REVOKE SELECT (" + ",".join(_STATE_SELECT_COLUMNS)' in source
+
+
+def test_post_install_function_acl_proof_uses_catalog_oids_without_schema_usage() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    post_revoke = source.split(
+        'op.execute("REVOKE USAGE ON SCHEMA app_secure FROM migration_owner")', 1
+    )[1]
+    assert "def _function_oid" in source
+    assert "pg_catalog.oidvectortypes(p.proargtypes)" in source
+    assert "function_oids = {signature: _function_oid(bind, signature)" in post_revoke
+    assert "CAST(:function_oid AS oid)" in post_revoke
+    assert "CAST(:sig AS regprocedure)" not in post_revoke
+    assert "migration_owner retained temporary app_secure USAGE" in post_revoke
+
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    acl_proof = workflow.split("- name: Prove P4B runtime ACL separation", 1)[1].split(
+        "- name: Seed authoritative branch", 1
+    )[0]
+    assert "v_claim oid;" in acl_proof
+    assert "v_ack oid;" in acl_proof
+    assert "v_failure oid;" in acl_proof
+    assert "v_reconcile oid;" in acl_proof
+    assert "pg_catalog.oidvectortypes(p.proargtypes)" in acl_proof
+    assert "has_function_privilege('worker_runtime',v_claim,'EXECUTE')" in acl_proof
+    assert "has_schema_privilege('migration_owner','app_secure','USAGE')" in acl_proof
+    assert "app_secure.claim_branch_search_projection(uuid,uuid)" not in acl_proof
 
 
 def test_worker_and_maintenance_capabilities_are_separated() -> None:
