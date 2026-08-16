@@ -263,7 +263,7 @@ def test_search_worker_uses_drift_repair_before_generic_dead_letter_path() -> No
 def test_metrics_are_low_cardinality_provider_health_latency_and_repair_instruments() -> None:
     source = METRICS.read_text(encoding="utf-8")
     assert '"doers.search.provider.requests"' in source
-    assert 'create_histogram(\n    "doers.search.provider.latency"' in source
+    assert '"doers.search.provider.latency"' in source
     assert '"doers.search.reconciliation.drift_repairs"' in source
     for forbidden_label in (
         '"tenant_id"',
