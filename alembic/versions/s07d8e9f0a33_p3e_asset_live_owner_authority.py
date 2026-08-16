@@ -9,8 +9,11 @@ also prove that the requester is still an authoritative owner when a worker
 claims or finalizes it. Owner login already treats ``owners.email_verified`` as
 a live authorization prerequisite. Bind the asynchronous claim/finalize
 capabilities to that same mutable authority signal and restore visible branding
-state when revocation cancels a pending/processing job. No job ACL, RLS,
-ownership, role membership, or worker table privilege is broadened.
+state when revocation cancels a pending/processing job.
+
+The certified predecessor already gives ``app_security_owner`` effective read
+visibility of ``owners.email_verified``. This revision consumes and asserts that
+inherited authority; it does not add or revoke any owners-table privilege.
 """
 
 from __future__ import annotations
@@ -106,6 +109,13 @@ def _column_select(bind) -> bool:
             :role, 'public.owners', 'email_verified', 'SELECT'
         )
     """), {"role": _SECURITY_OWNER}).scalar_one())
+
+
+def _require_inherited_owner_read(bind) -> None:
+    if not _column_select(bind):
+        raise RuntimeError(
+            "P3E predecessor live-owner read authority is missing"
+        )
 
 
 def _function_contract(bind, name: str, identity_args: str) -> dict[str, object]:
@@ -228,29 +238,14 @@ def _replace_live_authority(bind, *, enabled: bool) -> None:
 def upgrade() -> None:
     bind = op.get_bind()
     _require_identity(bind)
-    if _column_select(bind):
-        raise RuntimeError(
-            "P3E predecessor unexpectedly grants app_security_owner owners.email_verified"
-        )
-
-    op.execute(
-        "GRANT SELECT (email_verified) ON TABLE public.owners TO app_security_owner"
-    )
-    if not _column_select(bind):
-        raise RuntimeError("P3E live-owner read grant was not installed")
-
+    _require_inherited_owner_read(bind)
     _replace_live_authority(bind, enabled=True)
+    _require_inherited_owner_read(bind)
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     _require_identity(bind)
-    if not _column_select(bind):
-        raise RuntimeError("P3E live-owner read grant drifted before downgrade")
-
+    _require_inherited_owner_read(bind)
     _replace_live_authority(bind, enabled=False)
-    op.execute(
-        "REVOKE SELECT (email_verified) ON TABLE public.owners FROM app_security_owner"
-    )
-    if _column_select(bind):
-        raise RuntimeError("P3E live-owner read grant survived downgrade")
+    _require_inherited_owner_read(bind)

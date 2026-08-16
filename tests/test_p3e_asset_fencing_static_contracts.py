@@ -134,9 +134,10 @@ def test_asset_migrations_keep_reduced_role_and_identity_domain_contracts() -> N
 
     assert 'down_revision = "r07d8e9f0a32"' in s07
     assert "email_verified IS TRUE" in s07
-    assert "GRANT SELECT (email_verified)" in s07
-    assert "REVOKE SELECT (email_verified)" in s07
     assert "has_column_privilege" in s07
+    assert "_require_inherited_owner_read" in s07
+    assert "GRANT SELECT (email_verified)" not in s07
+    assert "REVOKE SELECT (email_verified)" not in s07
     assert "SET LOCAL ROLE app_security_owner" in s07
     assert "WHEN organization.logo_key IS NULL THEN NULL ELSE 'ready'" in s07
     assert "WHEN organization.cover_key IS NULL THEN NULL ELSE 'ready'" in s07
