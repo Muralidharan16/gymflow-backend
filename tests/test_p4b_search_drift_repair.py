@@ -200,6 +200,11 @@ def test_drift_repair_migration_is_fenced_worker_only_and_requeues_above_provide
     source = MIGRATION.read_text(encoding="utf-8")
     assert 'revision = "v07d8e9f0a36"' in source
     assert 'down_revision = "u07d8e9f0a35"' in source
+    assert "_install_superseded_status_contract()" in source
+    assert "_restore_predecessor_status_contract()" in source
+    assert '"superseded"' in source
+    assert "DROP CONSTRAINT {_OUTBOX_STATUS_CONSTRAINT}" in source
+    assert "v07 downgrade refuses loss of live/provider-backed search state" in source
     assert "CREATE FUNCTION app_secure.repair_branch_search_provider_drift" in source
     assert "SECURITY DEFINER" in source
     assert "SET row_security = on" in source
@@ -212,6 +217,15 @@ def test_drift_repair_migration_is_fenced_worker_only_and_requeues_above_provide
     assert "'source','search_provider_drift_repair'" in source
     assert "GRANT EXECUTE ON FUNCTION {_FUNCTION} TO worker_runtime" in source
     assert "leaked drift repair capability" in source
+    for predecessor_status in (
+        "pending",
+        "processing",
+        "delivered",
+        "dead_lettered",
+        "quarantined",
+        "compatibility_queue",
+    ):
+        assert f'"{predecessor_status}"' in source
     for forbidden in (
         "GRANT SELECT ON TABLE",
         "GRANT INSERT ON TABLE",
