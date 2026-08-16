@@ -57,7 +57,8 @@ class Organization(Base, TimestampMixin):
     country: Mapped[str] = mapped_column(String(60), server_default=text("'India'"), default="India", nullable=False)
     profile_completed: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), default=False, nullable=False)
 
-    # Logo fields
+    # Logo fields. ``logo_updated_by`` remains the legacy gym_owners domain;
+    # current owner-session provenance is stored separately.
     logo_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     logo_thumb_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     logo_medium_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -68,8 +69,11 @@ class Organization(Base, TimestampMixin):
     )
     logo_updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     logo_updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    logo_updated_by_owner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("owners.id", ondelete="SET NULL"), nullable=True
+    )
 
-    # Cover fields
+    # Cover fields. ``cover_updated_by`` remains the legacy gym_owners domain.
     cover_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     cover_mobile_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     cover_tablet_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -80,6 +84,9 @@ class Organization(Base, TimestampMixin):
     )
     cover_updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     cover_updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    cover_updated_by_owner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("owners.id", ondelete="SET NULL"), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -154,7 +161,12 @@ class OrganizationAssetAudit(Base, TimestampMixin):
         UUID(as_uuid=True), primary_key=True, default=new_uuid
     )
     org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Historical records use changed_by -> gym_owners.id. Modern P3E owner
+    # sessions use the separate owners-domain FK below.
     changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    changed_by_owner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("owners.id", ondelete="SET NULL"), nullable=True
+    )
     asset_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'logo'"), default="logo")
     old_s3_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     new_s3_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

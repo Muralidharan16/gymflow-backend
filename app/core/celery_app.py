@@ -8,13 +8,17 @@ from app.core.config import settings
 
 
 WORKER_QUEUE = "worker"
-# Historical queue label retained for deployment compatibility.  The process is
+# Historical queue label retained for deployment compatibility. The process is
 # the isolated maintenance control plane and now hosts both lifecycle and
 # narrowly bounded platform-maintenance tasks.
 MAINTENANCE_QUEUE = "lifecycle-maintenance"
 MAINTENANCE_TASKS = (
     "app.tasks.branch_lifecycle_sweeps.watchdog",
     "app.tasks.branch_lifecycle_sweeps.reconciliation",
+    "app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
+    "app.tasks.platform_maintenance.advance_trial_lifecycles",
+    "app.tasks.platform_maintenance.dispatch_organization_asset_jobs",
+    "app.tasks.platform_maintenance.dispatch_organization_asset_cleanup",
     "app.tasks.platform_maintenance.reclaim_stale_idempotency",
     "app.tasks.platform_maintenance.archive_expired_idempotency",
     "app.tasks.platform_maintenance.geocoding_reverification",
@@ -39,6 +43,11 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_always_eager=(settings.ENVIRONMENT == "development"),
     task_default_queue=WORKER_QUEUE,
+    imports=(
+        "app.tasks.logos",
+        "app.tasks.covers",
+        "app.tasks.platform_maintenance",
+    ),
     task_routes={
         task_name: {"queue": MAINTENANCE_QUEUE}
         for task_name in MAINTENANCE_TASKS
@@ -71,26 +80,31 @@ celery_app.steps["worker"].add(RuntimeDatabaseIdentityBootstep)
 celery_app.autodiscover_tasks(["app.tasks"])
 
 celery_app.conf.beat_schedule = {
-    "daily-trial-monitor": {
-        "task": "app.tasks.trial_tasks.monitor_trial_lifecycles",
-        "schedule": crontab(hour=0, minute=0),
+    "trial-lifecycle-maintenance": {
+        "task": "app.tasks.platform_maintenance.advance_trial_lifecycles",
+        "schedule": crontab(minute="*/5"),
+        "options": {"queue": MAINTENANCE_QUEUE},
     },
     "expire-subscriptions": {
-        "task": "app.tasks.expire_subs.run",
+        "task": "app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
         "schedule": crontab(hour=0, minute=5),
+        "options": {"queue": MAINTENANCE_QUEUE},
     },
-    "member-reminders": {
-        "task": "app.tasks.reminders.run",
-        "schedule": crontab(hour=10, minute=0),
+    "organization-asset-redispatch": {
+        "task": "app.tasks.platform_maintenance.dispatch_organization_asset_jobs",
+        "schedule": crontab(minute="*"),
+        "options": {"queue": MAINTENANCE_QUEUE},
     },
-    "daily-digest": {
-        "task": "app.tasks.daily_digest.run",
-        "schedule": crontab(hour=8, minute=30),
+    "organization-asset-cleanup-dispatch": {
+        "task": "app.tasks.platform_maintenance.dispatch_organization_asset_cleanup",
+        "schedule": crontab(minute="*"),
+        "options": {"queue": MAINTENANCE_QUEUE},
     },
-    "orphan-logo-cleanup": {
-        "task": "app.tasks.logos.cleanup_orphaned_logos",
-        "schedule": crontab(minute=0, hour="*/6"),
-    },
+    # Legacy reminder, daily-digest and orphan-object sweep schedules are
+    # intentionally absent. Their prior implementations performed cross-tenant
+    # discovery and/or external side effects under worker_runtime without a
+    # durable authorization/idempotency boundary. P3E keeps them fail-closed
+    # until they are rebuilt as tenant-bound durable delivery/cleanup workflows.
     "daily-branch-hours-audit-partition-readiness": {
         "task": "app.tasks.branch_hours_partition.run",
         "schedule": crontab(hour=3, minute=15),

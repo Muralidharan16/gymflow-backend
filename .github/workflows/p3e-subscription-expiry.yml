@@ -1,0 +1,168 @@
+name: P3E Subscription Expiry Maintenance PG16
+
+on:
+  pull_request:
+    branches:
+      - hardening/p3d-branch-role-lifecycle-matrix
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p3e-subscription-expiry-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  subscription-expiry:
+    name: Fresh PG16 bounded legacy subscription expiry
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
+      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_test
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p3e-subscription-expiry-not-production
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Prepare fresh P3E PostgreSQL 16 boundary
+        run: bash scripts/ci/prepare_p3e_pg16.sh
+
+      - name: Prove subscription migration downgrade and full re-upgrade contract
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_migration_test"
+          python -s -m alembic -c alembic.ini downgrade k07d8e9f0a2b
+          absent="$(PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_migration_test \
+            -c "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace WHERE n.nspname='app_secure' AND p.proname IN ('expire_legacy_member_subscriptions','advance_trial_lifecycles'))")"
+          test "${absent}" = "t"
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Seed relational preconditions only
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<'SQL'
+          INSERT INTO public.organizations (
+              id, name, slug, tier, is_active, max_branches,
+              default_currency_code, website_verified, social_links,
+              verification_status, country, profile_completed
+          ) VALUES (
+              'e3000000-0000-4000-8000-000000000001',
+              'P3E Subscription Fixture',
+              'p3e-subscription-fixture',
+              'basic'::public.orgtier,
+              true, 10, 'INR', false, '{}'::jsonb, 'pending', 'India', false
+          );
+
+          INSERT INTO public.gyms (
+              id, org_id, name, facility_type, gymu_id, is_active
+          ) VALUES (
+              'e3000000-0000-4000-8000-000000000002',
+              'e3000000-0000-4000-8000-000000000001',
+              'P3E Fixture Gym',
+              'gym'::public.facilitytype,
+              'P3EG000001',
+              true
+          );
+
+          INSERT INTO public.members (
+              id, gym_id, org_id, member_uid, member_number, name,
+              status, is_active, is_migrated
+          ) VALUES (
+              'e3000000-0000-4000-8000-000000000003',
+              'e3000000-0000-4000-8000-000000000002',
+              'e3000000-0000-4000-8000-000000000001',
+              'P3EM000001',
+              1,
+              'P3E Fixture Member',
+              'active'::public.memberstatus,
+              true,
+              false
+          );
+
+          INSERT INTO public.subscription_plans (
+              id, gym_id, name, duration_days, price,
+              max_freeze_days, features, is_active
+          ) VALUES (
+              'e3000000-0000-4000-8000-000000000004',
+              'e3000000-0000-4000-8000-000000000002',
+              'P3E Fixture Plan',
+              30,
+              1000.00,
+              0,
+              '{}'::jsonb,
+              true
+          );
+          SQL
+
+      - name: Prove bounded maintenance-only expiry runtime
+        run: |
+          set -euo pipefail
+          python -m pytest -q --maxfail=1 \
+            tests/test_p3e_subscription_expiry_maintenance_runtime.py
+
+      - name: Reprove worker and maintenance routing
+        run: |
+          set -euo pipefail
+          python -m pytest -q --maxfail=1 \
+            tests/test_p3e_worker_principal_routing_runtime.py \
+            tests/test_worker_database_identity_boundary.py \
+            tests/test_lifecycle_maintenance_runtime_boundary.py \
+            tests/test_lifecycle_rls_policy_role_boundary.py
+
+      - name: Reprove cluster identity graph
+        env:
+          DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:ci-migration-owner@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py
