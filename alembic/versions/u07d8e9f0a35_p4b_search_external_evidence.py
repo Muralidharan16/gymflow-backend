@@ -36,13 +36,44 @@ _BRANCH = "public.org_branches"
 _OUTBOX = "public.branch_outbox_events"
 _ATTEMPTS = "public.branch_search_effect_attempts"
 
-_STATE_SELECT_COLUMNS = (
+# Direct app_security_owner grants owned by predecessor revisions and required by
+# P4B's bounded capabilities.  u07 must preserve these on both upgrade and
+# downgrade; it grants/revokes only the P4B-owned deltas below.
+_BRANCH_INHERITED_SELECT_COLUMNS = ("id", "org_id")
+_STATE_INHERITED_SELECT_COLUMNS = ("branch_id", "deleted_at", "is_active")
+_OUTBOX_INHERITED_SELECT_COLUMNS = (
+    "outbox_id",
+    "tenant_id",
     "branch_id",
+    "event_type",
+    "status",
+    "leased_by",
+    "leased_until",
+    "correlation_id",
+)
+_OUTBOX_INHERITED_INSERT_COLUMNS = (
+    "outbox_id",
+    "tenant_id",
+    "branch_id",
+    "event_type",
+    "payload",
+    "created_at",
+    "process_after",
+    "status",
+    "attempt_count",
+    "max_attempts",
+    "correlation_id",
+    "leased_by",
+    "leased_until",
+)
+
+# P4B-owned direct column grants only.  Keeping these sets disjoint from the
+# predecessor grants is what makes downgrade ownership exact.
+_STATE_SELECT_COLUMNS = (
     "org_id",
     "status",
     "is_operational",
     "is_public",
-    "deleted_at",
     "search_visibility_version",
     "search_provider_ack_version",
     "search_provider_document_hash",
@@ -67,8 +98,6 @@ _STATE_UPDATE_COLUMNS = (
     "search_provider_reconciled_at",
 )
 _BRANCH_SELECT_COLUMNS = (
-    "id",
-    "org_id",
     "branch_name",
     "internal_slug",
     "timezone",
@@ -242,6 +271,28 @@ def _require_absent_direct_grants(
         )
 
 
+def _require_inherited_direct_grants(bind) -> None:
+    required = {
+        _BRANCH: {(column, "SELECT") for column in _BRANCH_INHERITED_SELECT_COLUMNS},
+        _STATE: {(column, "SELECT") for column in _STATE_INHERITED_SELECT_COLUMNS},
+        _OUTBOX: (
+            {(column, "SELECT") for column in _OUTBOX_INHERITED_SELECT_COLUMNS}
+            | {(column, "INSERT") for column in _OUTBOX_INHERITED_INSERT_COLUMNS}
+        ),
+    }
+    for relation, expected in required.items():
+        existing = _direct_column_privileges(bind, relation, _SECURITY_OWNER)
+        missing = expected.difference(existing)
+        if missing:
+            rendered = ", ".join(
+                f"{column}:{privilege}" for column, privilege in sorted(missing)
+            )
+            raise RuntimeError(
+                "u07 predecessor app_security_owner ACL drift "
+                f"on {relation}: missing {rendered}"
+            )
+
+
 def _require_predecessor(bind) -> None:
     for relation in (_STATE, _BRANCH, _OUTBOX):
         if bind.execute(
@@ -313,6 +364,7 @@ def _require_predecessor(bind) -> None:
     if existing_columns:
         raise RuntimeError(f"u07 state column collision: {sorted(existing_columns)!r}")
 
+    _require_inherited_direct_grants(bind)
     _require_absent_direct_grants(
         bind,
         _BRANCH,
