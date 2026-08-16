@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -31,10 +32,41 @@ def _sync_url(raw: str) -> str:
     return raw
 
 
+def _github_actions_local_verify_url() -> str | None:
+    """Use the disposable migration DB only for an explicitly local GH Actions cluster.
+
+    Normal callers must still provide DOERS_CLUSTER_VERIFY_DATABASE_URL. P4B's
+    fresh-PG16 gate already provisions a loopback-only migration_owner database;
+    accepting that exact CI-local authority avoids duplicating credentials while
+    preserving the verifier's fail-closed behavior everywhere else.
+    """
+
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return None
+    raw = os.environ.get("DATABASE_URL")
+    if not raw:
+        return None
+    try:
+        parsed = make_url(raw)
+    except Exception:
+        return None
+    if parsed.username != "migration_owner":
+        return None
+    if parsed.host not in {"127.0.0.1", "localhost"}:
+        return None
+    if not parsed.database:
+        return None
+    return raw
+
+
 def main() -> int:
-    raw_url = os.environ.get(VERIFY_URL_ENV)
+    raw_url = os.environ.get(VERIFY_URL_ENV) or _github_actions_local_verify_url()
     if not raw_url:
-        print(f"ERROR: {VERIFY_URL_ENV} is required", file=sys.stderr)
+        print(
+            f"ERROR: {VERIFY_URL_ENV} is required outside the guarded local "
+            "GitHub Actions migration cluster",
+            file=sys.stderr,
+        )
         return 2
 
     engine = create_engine(_sync_url(raw_url), pool_pre_ping=False)
