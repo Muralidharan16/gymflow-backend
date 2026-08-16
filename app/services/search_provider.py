@@ -41,7 +41,7 @@ class SearchEffectEvidence:
     provider_index: str
     provider_document_id: str
     request_sha256: str
-    provider_version: int
+    provider_version: int | None
     provider_evidence_sha256: str
     document_sha256: str | None
 
@@ -66,13 +66,13 @@ class SearchProviderError(RuntimeError):
 
 
 class OpenSearchProvider:
-    """Small REST adapter whose success is based on provider state, not HTTP hope.
+    """REST adapter whose success is based on provider state, not HTTP hope.
 
     PostgreSQL owns the desired projection version. OpenSearch receives that value
     with strict ``version_type=external``. A retry at the same version therefore
     cannot replace different content: a version conflict is resolved only by a
     real-time GET that proves the already-persisted provider document matches the
-    desired projection.
+    desired projection at the exact same version.
     """
 
     def __init__(
@@ -378,9 +378,28 @@ class OpenSearchProvider:
                 and isinstance(get_body, dict)
                 and get_body.get("found") is False
             ):
-                provider_version = self._provider_version(
-                    mutation_body, fallback=desired_version
-                )
+                provider_version = self._provider_version(mutation_body, fallback=None)
+                if provider_version is None:
+                    raise SearchProviderError(
+                        "OpenSearch absence was observed without mutation version evidence",
+                        outcome="ambiguous_outcome",
+                        error_code="delete_version_unproven",
+                        request_sha256=request_sha256,
+                    )
+                if provider_version < desired_version:
+                    raise SearchProviderError(
+                        "OpenSearch delete version is behind the desired version",
+                        outcome="retryable_failure",
+                        error_code="provider_version_behind",
+                        request_sha256=request_sha256,
+                    )
+                if provider_version > desired_version:
+                    raise SearchProviderError(
+                        "OpenSearch delete version is ahead of the authoritative clock",
+                        outcome="permanent_rejection",
+                        error_code="provider_version_ahead",
+                        request_sha256=request_sha256,
+                    )
                 return SearchEffectEvidence(
                     provider_code=_PROVIDER_CODE,
                     provider_index=self.index,
@@ -433,12 +452,26 @@ class OpenSearchProvider:
                 error_code="provider_source_missing",
                 request_sha256=request_sha256,
             )
-        provider_version = self._provider_version(get_body, fallback=0)
+        provider_version = self._provider_version(get_body, fallback=None)
+        if provider_version is None:
+            raise SearchProviderError(
+                "OpenSearch response omitted provider version evidence",
+                outcome="permanent_rejection",
+                error_code="provider_version_missing",
+                request_sha256=request_sha256,
+            )
         if provider_version < desired_version:
             raise SearchProviderError(
                 "OpenSearch provider version is behind the desired version",
                 outcome="retryable_failure",
                 error_code="provider_version_behind",
+                request_sha256=request_sha256,
+            )
+        if provider_version > desired_version:
+            raise SearchProviderError(
+                "OpenSearch provider version is ahead of the authoritative clock",
+                outcome="permanent_rejection",
+                error_code="provider_version_ahead",
                 request_sha256=request_sha256,
             )
         document_sha256 = _sha256_json(document)
@@ -466,11 +499,11 @@ class OpenSearchProvider:
             return None
         try:
             return response.json()
-        except (ValueError, json.JSONDecodeError):
+        except ValueError:
             return {"body_sha256": _sha256(response.content)}
 
     @staticmethod
-    def _provider_version(value: Any, *, fallback: int) -> int:
+    def _provider_version(value: Any, *, fallback: int | None) -> int | None:
         if isinstance(value, dict):
             version = value.get("_version")
             if isinstance(version, int) and version >= 0:
