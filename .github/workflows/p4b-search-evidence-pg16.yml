@@ -112,8 +112,44 @@ jobs:
           PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
           DO $$
-          DECLARE role_name text;
+          DECLARE
+            role_name text;
+            v_claim oid;
+            v_ack oid;
+            v_failure oid;
+            v_reconcile oid;
           BEGIN
+            IF pg_catalog.has_schema_privilege('migration_owner','app_secure','USAGE') THEN
+              RAISE EXCEPTION 'migration_owner retained temporary app_secure USAGE';
+            END IF;
+
+            SELECT p.oid INTO STRICT v_claim
+            FROM pg_catalog.pg_proc AS p
+            JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+            WHERE n.nspname='app_secure'
+              AND p.proname='claim_branch_search_projection'
+              AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, uuid';
+            SELECT p.oid INTO STRICT v_ack
+            FROM pg_catalog.pg_proc AS p
+            JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+            WHERE n.nspname='app_secure'
+              AND p.proname='acknowledge_branch_search_effect'
+              AND pg_catalog.oidvectortypes(p.proargtypes)=
+                'uuid, uuid, bigint, text, text, text, text, text, bigint, text, text';
+            SELECT p.oid INTO STRICT v_failure
+            FROM pg_catalog.pg_proc AS p
+            JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+            WHERE n.nspname='app_secure'
+              AND p.proname='record_branch_search_failure'
+              AND pg_catalog.oidvectortypes(p.proargtypes)=
+                'uuid, uuid, bigint, text, text, text, text, text';
+            SELECT p.oid INTO STRICT v_reconcile
+            FROM pg_catalog.pg_proc AS p
+            JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+            WHERE n.nspname='app_secure'
+              AND p.proname='enqueue_branch_search_reconciliation'
+              AND pg_catalog.oidvectortypes(p.proargtypes)='integer';
+
             FOREACH role_name IN ARRAY ARRAY[
               'app_runtime','auth_runtime','worker_runtime','lifecycle_maintenance_runtime'
             ] LOOP
@@ -130,32 +166,18 @@ jobs:
               END IF;
             END LOOP;
 
-            IF NOT pg_catalog.has_function_privilege(
-              'worker_runtime','app_secure.claim_branch_search_projection(uuid,uuid)','EXECUTE'
-            ) OR NOT pg_catalog.has_function_privilege(
-              'worker_runtime',
-              'app_secure.acknowledge_branch_search_effect(uuid,uuid,bigint,text,text,text,text,text,bigint,text,text)',
-              'EXECUTE'
-            ) OR NOT pg_catalog.has_function_privilege(
-              'worker_runtime',
-              'app_secure.record_branch_search_failure(uuid,uuid,bigint,text,text,text,text,text)',
-              'EXECUTE'
-            ) THEN
+            IF NOT pg_catalog.has_function_privilege('worker_runtime',v_claim,'EXECUTE')
+               OR NOT pg_catalog.has_function_privilege('worker_runtime',v_ack,'EXECUTE')
+               OR NOT pg_catalog.has_function_privilege('worker_runtime',v_failure,'EXECUTE') THEN
               RAISE EXCEPTION 'worker lacks exact P4B search capabilities';
             END IF;
-            IF pg_catalog.has_function_privilege(
-              'worker_runtime','app_secure.enqueue_branch_search_reconciliation(integer)','EXECUTE'
-            ) THEN
+            IF pg_catalog.has_function_privilege('worker_runtime',v_reconcile,'EXECUTE') THEN
               RAISE EXCEPTION 'worker received global search reconciliation capability';
             END IF;
             IF NOT pg_catalog.has_function_privilege(
-              'lifecycle_maintenance_runtime',
-              'app_secure.enqueue_branch_search_reconciliation(integer)','EXECUTE'
+              'lifecycle_maintenance_runtime',v_reconcile,'EXECUTE'
             ) THEN
               RAISE EXCEPTION 'maintenance lacks bounded search reconciliation enqueue';
-            END IF;
-            IF pg_catalog.has_schema_privilege('migration_owner','app_secure','USAGE') THEN
-              RAISE EXCEPTION 'migration_owner retained temporary app_secure USAGE';
             END IF;
           END
           $$;
