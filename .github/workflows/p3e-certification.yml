@@ -334,7 +334,7 @@ jobs:
                OR NOT pg_catalog.has_function_privilege('worker_runtime', v_claim_oid, 'EXECUTE') THEN
               RAISE EXCEPTION 'asset claim execution matrix drifted';
             END IF;
-            IF NOT pg_catalog.has_function_privilege(
+            IF NOT pg_catalog.has_column_privilege(
                 'app_security_owner', 'public.owners', 'email_verified', 'SELECT'
             ) THEN
               RAISE EXCEPTION 'reduced owner lacks exact live-authority read';
