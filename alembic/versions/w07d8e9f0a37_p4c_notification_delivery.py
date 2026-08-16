@@ -90,9 +90,7 @@ def _require_identity_contract(bind) -> None:
 
 def _has_column_select(bind, relation: str, column: str) -> bool:
     return bool(bind.execute(
-        sa.text(
-            "SELECT pg_catalog.has_column_privilege(:role,:relation,:column,'SELECT')"
-        ),
+        sa.text("SELECT pg_catalog.has_column_privilege(:role,:relation,:column,'SELECT')"),
         {"role": _SECURITY_OWNER, "relation": relation, "column": column},
     ).scalar_one())
 
@@ -158,7 +156,7 @@ def _set_outbox_statuses(statuses: tuple[str, ...]) -> None:
 
 
 def _create_storage() -> None:
-    op.execute(
+    statements = (
         """
         CREATE TABLE public.member_notification_preferences (
             tenant_id uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
@@ -170,8 +168,9 @@ def _create_storage() -> None:
             suppression_reason text,
             updated_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(),
             PRIMARY KEY (tenant_id,member_id)
-        );
-
+        )
+        """,
+        """
         CREATE TABLE public.notification_commands (
             command_id uuid PRIMARY KEY,
             source_outbox_id uuid NOT NULL REFERENCES public.branch_outbox_events(outbox_id) ON DELETE RESTRICT,
@@ -215,17 +214,17 @@ def _create_storage() -> None:
                 (request_sha256 IS NULL OR request_sha256 ~ '^[0-9a-f]{64}$') AND
                 (provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$')
             )
-        );
+        )
+        """,
+        """
         CREATE UNIQUE INDEX uq_notification_provider_reference
           ON public.notification_commands(provider_code,provider_reference_id)
-          WHERE provider_reference_id IS NOT NULL;
-        CREATE INDEX ix_notification_commands_due
-          ON public.notification_commands(status,next_attempt_at,created_at);
-        CREATE INDEX ix_notification_commands_source
-          ON public.notification_commands(source_outbox_id,command_id);
-        CREATE INDEX ix_notification_commands_tenant_member
-          ON public.notification_commands(tenant_id,member_id,created_at DESC);
-
+          WHERE provider_reference_id IS NOT NULL
+        """,
+        "CREATE INDEX ix_notification_commands_due ON public.notification_commands(status,next_attempt_at,created_at)",
+        "CREATE INDEX ix_notification_commands_source ON public.notification_commands(source_outbox_id,command_id)",
+        "CREATE INDEX ix_notification_commands_tenant_member ON public.notification_commands(tenant_id,member_id,created_at DESC)",
+        """
         CREATE TABLE public.notification_delivery_attempts (
             attempt_id uuid PRIMARY KEY,
             command_id uuid NOT NULL REFERENCES public.notification_commands(command_id) ON DELETE RESTRICT,
@@ -243,8 +242,9 @@ def _create_storage() -> None:
             created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(),
             UNIQUE(command_id,attempt_number),
             CHECK (provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$')
-        );
-
+        )
+        """,
+        """
         CREATE TABLE public.notification_provider_events (
             provider_code text NOT NULL,
             provider_event_id text NOT NULL,
@@ -255,11 +255,12 @@ def _create_storage() -> None:
             evidence_sha256 text NOT NULL CHECK (evidence_sha256 ~ '^[0-9a-f]{64}$'),
             received_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(),
             PRIMARY KEY(provider_code,provider_event_id)
-        );
-        CREATE INDEX ix_notification_provider_events_reference
-          ON public.notification_provider_events(provider_code,provider_reference_id,event_created_at DESC);
-        """
+        )
+        """,
+        "CREATE INDEX ix_notification_provider_events_reference ON public.notification_provider_events(provider_code,provider_reference_id,event_created_at DESC)",
     )
+    for statement in statements:
+        op.execute(statement)
 
     for relation in (_PREFS, _COMMANDS, _ATTEMPTS, _EVENTS):
         name = relation.split(".", 1)[1]
