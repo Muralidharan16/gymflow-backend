@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 
@@ -7,6 +8,31 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "alembic" / "versions" / "u07d8e9f0a35_p4b_search_external_evidence.py"
 POLLER = ROOT / "app" / "tasks" / "branch_outbox_poller.py"
 SERVICE = ROOT / "app" / "services" / "branch_lifecycle_service.py"
+
+
+def _op_execute_statements(source: str) -> set[str]:
+    """Return constant SQL passed to op.execute, normalized for whitespace."""
+
+    statements: set[str] = set()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        function = node.func
+        if not (
+            isinstance(function, ast.Attribute)
+            and function.attr == "execute"
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "op"
+        ):
+            continue
+        try:
+            value = ast.literal_eval(node.args[0])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(value, str):
+            statements.add(" ".join(value.split()))
+    return statements
 
 
 def test_p4b_migration_is_append_only_on_certified_p3e_head() -> None:
@@ -32,16 +58,31 @@ def test_search_evidence_table_is_force_rls_and_runtime_has_no_direct_grant() ->
 
 def test_worker_and_maintenance_capabilities_are_separated() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
+    statements = _op_execute_statements(source)
+
     assert (
-        "app_secure.claim_branch_search_projection(uuid,uuid) "
+        "GRANT EXECUTE ON FUNCTION "
+        "app_secure.claim_branch_search_projection(uuid,uuid) TO worker_runtime"
+        in statements
+    )
+    assert (
+        "GRANT EXECUTE ON FUNCTION "
+        "app_secure.acknowledge_branch_search_effect(uuid,uuid,bigint,text,text,text,text,text,bigint,text,text) "
         "TO worker_runtime"
-    ) in " ".join(source.split())
-    assert "acknowledge_branch_search_effect" in source
-    assert "record_branch_search_failure" in source
+        in statements
+    )
     assert (
+        "GRANT EXECUTE ON FUNCTION "
+        "app_secure.record_branch_search_failure(uuid,uuid,bigint,text,text,text,text,text) "
+        "TO worker_runtime"
+        in statements
+    )
+    assert (
+        "GRANT EXECUTE ON FUNCTION "
         "app_secure.enqueue_branch_search_reconciliation(integer) "
         "TO lifecycle_maintenance_runtime"
-    ) in " ".join(source.split())
+        in statements
+    )
     assert "leaked global reconciliation capability to worker_runtime" in source
 
 
