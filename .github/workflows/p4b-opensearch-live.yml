@@ -1,0 +1,83 @@
+name: P4B Live OpenSearch
+
+on:
+  pull_request:
+    branches:
+      - hardening/p4a-external-effects-contract
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p4b-opensearch-live-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-opensearch:
+    name: Real OpenSearch external-version and repair semantics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      OPENSEARCH_LIVE_URL: http://127.0.0.1:9200
+      P4B_LIVE_INDEX: p4b-live-${{ github.run_id }}-${{ github.run_attempt }}
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Start pinned single-node OpenSearch
+        run: |
+          set -euo pipefail
+          sudo sysctl -w vm.max_map_count=262144
+          docker pull opensearchproject/opensearch:3.7.0
+          docker run -d --name p4b-opensearch \
+            -p 9200:9200 \
+            -e discovery.type=single-node \
+            -e DISABLE_SECURITY_PLUGIN=true \
+            -e DISABLE_INSTALL_DEMO_CONFIG=true \
+            -e 'OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m' \
+            opensearchproject/opensearch:3.7.0
+
+          ready=0
+          for _ in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:9200/_cluster/health >/tmp/p4b-opensearch-health.json; then
+              ready=1
+              break
+            fi
+            if ! docker inspect -f '{{.State.Running}}' p4b-opensearch 2>/dev/null | grep -qx true; then
+              docker logs p4b-opensearch >&2 || true
+              exit 1
+            fi
+            sleep 2
+          done
+          test "${ready}" = '1'
+          cat /tmp/p4b-opensearch-health.json
+
+      - name: Prove P4B against real OpenSearch
+        run: |
+          set -euo pipefail
+          python -m py_compile app/services/search_provider.py tests/test_p4b_search_provider_live.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p4b_search_provider_live.py
+
+      - name: Capture OpenSearch logs
+        if: always()
+        run: docker logs --tail 200 p4b-opensearch || true
