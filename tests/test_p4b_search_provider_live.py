@@ -147,6 +147,8 @@ def test_live_opensearch_external_version_idempotency_drift_delete_and_missing_r
     assert deleted.provider_version == 41
     assert deleted.document_sha256 is None
 
+    # Repeating the exact authoritative delete must be idempotent rather than
+    # producing an unprovable 409/404 loop.
     duplicate_delete = asyncio.run(
         provider.apply(
             branch_id=delete_id,
@@ -157,6 +159,32 @@ def test_live_opensearch_external_version_idempotency_drift_delete_and_missing_r
     )
     assert duplicate_delete.provider_version == 41
     assert duplicate_delete.document_sha256 is None
+
+    # A genuinely newer provider document must still win.  delete uses
+    # external_gte only so equality can replay the same desired absence; a
+    # lower stale delete can never remove this version-42 document.
+    newer_delete_doc = _document(delete_id, name="Newer Delete State", search_version=42)
+    asyncio.run(
+        provider.apply(
+            branch_id=delete_id,
+            operation="index",
+            desired_version=42,
+            document=newer_delete_doc,
+        )
+    )
+    with pytest.raises(SearchProviderError) as stale_delete_info:
+        asyncio.run(
+            provider.apply(
+                branch_id=delete_id,
+                operation="delete",
+                desired_version=41,
+                document=None,
+            )
+        )
+    stale_delete = stale_delete_info.value
+    assert stale_delete.error_code == "delete_not_proven"
+    assert stale_delete.is_repairable_drift
+    assert stale_delete.provider_version == 42
 
     missing_id = str(uuid.uuid4())
     missing_doc = _document(missing_id, name="Missing Repair", search_version=50)
