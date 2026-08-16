@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from app.core.celery_app import celery_app
 from app.core.database import update_session_context, worker_async_session_maker
+from app.observability.search_metrics import record_drift_repair
 from app.services.branch_lifecycle_service import BranchLifecycleService
 from app.services.search_provider import OpenSearchProvider, SearchProviderError
 
@@ -291,6 +292,58 @@ async def _record_search_failure(
     return bool(still_current)
 
 
+async def _repair_search_drift(
+    event: dict[str, Any],
+    worker_id: uuid.UUID,
+    *,
+    projection: dict[str, Any],
+    error: SearchProviderError,
+) -> int | None:
+    """Advance the authoritative clock above proved provider drift and requeue."""
+
+    if not error.is_repairable_drift:
+        raise ValueError("search drift repair requires complete provider evidence")
+
+    async with worker_async_session_maker() as session:
+        await _install_saga_context(session, event=event, worker_id=worker_id)
+        next_version = await session.scalar(
+            text(
+                """
+                SELECT app_secure.repair_branch_search_provider_drift(
+                    CAST(:outbox_id AS uuid),
+                    CAST(:worker_id AS uuid),
+                    CAST(:desired_version AS bigint),
+                    CAST(:operation AS text),
+                    CAST(:provider_code AS text),
+                    CAST(:provider_index AS text),
+                    CAST(:provider_document_id AS text),
+                    CAST(:request_sha256 AS text),
+                    CAST(:provider_version AS bigint),
+                    CAST(:provider_evidence_sha256 AS text),
+                    CAST(:document_sha256 AS text),
+                    CAST(:error_code AS text)
+                )
+                """
+            ),
+            {
+                "outbox_id": event["outbox_id"],
+                "worker_id": worker_id,
+                "desired_version": projection["desired_version"],
+                "operation": projection["operation"],
+                "provider_code": "opensearch",
+                "provider_index": error.provider_index,
+                "provider_document_id": error.provider_document_id,
+                "request_sha256": error.request_sha256,
+                "provider_version": error.provider_version,
+                "provider_evidence_sha256": error.provider_evidence_sha256,
+                "document_sha256": error.document_sha256,
+                "error_code": error.error_code,
+            },
+        )
+        await session.commit()
+    return int(next_version) if next_version is not None else None
+
+
 async def _process_search_event(
     event: dict[str, Any],
     worker_id: uuid.UUID,
@@ -319,6 +372,36 @@ async def _process_search_event(
             document=document,
         )
     except SearchProviderError as exc:
+        if exc.is_repairable_drift:
+            try:
+                next_version = await _repair_search_drift(
+                    event,
+                    worker_id,
+                    projection=projection,
+                    error=exc,
+                )
+            except Exception as repair_error:
+                record_drift_repair(operation=operation, result="repair_failed")
+                return await _fail_event(event, worker_id, repair_error, permanent=False)
+
+            result = "requeued" if next_version is not None else "superseded"
+            record_drift_repair(operation=operation, result=result)
+            logger.warning(
+                "Lifecycle search provider drift fenced and requeued",
+                extra={
+                    "outbox_id": str(event["outbox_id"]),
+                    "tenant_id": str(event["tenant_id"]),
+                    "branch_id": branch_id,
+                    "operation": operation,
+                    "desired_version": desired_version,
+                    "observed_provider_version": exc.provider_version,
+                    "next_version": next_version,
+                    "provider_error_code": exc.error_code,
+                    "result": result,
+                },
+            )
+            return "superseded"
+
         try:
             still_current = await _record_search_failure(
                 event,
