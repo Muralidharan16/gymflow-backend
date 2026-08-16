@@ -11,10 +11,11 @@ provider API submission is **not** proof that a member received a notification.
 P4C keeps local intent, provider acceptance, and terminal provider evidence as
 separate states.
 
-A notification may become `delivered` only from durable downstream delivery
-evidence appropriate to the selected provider/channel. Providers that expose
-acceptance but no terminal delivery evidence may end at `provider_accepted` and
-must never be relabelled `delivered` by elapsed time or local retry exhaustion.
+A notification command may become `succeeded` only from durable downstream
+`delivered` evidence appropriate to the selected provider/channel. Providers
+that expose acceptance but no terminal delivery evidence may end at
+`provider_accepted` and must never be relabelled `succeeded` by elapsed time,
+local retry exhaustion, or an HTTP success alone.
 
 ## Authorization and tenant authority
 
@@ -46,19 +47,23 @@ recipient/channel/logical business notification. Retries reuse that identity.
 
 ## State machine
 
-Allowed command states are:
+P4C uses the shared P4 command states frozen by P4A:
 
-- `queued`
-- `sending`
+- `pending`
+- `processing`
 - `provider_accepted`
-- `delivered`
-- `rejected`
-- `bounced`
+- `succeeded`
+- `retry_pending`
 - `dead_lettered`
-- `suppressed`
 - `cancelled`
+- `superseded`
 
-Only `queued` work with a due retry time, or an expired `sending` lease, may be
+Provider delivery outcome is separate evidence. Relevant downstream outcomes
+include `delivered`, `bounced`, `rejected`, `suppressed`, and provider-specific
+nonterminal states. `succeeded` means terminal delivered evidence exists; a
+bounce/rejection/suppression is terminal business evidence but is not success.
+
+Only due `pending`/`retry_pending` work, or an expired `processing` lease, may be
 claimed. A claimant receives a fence token/lease and stale workers cannot
 acknowledge, reject, or reschedule after ownership changes.
 
@@ -71,13 +76,14 @@ any second external effect is attempted.
 - transport failure before a provable provider commit point: retryable;
 - unknown commit point: ambiguous and reconciliation-first;
 - provider 429/5xx: bounded retry respecting `Retry-After` where available;
-- permanent destination/template/provider validation failure: rejected;
+- permanent destination/template/provider validation failure: terminal rejected
+  evidence and command cancellation/dead-letter according to policy;
 - retry exhaustion without terminal downstream success: dead-lettered;
 - worker crash: lease expiry permits fenced reclaim;
 - database acknowledgement failure after provider acceptance: next execution
   reconciles provider state/idempotency before sending again.
 
-No failure path may synthesize `delivered`.
+No failure path may synthesize `succeeded` or `delivered`.
 
 ## Provider boundary
 
@@ -93,7 +99,7 @@ other is configured or production-ready.
 
 Where a provider exposes delivery callbacks:
 
-- verify the provider signature before parsing authoritative effect data;
+- verify the provider signature against the raw request body before trusting it;
 - use replay-safe provider event IDs / signed timestamps where available;
 - persist webhook-event idempotency;
 - tolerate duplicate and out-of-order events;
@@ -105,7 +111,7 @@ Where a provider exposes delivery callbacks:
 
 Maintenance may perform only bounded discovery/enqueue/reconciliation control
 work. It does not gain direct notification-provider success authority.
-Reconciliation covers stale sending leases, ambiguous attempts, accepted
+Reconciliation covers stale processing leases, ambiguous attempts, accepted
 notifications missing terminal evidence, and missed/duplicate webhooks.
 
 Dead-letter/operator recovery is explicit, audited, and never implemented by
