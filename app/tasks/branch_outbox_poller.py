@@ -9,7 +9,9 @@ from sqlalchemy import text
 
 from app.core.celery_app import celery_app
 from app.core.database import update_session_context, worker_async_session_maker
+from app.observability.search_metrics import record_drift_repair
 from app.services.branch_lifecycle_service import BranchLifecycleService
+from app.services.search_provider import OpenSearchProvider, SearchProviderError
 
 
 logger = logging.getLogger("doers.branch_lifecycle_outbox")
@@ -17,9 +19,11 @@ logger = logging.getLogger("doers.branch_lifecycle_outbox")
 _BATCH_SIZE = 20
 _LEASE_SECONDS = 600
 _MAINTENANCE_TOKEN = "branch_lifecycle_saga"
-_EXTERNAL_EVENT_TYPES = {
+_SEARCH_EVENT_TYPES = {
     "branch.search_deindex",
     "branch.search_index",
+}
+_DEFERRED_EXTERNAL_EVENT_TYPES = {
     "branch.member_notification",
     "branch.refund_required",
 }
@@ -178,6 +182,298 @@ async def _process_saga_event(
         return await _fail_event(event, worker_id, exc, permanent=False)
 
 
+async def _claim_search_projection(
+    event: dict[str, Any],
+    worker_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Read the authoritative search projection behind the current live lease."""
+
+    async with worker_async_session_maker() as session:
+        await _install_saga_context(session, event=event, worker_id=worker_id)
+        result = await session.execute(
+            text(
+                """
+                SELECT tenant_id, branch_id, operation, desired_version,
+                       document, previous_ack_version
+                FROM app_secure.claim_branch_search_projection(
+                    CAST(:outbox_id AS uuid), CAST(:worker_id AS uuid)
+                )
+                """
+            ),
+            {"outbox_id": event["outbox_id"], "worker_id": worker_id},
+        )
+        projection = dict(result.mappings().one())
+        # Do not hold a database transaction open across provider I/O.
+        await session.commit()
+        return projection
+
+
+async def _acknowledge_search_effect(
+    event: dict[str, Any],
+    worker_id: uuid.UUID,
+    *,
+    projection: dict[str, Any],
+    evidence,
+) -> str:
+    async with worker_async_session_maker() as session:
+        await _install_saga_context(session, event=event, worker_id=worker_id)
+        applied = await session.scalar(
+            text(
+                """
+                SELECT app_secure.acknowledge_branch_search_effect(
+                    CAST(:outbox_id AS uuid),
+                    CAST(:worker_id AS uuid),
+                    CAST(:desired_version AS bigint),
+                    CAST(:operation AS text),
+                    CAST(:provider_code AS text),
+                    CAST(:provider_index AS text),
+                    CAST(:provider_document_id AS text),
+                    CAST(:request_sha256 AS text),
+                    CAST(:provider_version AS bigint),
+                    CAST(:provider_evidence_sha256 AS text),
+                    CAST(:document_sha256 AS text)
+                )
+                """
+            ),
+            {
+                "outbox_id": event["outbox_id"],
+                "worker_id": worker_id,
+                "desired_version": projection["desired_version"],
+                "operation": projection["operation"],
+                "provider_code": evidence.provider_code,
+                "provider_index": evidence.provider_index,
+                "provider_document_id": evidence.provider_document_id,
+                "request_sha256": evidence.request_sha256,
+                "provider_version": evidence.provider_version,
+                "provider_evidence_sha256": evidence.provider_evidence_sha256,
+                "document_sha256": evidence.document_sha256,
+            },
+        )
+        await session.commit()
+    return "delivered" if bool(applied) else "superseded"
+
+
+async def _record_search_failure(
+    event: dict[str, Any],
+    worker_id: uuid.UUID,
+    *,
+    projection: dict[str, Any],
+    error: SearchProviderError,
+) -> bool:
+    async with worker_async_session_maker() as session:
+        await _install_saga_context(session, event=event, worker_id=worker_id)
+        still_current = await session.scalar(
+            text(
+                """
+                SELECT app_secure.record_branch_search_failure(
+                    CAST(:outbox_id AS uuid),
+                    CAST(:worker_id AS uuid),
+                    CAST(:desired_version AS bigint),
+                    CAST(:operation AS text),
+                    CAST(:outcome AS text),
+                    CAST(:provider_code AS text),
+                    CAST(:request_sha256 AS text),
+                    CAST(:error_code AS text)
+                )
+                """
+            ),
+            {
+                "outbox_id": event["outbox_id"],
+                "worker_id": worker_id,
+                "desired_version": projection["desired_version"],
+                "operation": projection["operation"],
+                "outcome": error.outcome,
+                "provider_code": "opensearch",
+                "request_sha256": error.request_sha256,
+                "error_code": error.error_code,
+            },
+        )
+        await session.commit()
+    return bool(still_current)
+
+
+async def _repair_search_drift(
+    event: dict[str, Any],
+    worker_id: uuid.UUID,
+    *,
+    projection: dict[str, Any],
+    error: SearchProviderError,
+) -> int | None:
+    """Advance the authoritative clock above proved provider drift and requeue."""
+
+    if not error.is_repairable_drift:
+        raise ValueError("search drift repair requires complete provider evidence")
+
+    async with worker_async_session_maker() as session:
+        await _install_saga_context(session, event=event, worker_id=worker_id)
+        next_version = await session.scalar(
+            text(
+                """
+                SELECT app_secure.repair_branch_search_provider_drift(
+                    CAST(:outbox_id AS uuid),
+                    CAST(:worker_id AS uuid),
+                    CAST(:desired_version AS bigint),
+                    CAST(:operation AS text),
+                    CAST(:provider_code AS text),
+                    CAST(:provider_index AS text),
+                    CAST(:provider_document_id AS text),
+                    CAST(:request_sha256 AS text),
+                    CAST(:provider_version AS bigint),
+                    CAST(:provider_evidence_sha256 AS text),
+                    CAST(:document_sha256 AS text),
+                    CAST(:error_code AS text)
+                )
+                """
+            ),
+            {
+                "outbox_id": event["outbox_id"],
+                "worker_id": worker_id,
+                "desired_version": projection["desired_version"],
+                "operation": projection["operation"],
+                "provider_code": "opensearch",
+                "provider_index": error.provider_index,
+                "provider_document_id": error.provider_document_id,
+                "request_sha256": error.request_sha256,
+                "provider_version": error.provider_version,
+                "provider_evidence_sha256": error.provider_evidence_sha256,
+                "document_sha256": error.document_sha256,
+                "error_code": error.error_code,
+            },
+        )
+        await session.commit()
+    return int(next_version) if next_version is not None else None
+
+
+async def _process_search_event(
+    event: dict[str, Any],
+    worker_id: uuid.UUID,
+) -> str:
+    """Apply search work only from a live lease and persist provider truth."""
+
+    try:
+        projection = await _claim_search_projection(event, worker_id)
+    except Exception as exc:
+        return await _fail_event(event, worker_id, exc, permanent=False)
+
+    # Event labels and payloads are intentionally ignored for the actual effect.
+    # The DB capability re-reads the current branch state and returns the current
+    # operation/version/document after proving lease ownership.
+    provider = OpenSearchProvider.from_settings()
+    branch_id = str(projection["branch_id"])
+    operation = str(projection["operation"])
+    desired_version = int(projection["desired_version"])
+    document = projection["document"]
+
+    try:
+        evidence = await provider.apply(
+            branch_id=branch_id,
+            operation=operation,
+            desired_version=desired_version,
+            document=document,
+        )
+    except SearchProviderError as exc:
+        if exc.is_repairable_drift:
+            try:
+                next_version = await _repair_search_drift(
+                    event,
+                    worker_id,
+                    projection=projection,
+                    error=exc,
+                )
+            except Exception as repair_error:
+                record_drift_repair(operation=operation, result="repair_failed")
+                return await _fail_event(event, worker_id, repair_error, permanent=False)
+
+            result = "requeued" if next_version is not None else "superseded"
+            record_drift_repair(operation=operation, result=result)
+            logger.warning(
+                "Lifecycle search provider drift fenced and requeued",
+                extra={
+                    "outbox_id": str(event["outbox_id"]),
+                    "tenant_id": str(event["tenant_id"]),
+                    "branch_id": branch_id,
+                    "operation": operation,
+                    "desired_version": desired_version,
+                    "observed_provider_version": exc.provider_version,
+                    "next_version": next_version,
+                    "provider_error_code": exc.error_code,
+                    "result": result,
+                },
+            )
+            return "superseded"
+
+        try:
+            still_current = await _record_search_failure(
+                event,
+                worker_id,
+                projection=projection,
+                error=exc,
+            )
+        except Exception as record_error:
+            return await _fail_event(event, worker_id, record_error, permanent=False)
+        if not still_current:
+            return "superseded"
+        return await _fail_event(
+            event,
+            worker_id,
+            exc,
+            permanent=exc.outcome == "permanent_rejection",
+        )
+    except Exception as exc:
+        request_sha256 = OpenSearchProvider.request_sha256(
+            index=provider.index,
+            branch_id=branch_id,
+            operation=operation,
+            desired_version=desired_version,
+            document=document,
+        )
+        classified = SearchProviderError(
+            f"Unexpected OpenSearch adapter failure: {type(exc).__name__}",
+            outcome="retryable_failure",
+            error_code="adapter_internal_error",
+            request_sha256=request_sha256,
+        )
+        try:
+            still_current = await _record_search_failure(
+                event,
+                worker_id,
+                projection=projection,
+                error=classified,
+            )
+        except Exception as record_error:
+            return await _fail_event(event, worker_id, record_error, permanent=False)
+        if not still_current:
+            return "superseded"
+        return await _fail_event(event, worker_id, classified, permanent=False)
+
+    try:
+        outcome = await _acknowledge_search_effect(
+            event,
+            worker_id,
+            projection=projection,
+            evidence=evidence,
+        )
+    except Exception as exc:
+        # The provider may already contain the desired projection. Do not issue a
+        # blind compensating write. Lease expiry + strict external versioning +
+        # authoritative GET make the retried attempt safe.
+        return await _fail_event(event, worker_id, exc, permanent=False)
+
+    logger.info(
+        "Lifecycle search effect verified",
+        extra={
+            "outbox_id": str(event["outbox_id"]),
+            "tenant_id": str(event["tenant_id"]),
+            "branch_id": branch_id,
+            "operation": operation,
+            "desired_version": desired_version,
+            "provider_version": evidence.provider_version,
+            "outcome": outcome,
+        },
+    )
+    return outcome
+
+
 async def _fail_event(
     event: dict[str, Any],
     worker_id: uuid.UUID,
@@ -321,16 +617,11 @@ async def _fail_event(
     return outcome
 
 
-async def _process_external_event(
+async def _process_deferred_external_event(
     event: dict[str, Any],
     worker_id: uuid.UUID,
 ) -> str:
-    """Fail closed until a real integration handler is wired.
-
-    Logging is not delivery. Search, notification and refund commands remain
-    retryable/dead-lettered until an actual downstream integration acknowledges
-    them.
-    """
+    """Keep P4C/P4D commands fail-closed until their provider slices exist."""
 
     return await _fail_event(
         event,
@@ -346,8 +637,10 @@ async def _process_event(event: dict[str, Any], worker_id: uuid.UUID) -> str:
     event_type = event["event_type"]
     if event_type == "branch.lifecycle_saga":
         return await _process_saga_event(event, worker_id)
-    if event_type in _EXTERNAL_EVENT_TYPES:
-        return await _process_external_event(event, worker_id)
+    if event_type in _SEARCH_EVENT_TYPES:
+        return await _process_search_event(event, worker_id)
+    if event_type in _DEFERRED_EXTERNAL_EVENT_TYPES:
+        return await _process_deferred_external_event(event, worker_id)
     return await _fail_event(
         event,
         worker_id,
@@ -362,6 +655,7 @@ async def _poll_outbox() -> dict[str, int]:
     summary = {
         "claimed": len(events),
         "delivered": 0,
+        "superseded": 0,
         "retry": 0,
         "dead_lettered": 0,
         "dead_lettered_compensated": 0,

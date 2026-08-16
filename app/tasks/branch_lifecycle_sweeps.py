@@ -38,21 +38,21 @@ async def _run_watchdog_sweep() -> None:
 
 
 async def _run_reconciliation_sweep() -> int:
-    # Reconciliation already uses FOR UPDATE SKIP LOCKED plus durable claims.
-    # Sleeping inside a Celery task only consumes a worker slot and does not add
-    # correctness, so concurrent schedulers rely on the database claim boundary.
+    # P4B reconciliation only enqueues durable search repair work. It never
+    # writes a provider-success marker itself; the leased search worker owns
+    # downstream execution and evidence acknowledgement.
     async with maintenance_async_session_maker() as session:
         await _prepare_maintenance_session(session)
         service = BranchLifecycleService(session)
         try:
-            synced_count = await service.run_reconciliation_sweep()
+            enqueued_count = await service.run_reconciliation_sweep()
             await session.commit()
-            if synced_count > 0:
+            if enqueued_count > 0:
                 logger.info(
-                    "Lifecycle reconciliation sweep synced %s branches",
-                    synced_count,
+                    "Lifecycle reconciliation sweep enqueued %s search repairs",
+                    enqueued_count,
                 )
-            return synced_count
+            return enqueued_count
         except Exception:
             await session.rollback()
             logger.exception("Lifecycle reconciliation sweep failed")

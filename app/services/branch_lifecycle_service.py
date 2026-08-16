@@ -687,86 +687,20 @@ class BranchLifecycleService:
                 )
 
     async def run_reconciliation_sweep(self) -> int:
-        """Reconcile stale search projection markers with safe per-row savepoints."""
+        """Enqueue bounded search repairs without fabricating provider success.
 
-        worker_id = uuid.uuid4()
-        now = datetime.now(timezone.utc)
-        stale_limit = now - timedelta(hours=24)
-        ttl_limit = now - timedelta(minutes=30)
+        P4B makes ``search_last_synced_at`` downstream-evidence-only. Maintenance
+        therefore has one job: ask the SECURITY DEFINER reconciliation capability
+        to enqueue current authoritative search work. Only the leased search
+        worker may later acknowledge a provider-verified effect.
+        """
 
-        result = await self.db.execute(
+        enqueued_count = await self.db.scalar(
             text(
-                """
-                UPDATE public.org_branch_state
-                SET reconciliation_claimed_by = :worker_id,
-                    reconciliation_claimed_at = :now
-                WHERE branch_id IN (
-                    SELECT branch_id
-                    FROM public.org_branch_state
-                    WHERE search_last_synced_at < :stale_limit
-                      AND deleted_at IS NULL
-                      AND (
-                            reconciliation_claimed_at IS NULL
-                            OR reconciliation_claimed_at < :ttl_limit
-                      )
-                    LIMIT 100
-                    FOR UPDATE SKIP LOCKED
-                )
-                RETURNING branch_id
-                """
+                "SELECT app_secure.enqueue_branch_search_reconciliation("
+                "CAST(:batch_size AS integer))"
             ),
-            {
-                "worker_id": worker_id,
-                "now": now,
-                "stale_limit": stale_limit,
-                "ttl_limit": ttl_limit,
-            },
+            {"batch_size": 100},
         )
-        claimed_ids = [row[0] for row in result.fetchall()]
-        if not claimed_ids:
-            return 0
-
-        synced_count = 0
-        for branch_id in claimed_ids:
-            try:
-                async with self.db.begin_nested():
-                    update_result = await self.db.execute(
-                        text(
-                            """
-                            UPDATE public.org_branch_state
-                            SET search_last_synced_at = :now,
-                                search_visibility_version = search_visibility_version + 1,
-                                reconciliation_claimed_by = NULL,
-                                reconciliation_claimed_at = NULL,
-                                search_sync_failed_at = NULL
-                            WHERE branch_id = :branch_id
-                            """
-                        ),
-                        {"now": now, "branch_id": branch_id},
-                    )
-                    if update_result.rowcount != 1:
-                        raise RuntimeError(
-                            f"Reconciliation lost claimed branch {branch_id}"
-                        )
-                synced_count += 1
-            except Exception:
-                logger.exception("Failed to reconcile branch %s", branch_id)
-                clear_result = await self.db.execute(
-                    text(
-                        """
-                        UPDATE public.org_branch_state
-                        SET reconciliation_claimed_by = NULL,
-                            reconciliation_claimed_at = NULL,
-                            search_sync_failed_at = :now
-                        WHERE branch_id = :branch_id
-                        """
-                    ),
-                    {"now": now, "branch_id": branch_id},
-                )
-                if clear_result.rowcount != 1:
-                    raise RuntimeError(
-                        f"Failed to release reconciliation claim for branch {branch_id}"
-                    )
-
         await self.db.commit()
-        return synced_count
+        return int(enqueued_count or 0)

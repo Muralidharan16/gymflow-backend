@@ -1,0 +1,271 @@
+name: P4B Search Drift Repair PG16
+
+on:
+  pull_request:
+    branches:
+      - hardening/p4a-external-effects-contract
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p4b-search-drift-pg16-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drift-repair:
+    name: Fenced provider drift repair on fresh PostgreSQL 16
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
+      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_drift_test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p4b_search_drift_repair.py
+
+      - name: Install PostgreSQL 16 and reduced identities
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime LOGIN PASSWORD 'ci-auth-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-worker-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-lifecycle-maintenance-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE app_test_runtime SET row_security='on';
+          ALTER ROLE auth_test_runtime SET row_security='on';
+          ALTER ROLE worker_test_runtime SET row_security='on';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_drift_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_drift_test
+            TO app_test_runtime, auth_test_runtime, worker_test_runtime,
+               lifecycle_maintenance_test_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_drift_test
+
+      - name: Upgrade fresh database to exact P4B head
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'v07d8e9f0a36'
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Seed tenant and searchable branch through certified bootstrap authority
+        run: |
+          set -euo pipefail
+          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_drift_test <<'SQL'
+          INSERT INTO public.organizations (
+            id,name,slug,tier,is_active,max_branches,default_currency_code,
+            website_verified,social_links,verification_status,country,profile_completed
+          ) VALUES (
+            '45000000-0000-4000-8000-000000000001','P4B Drift Org',
+            'p4b-drift-org','basic',true,10,'INR',false,'{}'::jsonb,'pending','India',false
+          );
+          INSERT INTO public.owners (
+            id,org_id,owner_name,email,hashed_password,email_verified,onboarding_completed
+          ) VALUES (
+            '45000000-0000-4000-8000-000000000051',
+            '45000000-0000-4000-8000-000000000001',
+            'P4B Drift Owner','p4b-drift-owner@example.test','p4b-test-hash',true,true
+          );
+          SQL
+
+          PGPASSWORD="${AUTH_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U auth_test_runtime -d gymflow_drift_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','45000000-0000-4000-8000-000000000001',true);
+          SELECT pg_catalog.set_config('app.current_user_id','45000000-0000-4000-8000-000000000051',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT pg_catalog.set_config('app.current_gym_id','',true);
+          INSERT INTO public.org_branches (
+            id,org_id,branch_name,branch_code,internal_slug,timezone,currency_code,
+            region_code,country_code
+          ) VALUES (
+            '45000000-0000-4000-8000-000000000011',
+            '45000000-0000-4000-8000-000000000001',
+            'P4B Drift Branch','P4BD-01','p4b-drift-branch','Asia/Kolkata','INR','PY','IN'
+          );
+          INSERT INTO public.org_branch_state (
+            branch_id,org_id,branch_status,is_primary,is_active,is_public,status,
+            is_operational,transition_source,search_visibility_version,search_epoch_ulid
+          ) VALUES (
+            '45000000-0000-4000-8000-000000000011',
+            '45000000-0000-4000-8000-000000000001',
+            'active',true,true,true,'active',true,'api',1,'01P4BDRIFT0000000000000000'
+          );
+          COMMIT;
+          SQL
+
+      - name: Enqueue and lease current search command
+        run: |
+          set -euo pipefail
+          enqueued="$(PGPASSWORD="${MAINTENANCE_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U lifecycle_maintenance_test_runtime -d gymflow_drift_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.internal_maintenance','lifecycle',true);
+          SELECT app_secure.enqueue_branch_search_reconciliation(10);
+          COMMIT;
+          SQL
+          )"
+          test "$(printf '%s\n' "${enqueued}" | grep -E '^[0-9]+$' | tail -1)" = '1'
+
+          outbox_id="$(PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_drift_test \
+            -c "SELECT outbox_id FROM public.branch_outbox_events WHERE branch_id='45000000-0000-4000-8000-000000000011' AND event_type='branch.search_index' AND status='pending' ORDER BY created_at DESC LIMIT 1")"
+          test -n "${outbox_id}"
+          echo "P4B_DRIFT_OUTBOX_ID=${outbox_id}" >> "${GITHUB_ENV}"
+
+          PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_drift_test <<SQL
+          UPDATE public.branch_outbox_events
+          SET status='processing', attempt_count=attempt_count+1,
+              last_attempted_at=pg_catalog.clock_timestamp(), last_error=NULL,
+              leased_by='45000000-0000-4000-8000-000000000041',
+              leased_until=pg_catalog.clock_timestamp()+INTERVAL '10 minutes'
+          WHERE outbox_id='${outbox_id}' AND status='pending';
+          SQL
+
+          projection="$(PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -F '|' -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_drift_test \
+            -c "SELECT operation,desired_version FROM app_secure.claim_branch_search_projection('${outbox_id}','45000000-0000-4000-8000-000000000041')")"
+          test "${projection}" = 'index|1'
+
+      - name: Prove provider-ahead drift atomically advances clock and requeues
+        run: |
+          set -euo pipefail
+          next_version="$(PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_drift_test <<SQL
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','45000000-0000-4000-8000-000000000001',true);
+          SELECT pg_catalog.set_config('app.current_role','branch_lifecycle_worker',true);
+          SELECT pg_catalog.set_config('app.internal_maintenance','branch_lifecycle_saga',true);
+          SELECT pg_catalog.set_config('app.worker_id','45000000-0000-4000-8000-000000000041',true);
+          SELECT app_secure.repair_branch_search_provider_drift(
+            '${P4B_DRIFT_OUTBOX_ID}',
+            '45000000-0000-4000-8000-000000000041',
+            1,'index','opensearch','branches-v1',
+            '45000000-0000-4000-8000-000000000011',
+            repeat('a',64),7,repeat('b',64),repeat('c',64),'provider_version_ahead'
+          );
+          COMMIT;
+          SQL
+          )"
+          test "$(printf '%s\n' "${next_version}" | grep -E '^[0-9]+$' | tail -1)" = '8'
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_drift_test <<SQL
+          DO \$\$
+          DECLARE
+            v_old_status text;
+            v_desired bigint;
+            v_ack bigint;
+            v_sync timestamptz;
+            v_failed timestamptz;
+            v_new_count bigint;
+            v_attempt_count bigint;
+          BEGIN
+            SELECT status INTO v_old_status
+            FROM public.branch_outbox_events WHERE outbox_id='${P4B_DRIFT_OUTBOX_ID}';
+            SELECT search_visibility_version,search_provider_ack_version,
+                   search_last_synced_at,search_sync_failed_at
+            INTO v_desired,v_ack,v_sync,v_failed
+            FROM public.org_branch_state
+            WHERE branch_id='45000000-0000-4000-8000-000000000011';
+            SELECT count(*) INTO v_new_count
+            FROM public.branch_outbox_events
+            WHERE branch_id='45000000-0000-4000-8000-000000000011'
+              AND event_type='branch.search_index'
+              AND status='pending'
+              AND payload->>'source'='search_provider_drift_repair'
+              AND (payload->>'desired_version')::bigint=8
+              AND (payload->>'observed_provider_version')::bigint=7;
+            SELECT count(*) INTO v_attempt_count
+            FROM public.branch_search_effect_attempts
+            WHERE outbox_id='${P4B_DRIFT_OUTBOX_ID}'
+              AND desired_version=1
+              AND provider_version=7
+              AND provider_index='branches-v1'
+              AND provider_document_id='45000000-0000-4000-8000-000000000011'
+              AND provider_evidence_sha256=repeat('b',64)
+              AND error_code='provider_version_ahead';
+            IF v_old_status <> 'superseded'
+               OR v_desired <> 8
+               OR v_ack IS NOT NULL
+               OR v_sync IS NOT NULL
+               OR v_failed IS NULL
+               OR v_new_count <> 1
+               OR v_attempt_count <> 1 THEN
+              RAISE EXCEPTION 'P4B drift repair did not atomically fence, evidence, advance and requeue';
+            END IF;
+          END
+          \$\$;
+          SQL
+
+      - name: Prove repair capability remains worker-only
+        run: |
+          set -euo pipefail
+          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_drift_test <<'SQL'
+          DO $$
+          DECLARE v_repair oid;
+          BEGIN
+            SELECT p.oid INTO STRICT v_repair
+            FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+            WHERE n.nspname='app_secure'
+              AND p.proname='repair_branch_search_provider_drift'
+              AND pg_catalog.oidvectortypes(p.proargtypes)=
+                  'uuid, uuid, bigint, text, text, text, text, text, bigint, text, text, text';
+            IF NOT pg_catalog.has_function_privilege('worker_runtime',v_repair,'EXECUTE') THEN
+              RAISE EXCEPTION 'worker lost drift repair capability';
+            END IF;
+            IF pg_catalog.has_function_privilege('app_runtime',v_repair,'EXECUTE')
+               OR pg_catalog.has_function_privilege('auth_runtime',v_repair,'EXECUTE')
+               OR pg_catalog.has_function_privilege('lifecycle_maintenance_runtime',v_repair,'EXECUTE') THEN
+              RAISE EXCEPTION 'drift repair leaked to a non-provider runtime';
+            END IF;
+          END
+          $$;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          python -s scripts/verify_cluster_identity_graph.py

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import model_validator
 
@@ -118,6 +119,54 @@ class Settings(DoersSettingsSchema):
                 f"[{item.code}] {item.subject}: {item.message}" for item in violations
             )
             raise ValueError("Production database identity configuration is unsafe: " + detail)
+
+        search_mode = self.SEARCH_PROVIDER_MODE.strip().lower()
+        if search_mode not in {"disabled", "opensearch"}:
+            raise ValueError("SEARCH_PROVIDER_MODE must be disabled or opensearch")
+
+        search_runtime_values = (
+            self.OPENSEARCH_URL.strip(),
+            self.OPENSEARCH_USERNAME.strip(),
+            self.OPENSEARCH_PASSWORD.strip(),
+            self.SEARCH_METRICS_OTLP_ENDPOINT.strip(),
+        )
+        if profile_name != "worker":
+            if search_mode != "disabled" or any(search_runtime_values):
+                raise ValueError(
+                    "OpenSearch and search-metrics configuration is restricted to the worker profile"
+                )
+            return self
+
+        if search_mode == "disabled":
+            if any(search_runtime_values):
+                raise ValueError(
+                    "disabled production search workers must not receive provider or metrics endpoints/credentials"
+                )
+            return self
+
+        provider_url = urlparse(self.OPENSEARCH_URL.strip())
+        if provider_url.scheme not in {"http", "https"} or not provider_url.netloc:
+            raise ValueError("OPENSEARCH_URL must be an HTTP(S) URL in production")
+        if not self.OPENSEARCH_INDEX.strip():
+            raise ValueError("OPENSEARCH_INDEX is required when OpenSearch is enabled")
+        if bool(self.OPENSEARCH_USERNAME.strip()) != bool(self.OPENSEARCH_PASSWORD.strip()):
+            raise ValueError("OpenSearch basic auth requires both username and password")
+        if self.OPENSEARCH_TIMEOUT_SECONDS <= 0 or self.OPENSEARCH_TIMEOUT_SECONDS > 60:
+            raise ValueError("OPENSEARCH_TIMEOUT_SECONDS must be in the range (0, 60]")
+
+        metrics_url = urlparse(self.SEARCH_METRICS_OTLP_ENDPOINT.strip())
+        if metrics_url.scheme not in {"http", "https"} or not metrics_url.netloc:
+            raise ValueError(
+                "SEARCH_METRICS_OTLP_ENDPOINT is required for production OpenSearch workers"
+            )
+        if not 1 <= self.SEARCH_METRICS_EXPORT_INTERVAL_SECONDS <= 300:
+            raise ValueError(
+                "SEARCH_METRICS_EXPORT_INTERVAL_SECONDS must be in the range [1, 300]"
+            )
+        if not 0 < self.SEARCH_METRICS_EXPORT_TIMEOUT_SECONDS <= 60:
+            raise ValueError(
+                "SEARCH_METRICS_EXPORT_TIMEOUT_SECONDS must be in the range (0, 60]"
+            )
         return self
 
     @property

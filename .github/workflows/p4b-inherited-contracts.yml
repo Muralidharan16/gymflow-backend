@@ -1,0 +1,76 @@
+name: P4B Inherited Contracts
+
+on:
+  pull_request:
+    branches:
+      - hardening/p4a-external-effects-contract
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p4b-inherited-contracts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inherited-contracts:
+    name: P4A durable invariants and P4B deployment isolation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Reprove durable P4A semantics retained by P4B
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4a_external_effect_contracts.py::test_contract_is_bound_to_certified_p3e_base_and_forbids_attempt_equals_success \
+            tests/test_p4a_external_effect_contracts.py::test_legacy_global_notification_entrypoints_remain_fail_closed_in_p4a \
+            tests/test_p4a_external_effect_contracts.py::test_finance_refund_foundation_exists_without_claiming_lifecycle_completion \
+            tests/test_p4a_external_effect_contracts.py::test_inventory_freezes_shared_p4_semantics \
+            tests/test_p4a_external_effect_contracts.py::test_contract_requires_idempotency_fencing_reconciliation_dlq_and_webhook_security
+
+      - name: Prove explicit P4A to P4B compatibility boundary
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4b_p4a_inherited_contracts.py
+
+      - name: Prove P4B production search and telemetry isolation
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            app/core/config.py \
+            app/core/settings_schema.py \
+            app/observability/search_metrics.py \
+            app/services/search_provider.py \
+            tests/test_p4b_search_deployment_contract.py \
+            tests/test_p4b_search_metrics_export.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4b_search_deployment_contract.py \
+            tests/test_p4b_search_metrics_export.py
+
+      - name: Reprove inherited P3E workflow bootstrap guard
+        run: |
+          set -euo pipefail
+          python scripts/verify_head_workflow_bootstrap.py
