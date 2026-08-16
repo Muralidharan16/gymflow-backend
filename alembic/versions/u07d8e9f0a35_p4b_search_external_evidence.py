@@ -255,6 +255,34 @@ def _require_no_new_runtime_table_acl(bind) -> None:
         raise RuntimeError("u07 leaked direct search-attempt ACL to worker_runtime")
 
 
+def _function_oid(bind, signature: str) -> int:
+    schema_name, qualified = signature.split(".", 1)
+    function_name, raw_args = qualified[:-1].split("(", 1)
+    argument_types = ", ".join(
+        part.strip() for part in raw_args.split(",") if part.strip()
+    )
+    oid = bind.execute(
+        sa.text(
+            """
+            SELECT p.oid::bigint
+            FROM pg_catalog.pg_proc AS p
+            JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+            WHERE n.nspname = :schema_name
+              AND p.proname = :function_name
+              AND pg_catalog.oidvectortypes(p.proargtypes) = :argument_types
+            """
+        ),
+        {
+            "schema_name": schema_name,
+            "function_name": function_name,
+            "argument_types": argument_types,
+        },
+    ).scalar_one_or_none()
+    if oid is None:
+        raise RuntimeError(f"u07 missing installed function for ACL proof: {signature}")
+    return int(oid)
+
+
 def _require_absent_direct_grants(
     bind,
     relation: str,
@@ -1018,24 +1046,32 @@ def upgrade() -> None:
     op.execute("RESET ROLE")
 
     _require_no_new_runtime_table_acl(bind)
+    function_oids = {signature: _function_oid(bind, signature) for signature in _FUNCTIONS}
     for role_name in ("app_runtime", "auth_runtime", _MAINTENANCE):
         for signature in _FUNCTIONS[:3]:
             if bind.execute(
                 sa.text(
                     "SELECT pg_catalog.has_function_privilege("
-                    ":role, CAST(:sig AS regprocedure), 'EXECUTE')"
+                    ":role, CAST(:function_oid AS oid), 'EXECUTE')"
                 ),
-                {"role": role_name, "sig": signature},
+                {"role": role_name, "function_oid": function_oids[signature]},
             ).scalar_one():
                 raise RuntimeError(f"u07 leaked worker search capability to {role_name}")
     if bind.execute(
         sa.text(
-            "SELECT pg_catalog.has_function_privilege('worker_runtime', "
-            "CAST(:sig AS regprocedure), 'EXECUTE')"
+            "SELECT pg_catalog.has_function_privilege("
+            "'worker_runtime', CAST(:function_oid AS oid), 'EXECUTE')"
         ),
-        {"sig": _FUNCTIONS[3]},
+        {"function_oid": function_oids[_FUNCTIONS[3]]},
     ).scalar_one():
         raise RuntimeError("u07 leaked global reconciliation capability to worker_runtime")
+    if bind.execute(
+        sa.text(
+            "SELECT pg_catalog.has_schema_privilege("
+            "'migration_owner', 'app_secure', 'USAGE')"
+        )
+    ).scalar_one():
+        raise RuntimeError("u07 migration_owner retained temporary app_secure USAGE")
 
 
 def downgrade() -> None:
