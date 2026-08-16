@@ -66,7 +66,7 @@ bash scripts/ci/provision_infrastructure_extensions.sh gymflow_test
 
 python -s scripts/verify_alembic_graph.py
 python -s scripts/migration_semantics_gate.py
-test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 's07d8e9f0a33'
+test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 't07d8e9f0a34'
 python -s -m alembic -c alembic.ini upgrade head
 python -s -m alembic -c alembic.ini current --check-heads
 DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_test" \
