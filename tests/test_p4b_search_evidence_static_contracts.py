@@ -9,6 +9,8 @@ MIGRATION = ROOT / "alembic" / "versions" / "u07d8e9f0a35_p4b_search_external_ev
 WORKFLOW = ROOT / ".github" / "workflows" / "p4b-search-evidence-pg16.yml"
 POLLER = ROOT / "app" / "tasks" / "branch_outbox_poller.py"
 SERVICE = ROOT / "app" / "services" / "branch_lifecycle_service.py"
+PROVIDER = ROOT / "app" / "services" / "search_provider.py"
+SETTINGS = ROOT / "app" / "core" / "settings_schema.py"
 
 
 def _op_execute_statements(source: str) -> set[str]:
@@ -213,8 +215,8 @@ def test_projection_version_changes_only_from_searchable_state_or_branch_fields(
 
 
 def test_reconciliation_enqueues_work_and_never_marks_local_sync_success() -> None:
-    source = MIGRATION.read_text(encoding="utf-8")
-    reconcile = source.split("CREATE FUNCTION app_secure.enqueue_branch_search_reconciliation", 1)[1]
+    migration = MIGRATION.read_text(encoding="utf-8")
+    reconcile = migration.split("CREATE FUNCTION app_secure.enqueue_branch_search_reconciliation", 1)[1]
     reconcile = reconcile.split("CREATE FUNCTION app_secure.bump_branch_search_version_from_state", 1)[0]
     assert "FOR UPDATE SKIP LOCKED" in reconcile
     assert "p_batch_size < 1 OR p_batch_size > 100" in reconcile
@@ -223,18 +225,50 @@ def test_reconciliation_enqueues_work_and_never_marks_local_sync_success() -> No
     assert "search_last_synced_at =" not in reconcile
     assert "search_provider_ack_version =" not in reconcile
 
+    service = SERVICE.read_text(encoding="utf-8")
+    application_reconcile = service.split("async def run_reconciliation_sweep", 1)[1]
+    assert "app_secure.enqueue_branch_search_reconciliation" in application_reconcile
+    assert "search_last_synced_at =" not in application_reconcile
+    assert "search_visibility_version =" not in application_reconcile
+    assert "UPDATE public.org_branch_state" not in application_reconcile
 
-def test_pre_p4b_false_sync_implementation_is_still_visible_for_replacement() -> None:
-    source = SERVICE.read_text(encoding="utf-8")
-    reconciliation = source.split("async def run_reconciliation_sweep", 1)[1]
-    assert "search_last_synced_at = :now" in reconciliation
-    assert "search_visibility_version = search_visibility_version + 1" in reconciliation
 
-
-def test_search_handler_remains_fail_closed_until_provider_adapter_is_added() -> None:
+def test_search_worker_uses_authoritative_projection_provider_evidence_and_stale_fence() -> None:
     source = POLLER.read_text(encoding="utf-8")
-    handler = source.split("async def _process_external_event", 1)[1].split(
+    assert '"branch.search_deindex"' in source
+    assert '"branch.search_index"' in source
+    handler = source.split("async def _process_search_event", 1)[1].split(
+        "async def _fail_event", 1
+    )[0]
+    assert "_claim_search_projection" in handler
+    assert "provider.apply(" in handler
+    assert "_record_search_failure" in handler
+    assert "_acknowledge_search_effect" in handler
+    assert 'return "superseded"' in handler
+    assert "_mark_delivered(" not in handler
+
+    deferred = source.split("async def _process_deferred_external_event", 1)[1].split(
         "async def _process_event", 1
     )[0]
-    assert "No production handler is configured" in handler
-    assert "_mark_delivered(" not in handler
+    assert "No production handler is configured" in deferred
+    assert "_mark_delivered(" not in deferred
+
+
+def test_opensearch_adapter_is_strictly_versioned_and_verifies_real_time_state() -> None:
+    source = PROVIDER.read_text(encoding="utf-8")
+    assert '"version_type": "external"' in source
+    assert "external_gte" not in source
+    assert 'params={"realtime": "true"}' in source
+    assert "provider_document_mismatch" in source
+    assert "mutation_transport_ambiguous" in source
+    assert "provider_evidence_sha256" in source
+    assert "refresh\": \"wait_for" not in source  # avoid brittle escaped source checks
+    assert '"refresh": "wait_for"' in source
+
+
+def test_search_configuration_defaults_fail_closed() -> None:
+    source = SETTINGS.read_text(encoding="utf-8")
+    assert 'SEARCH_PROVIDER_MODE: str = "disabled"' in source
+    assert 'OPENSEARCH_URL: str = ""' in source
+    assert 'OPENSEARCH_INDEX: str = "branches-v1"' in source
+    assert "OPENSEARCH_VERIFY_TLS: bool = True" in source
