@@ -226,7 +226,7 @@ def upgrade() -> None:
                 RETURN NULL;
             END IF;
 
-            v_next_version := pg_catalog.greatest(v_current_version, p_provider_version) + 1;
+            v_next_version := GREATEST(v_current_version, p_provider_version) + 1;
 
             UPDATE public.org_branch_state
             SET search_visibility_version = v_next_version,
