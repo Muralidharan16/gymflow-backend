@@ -307,7 +307,7 @@ jobs:
               last_error=NULL,
               leased_by='44000000-0000-4000-8000-000000000041',
               leased_until=pg_catalog.clock_timestamp()+INTERVAL '10 minutes'
-          WHERE outbox_id='${P4B_OUTBOX_ID}'
+          WHERE outbox_id='${outbox_id}'
             AND status='pending';
           SQL
 
