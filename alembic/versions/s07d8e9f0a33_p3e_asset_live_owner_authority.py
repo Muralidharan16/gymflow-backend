@@ -8,8 +8,9 @@ The durable asset job stores immutable owner identity, but a surviving job must
 also prove that the requester is still an authoritative owner when a worker
 claims or finalizes it. Owner login already treats ``owners.email_verified`` as
 a live authorization prerequisite. Bind the asynchronous claim/finalize
-capabilities to that same mutable authority signal without changing job ACLs,
-RLS, ownership, role membership, or any worker table privileges.
+capabilities to that same mutable authority signal and restore visible branding
+state when revocation cancels a pending/processing job. No job ACL, RLS,
+ownership, role membership, or worker table privilege is broadened.
 """
 
 from __future__ import annotations
@@ -28,18 +29,56 @@ _SECURITY_OWNER = "app_security_owner"
 
 _FUNCTIONS = {
     "claim_organization_asset_job": (
-        "p_job_id uuid, p_lease_token uuid, p_lease_seconds integer",
-        True,
+        "p_job_id uuid, p_lease_token uuid, p_lease_seconds integer"
     ),
     "finalize_organization_asset_job": (
         "p_job_id uuid, p_lease_token uuid, p_width integer, p_height integer, "
-        "p_size_bytes bigint, p_content_type text",
-        True,
+        "p_size_bytes bigint, p_content_type text"
     ),
 }
 
 _OWNER_BINDING = "AND owner_row.org_id = v_job.organization_id"
 _LIVE_BINDING = _OWNER_BINDING + "\n                  AND owner_row.email_verified IS TRUE"
+
+_CLAIM_CANCEL_END = """WHERE job.id = p_job_id;
+                RETURN;"""
+_CLAIM_CANCEL_END_LIVE = """WHERE job.id = p_job_id;
+                IF v_job.asset_type = 'logo' THEN
+                    UPDATE public.organizations AS organization
+                    SET logo_status = CASE
+                            WHEN organization.logo_key IS NULL THEN NULL ELSE 'ready'
+                        END,
+                        updated_at = v_now
+                    WHERE organization.id = v_job.organization_id;
+                ELSE
+                    UPDATE public.organizations AS organization
+                    SET cover_status = CASE
+                            WHEN organization.cover_key IS NULL THEN NULL ELSE 'ready'
+                        END,
+                        updated_at = v_now
+                    WHERE organization.id = v_job.organization_id;
+                END IF;
+                RETURN;"""
+
+_FINALIZE_CANCEL_END = """WHERE id = p_job_id;
+                applied := false; old_keys := ARRAY[]::text[]; RETURN NEXT; RETURN;"""
+_FINALIZE_CANCEL_END_LIVE = """WHERE id = p_job_id;
+                IF v_job.asset_type = 'logo' THEN
+                    UPDATE public.organizations AS organization
+                    SET logo_status = CASE
+                            WHEN organization.logo_key IS NULL THEN NULL ELSE 'ready'
+                        END,
+                        updated_at = v_now
+                    WHERE organization.id = v_job.organization_id;
+                ELSE
+                    UPDATE public.organizations AS organization
+                    SET cover_status = CASE
+                            WHEN organization.cover_key IS NULL THEN NULL ELSE 'ready'
+                        END,
+                        updated_at = v_now
+                    WHERE organization.id = v_job.organization_id;
+                END IF;
+                applied := false; old_keys := ARRAY[]::text[]; RETURN NEXT; RETURN;"""
 
 
 def _require_identity(bind) -> None:
@@ -126,9 +165,9 @@ def _function_contract(bind, name: str, identity_args: str) -> dict[str, object]
     return dict(row)
 
 
-def _replace_live_binding(bind, *, enabled: bool) -> None:
+def _replace_live_authority(bind, *, enabled: bool) -> None:
     definitions: list[str] = []
-    for name, (identity_args, _worker_only) in _FUNCTIONS.items():
+    for name, identity_args in _FUNCTIONS.items():
         row = _function_contract(bind, name, identity_args)
         definition = str(row["definition"])
         if enabled:
@@ -137,10 +176,34 @@ def _replace_live_binding(bind, *, enabled: bool) -> None:
             if definition.count(_OWNER_BINDING) != 1:
                 raise RuntimeError(f"asset owner predecessor predicate drift: {name}")
             patched = definition.replace(_OWNER_BINDING, _LIVE_BINDING, 1)
+            if name == "claim_organization_asset_job":
+                if patched.count(_CLAIM_CANCEL_END) != 1:
+                    raise RuntimeError("asset claim cancellation predecessor drift")
+                patched = patched.replace(
+                    _CLAIM_CANCEL_END, _CLAIM_CANCEL_END_LIVE, 1
+                )
+            else:
+                if patched.count(_FINALIZE_CANCEL_END) != 1:
+                    raise RuntimeError("asset finalize cancellation predecessor drift")
+                patched = patched.replace(
+                    _FINALIZE_CANCEL_END, _FINALIZE_CANCEL_END_LIVE, 1
+                )
         else:
             if definition.count(_LIVE_BINDING) != 1:
                 raise RuntimeError(f"live-owner predicate drift: {name}")
             patched = definition.replace(_LIVE_BINDING, _OWNER_BINDING, 1)
+            if name == "claim_organization_asset_job":
+                if patched.count(_CLAIM_CANCEL_END_LIVE) != 1:
+                    raise RuntimeError("asset claim live cancellation drift")
+                patched = patched.replace(
+                    _CLAIM_CANCEL_END_LIVE, _CLAIM_CANCEL_END, 1
+                )
+            else:
+                if patched.count(_FINALIZE_CANCEL_END_LIVE) != 1:
+                    raise RuntimeError("asset finalize live cancellation drift")
+                patched = patched.replace(
+                    _FINALIZE_CANCEL_END_LIVE, _FINALIZE_CANCEL_END, 1
+                )
         definitions.append(patched)
 
     bind.exec_driver_sql("SET LOCAL ROLE app_security_owner")
@@ -150,12 +213,16 @@ def _replace_live_binding(bind, *, enabled: bool) -> None:
     finally:
         bind.exec_driver_sql("RESET ROLE")
 
-    for name, (identity_args, _worker_only) in _FUNCTIONS.items():
+    for name, identity_args in _FUNCTIONS.items():
         definition = str(_function_contract(bind, name, identity_args)["definition"])
-        if enabled and definition.count(_LIVE_BINDING) != 1:
-            raise RuntimeError(f"live-owner predicate was not installed: {name}")
-        if not enabled and _LIVE_BINDING in definition:
-            raise RuntimeError(f"live-owner predicate survived downgrade: {name}")
+        if enabled:
+            if definition.count(_LIVE_BINDING) != 1:
+                raise RuntimeError(f"live-owner predicate was not installed: {name}")
+            if "WHEN organization." not in definition:
+                raise RuntimeError(f"asset status restoration was not installed: {name}")
+        else:
+            if _LIVE_BINDING in definition or "WHEN organization." in definition:
+                raise RuntimeError(f"live-owner correction survived downgrade: {name}")
 
 
 def upgrade() -> None:
@@ -172,7 +239,7 @@ def upgrade() -> None:
     if not _column_select(bind):
         raise RuntimeError("P3E live-owner read grant was not installed")
 
-    _replace_live_binding(bind, enabled=True)
+    _replace_live_authority(bind, enabled=True)
 
 
 def downgrade() -> None:
@@ -181,7 +248,7 @@ def downgrade() -> None:
     if not _column_select(bind):
         raise RuntimeError("P3E live-owner read grant drifted before downgrade")
 
-    _replace_live_binding(bind, enabled=False)
+    _replace_live_authority(bind, enabled=False)
     op.execute(
         "REVOKE SELECT (email_verified) ON TABLE public.owners FROM app_security_owner"
     )
