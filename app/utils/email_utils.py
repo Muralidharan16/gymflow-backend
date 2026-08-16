@@ -202,13 +202,17 @@ async def _send_via_resend(
 
 # ─── Public interface ─────────────────────────────────────────────────────────
 
+def _verification_url(raw_token: str) -> str:
+    return f"{settings.public_api_base_url}/auth/verify?token={raw_token}"
+
+
 async def send_verification_email(
     email: str,
     owner_name: str,
     org_name: str,
     raw_token: str,
 ) -> bool:
-    verify_url = f"{settings.BACKEND_BASE_URL}/auth/verify?token={raw_token}"
+    verify_url = _verification_url(raw_token)
     subject = "Verify your Doers account"
     
     if settings.ENVIRONMENT == "development":

@@ -30,6 +30,11 @@ def _refresh_ttl_seconds() -> int:
     return int(settings.REFRESH_TOKEN_EXPIRE_DAYS) * 24 * 60 * 60
 
 
+def _auth_cookie_path() -> str:
+    """Keep narrow browser capabilities aligned with the public API mount point."""
+    return f"{settings.public_api_path_prefix}/auth"
+
+
 def _normalized_origin(value: str) -> str:
     raw = str(value or "").strip()
     parsed = urlsplit(raw)
@@ -81,7 +86,7 @@ def set_auth_cookies(response: Response, tokens: TokenResponse) -> None:
         httponly=True,
         secure=is_prod,
         samesite="lax",
-        path="/auth",
+        path=_auth_cookie_path(),
         max_age=_refresh_ttl_seconds(),
     )
     response.headers["Cache-Control"] = "no-store"
@@ -99,7 +104,7 @@ def clear_auth_cookies(response: Response) -> None:
     )
     response.delete_cookie(
         REFRESH_COOKIE_NAME,
-        path="/auth",
+        path=_auth_cookie_path(),
         httponly=True,
         secure=is_prod,
         samesite="lax",
@@ -115,7 +120,7 @@ def set_signup_poll_cookie(response: Response, raw_token: str) -> None:
         httponly=True,
         secure=settings.ENVIRONMENT == "production",
         samesite="lax",
-        path="/auth",
+        path=_auth_cookie_path(),
         max_age=_SIGNUP_POLL_TTL_SECONDS,
     )
     response.headers["Cache-Control"] = "no-store"
@@ -124,7 +129,7 @@ def set_signup_poll_cookie(response: Response, raw_token: str) -> None:
 def clear_signup_poll_cookie(response: Response) -> None:
     response.delete_cookie(
         SIGNUP_POLL_COOKIE_NAME,
-        path="/auth",
+        path=_auth_cookie_path(),
         httponly=True,
         secure=settings.ENVIRONMENT == "production",
         samesite="lax",

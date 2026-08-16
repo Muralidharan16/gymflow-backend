@@ -22,6 +22,7 @@ class DoersSettingsSchema(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     BACKEND_BASE_URL: str = "http://localhost:8000"
+    PUBLIC_API_PATH_PREFIX: str = ""
     FRONTEND_URL: str = "http://localhost:3000"
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:5174"
 
