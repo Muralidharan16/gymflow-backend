@@ -64,9 +64,6 @@ def test_p3a_is_a_single_head_delta_with_exact_predecessor_acl_contract() -> Non
         ("default_currency_code", "SELECT"),
     }
 
-    # Table ACLs and direct per-column ACLs are deliberately inspected through
-    # separate PostgreSQL catalogs. information_schema.column_privileges expands
-    # table-wide grants into one row per column and cannot prove this boundary.
     assert "relation_data.relacl" in source
     assert "attribute_data.attacl" in source
     assert "pg_catalog.aclexplode" in source
@@ -164,9 +161,6 @@ def test_bootstrap_update_is_column_scoped_without_changing_creation_contract() 
     assert "TO auth_runtime" in upgrade
     assert "GRANT UPDATE ON TABLE public.organizations TO auth_runtime" in downgrade
     assert "REVOKE UPDATE (" in downgrade
-
-    # P3A narrows existing-row mutation. It does not silently redesign the
-    # separately certified pre-tenant organization creation/read contract.
     assert '_FORWARD_AUTH_RELATION_ACL = {"INSERT", "SELECT"}' in source
 
 
@@ -176,7 +170,6 @@ def test_profile_capabilities_are_current_tenant_and_org_admin_bound() -> None:
 
     assert "CREATE FUNCTION app_secure.current_organization_profile()" in source
     assert "CREATE FUNCTION app_secure.update_current_organization_profile(p_patch jsonb)" in source
-    # Count executable SQL clauses, not prose in the module docstring.
     assert source.count("\nSECURITY DEFINER\n") == 2
     assert source.count("\nSET search_path = pg_catalog\n") == 2
     assert source.count("\nSET row_security = on\n") == 2
@@ -264,10 +257,6 @@ def test_profile_route_never_loads_or_refreshes_the_organization_orm_row() -> No
         and node.module == "app.models.organization"
         for alias in node.names
     }
-    # P3A's invariant is that the profile route never reopens an Organization ORM
-    # row. P3B further removes the legacy registration ORM model and routes masked
-    # registration reads through its bounded capability; that is a strengthening,
-    # not a reason to require the retired import.
     assert "Organization" not in model_imports
     assert "OrganizationRegistration" not in model_imports
 
@@ -282,8 +271,6 @@ def test_profile_repository_can_only_call_bounded_app_secure_capabilities() -> N
     assert ":org_id" not in source
     assert "json.dumps" in source
 
-    # No repository function accepts an arbitrary tenant target. Tenant binding
-    # is entirely inside the database capability via app.current_org_id.
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             assert "org_id" not in {arg.arg for arg in node.args.args}
@@ -295,7 +282,6 @@ def test_request_validation_matches_non_nullable_database_profile_fields() -> No
     with pytest.raises(ValidationError):
         OrganizationUpdate(social_links=None)
 
-    # Explicit null remains legal PATCH semantics for nullable profile fields.
     payload = OrganizationUpdate(
         business_type=None,
         tagline=None,
@@ -318,8 +304,12 @@ def test_worker_asset_writer_remains_on_dedicated_worker_identity_and_outside_p3
 
     assert "worker_runtime" not in migration
     assert "WorkerSyncSessionLocal" in worker
-    assert "org.logo_status" in worker
-    assert "org.cover_status" in worker
+    assert "app_secure.claim_organization_asset_job" in worker
+    assert "app_secure.finalize_organization_asset_job" in worker
+    assert "app_secure.fail_organization_asset_job" in worker
+    assert "org.logo_status" not in worker
+    assert "org.cover_status" not in worker
+    assert "db.query(Organization)" not in worker
     assert "settings.DATABASE_URL" not in worker
 
 

@@ -45,23 +45,36 @@ def test_canonical_app_has_crash_safe_worker_semantics() -> None:
     assert 'task_always_eager=(settings.ENVIRONMENT == "development")' in source
 
 
-def test_canonical_beat_schedule_contains_all_operational_sweeps() -> None:
+def test_canonical_beat_schedule_contains_only_hardened_operational_sweeps() -> None:
     source = _source(CORE)
 
     required_tasks = {
-        "app.tasks.trial_tasks.monitor_trial_lifecycles",
-        "app.tasks.expire_subs.run",
-        "app.tasks.reminders.run",
-        "app.tasks.daily_digest.run",
-        "app.tasks.logos.cleanup_orphaned_logos",
+        "app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
+        "app.tasks.platform_maintenance.advance_trial_lifecycles",
+        "app.tasks.platform_maintenance.dispatch_organization_asset_jobs",
+        "app.tasks.platform_maintenance.dispatch_organization_asset_cleanup",
+        "app.tasks.platform_maintenance.run",
         "app.tasks.branch_hours_partition.run",
         "app.tasks.outbox_poller.run",
         "app.tasks.branch_outbox_poller.run",
         "app.tasks.branch_lifecycle_sweeps.watchdog",
         "app.tasks.branch_lifecycle_sweeps.reconciliation",
     }
+    forbidden_legacy_tasks = {
+        "app.tasks.trial_tasks.monitor_trial_lifecycles",
+        "app.tasks.expire_subs.run",
+        "app.tasks.expire_subs.expire_subscriptions",
+        "app.tasks.reminders.run",
+        "app.tasks.reminders.send_daily_reminders",
+        "app.tasks.daily_digest.run",
+        "app.tasks.daily_digest.daily_digest",
+        "app.tasks.logos.cleanup_orphaned_logos",
+    }
+
     for task_name in required_tasks:
         assert task_name in source
+    for task_name in forbidden_legacy_tasks:
+        assert task_name not in source
 
 
 def test_maintenance_tasks_are_routed_to_a_dedicated_queue() -> None:
@@ -71,8 +84,15 @@ def test_maintenance_tasks_are_routed_to_a_dedicated_queue() -> None:
     assert 'MAINTENANCE_QUEUE = "lifecycle-maintenance"' in source
     assert "task_default_queue=WORKER_QUEUE" in source
     assert "task_routes={" in source
-    assert '"app.tasks.branch_lifecycle_sweeps.watchdog"' in source
-    assert '"app.tasks.branch_lifecycle_sweeps.reconciliation"' in source
+    for task_name in (
+        "app.tasks.branch_lifecycle_sweeps.watchdog",
+        "app.tasks.branch_lifecycle_sweeps.reconciliation",
+        "app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
+        "app.tasks.platform_maintenance.advance_trial_lifecycles",
+        "app.tasks.platform_maintenance.dispatch_organization_asset_jobs",
+        "app.tasks.platform_maintenance.dispatch_organization_asset_cleanup",
+    ):
+        assert f'"{task_name}"' in source
     assert '"options": {"queue": MAINTENANCE_QUEUE}' in source
 
 

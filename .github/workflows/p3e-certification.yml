@@ -14,6 +14,28 @@ concurrency:
   group: p3e-certification-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  MIGRATION_PASSWORD: ci-migration-owner
+  GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+  AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+  WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
+  MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
+  DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
+  TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+  TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+  AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
+  WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_test
+  MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
+  REDIS_URL: redis://127.0.0.1:6379/0
+  CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+  CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+  AWS_ACCESS_KEY_ID: ci-test
+  AWS_SECRET_ACCESS_KEY: ci-test
+  AWS_REGION_NAME: us-east-1
+  S3_BUCKET_NAME: gymflow-ci-test
+  ENVIRONMENT: test
+  PYTHONDONTWRITEBYTECODE: '1'
+
 jobs:
   tenant-context-pool-isolation:
     name: P3E Tenant Context and Pool Isolation PG16
@@ -22,35 +44,14 @@ jobs:
     services:
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: [6379:6379]
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
     env:
-      MIGRATION_PASSWORD: ci-migration-owner
-      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
-      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
-      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
-      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
-      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
-      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
-      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
-      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
-      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_test
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
-      REDIS_URL: redis://127.0.0.1:6379/0
-      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
-      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
       SECRET_KEY: ci-p3e-context-not-production
-      AWS_ACCESS_KEY_ID: ci-test
-      AWS_SECRET_ACCESS_KEY: ci-test
-      AWS_REGION_NAME: us-east-1
-      S3_BUCKET_NAME: gymflow-ci-test
-      ENVIRONMENT: test
-      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -97,35 +98,14 @@ jobs:
     services:
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: [6379:6379]
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
     env:
-      MIGRATION_PASSWORD: ci-migration-owner
-      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
-      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
-      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
-      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
-      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
-      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
-      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
-      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
-      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_test
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
-      REDIS_URL: redis://127.0.0.1:6379/0
-      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
-      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
       SECRET_KEY: ci-p3e-inherited-p3abc-not-production
-      AWS_ACCESS_KEY_ID: ci-test
-      AWS_SECRET_ACCESS_KEY: ci-test
-      AWS_REGION_NAME: us-east-1
-      S3_BUCKET_NAME: gymflow-ci-test
-      ENVIRONMENT: test
-      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -195,35 +175,14 @@ jobs:
     services:
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: [6379:6379]
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
     env:
-      MIGRATION_PASSWORD: ci-migration-owner
-      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
-      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
-      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
-      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
-      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
-      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
-      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
-      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
-      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_test
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
-      REDIS_URL: redis://127.0.0.1:6379/0
-      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
-      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
       SECRET_KEY: ci-p3e-inherited-p3d-not-production
-      AWS_ACCESS_KEY_ID: ci-test
-      AWS_SECRET_ACCESS_KEY: ci-test
-      AWS_REGION_NAME: us-east-1
-      S3_BUCKET_NAME: gymflow-ci-test
-      ENVIRONMENT: test
-      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -285,35 +244,14 @@ jobs:
     services:
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: [6379:6379]
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
     env:
-      MIGRATION_PASSWORD: ci-migration-owner
-      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
-      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
-      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
-      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
-      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
-      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
-      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
-      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
-      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_test
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
-      REDIS_URL: redis://127.0.0.1:6379/0
-      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
-      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
       SECRET_KEY: ci-p3e-migration-lifecycle-not-production
-      AWS_ACCESS_KEY_ID: ci-test
-      AWS_SECRET_ACCESS_KEY: ci-test
-      AWS_REGION_NAME: us-east-1
-      S3_BUCKET_NAME: gymflow-ci-test
-      ENVIRONMENT: test
-      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -353,32 +291,56 @@ jobs:
             -h 127.0.0.1 -U migration_owner -d gymflow_migration_test <<'SQL'
           DO $$
           DECLARE
+            v_claim_oid oid;
+            v_finalize_oid oid;
             v_definition text;
           BEGIN
             IF pg_catalog.has_schema_privilege('migration_owner', 'app_secure', 'USAGE') THEN
               RAISE EXCEPTION 'migration_owner retained app_secure USAGE';
             END IF;
-            SELECT pg_catalog.pg_get_functiondef(p.oid)
-              INTO v_definition
+
+            SELECT p.oid, pg_catalog.pg_get_functiondef(p.oid)
+              INTO v_claim_oid, v_definition
               FROM pg_catalog.pg_proc AS p
               JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
              WHERE n.nspname = 'app_secure'
-               AND p.proname = 'claim_organization_asset_job';
-            IF v_definition IS NULL OR pg_catalog.strpos(
-                v_definition, 'attempt_count = job.attempt_count + 1'
-            ) = 0 THEN
-              RAISE EXCEPTION 'qualified asset attempt counter is missing';
+               AND p.proname = 'claim_organization_asset_job'
+               AND pg_catalog.pg_get_function_identity_arguments(p.oid)
+                   = 'p_job_id uuid, p_lease_token uuid, p_lease_seconds integer';
+            IF v_claim_oid IS NULL
+               OR pg_catalog.strpos(v_definition, 'attempt_count = job.attempt_count + 1') = 0
+               OR pg_catalog.strpos(v_definition, 'owner_row.email_verified IS TRUE') = 0 THEN
+              RAISE EXCEPTION 'final asset claim contract is incomplete';
             END IF;
-            IF pg_catalog.has_function_privilege(
-                'app_runtime', 'app_secure.claim_organization_asset_job(uuid,uuid,integer)', 'EXECUTE'
-            ) OR pg_catalog.has_function_privilege(
-                'auth_runtime', 'app_secure.claim_organization_asset_job(uuid,uuid,integer)', 'EXECUTE'
-            ) OR pg_catalog.has_function_privilege(
-                'lifecycle_maintenance_runtime', 'app_secure.claim_organization_asset_job(uuid,uuid,integer)', 'EXECUTE'
-            ) OR NOT pg_catalog.has_function_privilege(
-                'worker_runtime', 'app_secure.claim_organization_asset_job(uuid,uuid,integer)', 'EXECUTE'
-            ) THEN
+
+            SELECT p.oid, pg_catalog.pg_get_functiondef(p.oid)
+              INTO v_finalize_oid, v_definition
+              FROM pg_catalog.pg_proc AS p
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+             WHERE n.nspname = 'app_secure'
+               AND p.proname = 'finalize_organization_asset_job'
+               AND pg_catalog.pg_get_function_identity_arguments(p.oid)
+                   = 'p_job_id uuid, p_lease_token uuid, p_width integer, p_height integer, p_size_bytes bigint, p_content_type text';
+            IF v_finalize_oid IS NULL
+               OR pg_catalog.strpos(v_definition, 'owner_row.email_verified IS TRUE') = 0
+               OR pg_catalog.strpos(v_definition, 'logo_updated_by_owner_id = v_job.requested_by_owner_id') = 0 THEN
+              RAISE EXCEPTION 'final asset finalize contract is incomplete';
+            END IF;
+
+            IF pg_catalog.has_function_privilege('app_runtime', v_claim_oid, 'EXECUTE')
+               OR pg_catalog.has_function_privilege('auth_runtime', v_claim_oid, 'EXECUTE')
+               OR pg_catalog.has_function_privilege('lifecycle_maintenance_runtime', v_claim_oid, 'EXECUTE')
+               OR pg_catalog.has_function_privilege('migration_owner', v_claim_oid, 'EXECUTE')
+               OR NOT pg_catalog.has_function_privilege('worker_runtime', v_claim_oid, 'EXECUTE') THEN
               RAISE EXCEPTION 'asset claim execution matrix drifted';
+            END IF;
+            IF NOT pg_catalog.has_column_privilege(
+                'app_security_owner', 'public.owners', 'email_verified', 'SELECT'
+            ) THEN
+              RAISE EXCEPTION 'reduced owner lacks exact live-authority read';
+            END IF;
+            IF pg_catalog.has_table_privilege('worker_runtime', 'public.owners', 'SELECT') THEN
+              RAISE EXCEPTION 'worker gained direct owners SELECT';
             END IF;
           END $$;
           SQL
@@ -399,35 +361,14 @@ jobs:
     services:
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: [6379:6379]
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
     env:
-      MIGRATION_PASSWORD: ci-migration-owner
-      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
-      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
-      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
-      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
-      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
-      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
-      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
-      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
-      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_test
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
-      REDIS_URL: redis://127.0.0.1:6379/0
-      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
-      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
       SECRET_KEY: ci-p3e-general-not-production
-      AWS_ACCESS_KEY_ID: ci-test
-      AWS_SECRET_ACCESS_KEY: ci-test
-      AWS_REGION_NAME: us-east-1
-      S3_BUCKET_NAME: gymflow-ci-test
-      ENVIRONMENT: test
-      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -463,11 +404,15 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
+          # Dedicated P3E runtime files own relational fixtures and are executed
+          # by same-head decisive workflows; the general suite proves everything
+          # else without recreating privileged fixture state.
           python -m pytest -q --maxfail=1 \
             --ignore=tests/platform_billing \
             --ignore=tests/test_p3e_subscription_expiry_maintenance_runtime.py \
             --ignore=tests/test_p3e_trial_lifecycle_maintenance_runtime.py \
             --ignore=tests/test_p3e_asset_fencing_runtime.py \
+            --ignore=tests/test_p3e_asset_modern_owner_provenance_runtime.py \
             2>&1 | tee /tmp/p3e-general-pytest.log
           exit ${PIPESTATUS[0]}
       - name: Upload general regression failure evidence

@@ -77,7 +77,8 @@ def test_asset_migrations_keep_reduced_role_and_identity_domain_contracts() -> N
     p07 = _source("alembic/versions/p07d8e9f0a30_p3e_asset_cleanup_jobs.py")
     q07 = _source("alembic/versions/q07d8e9f0a31_p3e_asset_claim_ambiguity.py")
     r07 = _source("alembic/versions/r07d8e9f0a32_p3e_modern_owner_asset_provenance.py")
-    combined = "\n".join((n07, o07, p07, q07, r07)).lower()
+    s07 = _source("alembic/versions/s07d8e9f0a33_p3e_asset_live_owner_authority.py")
+    combined = "\n".join((n07, o07, p07, q07, r07, s07)).lower()
     normalized_p07 = " ".join(p07.lower().split())
 
     assert "bypassrls" in combined
@@ -117,8 +118,6 @@ def test_asset_migrations_keep_reduced_role_and_identity_domain_contracts() -> N
     ):
         assert token in q07
 
-    # Legacy gym-owner provenance is preserved; modern owner provenance is a
-    # separate, FK-backed domain and the audit row cannot claim both actors.
     assert '"organizations_logo_updated_by_fkey"' in r07
     assert '("organizations", "logo_updated_by", "gym_owners", "id")' in r07
     assert '"organizations_cover_updated_by_fkey"' in r07
@@ -133,7 +132,16 @@ def test_asset_migrations_keep_reduced_role_and_identity_domain_contracts() -> N
     assert "logo_updated_by = NULL" in r07
     assert "cover_updated_by = NULL" in r07
 
+    assert 'down_revision = "r07d8e9f0a32"' in s07
+    assert "email_verified IS TRUE" in s07
+    assert "GRANT SELECT (email_verified)" in s07
+    assert "REVOKE SELECT (email_verified)" in s07
+    assert "has_column_privilege" in s07
+    assert "SET LOCAL ROLE app_security_owner" in s07
+    assert "WHEN organization.logo_key IS NULL THEN NULL ELSE 'ready'" in s07
+    assert "WHEN organization.cover_key IS NULL THEN NULL ELSE 'ready'" in s07
 
-def test_p3e_fresh_database_harness_targets_modern_owner_provenance_head() -> None:
+
+def test_p3e_fresh_database_harness_targets_live_owner_authority_head() -> None:
     source = _source("scripts/ci/prepare_p3e_pg16.sh")
-    assert "r07d8e9f0a32" in source
+    assert "s07d8e9f0a33" in source
