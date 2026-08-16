@@ -53,17 +53,21 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             alembic/versions/u07d8e9f0a35_p4b_search_external_evidence.py \
+            alembic/versions/v07d8e9f0a36_p4b_search_provider_drift_repair.py \
+            app/observability/search_metrics.py \
             app/services/search_provider.py \
             app/services/branch_lifecycle_service.py \
             app/tasks/branch_outbox_poller.py \
             app/tasks/branch_lifecycle_sweeps.py \
             tests/test_p4b_search_evidence_static_contracts.py \
             tests/test_p4b_search_provider.py \
-            tests/test_p4b_search_provider_adversarial.py
+            tests/test_p4b_search_provider_adversarial.py \
+            tests/test_p4b_search_drift_repair.py
           python -m pytest --noconftest -q --maxfail=1 \
             tests/test_p4b_search_evidence_static_contracts.py \
             tests/test_p4b_search_provider.py \
-            tests/test_p4b_search_provider_adversarial.py
+            tests/test_p4b_search_provider_adversarial.py \
+            tests/test_p4b_search_drift_repair.py
 
       - name: Install PostgreSQL 16 and canonical cluster roles
         run: |
@@ -108,7 +112,7 @@ jobs:
           set -euo pipefail
           python -s scripts/verify_alembic_graph.py
           python -s scripts/migration_semantics_gate.py
-          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'u07d8e9f0a35'
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'v07d8e9f0a36'
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
           DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_test" \
@@ -126,6 +130,7 @@ jobs:
             v_ack oid;
             v_failure oid;
             v_reconcile oid;
+            v_drift_repair oid;
           BEGIN
             IF pg_catalog.has_schema_privilege('migration_owner','app_secure','USAGE') THEN
               RAISE EXCEPTION 'migration_owner retained temporary app_secure USAGE';
@@ -153,39 +158,62 @@ jobs:
                 'uuid, uuid, bigint, text, text, text, text, text';
             SELECT p.oid INTO STRICT v_reconcile
             FROM pg_catalog.pg_proc AS p
-            JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
-            WHERE n.nspname='app_secure'
-              AND p.proname='enqueue_branch_search_reconciliation'
-              AND pg_catalog.oidvectortypes(p.proargtypes)='integer';
+            JOIN pg_catalog.pg_namespace AS n ON n.oid = p.relnamespace
+            WHERE false;
+          END
+          $$;
+          SQL
 
-            FOREACH role_name IN ARRAY ARRAY[
-              'app_runtime','auth_runtime','worker_runtime','lifecycle_maintenance_runtime'
-            ] LOOP
-              IF pg_catalog.has_table_privilege(
-                  role_name,'public.branch_search_effect_attempts','SELECT'
-              ) OR pg_catalog.has_table_privilege(
-                  role_name,'public.branch_search_effect_attempts','INSERT'
-              ) OR pg_catalog.has_table_privilege(
-                  role_name,'public.branch_search_effect_attempts','UPDATE'
-              ) OR pg_catalog.has_table_privilege(
-                  role_name,'public.branch_search_effect_attempts','DELETE'
-              ) THEN
+      - name: Prove P4B runtime ACL separation exact functions
+        run: |
+          set -euo pipefail
+          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
+          DO $$
+          DECLARE
+            role_name text;
+            v_claim oid;
+            v_ack oid;
+            v_failure oid;
+            v_reconcile oid;
+            v_drift_repair oid;
+          BEGIN
+            SELECT p.oid INTO STRICT v_claim FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname='app_secure' AND p.proname='claim_branch_search_projection' AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, uuid';
+            SELECT p.oid INTO STRICT v_ack FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname='app_secure' AND p.proname='acknowledge_branch_search_effect' AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, uuid, bigint, text, text, text, text, text, bigint, text, text';
+            SELECT p.oid INTO STRICT v_failure FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname='app_secure' AND p.proname='record_branch_search_failure' AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, uuid, bigint, text, text, text, text, text';
+            SELECT p.oid INTO STRICT v_reconcile FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname='app_secure' AND p.proname='enqueue_branch_search_reconciliation' AND pg_catalog.oidvectortypes(p.proargtypes)='integer';
+            SELECT p.oid INTO STRICT v_drift_repair FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+             WHERE n.nspname='app_secure' AND p.proname='repair_branch_search_provider_drift' AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, uuid, bigint, text, text, text, text, text, bigint, text, text, text';
+
+            FOREACH role_name IN ARRAY ARRAY['app_runtime','auth_runtime','worker_runtime','lifecycle_maintenance_runtime'] LOOP
+              IF pg_catalog.has_table_privilege(role_name,'public.branch_search_effect_attempts','SELECT')
+                 OR pg_catalog.has_table_privilege(role_name,'public.branch_search_effect_attempts','INSERT')
+                 OR pg_catalog.has_table_privilege(role_name,'public.branch_search_effect_attempts','UPDATE')
+                 OR pg_catalog.has_table_privilege(role_name,'public.branch_search_effect_attempts','DELETE') THEN
                 RAISE EXCEPTION '% has direct P4B evidence-table CRUD', role_name;
               END IF;
             END LOOP;
 
             IF NOT pg_catalog.has_function_privilege('worker_runtime',v_claim,'EXECUTE')
                OR NOT pg_catalog.has_function_privilege('worker_runtime',v_ack,'EXECUTE')
-               OR NOT pg_catalog.has_function_privilege('worker_runtime',v_failure,'EXECUTE') THEN
+               OR NOT pg_catalog.has_function_privilege('worker_runtime',v_failure,'EXECUTE')
+               OR NOT pg_catalog.has_function_privilege('worker_runtime',v_drift_repair,'EXECUTE') THEN
               RAISE EXCEPTION 'worker lacks exact P4B search capabilities';
             END IF;
             IF pg_catalog.has_function_privilege('worker_runtime',v_reconcile,'EXECUTE') THEN
               RAISE EXCEPTION 'worker received global search reconciliation capability';
             END IF;
-            IF NOT pg_catalog.has_function_privilege(
-              'lifecycle_maintenance_runtime',v_reconcile,'EXECUTE'
-            ) THEN
+            IF NOT pg_catalog.has_function_privilege('lifecycle_maintenance_runtime',v_reconcile,'EXECUTE') THEN
               RAISE EXCEPTION 'maintenance lacks bounded search reconciliation enqueue';
+            END IF;
+            IF pg_catalog.has_function_privilege('lifecycle_maintenance_runtime',v_drift_repair,'EXECUTE')
+               OR pg_catalog.has_function_privilege('app_runtime',v_drift_repair,'EXECUTE')
+               OR pg_catalog.has_function_privilege('auth_runtime',v_drift_repair,'EXECUTE') THEN
+              RAISE EXCEPTION 'drift repair leaked outside worker runtime';
             END IF;
           END
           $$;
@@ -252,8 +280,7 @@ jobs:
           SELECT pg_catalog.set_config('app.current_user_id','44000000-0000-4000-8000-000000000051',true);
           SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
           SELECT pg_catalog.set_config('app.current_role','owner',true);
-          UPDATE public.org_branch_state
-          SET is_public=false
+          UPDATE public.org_branch_state SET is_public=false
           WHERE branch_id='44000000-0000-4000-8000-000000000011'
             AND org_id='44000000-0000-4000-8000-000000000001';
           COMMIT;
@@ -267,8 +294,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<'SQL'
-          UPDATE public.org_branch_state
-          SET is_public=false
+          UPDATE public.org_branch_state SET is_public=false
           WHERE branch_id='44000000-0000-4000-8000-000000000011'
             AND org_id='44000000-0000-4000-8000-000000000001';
           SQL
@@ -299,8 +325,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<'SQL'
-          UPDATE public.org_branch_state
-          SET is_public=true
+          UPDATE public.org_branch_state SET is_public=true
           WHERE branch_id='44000000-0000-4000-8000-000000000011'
             AND org_id='44000000-0000-4000-8000-000000000001';
           SQL
@@ -311,14 +336,11 @@ jobs:
           PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U worker_test_runtime -d gymflow_test <<SQL
           UPDATE public.branch_outbox_events
-          SET status='processing',
-              attempt_count=attempt_count+1,
-              last_attempted_at=pg_catalog.clock_timestamp(),
-              last_error=NULL,
+          SET status='processing', attempt_count=attempt_count+1,
+              last_attempted_at=pg_catalog.clock_timestamp(), last_error=NULL,
               leased_by='44000000-0000-4000-8000-000000000041',
               leased_until=pg_catalog.clock_timestamp()+INTERVAL '10 minutes'
-          WHERE outbox_id='${P4B_OUTBOX_ID}'
-            AND status='pending';
+          WHERE outbox_id='${P4B_OUTBOX_ID}' AND status='pending';
           SQL
 
       - name: Prove stale event label is not authority and evidence gates sync state
@@ -332,23 +354,18 @@ jobs:
           PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U worker_test_runtime -d gymflow_test <<SQL
           SELECT app_secure.acknowledge_branch_search_effect(
-            '${P4B_OUTBOX_ID}',
-            '44000000-0000-4000-8000-000000000041',
-            3,'index','opensearch','branches-v1',
-            '44000000-0000-4000-8000-000000000011',
-            repeat('a',64),3,repeat('b',64),repeat('c',64)
-          );
+            '${P4B_OUTBOX_ID}','44000000-0000-4000-8000-000000000041',
+            3,'index','opensearch','branches-v1','44000000-0000-4000-8000-000000000011',
+            repeat('a',64),3,repeat('b',64),repeat('c',64));
           SQL
 
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<SQL
           DO \$\$
           DECLARE v_status text; v_ack bigint; v_sync timestamptz; v_attempts bigint;
           BEGIN
-            SELECT status INTO v_status FROM public.branch_outbox_events
-              WHERE outbox_id='${P4B_OUTBOX_ID}';
+            SELECT status INTO v_status FROM public.branch_outbox_events WHERE outbox_id='${P4B_OUTBOX_ID}';
             SELECT search_provider_ack_version,search_last_synced_at INTO v_ack,v_sync
-              FROM public.org_branch_state
-              WHERE branch_id='44000000-0000-4000-8000-000000000011';
+              FROM public.org_branch_state WHERE branch_id='44000000-0000-4000-8000-000000000011';
             SELECT count(*) INTO v_attempts FROM public.branch_search_effect_attempts
               WHERE outbox_id='${P4B_OUTBOX_ID}' AND outcome='definite_success';
             IF v_status <> 'delivered' OR v_ack <> 3 OR v_sync IS NULL OR v_attempts <> 1 THEN
@@ -362,19 +379,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<'SQL'
-          UPDATE public.org_branch_state
-          SET is_public=false
+          UPDATE public.org_branch_state SET is_public=false
           WHERE branch_id='44000000-0000-4000-8000-000000000011'
             AND org_id='44000000-0000-4000-8000-000000000001';
-          SQL
-
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<'SQL'
           DO $$
           DECLARE v_desired bigint; v_ack bigint; v_sync timestamptz;
           BEGIN
             SELECT search_visibility_version,search_provider_ack_version,search_last_synced_at
-            INTO v_desired,v_ack,v_sync
-            FROM public.org_branch_state
+            INTO v_desired,v_ack,v_sync FROM public.org_branch_state
             WHERE branch_id='44000000-0000-4000-8000-000000000011';
             IF v_desired <> 4 OR v_ack <> 3 OR v_sync IS NOT NULL THEN
               RAISE EXCEPTION 'searchable state change did not invalidate prior sync evidence';
@@ -410,8 +422,7 @@ jobs:
             WHERE branch_id='44000000-0000-4000-8000-000000000011'
               AND event_type='branch.search_deindex' AND status='pending';
             SELECT search_visibility_version,search_provider_ack_version,search_last_synced_at
-              INTO v_desired,v_ack,v_sync
-              FROM public.org_branch_state
+              INTO v_desired,v_ack,v_sync FROM public.org_branch_state
               WHERE branch_id='44000000-0000-4000-8000-000000000011';
             IF v_pending <> 1 OR v_desired <> 4 OR v_ack <> 3 OR v_sync IS NOT NULL THEN
               RAISE EXCEPTION 'reconciliation changed success state instead of only enqueueing work';
