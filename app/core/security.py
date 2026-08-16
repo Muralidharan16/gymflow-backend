@@ -61,6 +61,7 @@ def create_access_token(
     role: str = "owner",
     branch_ids: list[str] = None,
     principal_type: str = "owner",
+    family_id: str | None = None,
 ) -> str:
     """Create a short-lived access token with an explicit subject namespace."""
     normalized_principal_type = str(principal_type).strip().lower()
@@ -80,17 +81,21 @@ def create_access_token(
         "jti": str(uuid.uuid4()),
         "exp": datetime.now(timezone.utc) + timedelta(minutes=15),
     }
+    if family_id is not None:
+        payload["f_id"] = str(family_id)
     return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
 
 
-def create_refresh_token(owner_id: str) -> str:
-    """Create refresh token for the current owner-authentication flow."""
+def create_refresh_token(owner_id: str, family_id: str | None = None) -> str:
+    """Create a refresh token, optionally bound to an auth-session family."""
     payload = {
         "sub": str(owner_id),
         "type": "refresh",
         "jti": str(uuid.uuid4()),
         "exp": datetime.now(timezone.utc) + timedelta(days=7),
     }
+    if family_id is not None:
+        payload["f_id"] = str(family_id)
     return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
 
 
@@ -121,9 +126,7 @@ def verify_token(token: str, expected_type: str = "access") -> Dict[str, Any]:
 
 def get_token_family_id(refresh_token: str) -> str:
     """Extract family_id from a valid refresh token."""
-    payload = decode_token(refresh_token)
-    if payload.get("type") != "refresh":
-        raise InvalidTokenError("Not a refresh token")
+    payload = verify_token(refresh_token, "refresh")
     family_id = payload.get("f_id")
     if not family_id:
         raise InvalidTokenError("Refresh token missing family_id claim")

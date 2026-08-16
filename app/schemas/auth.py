@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Optional
 from app.models.enums import StaffRole, FacilityType
 
+
 class SignupRequest(BaseModel):
     org_name: str = Field(..., min_length=2, max_length=100)
     owner_name: str
@@ -27,20 +28,32 @@ class SignupRequest(BaseModel):
             raise ValueError("Password must contain at least one special character")
         return v
 
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
     device_id: Optional[str] = None
     device_name: Optional[str] = None
 
+
 class TokenResponse(BaseModel):
+    """Internal server-side token carrier. Never serialize this model to browser JSON."""
+
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
     onboarding_completed: bool = False
 
+
 class RefreshRequest(BaseModel):
+    """Legacy non-browser refresh shape retained for explicit non-browser integrations."""
+
     refresh_token: str
+
+
+class SignupStatusRequest(BaseModel):
+    email: EmailStr
+
 
 class StaffResponse(BaseModel):
     id: uuid.UUID

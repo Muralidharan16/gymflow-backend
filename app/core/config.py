@@ -21,6 +21,9 @@ _PROCESS_PROFILE_MANIFEST = (
 )
 _DISABLED_ASYNC_URL = "postgresql+asyncpg://disabled@invalid.invalid/doers_disabled"
 _MIN_PRODUCTION_SECRET_LENGTH = 32
+_PUBLIC_PATH_SEGMENT_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+)
 
 
 def _process_manifest() -> dict:
@@ -69,6 +72,35 @@ def _validated_https_origin(
         raise ValueError(f"{name} must not use loopback or unspecified addresses in production")
 
     return host, port
+
+
+def _validated_public_api_path_prefix(value: str) -> str:
+    """Validate and normalize the public reverse-proxy path prefix for the API."""
+    raw = str(value or "")
+    if raw in {"", "/"}:
+        return ""
+    if any(char.isspace() or ord(char) < 0x20 or ord(char) == 0x7F for char in raw):
+        raise ValueError("PUBLIC_API_PATH_PREFIX must not contain whitespace or control characters")
+    if not raw.startswith("/") or raw.startswith("//"):
+        raise ValueError("PUBLIC_API_PATH_PREFIX must be empty or an absolute path prefix")
+    if any(token in raw for token in ("\\", "?", "#", "%")):
+        raise ValueError(
+            "PUBLIC_API_PATH_PREFIX must not contain backslashes, query, fragment, or percent encoding"
+        )
+
+    normalized = raw[:-1] if raw.endswith("/") else raw
+    if "//" in normalized:
+        raise ValueError("PUBLIC_API_PATH_PREFIX must not contain empty path segments")
+
+    segments = normalized.split("/")[1:]
+    if not segments or any(
+        segment in {".", ".."}
+        or not segment
+        or any(char not in _PUBLIC_PATH_SEGMENT_CHARS for char in segment)
+        for segment in segments
+    ):
+        raise ValueError("PUBLIC_API_PATH_PREFIX contains an unsafe path segment")
+    return normalized
 
 
 def _validate_production_secret(name: str, value: str) -> str:
@@ -175,6 +207,11 @@ class Settings(DoersSettingsSchema):
         return self
 
     @model_validator(mode="after")
+    def validate_public_api_path_prefix(self):
+        _validated_public_api_path_prefix(self.PUBLIC_API_PATH_PREFIX)
+        return self
+
+    @model_validator(mode="after")
     def validate_production_security_boundaries(self):
         if self.ENVIRONMENT != "production" or self.process_profile != "api":
             return self
@@ -216,6 +253,14 @@ class Settings(DoersSettingsSchema):
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def public_api_path_prefix(self) -> str:
+        return _validated_public_api_path_prefix(self.PUBLIC_API_PATH_PREFIX)
+
+    @property
+    def public_api_base_url(self) -> str:
+        return f"{str(self.BACKEND_BASE_URL).rstrip('/')}{self.public_api_path_prefix}"
 
     @property
     def process_profile(self) -> str:

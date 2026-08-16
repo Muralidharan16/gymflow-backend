@@ -27,7 +27,7 @@ from fastapi import Request, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
-from app.core.security import ACCESS_TOKEN_PRINCIPAL_TYPES, decode_token
+from app.core.security import ACCESS_TOKEN_PRINCIPAL_TYPES, verify_token
 from app.core.redis import redis_client
 from app.core.concurrency import adaptive_controller
 
@@ -43,11 +43,10 @@ EXEMPT_PATHS = {
     "/auth/register",
     "/auth/login",
     "/auth/refresh",
+    "/auth/logout",
     "/auth/verify",
     "/auth/resend-verification",
     "/onboarding/pincode",
-    "/onboarding/status",
-    "/onboarding/complete",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -323,51 +322,114 @@ class AdaptiveWriteThrottler(BaseHTTPMiddleware):
 
 class TenantMiddleware(BaseHTTPMiddleware):
     """
-    Validates JWT, checks blacklist/family-revocation in Redis, and injects
-    principal claims into request.state for downstream use.
+    Validates access JWTs, checks durable browser-session family revocation and
+    Redis revocation signals, then injects principal claims into request.state.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
         if _is_exempt(request.url.path) or request.method == "OPTIONS":
             return await call_next(request)
 
-        auth  = request.headers.get("Authorization", "")
+        from app.core.config import settings
+        from app.core.browser_session import require_trusted_browser_origin
+
+        auth = request.headers.get("Authorization", "")
         token = None
+        token_source = "none"
 
         if auth.startswith("Bearer "):
             token = auth.split(" ", 1)[1]
+            token_source = "bearer"
         else:
             token = request.cookies.get("access_token")
+            if token:
+                token_source = "cookie"
 
         if not token:
             return JSONResponse(status_code=401, content={"detail": "Missing authentication."})
 
         try:
-            payload = decode_token(token)
+            payload = verify_token(token, "access")
         except Exception:
-            return JSONResponse(status_code=401, content={"detail": "Invalid or expired token."})
+            return JSONResponse(status_code=401, content={"detail": "Invalid or expired access token."})
 
         principal_type = payload.get("principal_type")
         if principal_type not in ACCESS_TOKEN_PRINCIPAL_TYPES:
             return JSONResponse(status_code=401, content={"detail": "Invalid principal type."})
 
-        jti       = payload.get("jti")
+        jti = payload.get("jti")
         family_id = payload.get("f_id")
+        user_id = payload.get("sub")
+        org_id = payload.get("org_id")
 
         try:
-            if jti and await redis_client.get(f"blacklist:{jti}"):
+            user_uuid = uuid.UUID(str(user_id))
+            org_uuid = uuid.UUID(str(org_id))
+            family_uuid = uuid.UUID(str(family_id)) if family_id is not None else None
+        except (AttributeError, TypeError, ValueError):
+            return JSONResponse(status_code=401, content={"detail": "Invalid authentication claims."})
+
+        # Browser owner sessions must always be tied to a durable session family.
+        # Legacy owner refresh cookies can be upgraded once through /auth/refresh,
+        # but legacy access cookies are never trusted as durable browser sessions.
+        if token_source == "cookie" and principal_type == "owner" and family_uuid is None:
+            return JSONResponse(status_code=401, content={"detail": "Session upgrade required."})
+
+        if token_source == "cookie":
+            try:
+                require_trusted_browser_origin(request)
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+        # Redis provides fast revocation rejection. In production Redis failure is
+        # fail-closed for authenticated traffic; revocation must never silently
+        # degrade into an allow decision.
+        try:
+            from app.core.redis import get_redis_utils
+
+            redis = get_redis_utils().client
+            if jti and await redis.get(f"blacklist:{jti}"):
                 return JSONResponse(status_code=401, content={"detail": "Token revoked."})
-            if family_id and await redis_client.get(f"family_revoked:{family_id}"):
+            if family_uuid and await redis.get(f"family_revoked:{family_uuid}"):
                 return JSONResponse(status_code=401, content={"detail": "Session revoked."})
         except Exception:
-            pass  # Redis unavailable — proceed (fail-open; blacklist check is defense-in-depth)
+            logger.exception("Session revocation lookup failed")
+            if settings.ENVIRONMENT == "production":
+                return JSONResponse(status_code=503, content={"detail": "Session validation unavailable."})
 
-        request.state.staff_id = payload.get("sub")
+        # The database is authoritative for owner browser-session families. This
+        # prevents a Redis restart/flush from resurrecting an access token from a
+        # family that was revoked because of logout or refresh-token reuse.
+        if principal_type == "owner" and family_uuid is not None:
+            try:
+                from sqlalchemy import select
+                from app.core.auth_database import AuthSessionLocal
+                from app.models.auth_session import AuthSessionFamily
+
+                if AuthSessionLocal is None:
+                    raise RuntimeError("Auth database unavailable")
+                async with AuthSessionLocal() as auth_session:
+                    result = await auth_session.execute(
+                        select(AuthSessionFamily).where(
+                            AuthSessionFamily.id == family_uuid,
+                            AuthSessionFamily.user_id == user_uuid,
+                        )
+                    )
+                    family = result.scalar_one_or_none()
+                if family is None or family.revoked_at is not None:
+                    return JSONResponse(status_code=401, content={"detail": "Session revoked."})
+            except Exception:
+                logger.exception("Durable session-family validation failed")
+                return JSONResponse(status_code=503, content={"detail": "Session validation unavailable."})
+
+        request.state.staff_id = str(user_uuid)
         request.state.principal_type = principal_type
-        request.state.org_id   = payload.get("org_id")
-        request.state.gym_id   = payload.get("gym_id")
-        request.state.role     = payload.get("role")
+        request.state.org_id = str(org_uuid)
+        request.state.gym_id = payload.get("gym_id")
+        request.state.role = payload.get("role")
         request.state.branch_ids = payload.get("branch_ids", [])
+        request.state.token_family_id = str(family_uuid) if family_uuid is not None else None
+        request.state.token_source = token_source
 
         return await call_next(request)
 

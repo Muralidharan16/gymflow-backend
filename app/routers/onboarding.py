@@ -1,14 +1,10 @@
 # app/routers/onboarding.py
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
 from app.core.auth_database import get_auth_db
+from app.core.database import get_db
 from app.core.redis import redis_client
-from app.core.security import decode_token
 from app.repositories.geo_repository import GeoRepository
 from app.schemas.onboarding import (
     OnboardingCompleteRequest,
@@ -19,25 +15,16 @@ from app.services.geo_service import GeoService
 from app.services.onboarding_service import OnboardingService
 
 router = APIRouter(prefix="/onboarding", tags=["Onboarding"])
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
 
 
-async def get_current_owner_id(
-    request: Request,
-    token: Optional[str] = Depends(oauth2_scheme),
-) -> str:
-    if not token:
-        token = request.cookies.get("access_token")
-    if not token:
+def get_current_owner_id(request: Request) -> str:
+    """Use the centrally verified access-token principal from TenantMiddleware."""
+    if getattr(request.state, "principal_type", None) != "owner":
+        raise HTTPException(status_code=403, detail="Owner session required")
+    owner_id = getattr(request.state, "staff_id", None)
+    if not owner_id:
         raise HTTPException(status_code=401, detail="Authentication required")
-    try:
-        payload = decode_token(token)
-        owner_id = payload.get("sub")
-        if not owner_id:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return owner_id
-    except Exception:
-        raise HTTPException(status_code=401, detail="Could not validate credentials")
+    return str(owner_id)
 
 
 @router.get("/pincode/{pincode}", response_model=PincodeLookupResponse)
@@ -69,9 +56,9 @@ async def complete_onboarding(
     request: Request,
     data: OnboardingCompleteRequest,
     db: AsyncSession = Depends(get_auth_db),
-    owner_id: str = Depends(get_current_owner_id),
 ):
     """Activate an owner/tenant through the dedicated bootstrap DB identity."""
+    owner_id = get_current_owner_id(request)
     service = OnboardingService(db)
     ip_address = request.client.host if request.client else "127.0.0.1"
     user_agent = request.headers.get("user-agent", "")
@@ -85,8 +72,9 @@ async def complete_onboarding(
 
 @router.get("/status", response_model=OnboardingStatusResponse)
 async def get_onboarding_status(
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    owner_id: str = Depends(get_current_owner_id),
 ):
+    owner_id = get_current_owner_id(request)
     service = OnboardingService(db)
     return await service.get_status(owner_id)
