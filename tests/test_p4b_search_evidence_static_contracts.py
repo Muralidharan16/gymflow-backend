@@ -254,10 +254,11 @@ def test_search_worker_uses_authoritative_projection_provider_evidence_and_stale
     assert "_mark_delivered(" not in deferred
 
 
-def test_opensearch_adapter_is_strictly_versioned_and_verifies_real_time_state() -> None:
+def test_opensearch_adapter_uses_safe_asymmetric_versioning_and_real_time_verification() -> None:
     source = PROVIDER.read_text(encoding="utf-8")
-    assert '"version_type": "external"' in source
-    assert "external_gte" not in source
+    assert '"version_type": "external_gte" if operation == "delete" else "external"' in source
+    assert "Index operations use strict" in source
+    assert "Delete operations use ``external_gte``" in source
     assert 'params={"realtime": "true"}' in source
     assert "provider_document_mismatch" in source
     assert "mutation_transport_ambiguous" in source
