@@ -137,7 +137,7 @@ def test_post_install_function_acl_proof_uses_catalog_oids_without_schema_usage(
 
     workflow = WORKFLOW.read_text(encoding="utf-8")
     acl_proof = workflow.split("- name: Prove P4B runtime ACL separation", 1)[1].split(
-        "- name: Seed authoritative branch", 1
+        "- name: Seed tenant and owner", 1
     )[0]
     assert "v_claim oid;" in acl_proof
     assert "v_ack oid;" in acl_proof
@@ -262,7 +262,6 @@ def test_opensearch_adapter_is_strictly_versioned_and_verifies_real_time_state()
     assert "provider_document_mismatch" in source
     assert "mutation_transport_ambiguous" in source
     assert "provider_evidence_sha256" in source
-    assert "refresh\": \"wait_for" not in source  # avoid brittle escaped source checks
     assert '"refresh": "wait_for"' in source
 
 
