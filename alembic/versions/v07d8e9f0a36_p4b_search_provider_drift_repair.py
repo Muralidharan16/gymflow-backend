@@ -12,8 +12,11 @@ owns a live leased search event can record the provider evidence, advance the
 PostgreSQL search clock above the observed provider clock, supersede the stale
 attempt, and enqueue a fresh authoritative search command.
 
-No runtime receives direct table CRUD, no role membership changes, and the
-maintenance identity still has no provider-side repair capability.
+The predecessor outbox routines already use ``superseded`` for obsolete work,
+but the legacy outbox status CHECK did not admit that explicit non-success
+terminal state. This revision closes that schema-contract gap without widening
+any role privilege. Downgrade restores the predecessor CHECK exactly and refuses
+to discard live/provider-backed P4B state.
 """
 
 from __future__ import annotations
@@ -33,6 +36,15 @@ _WORKER = "worker_runtime"
 _FUNCTION = (
     "app_secure.repair_branch_search_provider_drift("
     "uuid,uuid,bigint,text,text,text,text,text,bigint,text,text,text)"
+)
+_OUTBOX_STATUS_CONSTRAINT = "branch_outbox_events_status_check"
+_PREDECESSOR_OUTBOX_STATUSES = (
+    "pending",
+    "processing",
+    "delivered",
+    "dead_lettered",
+    "quarantined",
+    "compatibility_queue",
 )
 
 
@@ -108,11 +120,67 @@ def _require_predecessor(bind) -> None:
     ).scalar_one():
         raise RuntimeError("v07 drift repair function collision")
 
+    constraint_def = bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.pg_get_constraintdef(c.oid, true)
+            FROM pg_catalog.pg_constraint AS c
+            WHERE c.conrelid = 'public.branch_outbox_events'::regclass
+              AND c.conname = :constraint_name
+              AND c.contype = 'c'
+            """
+        ),
+        {"constraint_name": _OUTBOX_STATUS_CONSTRAINT},
+    ).scalar_one_or_none()
+    if constraint_def is None:
+        raise RuntimeError("v07 predecessor outbox status CHECK is missing")
+    missing = [
+        status
+        for status in _PREDECESSOR_OUTBOX_STATUSES
+        if f"'{status}'" not in constraint_def
+    ]
+    if missing or "'superseded'" in constraint_def:
+        raise RuntimeError(
+            "v07 predecessor outbox status CHECK drift: "
+            f"missing={missing!r}, definition={constraint_def!r}"
+        )
+
+
+def _install_superseded_status_contract() -> None:
+    statuses = ", ".join(
+        f"'{status}'" for status in (*_PREDECESSOR_OUTBOX_STATUSES, "superseded")
+    )
+    op.execute(
+        f"""
+        ALTER TABLE public.branch_outbox_events
+            DROP CONSTRAINT {_OUTBOX_STATUS_CONSTRAINT},
+            ADD CONSTRAINT {_OUTBOX_STATUS_CONSTRAINT}
+                CHECK (status IN ({statuses}))
+        """
+    )
+
+
+def _restore_predecessor_status_contract() -> None:
+    statuses = ", ".join(f"'{status}'" for status in _PREDECESSOR_OUTBOX_STATUSES)
+    op.execute(
+        f"""
+        ALTER TABLE public.branch_outbox_events
+            DROP CONSTRAINT {_OUTBOX_STATUS_CONSTRAINT},
+            ADD CONSTRAINT {_OUTBOX_STATUS_CONSTRAINT}
+                CHECK (status IN ({statuses}))
+        """
+    )
+
 
 def upgrade() -> None:
     bind = op.get_bind()
     _require_identity_contract(bind)
     _require_predecessor(bind)
+
+    # The table remains owned by the migration authority. This only admits the
+    # explicit obsolete-work terminal state already used by bounded P4B routines;
+    # it grants no new DML capability to any runtime identity.
+    _install_superseded_status_contract()
 
     op.execute("SET LOCAL ROLE app_security_owner")
     op.execute(
@@ -299,11 +367,58 @@ def upgrade() -> None:
     ).scalar_one():
         raise RuntimeError("v07 worker lacks drift repair capability")
 
+    constraint_def = bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.pg_get_constraintdef(c.oid, true)
+            FROM pg_catalog.pg_constraint AS c
+            WHERE c.conrelid = 'public.branch_outbox_events'::regclass
+              AND c.conname = :constraint_name
+            """
+        ),
+        {"constraint_name": _OUTBOX_STATUS_CONSTRAINT},
+    ).scalar_one()
+    if "'superseded'" not in constraint_def:
+        raise RuntimeError("v07 failed to install superseded outbox status contract")
+
 
 def downgrade() -> None:
     bind = op.get_bind()
     _require_identity_contract(bind)
+
+    live = bind.execute(
+        sa.text(
+            """
+            SELECT count(*) FROM public.branch_outbox_events
+            WHERE event_type IN ('branch.search_index','branch.search_deindex')
+              AND status IN ('pending','processing')
+            """
+        )
+    ).scalar_one()
+    evidence = bind.execute(
+        sa.text("SELECT count(*) FROM public.branch_search_effect_attempts")
+    ).scalar_one()
+    acknowledged = bind.execute(
+        sa.text(
+            "SELECT count(*) FROM public.org_branch_state "
+            "WHERE search_provider_ack_version IS NOT NULL"
+        )
+    ).scalar_one()
+    superseded = bind.execute(
+        sa.text(
+            "SELECT count(*) FROM public.branch_outbox_events "
+            "WHERE status = 'superseded'"
+        )
+    ).scalar_one()
+    if live or evidence or acknowledged or superseded:
+        raise RuntimeError(
+            "v07 downgrade refuses loss of live/provider-backed search state: "
+            f"live={live}, evidence={evidence}, acknowledged={acknowledged}, "
+            f"superseded={superseded}"
+        )
+
     op.execute("SET LOCAL ROLE app_security_owner")
     op.execute(f"REVOKE EXECUTE ON FUNCTION {_FUNCTION} FROM worker_runtime")
     op.execute(f"DROP FUNCTION {_FUNCTION}")
     op.execute("RESET ROLE")
+    _restore_predecessor_status_contract()
