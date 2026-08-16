@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   inherited-contracts:
-    name: P4A baseline and P4B deployment isolation
+    name: P4A durable invariants and P4B deployment isolation
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
@@ -40,10 +40,21 @@ jobs:
           python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
           diff -u requirements-test.lock /tmp/resolved.txt
 
-      - name: Reprove complete inherited P4A contract suite
+      - name: Reprove durable P4A semantics retained by P4B
         run: |
           set -euo pipefail
-          python -m pytest --noconftest -q --maxfail=1 tests/test_p4a_*.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4a_external_effect_contracts.py::test_contract_is_bound_to_certified_p3e_base_and_forbids_attempt_equals_success \
+            tests/test_p4a_external_effect_contracts.py::test_legacy_global_notification_entrypoints_remain_fail_closed_in_p4a \
+            tests/test_p4a_external_effect_contracts.py::test_finance_refund_foundation_exists_without_claiming_lifecycle_completion \
+            tests/test_p4a_external_effect_contracts.py::test_inventory_freezes_shared_p4_semantics \
+            tests/test_p4a_external_effect_contracts.py::test_contract_requires_idempotency_fencing_reconciliation_dlq_and_webhook_security
+
+      - name: Prove explicit P4A to P4B compatibility boundary
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4b_p4a_inherited_contracts.py
 
       - name: Prove P4B production search credential isolation
         run: |
