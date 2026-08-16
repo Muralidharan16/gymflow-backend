@@ -38,6 +38,17 @@ class DoersSettingsSchema(BaseSettings):
     WA_TEMPLATE_DIGEST: str = "daily_digest_notification"
     GOOGLE_MAPS_SERVER_API_KEY: str = ""
 
+    # P4B search integration. The worker fails closed unless mode=opensearch and
+    # a concrete endpoint/index are supplied. Defaults intentionally do not make
+    # a development process perform external writes by accident.
+    SEARCH_PROVIDER_MODE: str = "disabled"
+    OPENSEARCH_URL: str = ""
+    OPENSEARCH_INDEX: str = "branches-v1"
+    OPENSEARCH_USERNAME: str = ""
+    OPENSEARCH_PASSWORD: str = ""
+    OPENSEARCH_TIMEOUT_SECONDS: float = 5.0
+    OPENSEARCH_VERIFY_TLS: bool = True
+
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "info"
 
