@@ -58,10 +58,12 @@ jobs:
             app/tasks/branch_outbox_poller.py \
             app/tasks/branch_lifecycle_sweeps.py \
             tests/test_p4b_search_evidence_static_contracts.py \
-            tests/test_p4b_search_provider.py
+            tests/test_p4b_search_provider.py \
+            tests/test_p4b_search_provider_adversarial.py
           python -m pytest --noconftest -q --maxfail=1 \
             tests/test_p4b_search_evidence_static_contracts.py \
-            tests/test_p4b_search_provider.py
+            tests/test_p4b_search_provider.py \
+            tests/test_p4b_search_provider_adversarial.py
 
       - name: Install PostgreSQL 16 and canonical cluster roles
         run: |
