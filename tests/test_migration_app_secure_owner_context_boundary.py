@@ -61,6 +61,25 @@ _P3B_REPLACE_CORRECTION_MIGRATION = (
     "j07d8e9f0a2a_p3b_registration_replace_without_upsert_reads.py"
 )
 _P3B_CONTRACT_MIGRATION = "k07d8e9f0a2b_p3b_registration_contract.py"
+_P3E_SUBSCRIPTION_EXPIRY_MIGRATION = (
+    "l07d8e9f0a2c_p3e_subscription_expiry_maintenance.py"
+)
+_P3E_TRIAL_LIFECYCLE_MIGRATION = (
+    "m07d8e9f0a2d_p3e_trial_lifecycle_maintenance.py"
+)
+_P3E_ASSET_JOBS_MIGRATION = "n07d8e9f0a2e_p3e_fenced_organization_asset_jobs.py"
+_P3E_ASSET_DELETE_MIGRATION = "o07d8e9f0a2f_p3e_asset_delete_capability.py"
+_P3E_ASSET_CLEANUP_MIGRATION = "p07d8e9f0a30_p3e_asset_cleanup_jobs.py"
+_P3E_ASSET_CLAIM_MIGRATION = "q07d8e9f0a31_p3e_asset_claim_ambiguity.py"
+_P3E_ASSET_PROVENANCE_MIGRATION = (
+    "r07d8e9f0a32_p3e_modern_owner_asset_provenance.py"
+)
+_P3E_ASSET_LIVE_OWNER_MIGRATION = (
+    "s07d8e9f0a33_p3e_asset_live_owner_authority.py"
+)
+_P3E_ASSET_ENUM_RECOVERY_MIGRATION = (
+    "t07d8e9f0a34_p3e_asset_status_enum_recovery.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -78,6 +97,15 @@ APP_SECURE_FILES.update(
         _P3B_BACKFILL_MIGRATION,
         _P3B_REPLACE_CORRECTION_MIGRATION,
         _P3B_CONTRACT_MIGRATION,
+        _P3E_SUBSCRIPTION_EXPIRY_MIGRATION,
+        _P3E_TRIAL_LIFECYCLE_MIGRATION,
+        _P3E_ASSET_JOBS_MIGRATION,
+        _P3E_ASSET_DELETE_MIGRATION,
+        _P3E_ASSET_CLEANUP_MIGRATION,
+        _P3E_ASSET_CLAIM_MIGRATION,
+        _P3E_ASSET_PROVENANCE_MIGRATION,
+        _P3E_ASSET_LIVE_OWNER_MIGRATION,
+        _P3E_ASSET_ENUM_RECOVERY_MIGRATION,
     }
 )
 
@@ -159,6 +187,18 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         _P3B_BACKFILL_MIGRATION: function_install_contract,
         _P3B_REPLACE_CORRECTION_MIGRATION: function_install_contract,
         _P3B_CONTRACT_MIGRATION: function_install_contract,
+        # P3E capabilities are function/table-column contracts. Only P07 needs
+        # temporary schema USAGE for migration_owner to install reduced-owner
+        # trigger functions; that USAGE is revoked before the migration exits.
+        _P3E_SUBSCRIPTION_EXPIRY_MIGRATION: set(),
+        _P3E_TRIAL_LIFECYCLE_MIGRATION: set(),
+        _P3E_ASSET_JOBS_MIGRATION: set(),
+        _P3E_ASSET_DELETE_MIGRATION: set(),
+        _P3E_ASSET_CLEANUP_MIGRATION: function_install_contract,
+        _P3E_ASSET_CLAIM_MIGRATION: set(),
+        _P3E_ASSET_PROVENANCE_MIGRATION: set(),
+        _P3E_ASSET_LIVE_OWNER_MIGRATION: set(),
+        _P3E_ASSET_ENUM_RECOVERY_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {

@@ -67,7 +67,7 @@ async def _enqueue_asset_job(
         sa.text(
             """
             SELECT app_secure.enqueue_organization_asset_job(
-                :asset_type, :upload_id, :focal_y, :request_ip
+                :asset_type, :upload_id, CAST(:focal_y AS numeric), :request_ip
             )
             """
         ),
