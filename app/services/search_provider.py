@@ -96,11 +96,12 @@ class SearchProviderError(RuntimeError):
 class OpenSearchProvider:
     """REST adapter whose success is based on provider state, not HTTP hope.
 
-    PostgreSQL owns the desired projection version. OpenSearch receives that value
-    with strict ``version_type=external``. A retry at the same version therefore
-    cannot replace different content: a version conflict is resolved only by a
-    real-time GET that proves the already-persisted provider document matches the
-    desired projection at the exact same version.
+    PostgreSQL owns the desired projection version. Index operations use strict
+    ``version_type=external`` so an equal or older version can never replace
+    different content. Delete operations use ``external_gte``: equality is safe
+    for the same desired absence and makes retries of an already-applied delete
+    idempotent, while any newer provider version still wins and is fenced as
+    drift. Every accepted mutation is followed by a real-time provider readback.
     """
 
     def __init__(
@@ -312,7 +313,7 @@ class OpenSearchProvider:
         path = f"/{index_path}/_doc/{document_path}"
         params = {
             "version": str(desired_version),
-            "version_type": "external",
+            "version_type": "external_gte" if operation == "delete" else "external",
             "refresh": "wait_for",
         }
 
