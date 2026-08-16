@@ -43,16 +43,9 @@ jobs:
       - name: Prove complete P4A contract suite
         run: |
           set -euo pipefail
-          python -m pytest --noconftest -q --maxfail=1 \
-            tests/test_p4a_external_effect_contracts.py \
-            tests/test_p4a_external_effect_semantics.py \
-            tests/test_p4a_no_false_success_contract.py \
-            tests/test_p4a_inventory_schema.py \
-            tests/test_p4a_recovery_runbook_contract.py \
-            tests/test_p4a_contract_docs_linkage.py \
-            tests/test_p4a_acceptance_matrix_contract.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p4a_*.py
 
-      - name: Reprove inherited P3E static contracts and bootstrap guard
+      - name: Reprove inherited P3E bootstrap guard
         run: |
           set -euo pipefail
           python scripts/verify_head_workflow_bootstrap.py
