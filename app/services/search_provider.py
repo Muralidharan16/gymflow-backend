@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import quote
 
 import httpx
+
+from app.observability.search_metrics import record_provider_call
 
 
 _PROVIDER_CODE = "opensearch"
@@ -15,6 +18,11 @@ _ALLOWED_FAILURE_OUTCOMES = {
     "permanent_rejection",
     "retryable_failure",
     "ambiguous_outcome",
+}
+_REPAIRABLE_DRIFT_CODES = {
+    "provider_document_mismatch",
+    "provider_version_ahead",
+    "delete_not_proven",
 }
 
 
@@ -56,6 +64,11 @@ class SearchProviderError(RuntimeError):
         outcome: str,
         error_code: str,
         request_sha256: str,
+        provider_index: str | None = None,
+        provider_document_id: str | None = None,
+        provider_version: int | None = None,
+        provider_evidence_sha256: str | None = None,
+        document_sha256: str | None = None,
     ) -> None:
         if outcome not in _ALLOWED_FAILURE_OUTCOMES:
             raise ValueError(f"Unsupported search outcome: {outcome!r}")
@@ -63,6 +76,21 @@ class SearchProviderError(RuntimeError):
         self.outcome = outcome
         self.error_code = error_code[:160]
         self.request_sha256 = request_sha256
+        self.provider_index = provider_index
+        self.provider_document_id = provider_document_id
+        self.provider_version = provider_version
+        self.provider_evidence_sha256 = provider_evidence_sha256
+        self.document_sha256 = document_sha256
+
+    @property
+    def is_repairable_drift(self) -> bool:
+        return (
+            self.error_code in _REPAIRABLE_DRIFT_CODES
+            and self.provider_index is not None
+            and self.provider_document_id is not None
+            and self.provider_version is not None
+            and self.provider_evidence_sha256 is not None
+        )
 
 
 class OpenSearchProvider:
@@ -218,10 +246,11 @@ class OpenSearchProvider:
             desired_version=desired_version,
             document=document,
         )
+        started = time.monotonic()
         try:
             self._validate_configuration(request_sha256)
             if self._client is not None:
-                return await self._apply_with_client(
+                evidence = await self._apply_with_client(
                     self._client,
                     branch_id=branch_id,
                     operation=operation,
@@ -229,24 +258,43 @@ class OpenSearchProvider:
                     document=document,
                     request_sha256=request_sha256,
                 )
-            async with httpx.AsyncClient(**self._client_kwargs()) as client:
-                return await self._apply_with_client(
-                    client,
-                    branch_id=branch_id,
-                    operation=operation,
-                    desired_version=desired_version,
-                    document=document,
-                    request_sha256=request_sha256,
-                )
-        except SearchProviderError:
+            else:
+                async with httpx.AsyncClient(**self._client_kwargs()) as client:
+                    evidence = await self._apply_with_client(
+                        client,
+                        branch_id=branch_id,
+                        operation=operation,
+                        desired_version=desired_version,
+                        document=document,
+                        request_sha256=request_sha256,
+                    )
+        except SearchProviderError as exc:
+            record_provider_call(
+                operation=operation,
+                outcome=exc.outcome,
+                duration_ms=(time.monotonic() - started) * 1000,
+            )
             raise
         except ValueError as exc:
-            raise SearchProviderError(
+            classified = SearchProviderError(
                 str(exc),
                 outcome="permanent_rejection",
                 error_code="provider_configuration_invalid",
                 request_sha256=request_sha256,
-            ) from exc
+            )
+            record_provider_call(
+                operation=operation,
+                outcome=classified.outcome,
+                duration_ms=(time.monotonic() - started) * 1000,
+            )
+            raise classified from exc
+
+        record_provider_call(
+            operation=operation,
+            outcome="definite_success",
+            duration_ms=(time.monotonic() - started) * 1000,
+        )
+        return evidence
 
     async def _apply_with_client(
         self,
@@ -371,6 +419,9 @@ class OpenSearchProvider:
             "get_body": get_body,
         }
         provider_evidence_sha256 = _sha256_json(evidence_payload)
+        desired_document_sha256 = (
+            _sha256_json(document) if operation == "index" else None
+        )
 
         if operation == "delete":
             if response.status_code == 404 or (
@@ -399,6 +450,10 @@ class OpenSearchProvider:
                         outcome="permanent_rejection",
                         error_code="provider_version_ahead",
                         request_sha256=request_sha256,
+                        provider_index=self.index,
+                        provider_document_id=branch_id,
+                        provider_version=provider_version,
+                        provider_evidence_sha256=provider_evidence_sha256,
                     )
                 return SearchEffectEvidence(
                     provider_code=_PROVIDER_CODE,
@@ -416,6 +471,7 @@ class OpenSearchProvider:
                     error_code=f"verification_http_{response.status_code}",
                     request_sha256=request_sha256,
                 )
+            observed_version = self._provider_version(get_body, fallback=None)
             raise SearchProviderError(
                 "OpenSearch still contains the document after delete",
                 outcome="permanent_rejection"
@@ -423,6 +479,12 @@ class OpenSearchProvider:
                 else "ambiguous_outcome",
                 error_code="delete_not_proven",
                 request_sha256=request_sha256,
+                provider_index=self.index if observed_version is not None else None,
+                provider_document_id=branch_id if observed_version is not None else None,
+                provider_version=observed_version,
+                provider_evidence_sha256=(
+                    provider_evidence_sha256 if observed_version is not None else None
+                ),
             )
 
         if response.status_code != 200 or not isinstance(get_body, dict):
@@ -473,14 +535,23 @@ class OpenSearchProvider:
                 outcome="permanent_rejection",
                 error_code="provider_version_ahead",
                 request_sha256=request_sha256,
+                provider_index=self.index,
+                provider_document_id=branch_id,
+                provider_version=provider_version,
+                provider_evidence_sha256=provider_evidence_sha256,
+                document_sha256=desired_document_sha256,
             )
-        document_sha256 = _sha256_json(document)
-        if _sha256_json(source) != document_sha256:
+        if _sha256_json(source) != desired_document_sha256:
             raise SearchProviderError(
                 "OpenSearch provider document differs from the authoritative projection",
                 outcome="permanent_rejection",
                 error_code="provider_document_mismatch",
                 request_sha256=request_sha256,
+                provider_index=self.index,
+                provider_document_id=branch_id,
+                provider_version=provider_version,
+                provider_evidence_sha256=provider_evidence_sha256,
+                document_sha256=desired_document_sha256,
             )
 
         return SearchEffectEvidence(
@@ -490,7 +561,7 @@ class OpenSearchProvider:
             request_sha256=request_sha256,
             provider_version=provider_version,
             provider_evidence_sha256=provider_evidence_sha256,
-            document_sha256=document_sha256,
+            document_sha256=desired_document_sha256,
         )
 
     @staticmethod
