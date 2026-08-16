@@ -130,8 +130,6 @@ def _set_owner_verified(value: bool) -> None:
 def _reset_state() -> None:
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as conn:
         with conn.cursor() as cur:
-            # Principal id/org binding is deliberately immutable. Only reset the
-            # mutable authority bit used by real owner login and P3E async recheck.
             cur.execute(
                 "UPDATE public.owners SET email_verified = true WHERE id IN (%s, %s)",
                 (_OWNER1, _OWNER2),
@@ -174,8 +172,6 @@ def _reset_state() -> None:
                 """,
                 (_ORG1,),
             )
-            # The reset UPDATE fires the durable cleanup trigger; these are
-            # fixture-only rows and are removed before each assertion.
             cur.execute(
                 "DELETE FROM public.organization_asset_cleanup_jobs "
                 "WHERE organization_id = %s",
@@ -418,6 +414,11 @@ def test_live_owner_is_revalidated_at_claim() -> None:
                 (job_id,),
             )
             assert cur.fetchone() == ("cancelled", "owner_membership_revoked")
+            cur.execute(
+                "SELECT logo_key, logo_status FROM public.organizations WHERE id = %s",
+                (_ORG1,),
+            )
+            assert cur.fetchone() == ("legacy/logo-original", "ready")
 
 
 def test_live_owner_is_revalidated_again_before_finalize() -> None:
@@ -449,7 +450,7 @@ def test_live_owner_is_revalidated_again_before_finalize() -> None:
                 "SELECT logo_key, logo_status FROM public.organizations WHERE id = %s",
                 (_ORG1,),
             )
-            assert cur.fetchone() == ("legacy/logo-original", "processing")
+            assert cur.fetchone() == ("legacy/logo-original", "ready")
 
 
 def test_delete_cancels_active_lease_and_stale_worker_cannot_republish() -> None:
