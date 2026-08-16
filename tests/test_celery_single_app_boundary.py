@@ -53,12 +53,15 @@ def test_canonical_beat_schedule_contains_only_hardened_operational_sweeps() -> 
         "app.tasks.platform_maintenance.advance_trial_lifecycles",
         "app.tasks.platform_maintenance.dispatch_organization_asset_jobs",
         "app.tasks.platform_maintenance.dispatch_organization_asset_cleanup",
-        "app.tasks.platform_maintenance.run",
         "app.tasks.branch_hours_partition.run",
         "app.tasks.outbox_poller.run",
         "app.tasks.branch_outbox_poller.run",
         "app.tasks.branch_lifecycle_sweeps.watchdog",
         "app.tasks.branch_lifecycle_sweeps.reconciliation",
+        "app.tasks.platform_maintenance.reclaim_stale_idempotency",
+        "app.tasks.platform_maintenance.archive_expired_idempotency",
+        "app.tasks.platform_maintenance.geocoding_reverification",
+        "app.tasks.platform_maintenance.cleanup_places_cache",
     }
     forbidden_legacy_tasks = {
         "app.tasks.trial_tasks.monitor_trial_lifecycles",
