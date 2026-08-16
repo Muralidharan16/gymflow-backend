@@ -66,16 +66,19 @@ def _inventory() -> dict:
     return json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
 
 
-def _assignment_string_set(source: str, name: str) -> set[str]:
+def _assignment_literal(source: str, name: str):
     tree = ast.parse(source)
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
         if not any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
             continue
-        value = ast.literal_eval(node.value)
-        return set(value)
+        return ast.literal_eval(node.value)
     raise AssertionError(f"assignment {name} not found")
+
+
+def _assignment_string_set(source: str, name: str) -> set[str]:
+    return set(_assignment_literal(source, name))
 
 
 def test_contract_is_bound_to_certified_p3e_base_and_forbids_attempt_equals_success() -> None:
@@ -132,9 +135,12 @@ def test_legacy_global_notification_entrypoints_remain_fail_closed_in_p4a() -> N
 
     reminders = REMINDERS.read_text(encoding="utf-8")
     digest = DAILY_DIGEST.read_text(encoding="utf-8")
-    assert "pending a tenant-bound durable notification outbox" in reminders
+    reminder_message = _assignment_literal(reminders, "_DISABLED_MESSAGE")
+    digest_message = _assignment_literal(digest, "_DISABLED_MESSAGE")
+
+    assert "tenant-bound durable notification outbox" in reminder_message
+    assert "tenant-bound durable digest dispatcher" in digest_message
     assert "raise RuntimeError(_DISABLED_MESSAGE)" in reminders
-    assert "pending a tenant-bound durable digest dispatcher" in digest
     assert "raise RuntimeError(_DISABLED_MESSAGE)" in digest
 
 
