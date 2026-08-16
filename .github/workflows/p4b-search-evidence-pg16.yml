@@ -136,48 +136,6 @@ jobs:
               RAISE EXCEPTION 'migration_owner retained temporary app_secure USAGE';
             END IF;
 
-            SELECT p.oid INTO STRICT v_claim
-            FROM pg_catalog.pg_proc AS p
-            JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
-            WHERE n.nspname='app_secure'
-              AND p.proname='claim_branch_search_projection'
-              AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, uuid';
-            SELECT p.oid INTO STRICT v_ack
-            FROM pg_catalog.pg_proc AS p
-            JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
-            WHERE n.nspname='app_secure'
-              AND p.proname='acknowledge_branch_search_effect'
-              AND pg_catalog.oidvectortypes(p.proargtypes)=
-                'uuid, uuid, bigint, text, text, text, text, text, bigint, text, text';
-            SELECT p.oid INTO STRICT v_failure
-            FROM pg_catalog.pg_proc AS p
-            JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
-            WHERE n.nspname='app_secure'
-              AND p.proname='record_branch_search_failure'
-              AND pg_catalog.oidvectortypes(p.proargtypes)=
-                'uuid, uuid, bigint, text, text, text, text, text';
-            SELECT p.oid INTO STRICT v_reconcile
-            FROM pg_catalog.pg_proc AS p
-            JOIN pg_catalog.pg_namespace AS n ON n.oid = p.relnamespace
-            WHERE false;
-          END
-          $$;
-          SQL
-
-      - name: Prove P4B runtime ACL separation exact functions
-        run: |
-          set -euo pipefail
-          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
-          DO $$
-          DECLARE
-            role_name text;
-            v_claim oid;
-            v_ack oid;
-            v_failure oid;
-            v_reconcile oid;
-            v_drift_repair oid;
-          BEGIN
             SELECT p.oid INTO STRICT v_claim FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
              WHERE n.nspname='app_secure' AND p.proname='claim_branch_search_projection' AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, uuid';
             SELECT p.oid INTO STRICT v_ack FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
