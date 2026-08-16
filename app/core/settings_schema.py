@@ -48,6 +48,9 @@ class DoersSettingsSchema(BaseSettings):
     OPENSEARCH_PASSWORD: str = ""
     OPENSEARCH_TIMEOUT_SECONDS: float = 5.0
     OPENSEARCH_VERIFY_TLS: bool = True
+    SEARCH_METRICS_OTLP_ENDPOINT: str = ""
+    SEARCH_METRICS_EXPORT_INTERVAL_SECONDS: float = 30.0
+    SEARCH_METRICS_EXPORT_TIMEOUT_SECONDS: float = 5.0
 
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "info"
