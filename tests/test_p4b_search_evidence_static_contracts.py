@@ -35,6 +35,20 @@ def _op_execute_statements(source: str) -> set[str]:
     return statements
 
 
+def _literal_assignment(source: str, name: str) -> tuple[str, ...]:
+    tree = ast.parse(source)
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id == name:
+            value = ast.literal_eval(node.value)
+            assert isinstance(value, tuple)
+            assert all(isinstance(item, str) for item in value)
+            return value
+    raise AssertionError(f"missing literal assignment {name}")
+
+
 def test_p4b_migration_is_append_only_on_certified_p3e_head() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     assert 'revision = "u07d8e9f0a35"' in source
@@ -54,6 +68,56 @@ def test_search_evidence_table_is_force_rls_and_runtime_has_no_direct_grant() ->
         "GRANT INSERT ON TABLE public.branch_search_effect_attempts TO lifecycle_maintenance_runtime",
     ):
         assert forbidden not in source
+
+
+def test_predecessor_security_owner_acl_is_preserved_and_disjoint_from_p4b_delta() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+
+    branch_inherited = set(_literal_assignment(source, "_BRANCH_INHERITED_SELECT_COLUMNS"))
+    branch_owned = set(_literal_assignment(source, "_BRANCH_SELECT_COLUMNS"))
+    state_inherited = set(_literal_assignment(source, "_STATE_INHERITED_SELECT_COLUMNS"))
+    state_owned = set(_literal_assignment(source, "_STATE_SELECT_COLUMNS"))
+    outbox_inherited_select = set(
+        _literal_assignment(source, "_OUTBOX_INHERITED_SELECT_COLUMNS")
+    )
+    outbox_inherited_insert = set(
+        _literal_assignment(source, "_OUTBOX_INHERITED_INSERT_COLUMNS")
+    )
+
+    assert branch_inherited == {"id", "org_id"}
+    assert state_inherited == {"branch_id", "deleted_at", "is_active"}
+    assert branch_inherited.isdisjoint(branch_owned)
+    assert state_inherited.isdisjoint(state_owned)
+    assert outbox_inherited_select == {
+        "outbox_id",
+        "tenant_id",
+        "branch_id",
+        "event_type",
+        "status",
+        "leased_by",
+        "leased_until",
+        "correlation_id",
+    }
+    assert outbox_inherited_insert == {
+        "outbox_id",
+        "tenant_id",
+        "branch_id",
+        "event_type",
+        "payload",
+        "created_at",
+        "process_after",
+        "status",
+        "attempt_count",
+        "max_attempts",
+        "correlation_id",
+        "leased_by",
+        "leased_until",
+    }
+    assert "_require_inherited_direct_grants(bind)" in source
+    assert '"GRANT SELECT (" + ",".join(_BRANCH_SELECT_COLUMNS)' in source
+    assert '"REVOKE SELECT (" + ",".join(_BRANCH_SELECT_COLUMNS)' in source
+    assert '"GRANT SELECT (" + ",".join(_STATE_SELECT_COLUMNS)' in source
+    assert '"REVOKE SELECT (" + ",".join(_STATE_SELECT_COLUMNS)' in source
 
 
 def test_worker_and_maintenance_capabilities_are_separated() -> None:
