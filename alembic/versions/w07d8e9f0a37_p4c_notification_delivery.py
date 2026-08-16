@@ -78,7 +78,8 @@ def _require_identity_contract(bind) -> None:
     )):
         raise RuntimeError("w07 migration_owner violates reduced-role contract")
 
-    for role_name in (_SECURITY_OWNER, _WORKER, _MAINTENANCE, _APP, "auth_runtime"):
+    _require_reduced_role(bind, _SECURITY_OWNER)
+    for role_name in (_WORKER, _MAINTENANCE, _APP, "auth_runtime"):
         _require_reduced_role(bind, role_name)
         if bind.execute(
             sa.text("SELECT pg_catalog.pg_has_role(:member,:target,'SET')"),
