@@ -228,10 +228,12 @@ def test_timeout_without_provider_proof_remains_ambiguous() -> None:
     assert exc_info.value.error_code == "mutation_transport_ambiguous"
 
 
-def test_delete_success_requires_provider_absence() -> None:
+def test_delete_success_requires_provider_absence_and_idempotent_versioning() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "DELETE":
-            assert request.url.params["version_type"] == "external"
+            assert request.url.params["version"] == "8"
+            assert request.url.params["version_type"] == "external_gte"
+            assert request.url.params["refresh"] == "wait_for"
             return httpx.Response(
                 200,
                 request=request,
@@ -259,6 +261,42 @@ def test_delete_success_requires_provider_absence() -> None:
     assert evidence.provider_version == 8
     assert evidence.document_sha256 is None
     assert len(evidence.provider_evidence_sha256) == 64
+
+
+def test_delete_at_older_version_cannot_remove_newer_provider_document() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "DELETE":
+            assert request.url.params["version_type"] == "external_gte"
+            return httpx.Response(409, request=request, json={"error": "conflict"})
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "_id": BRANCH_ID,
+                "_version": 9,
+                "found": True,
+                "_source": {**DOCUMENT, "search_version": 9},
+            },
+        )
+
+    provider, client = _provider(handler)
+    try:
+        with pytest.raises(SearchProviderError) as exc_info:
+            asyncio.run(
+                provider.apply(
+                    branch_id=BRANCH_ID,
+                    operation="delete",
+                    desired_version=8,
+                    document=None,
+                )
+            )
+    finally:
+        asyncio.run(client.aclose())
+
+    error = exc_info.value
+    assert error.error_code == "delete_not_proven"
+    assert error.is_repairable_drift
+    assert error.provider_version == 9
 
 
 def test_provider_503_is_retryable_and_not_success() -> None:
