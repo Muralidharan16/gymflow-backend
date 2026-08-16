@@ -120,6 +120,52 @@ class Settings(DoersSettingsSchema):
             )
             raise ValueError("Production database identity configuration is unsafe: " + detail)
 
+        notification_mode = self.NOTIFICATION_EMAIL_PROVIDER_MODE.strip().lower()
+        if notification_mode not in {"disabled", "resend"}:
+            raise ValueError(
+                "NOTIFICATION_EMAIL_PROVIDER_MODE must be disabled or resend"
+            )
+        notification_key = self.P4C_RESEND_API_KEY.strip()
+        webhook_secret = self.RESEND_WEBHOOK_SECRET.strip()
+        if profile_name == "worker":
+            if webhook_secret:
+                raise ValueError(
+                    "RESEND_WEBHOOK_SECRET is restricted to the API profile"
+                )
+            if notification_mode == "disabled":
+                if notification_key:
+                    raise ValueError(
+                        "disabled notification workers must not receive P4C_RESEND_API_KEY"
+                    )
+            else:
+                if not notification_key:
+                    raise ValueError(
+                        "P4C_RESEND_API_KEY is required when Resend notifications are enabled"
+                    )
+                if not self.NOTIFICATION_EMAIL_FROM.strip():
+                    raise ValueError(
+                        "NOTIFICATION_EMAIL_FROM is required when Resend notifications are enabled"
+                    )
+                resend_url = urlparse(self.RESEND_API_BASE_URL.strip())
+                if resend_url.scheme != "https" or not resend_url.netloc:
+                    raise ValueError(
+                        "RESEND_API_BASE_URL must be an HTTPS URL in production"
+                    )
+                if not 0 < self.NOTIFICATION_PROVIDER_TIMEOUT_SECONDS <= 60:
+                    raise ValueError(
+                        "NOTIFICATION_PROVIDER_TIMEOUT_SECONDS must be in the range (0, 60]"
+                    )
+        elif profile_name == "api":
+            if notification_mode != "disabled" or notification_key:
+                raise ValueError(
+                    "P4C Resend sending authority is restricted to the worker profile"
+                )
+        else:
+            if notification_mode != "disabled" or notification_key or webhook_secret:
+                raise ValueError(
+                    "P4C notification provider configuration is forbidden for maintenance/beat profiles"
+                )
+
         search_mode = self.SEARCH_PROVIDER_MODE.strip().lower()
         if search_mode not in {"disabled", "opensearch"}:
             raise ValueError("SEARCH_PROVIDER_MODE must be disabled or opensearch")
