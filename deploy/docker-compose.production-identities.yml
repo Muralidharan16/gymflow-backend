@@ -5,6 +5,10 @@ services:
       CELERY_WORKER_PROFILE: ""
       WORKER_DATABASE_URL: ""
       MAINTENANCE_DATABASE_URL: ""
+      SEARCH_PROVIDER_MODE: disabled
+      OPENSEARCH_URL: ""
+      OPENSEARCH_USERNAME: ""
+      OPENSEARCH_PASSWORD: ""
 
   celery-worker:
     environment:
@@ -13,6 +17,13 @@ services:
       DATABASE_URL: ""
       AUTH_DATABASE_URL: ""
       MAINTENANCE_DATABASE_URL: ""
+      SEARCH_PROVIDER_MODE: ${SEARCH_PROVIDER_MODE:-disabled}
+      OPENSEARCH_URL: ${OPENSEARCH_URL:-}
+      OPENSEARCH_INDEX: ${OPENSEARCH_INDEX:-branches-v1}
+      OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-}
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD:-}
+      OPENSEARCH_TIMEOUT_SECONDS: ${OPENSEARCH_TIMEOUT_SECONDS:-5}
+      OPENSEARCH_VERIFY_TLS: ${OPENSEARCH_VERIFY_TLS:-true}
 
   celery-maintenance-worker:
     environment:
@@ -21,6 +32,10 @@ services:
       DATABASE_URL: ""
       AUTH_DATABASE_URL: ""
       WORKER_DATABASE_URL: ""
+      SEARCH_PROVIDER_MODE: disabled
+      OPENSEARCH_URL: ""
+      OPENSEARCH_USERNAME: ""
+      OPENSEARCH_PASSWORD: ""
 
   celery-beat:
     environment:
@@ -30,6 +45,10 @@ services:
       AUTH_DATABASE_URL: ""
       WORKER_DATABASE_URL: ""
       MAINTENANCE_DATABASE_URL: ""
+      SEARCH_PROVIDER_MODE: disabled
+      OPENSEARCH_URL: ""
+      OPENSEARCH_USERNAME: ""
+      OPENSEARCH_PASSWORD: ""
 
   flower:
     environment:
@@ -39,3 +58,7 @@ services:
       AUTH_DATABASE_URL: ""
       WORKER_DATABASE_URL: ""
       MAINTENANCE_DATABASE_URL: ""
+      SEARCH_PROVIDER_MODE: disabled
+      OPENSEARCH_URL: ""
+      OPENSEARCH_USERNAME: ""
+      OPENSEARCH_PASSWORD: ""
