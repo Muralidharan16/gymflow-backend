@@ -13,6 +13,7 @@ def _source(path: str) -> str:
 def test_asset_api_persists_authority_before_opaque_queue_publish() -> None:
     source = _source("app/routers/assets.py")
     assert "app_secure.enqueue_organization_asset_job" in source
+    assert "CAST(:focal_y AS numeric)" in source
     assert "await db.commit()" in source
     assert "process_organization_asset.delay(str(job_id))" in source
     assert "process_org_logo.delay" not in source
