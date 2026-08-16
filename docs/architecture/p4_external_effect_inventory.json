@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "certified_base_sha": "882406537584861da2b2b6d44fd37b016a9f8462",
+  "phase": "P4A",
+  "governing_rule": "local_attempt_is_not_external_success",
+  "lifecycle_external_events": [
+    {
+      "event_type": "branch.search_index",
+      "domain": "search",
+      "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
+      "consumer": "app.tasks.branch_outbox_poller",
+      "p4_stage": "P4B",
+      "current_status": "fail_closed_pending_real_provider",
+      "terminal_success_requires": "authoritative_search_provider_evidence"
+    },
+    {
+      "event_type": "branch.search_deindex",
+      "domain": "search",
+      "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
+      "consumer": "app.tasks.branch_outbox_poller",
+      "p4_stage": "P4B",
+      "current_status": "fail_closed_pending_real_provider",
+      "terminal_success_requires": "authoritative_search_provider_evidence"
+    },
+    {
+      "event_type": "branch.member_notification",
+      "domain": "notification",
+      "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
+      "consumer": "app.tasks.branch_outbox_poller",
+      "p4_stage": "P4C",
+      "current_status": "fail_closed_pending_real_provider",
+      "terminal_success_requires": "provider_acceptance_and_channel_terminal_evidence_where_available"
+    },
+    {
+      "event_type": "branch.refund_required",
+      "domain": "finance_refund",
+      "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
+      "consumer": "app.tasks.branch_outbox_poller",
+      "p4_stage": "P4D",
+      "current_status": "fail_closed_pending_real_provider",
+      "terminal_success_requires": "authoritative_refund_provider_evidence"
+    }
+  ],
+  "legacy_notification_entrypoints": [
+    {
+      "task": "send_daily_reminders",
+      "source": "app/tasks/reminders.py",
+      "p4_stage": "P4C",
+      "current_status": "fail_closed"
+    },
+    {
+      "task": "send_birthday_wishes",
+      "source": "app/tasks/reminders.py",
+      "p4_stage": "P4C",
+      "current_status": "fail_closed"
+    },
+    {
+      "task": "app.tasks.daily_digest.run",
+      "source": "app/tasks/daily_digest.py",
+      "p4_stage": "P4C",
+      "current_status": "fail_closed"
+    }
+  ],
+  "known_p4_gaps": [
+    {
+      "id": "search_marker_only_reconciliation",
+      "source": "app/services/branch_lifecycle_service.py",
+      "method": "run_reconciliation_sweep",
+      "p4_stage": "P4B",
+      "risk": "local search sync markers can advance without downstream provider evidence",
+      "required_resolution": "replace marker-only reconciliation with provider-backed compare_and_repair semantics"
+    },
+    {
+      "id": "lifecycle_external_handler_fail_closed",
+      "source": "app/tasks/branch_outbox_poller.py",
+      "method": "_process_external_event",
+      "p4_stage": "P4B_P4C_P4D",
+      "risk": "external commands cannot complete until real handlers exist",
+      "required_resolution": "add domain handlers without changing attempted_into_succeeded semantics"
+    }
+  ],
+  "finance_foundation": {
+    "refund_model": "app.finance_core.models.foundation.FinanceRefund",
+    "payment_model": "app.finance_core.models.foundation.FinancePayment",
+    "provider_event_model": "app.finance_core.models.foundation.FinancePaymentEvent",
+    "idempotency_model": "app.finance_core.models.foundation.FinanceIdempotencyKey",
+    "outbox_model": "app.finance_core.models.foundation.FinanceOutboxEvent",
+    "refund_terminal_success_state": "succeeded",
+    "p4_stage": "P4D"
+  },
+  "required_semantics": {
+    "command_states": [
+      "pending",
+      "processing",
+      "provider_accepted",
+      "succeeded",
+      "retry_pending",
+      "dead_lettered",
+      "cancelled",
+      "superseded"
+    ],
+    "provider_outcomes": [
+      "definite_success",
+      "provider_accepted_nonterminal",
+      "permanent_rejection",
+      "retryable_failure",
+      "ambiguous_outcome"
+    ],
+    "durable_evidence_fields": [
+      "internal_effect_id",
+      "tenant_or_organization_id",
+      "aggregate_id",
+      "effect_type",
+      "idempotency_key",
+      "desired_state_or_version",
+      "request_hash",
+      "status",
+      "attempt_count",
+      "next_attempt_at",
+      "lease_or_fence",
+      "provider_code",
+      "provider_reference_id",
+      "provider_event_id",
+      "acknowledgement_or_evidence",
+      "attempted_at",
+      "acknowledged_at",
+      "completed_at",
+      "last_error",
+      "correlation_id",
+      "dead_letter_reason"
+    ]
+  }
+}
