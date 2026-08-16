@@ -112,7 +112,12 @@ jobs:
               END LOOP;
             END LOOP;
 
-            SELECT 'app_secure.materialize_branch_member_notifications(uuid,uuid)'::regprocedure::oid INTO v_fn;
+            SELECT p.oid INTO STRICT v_fn
+            FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+            WHERE n.nspname='app_secure'
+              AND p.proname='materialize_branch_member_notifications'
+              AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, uuid';
             IF NOT pg_catalog.has_function_privilege('worker_runtime',v_fn,'EXECUTE')
                OR pg_catalog.has_function_privilege('app_runtime',v_fn,'EXECUTE')
                OR pg_catalog.has_function_privilege('auth_runtime',v_fn,'EXECUTE')
@@ -120,7 +125,12 @@ jobs:
               RAISE EXCEPTION 'P4C fanout function privilege partition is wrong';
             END IF;
 
-            SELECT 'app_secure.apply_resend_notification_event(text,text,text,timestamptz,text)'::regprocedure::oid INTO v_fn;
+            SELECT p.oid INTO STRICT v_fn
+            FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+            WHERE n.nspname='app_secure'
+              AND p.proname='apply_resend_notification_event'
+              AND pg_catalog.oidvectortypes(p.proargtypes)='text, text, text, timestamp with time zone, text';
             IF NOT pg_catalog.has_function_privilege('app_runtime',v_fn,'EXECUTE')
                OR pg_catalog.has_function_privilege('worker_runtime',v_fn,'EXECUTE')
                OR pg_catalog.has_function_privilege('auth_runtime',v_fn,'EXECUTE')
