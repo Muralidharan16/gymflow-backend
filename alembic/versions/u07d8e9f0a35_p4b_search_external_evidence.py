@@ -75,7 +75,6 @@ _BRANCH_SELECT_COLUMNS = (
     "region_code",
     "country_code",
 )
-_OUTBOX_ADDED_SELECT_COLUMNS = ("attempt_count",)
 _OUTBOX_UPDATE_COLUMNS = ("status", "last_error", "leased_by", "leased_until")
 
 _FUNCTIONS = (
@@ -170,9 +169,7 @@ def _direct_column_privileges(bind, relation: str, role_name: str) -> set[tuple[
                   ON attribute_data.attrelid = relation_data.oid
                  AND attribute_data.attnum > 0
                  AND NOT attribute_data.attisdropped
-                CROSS JOIN LATERAL pg_catalog.aclexplode(
-                    COALESCE(attribute_data.attacl, '{}'::aclitem[])
-                ) AS acl_data
+                CROSS JOIN LATERAL pg_catalog.aclexplode(attribute_data.attacl) AS acl_data
                 JOIN pg_catalog.pg_roles AS grantee
                   ON grantee.oid = acl_data.grantee
                 WHERE namespace_data.nspname = :schema_name
@@ -229,6 +226,22 @@ def _require_no_new_runtime_table_acl(bind) -> None:
         raise RuntimeError("u07 leaked direct search-attempt ACL to worker_runtime")
 
 
+def _require_absent_direct_grants(
+    bind,
+    relation: str,
+    role_name: str,
+    expected: set[tuple[str, str]],
+) -> None:
+    existing = _direct_column_privileges(bind, relation, role_name)
+    overlap = existing.intersection(expected)
+    if overlap:
+        rendered = ", ".join(f"{column}:{privilege}" for column, privilege in sorted(overlap))
+        raise RuntimeError(
+            "u07 refuses ambiguous predecessor app_security_owner column ACL "
+            f"on {relation}: {rendered}"
+        )
+
+
 def _require_predecessor(bind) -> None:
     for relation in (_STATE, _BRANCH, _OUTBOX):
         if bind.execute(
@@ -236,24 +249,40 @@ def _require_predecessor(bind) -> None:
             {"relation": relation},
         ).scalar_one():
             raise RuntimeError(f"u07 missing predecessor relation {relation}")
-    if bind.execute(sa.text("SELECT pg_catalog.to_regclass(:relation) IS NOT NULL"), {"relation": _ATTEMPTS}).scalar_one():
+    if bind.execute(
+        sa.text("SELECT pg_catalog.to_regclass(:relation) IS NOT NULL"),
+        {"relation": _ATTEMPTS},
+    ).scalar_one():
         raise RuntimeError("u07 search attempt relation already exists")
-    for signature in (*_FUNCTIONS, *_TRIGGER_FUNCTIONS):
-        if bind.execute(
+
+    existing_function_names = {
+        row[0]
+        for row in bind.execute(
             sa.text(
                 """
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM pg_catalog.pg_proc AS p
-                    JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
-                    WHERE n.nspname = split_part(:signature, '.', 1)
-                      AND p.oid::regprocedure::text = split_part(:signature, '.', 2)
-                )
+                SELECT p.proname::text
+                FROM pg_catalog.pg_proc AS p
+                JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'app_secure'
+                  AND p.proname = ANY(CAST(:names AS text[]))
                 """
             ),
-            {"signature": signature},
-        ).scalar_one():
-            raise RuntimeError(f"u07 function collision: {signature}")
+            {
+                "names": [
+                    "claim_branch_search_projection",
+                    "acknowledge_branch_search_effect",
+                    "record_branch_search_failure",
+                    "enqueue_branch_search_reconciliation",
+                    "bump_branch_search_version_from_state",
+                    "bump_branch_search_version_from_branch",
+                ]
+            },
+        ).all()
+    }
+    if existing_function_names:
+        raise RuntimeError(
+            "u07 function collision: " + ", ".join(sorted(existing_function_names))
+        )
 
     existing_columns = set(
         bind.execute(
@@ -284,21 +313,26 @@ def _require_predecessor(bind) -> None:
     if existing_columns:
         raise RuntimeError(f"u07 state column collision: {sorted(existing_columns)!r}")
 
-    # This revision owns only its new direct column grants. Refuse to revoke a
-    # predecessor grant on downgrade by requiring those exact direct grants to
-    # be absent before installation.
-    predecessor_column_acl = _direct_column_privileges(bind, _BRANCH, _SECURITY_OWNER)
-    predecessor_column_acl |= _direct_column_privileges(bind, _STATE, _SECURITY_OWNER)
-    for column_name, privilege in predecessor_column_acl:
-        if (
-            (column_name in _BRANCH_SELECT_COLUMNS and privilege == "SELECT")
-            or (column_name in _STATE_SELECT_COLUMNS and privilege == "SELECT")
-            or (column_name in _STATE_UPDATE_COLUMNS and privilege == "UPDATE")
-        ):
-            raise RuntimeError(
-                "u07 refuses ambiguous predecessor app_security_owner column ACL: "
-                f"{column_name}:{privilege}"
-            )
+    _require_absent_direct_grants(
+        bind,
+        _BRANCH,
+        _SECURITY_OWNER,
+        {(column, "SELECT") for column in _BRANCH_SELECT_COLUMNS},
+    )
+    _require_absent_direct_grants(
+        bind,
+        _STATE,
+        _SECURITY_OWNER,
+        {(column, "SELECT") for column in _STATE_SELECT_COLUMNS}
+        | {(column, "UPDATE") for column in _STATE_UPDATE_COLUMNS},
+    )
+    _require_absent_direct_grants(
+        bind,
+        _OUTBOX,
+        _SECURITY_OWNER,
+        {("attempt_count", "SELECT")}
+        | {(column, "UPDATE") for column in _OUTBOX_UPDATE_COLUMNS},
+    )
 
 
 def _create_secure_functions() -> None:
@@ -890,9 +924,6 @@ def upgrade() -> None:
 
     _create_secure_functions()
 
-    # migration_owner owns the target tables but deliberately lacks persistent
-    # app_secure schema usage. Grant only long enough to install the two triggers,
-    # then revoke it together with temporary trigger-function EXECUTE.
     op.execute("SET LOCAL ROLE app_security_owner")
     op.execute("GRANT USAGE ON SCHEMA app_secure TO migration_owner")
     op.execute(
@@ -938,7 +969,10 @@ def upgrade() -> None:
     for role_name in ("app_runtime", "auth_runtime", _MAINTENANCE):
         for signature in _FUNCTIONS[:3]:
             if bind.execute(
-                sa.text("SELECT pg_catalog.has_function_privilege(:role, CAST(:sig AS regprocedure), 'EXECUTE')"),
+                sa.text(
+                    "SELECT pg_catalog.has_function_privilege("
+                    ":role, CAST(:sig AS regprocedure), 'EXECUTE')"
+                ),
                 {"role": role_name, "sig": signature},
             ).scalar_one():
                 raise RuntimeError(f"u07 leaked worker search capability to {role_name}")
@@ -965,7 +999,9 @@ def downgrade() -> None:
             """
         )
     ).scalar_one()
-    evidence = bind.execute(sa.text("SELECT count(*) FROM public.branch_search_effect_attempts")).scalar_one()
+    evidence = bind.execute(
+        sa.text("SELECT count(*) FROM public.branch_search_effect_attempts")
+    ).scalar_one()
     acknowledged = bind.execute(
         sa.text(
             "SELECT count(*) FROM public.org_branch_state "
@@ -1005,7 +1041,10 @@ def downgrade() -> None:
         "REVOKE UPDATE (" + ",".join(_STATE_UPDATE_COLUMNS) + ") "
         "ON TABLE public.org_branch_state FROM app_security_owner"
     )
-    op.execute("REVOKE SELECT (attempt_count) ON TABLE public.branch_outbox_events FROM app_security_owner")
+    op.execute(
+        "REVOKE SELECT (attempt_count) ON TABLE public.branch_outbox_events "
+        "FROM app_security_owner"
+    )
     op.execute(
         "REVOKE UPDATE (" + ",".join(_OUTBOX_UPDATE_COLUMNS) + ") "
         "ON TABLE public.branch_outbox_events FROM app_security_owner"
