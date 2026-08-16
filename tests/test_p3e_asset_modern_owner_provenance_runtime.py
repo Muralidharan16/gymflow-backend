@@ -41,7 +41,7 @@ def _set_owner_context(conn) -> None:
 def _enqueue(conn, asset_type: str, upload_id: str) -> uuid.UUID:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT app_secure.enqueue_organization_asset_job(%s, %s, %s, %s)",
+            "SELECT app_secure.enqueue_organization_asset_job(%s, %s, %s::numeric, %s)",
             (asset_type, upload_id, 0.5 if asset_type == "cover" else None, "127.0.0.1"),
         )
         return cur.fetchone()[0]
