@@ -188,6 +188,12 @@ jobs:
           set -euo pipefail
           PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config(
+            'app.current_org_id',
+            '44000000-0000-4000-8000-000000000001',
+            true
+          );
           INSERT INTO public.organizations (
             id,name,slug,tier,is_active,max_branches,default_currency_code,
             website_verified,social_links,verification_status,country,profile_completed
@@ -224,6 +230,7 @@ jobs:
             '44000000-0000-4000-8000-000000000041',
             clock_timestamp() + interval '10 minutes'
           );
+          COMMIT;
           SQL
 
       - name: Prove stale event label is not authority and evidence gates sync state
