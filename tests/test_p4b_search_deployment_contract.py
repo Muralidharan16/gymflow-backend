@@ -42,6 +42,9 @@ def test_only_ordinary_worker_receives_live_opensearch_configuration() -> None:
     assert "OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-}" in worker
     assert "OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD:-}" in worker
     assert "OPENSEARCH_VERIFY_TLS: ${OPENSEARCH_VERIFY_TLS:-true}" in worker
+    assert "SEARCH_METRICS_OTLP_ENDPOINT: ${SEARCH_METRICS_OTLP_ENDPOINT:-}" in worker
+    assert "SEARCH_METRICS_EXPORT_INTERVAL_SECONDS: ${SEARCH_METRICS_EXPORT_INTERVAL_SECONDS:-30}" in worker
+    assert "SEARCH_METRICS_EXPORT_TIMEOUT_SECONDS: ${SEARCH_METRICS_EXPORT_TIMEOUT_SECONDS:-5}" in worker
 
     for service_name in (
         "api",
@@ -54,9 +57,11 @@ def test_only_ordinary_worker_receives_live_opensearch_configuration() -> None:
         assert 'OPENSEARCH_URL: ""' in block, service_name
         assert 'OPENSEARCH_USERNAME: ""' in block, service_name
         assert 'OPENSEARCH_PASSWORD: ""' in block, service_name
+        assert 'SEARCH_METRICS_OTLP_ENDPOINT: ""' in block, service_name
         assert "${OPENSEARCH_URL" not in block, service_name
         assert "${OPENSEARCH_USERNAME" not in block, service_name
         assert "${OPENSEARCH_PASSWORD" not in block, service_name
+        assert "${SEARCH_METRICS_OTLP_ENDPOINT" not in block, service_name
 
 
 def test_example_configuration_is_fail_closed_and_contains_no_provider_secret() -> None:
@@ -68,6 +73,9 @@ def test_example_configuration_is_fail_closed_and_contains_no_provider_secret() 
     assert "OPENSEARCH_USERNAME=\n" in source
     assert "OPENSEARCH_PASSWORD=\n" in source
     assert "OPENSEARCH_VERIFY_TLS=true" in source
+    assert "SEARCH_METRICS_OTLP_ENDPOINT=\n" in source
+    assert "SEARCH_METRICS_EXPORT_INTERVAL_SECONDS=30" in source
+    assert "SEARCH_METRICS_EXPORT_TIMEOUT_SECONDS=5" in source
 
 
 def test_non_worker_profiles_never_inherit_worker_database_or_search_credentials() -> None:
