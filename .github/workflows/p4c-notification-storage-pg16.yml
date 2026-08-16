@@ -1,0 +1,354 @@
+name: P4C Notification Storage PG16
+
+on:
+  pull_request:
+    branches:
+      - hardening/p4b-search-integration
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p4c-notification-storage-pg16-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  notification-storage:
+    name: Durable notification authority on fresh PostgreSQL 16
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      APP_RUNTIME_PASSWORD: ci-app-test-runtime
+      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p4c_test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment and prove static contracts
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+          python -m py_compile alembic/versions/w07d8e9f0a37_p4c_notification_delivery.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p4c_notification_static_contracts.py
+
+      - name: Install PostgreSQL 16 and reduced identities
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-worker-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE app_test_runtime SET row_security='on';
+          ALTER ROLE worker_test_runtime SET row_security='on';
+          CREATE DATABASE gymflow_p4c_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p4c_test TO app_test_runtime,worker_test_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p4c_test
+
+      - name: Upgrade fresh database to exact P4C storage head
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'w07d8e9f0a37'
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Prove RLS, ACL and capability partition
+        run: |
+          set -euo pipefail
+          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p4c_test <<'SQL'
+          DO $$
+          DECLARE
+            v_rel text;
+            v_role text;
+            v_enabled boolean;
+            v_forced boolean;
+            v_fn oid;
+          BEGIN
+            FOREACH v_rel IN ARRAY ARRAY[
+              'member_notification_preferences','notification_commands',
+              'notification_delivery_attempts','notification_provider_events'
+            ] LOOP
+              SELECT relrowsecurity,relforcerowsecurity INTO v_enabled,v_forced
+              FROM pg_catalog.pg_class WHERE oid=('public.'||v_rel)::regclass;
+              IF NOT v_enabled OR NOT v_forced THEN
+                RAISE EXCEPTION 'P4C relation % is not ENABLE+FORCE RLS',v_rel;
+              END IF;
+              FOREACH v_role IN ARRAY ARRAY[
+                'app_runtime','auth_runtime','worker_runtime','lifecycle_maintenance_runtime'
+              ] LOOP
+                IF pg_catalog.has_table_privilege(v_role,('public.'||v_rel)::regclass,'SELECT')
+                   OR pg_catalog.has_table_privilege(v_role,('public.'||v_rel)::regclass,'INSERT')
+                   OR pg_catalog.has_table_privilege(v_role,('public.'||v_rel)::regclass,'UPDATE')
+                   OR pg_catalog.has_table_privilege(v_role,('public.'||v_rel)::regclass,'DELETE') THEN
+                  RAISE EXCEPTION 'P4C direct notification ACL leaked: % %',v_role,v_rel;
+                END IF;
+              END LOOP;
+            END LOOP;
+
+            SELECT 'app_secure.materialize_branch_member_notifications(uuid,uuid)'::regprocedure::oid INTO v_fn;
+            IF NOT pg_catalog.has_function_privilege('worker_runtime',v_fn,'EXECUTE')
+               OR pg_catalog.has_function_privilege('app_runtime',v_fn,'EXECUTE')
+               OR pg_catalog.has_function_privilege('auth_runtime',v_fn,'EXECUTE')
+               OR pg_catalog.has_function_privilege('lifecycle_maintenance_runtime',v_fn,'EXECUTE') THEN
+              RAISE EXCEPTION 'P4C fanout function privilege partition is wrong';
+            END IF;
+
+            SELECT 'app_secure.apply_resend_notification_event(text,text,text,timestamptz,text)'::regprocedure::oid INTO v_fn;
+            IF NOT pg_catalog.has_function_privilege('app_runtime',v_fn,'EXECUTE')
+               OR pg_catalog.has_function_privilege('worker_runtime',v_fn,'EXECUTE')
+               OR pg_catalog.has_function_privilege('auth_runtime',v_fn,'EXECUTE')
+               OR pg_catalog.has_function_privilege('lifecycle_maintenance_runtime',v_fn,'EXECUTE') THEN
+              RAISE EXCEPTION 'P4C webhook evidence function privilege partition is wrong';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Seed authoritative lifecycle/member fixture
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_p4c_test <<'SQL'
+          INSERT INTO public.organizations(
+            id,name,slug,tier,is_active,max_branches,default_currency_code,
+            website_verified,social_links,verification_status,country,profile_completed
+          ) VALUES (
+            '46000000-0000-4000-8000-000000000001','P4C Notification Org','p4c-notification-org',
+            'basic',true,10,'INR',false,'{}'::jsonb,'pending','India',false
+          );
+          INSERT INTO public.org_branches(
+            id,org_id,branch_name,branch_code,internal_slug,timezone,currency_code,
+            region_code,country_code
+          ) VALUES (
+            '46000000-0000-4000-8000-000000000011',
+            '46000000-0000-4000-8000-000000000001',
+            'P4C Main Branch','P4C-01','p4c-main','Asia/Kolkata','INR','PY','IN'
+          );
+          INSERT INTO public.members(
+            id,org_id,home_branch_id,member_uid,member_number,name,email,status,is_active,
+            is_migrated,created_at,updated_at
+          ) VALUES (
+            '46000000-0000-4000-8000-000000000021',
+            '46000000-0000-4000-8000-000000000001',
+            '46000000-0000-4000-8000-000000000011',
+            'P4CMEMBER0001',1,'P4C Member','old-address@example.test','active',true,false,
+            pg_catalog.clock_timestamp(),pg_catalog.clock_timestamp()
+          );
+          INSERT INTO public.branch_status_history(
+            history_id,branch_id,from_status,to_status,changed_by,changed_at,reason,
+            transition_source,snapshot,correlation_id,correlation_emitted_at
+          ) VALUES (
+            '46000000-0000-4000-8000-000000000031',
+            '46000000-0000-4000-8000-000000000011','active','temporarily_closed',NULL,
+            pg_catalog.clock_timestamp(),'P4C fixture','ci','{}'::jsonb,
+            '46000000-0000-4000-8000-000000000041',pg_catalog.clock_timestamp()
+          );
+          INSERT INTO public.branch_outbox_events(
+            outbox_id,tenant_id,branch_id,event_type,payload,created_at,process_after,status,
+            attempt_count,max_attempts,correlation_id,leased_by,leased_until,last_attempted_at
+          ) VALUES (
+            '46000000-0000-4000-8000-000000000051',
+            '46000000-0000-4000-8000-000000000001',
+            '46000000-0000-4000-8000-000000000011','branch.member_notification',
+            '{"email":"attacker-controlled@example.invalid","to_status":"active"}'::jsonb,
+            pg_catalog.clock_timestamp(),pg_catalog.clock_timestamp(),'processing',1,5,
+            '46000000-0000-4000-8000-000000000041',
+            '46000000-0000-4000-8000-000000000061',
+            pg_catalog.clock_timestamp()+INTERVAL '10 minutes',pg_catalog.clock_timestamp()
+          );
+          SQL
+
+      - name: Prove tenant-bound deterministic fanout ignores queue recipient data
+        run: |
+          set -euo pipefail
+          result="$(PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_p4c_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',true);
+          SELECT pg_catalog.set_config('app.current_role','branch_lifecycle_worker',true);
+          SELECT pg_catalog.set_config('app.internal_maintenance','branch_lifecycle_saga',true);
+          SELECT pg_catalog.set_config('app.worker_id','46000000-0000-4000-8000-000000000061',true);
+          SELECT app_secure.materialize_branch_member_notifications(
+            '46000000-0000-4000-8000-000000000051',
+            '46000000-0000-4000-8000-000000000061'
+          );
+          COMMIT;
+          SQL
+          )"
+          test "$(printf '%s\n' "${result}" | grep -E '^[0-9]+$' | tail -1)" = '1'
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_p4c_test <<'SQL'
+          DO $$
+          DECLARE
+            v_parent text;
+            v_commands bigint;
+            v_children bigint;
+            v_key text;
+            v_data jsonb;
+          BEGIN
+            SELECT status INTO v_parent FROM public.branch_outbox_events
+            WHERE outbox_id='46000000-0000-4000-8000-000000000051';
+            SELECT count(*),min(idempotency_key),min(template_data::text)::jsonb
+            INTO v_commands,v_key,v_data FROM public.notification_commands
+            WHERE source_outbox_id='46000000-0000-4000-8000-000000000051';
+            SELECT count(*) INTO v_children FROM public.branch_outbox_events
+            WHERE event_type='notification.delivery'
+              AND tenant_id='46000000-0000-4000-8000-000000000001'
+              AND branch_id='46000000-0000-4000-8000-000000000011';
+            IF v_parent<>'superseded' OR v_commands<>1 OR v_children<>1
+               OR v_key<>'branch-lifecycle/46000000-0000-4000-8000-000000000041/46000000-0000-4000-8000-000000000021/email'
+               OR v_data->>'from_status'<>'active'
+               OR v_data->>'to_status'<>'temporarily_closed'
+               OR v_data::text LIKE '%attacker-controlled%' THEN
+              RAISE EXCEPTION 'P4C fanout authority/idempotency contract failed';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Prove claim re-reads current destination and provider acceptance is nonterminal
+        run: |
+          set -euo pipefail
+          child="$(sudo -u postgres psql -X -At -d gymflow_p4c_test -c "SELECT command_id FROM public.notification_commands LIMIT 1")"
+          test -n "${child}"
+          echo "P4C_CHILD=${child}" >> "${GITHUB_ENV}"
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_p4c_test <<'SQL'
+          UPDATE public.members
+          SET email='current-address@example.test',updated_at=pg_catalog.clock_timestamp()
+          WHERE id='46000000-0000-4000-8000-000000000021';
+          SQL
+
+          PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_p4c_test <<SQL
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',true);
+          UPDATE public.branch_outbox_events
+          SET status='processing',attempt_count=attempt_count+1,last_attempted_at=pg_catalog.clock_timestamp(),
+              leased_by='46000000-0000-4000-8000-000000000061',
+              leased_until=pg_catalog.clock_timestamp()+INTERVAL '10 minutes'
+          WHERE outbox_id='${child}' AND status='pending';
+          COMMIT;
+          SQL
+
+          projection="$(PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -F '|' -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_p4c_test <<SQL
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',true);
+          SELECT eligible,destination,channel,attempt_number,provider_code
+          FROM app_secure.claim_notification_delivery(
+            '${child}','46000000-0000-4000-8000-000000000061'
+          );
+          COMMIT;
+          SQL
+          )"
+          test "$(printf '%s\n' "${projection}" | grep '^t|' | tail -1)" = 't|current-address@example.test|email|1|resend'
+
+          ack="$(PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_p4c_test <<SQL
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',true);
+          SELECT app_secure.acknowledge_notification_provider_acceptance(
+            '${child}','46000000-0000-4000-8000-000000000061','resend-email-id-001',
+            repeat('a',64),repeat('b',64)
+          );
+          COMMIT;
+          SQL
+          )"
+          test "$(printf '%s\n' "${ack}" | grep -E '^(t|f)$' | tail -1)" = 't'
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_p4c_test <<SQL
+          DO \$\$
+          DECLARE v_command text; v_outbox text; v_attempts bigint;
+          BEGIN
+            SELECT status INTO v_command FROM public.notification_commands WHERE command_id='${child}';
+            SELECT status INTO v_outbox FROM public.branch_outbox_events WHERE outbox_id='${child}';
+            SELECT count(*) INTO v_attempts FROM public.notification_delivery_attempts
+            WHERE command_id='${child}' AND outcome='provider_accepted_nonterminal'
+              AND provider_reference_id='resend-email-id-001';
+            IF v_command<>'provider_accepted' OR v_outbox<>'provider_accepted' OR v_attempts<>1 THEN
+              RAISE EXCEPTION 'provider acceptance was confused with terminal delivery';
+            END IF;
+          END
+          \$\$;
+          SQL
+
+      - name: Prove verified provider event is the only terminal success path
+        run: |
+          set -euo pipefail
+          event_result="$(PGPASSWORD="${APP_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_test_runtime -d gymflow_p4c_test <<'SQL'
+          SELECT app_secure.apply_resend_notification_event(
+            'resend-event-001','resend-email-id-001','email.delivered',
+            pg_catalog.clock_timestamp(),repeat('c',64)
+          );
+          SQL
+          )"
+          test "${event_result}" = 'succeeded'
+
+          duplicate="$(PGPASSWORD="${APP_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_test_runtime -d gymflow_p4c_test <<'SQL'
+          SELECT app_secure.apply_resend_notification_event(
+            'resend-event-001','resend-email-id-001','email.delivered',
+            pg_catalog.clock_timestamp(),repeat('c',64)
+          );
+          SQL
+          )"
+          test "${duplicate}" = 'duplicate'
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_p4c_test <<SQL
+          DO \$\$
+          DECLARE v_command text; v_outbox text; v_outcome text;
+          BEGIN
+            SELECT status,delivery_outcome INTO v_command,v_outcome
+            FROM public.notification_commands WHERE command_id='${P4C_CHILD}';
+            SELECT status INTO v_outbox FROM public.branch_outbox_events WHERE outbox_id='${P4C_CHILD}';
+            IF v_command<>'succeeded' OR v_outbox<>'delivered' OR v_outcome<>'delivered' THEN
+              RAISE EXCEPTION 'verified Resend delivery evidence did not establish terminal success';
+            END IF;
+          END
+          \$\$;
+          SQL
+
+      - name: Prove provider-backed downgrade is refused
+        run: |
+          set -euo pipefail
+          set +e
+          output="$(python -s -m alembic -c alembic.ini downgrade v07d8e9f0a36 2>&1)"
+          rc=$?
+          set -e
+          test "${rc}" -ne 0
+          printf '%s\n' "${output}" | grep -F 'w07 downgrade refuses loss of live/provider-backed notification state'
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Reprove cluster identity contract
+        run: |
+          set -euo pipefail
+          bash scripts/ci/verify_cluster_roles.sh
+          python -s scripts/verify_cluster_identity_graph.py
