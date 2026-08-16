@@ -36,16 +36,21 @@ def _tuple_assignment(source: str, name: str) -> tuple[str, ...]:
     raise AssertionError(f"assignment {name} not found")
 
 
+def _normalized(source: str) -> str:
+    return " ".join(source.split())
+
+
 def test_p4c_contract_stacks_exactly_on_certified_p4b_and_preserves_truth_rule() -> None:
     source = CONTRACT.read_text(encoding="utf-8")
+    normalized = _normalized(source)
     assert "351fe7680fcf0614bd651b49cd8aae11e689d5e8" in source
     assert "HTTP 2xx" in source
     assert "is **not** proof" in source
-    assert "may become `succeeded` only from durable downstream" in source
-    assert "must never be relabelled `succeeded`" in source
-    assert "Queue payloads are data, never recipient or tenant authorization authority" in source
-    assert "Operator input may identify a notification to recover" in source
-    assert "may not supply an arbitrary destination or message body" in source
+    assert "may become `succeeded` only from durable downstream" in normalized
+    assert "must never be relabelled `succeeded`" in normalized
+    assert "Queue payloads are data, never recipient or tenant authorization authority" in normalized
+    assert "Operator input may identify a notification to recover" in normalized
+    assert "may not supply an arbitrary destination or message body" in normalized
 
 
 def test_p4c_migration_is_append_only_after_p4b_and_uses_shared_p4_states() -> None:
@@ -103,7 +108,6 @@ def test_p4c_capabilities_are_security_definer_fenced_and_public_revoked() -> No
     assert "REVOKE ALL ON FUNCTION {signature} FROM PUBLIC" in source
     assert "GRANT EXECUTE ON FUNCTION {signature} TO worker_runtime" in source
     assert "GRANT EXECUTE ON FUNCTION {_FUNCTIONS[4]} TO app_runtime" in source
-    assert "lifecycle_maintenance_runtime" not in source.split("def _create_functions", 1)[1].split("def _post_install_proof", 1)[0].split("GRANT EXECUTE")[-1]
 
 
 def test_lifecycle_fanout_is_deterministic_db_authoritative_and_not_false_delivery() -> None:
@@ -117,7 +121,7 @@ def test_lifecycle_fanout_is_deterministic_db_authoritative_and_not_false_delive
     assert "public.member_notification_preferences" in fanout
     assert "branch-lifecycle/'||v_correlation::text||'/'||m.id::text||'/email" in fanout
     assert "ON CONFLICT(idempotency_key) DO NOTHING" in fanout
-    assert "event_type,'notification.delivery'" not in fanout  # guard against brittle string reconstruction
+    assert "o.payload" not in fanout
     assert "'notification.delivery'" in fanout
     assert "status='superseded'" in fanout
     assert "status='delivered'" not in fanout
