@@ -48,14 +48,20 @@ jobs:
           python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
           diff -u requirements-test.lock /tmp/resolved.txt
 
-      - name: Compile and prove P4B static contracts
+      - name: Compile and prove P4B application and static contracts
         run: |
           set -euo pipefail
           python -m py_compile \
             alembic/versions/u07d8e9f0a35_p4b_search_external_evidence.py \
-            tests/test_p4b_search_evidence_static_contracts.py
+            app/services/search_provider.py \
+            app/services/branch_lifecycle_service.py \
+            app/tasks/branch_outbox_poller.py \
+            app/tasks/branch_lifecycle_sweeps.py \
+            tests/test_p4b_search_evidence_static_contracts.py \
+            tests/test_p4b_search_provider.py
           python -m pytest --noconftest -q --maxfail=1 \
-            tests/test_p4b_search_evidence_static_contracts.py
+            tests/test_p4b_search_evidence_static_contracts.py \
+            tests/test_p4b_search_provider.py
 
       - name: Install PostgreSQL 16 and canonical cluster roles
         run: |
@@ -183,17 +189,11 @@ jobs:
           $$;
           SQL
 
-      - name: Seed authoritative branch and intentionally stale search event
+      - name: Seed tenant and owner through migration authority
         run: |
           set -euo pipefail
           PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
-          BEGIN;
-          SELECT pg_catalog.set_config(
-            'app.current_org_id',
-            '44000000-0000-4000-8000-000000000001',
-            true
-          );
           INSERT INTO public.organizations (
             id,name,slug,tier,is_active,max_branches,default_currency_code,
             website_verified,social_links,verification_status,country,profile_completed
@@ -201,6 +201,26 @@ jobs:
             '44000000-0000-4000-8000-000000000001','P4B Search Org',
             'p4b-search-org','basic',true,10,'INR',false,'{}'::jsonb,'pending','India',false
           );
+          INSERT INTO public.owners (
+            id,org_id,owner_name,email,hashed_password,email_verified,onboarding_completed
+          ) VALUES (
+            '44000000-0000-4000-8000-000000000051',
+            '44000000-0000-4000-8000-000000000001',
+            'P4B Owner','p4b-owner@example.test','p4b-test-hash',true,true
+          );
+          SQL
+
+      - name: Create first branch state through certified P3A auth bootstrap
+        run: |
+          set -euo pipefail
+          PGPASSWORD="${AUTH_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U auth_test_runtime -d gymflow_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','44000000-0000-4000-8000-000000000001',true);
+          SELECT pg_catalog.set_config('app.current_user_id','44000000-0000-4000-8000-000000000051',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          SELECT pg_catalog.set_config('app.current_gym_id','',true);
           INSERT INTO public.org_branches (
             id,org_id,branch_name,branch_code,internal_slug,timezone,currency_code,
             region_code,country_code
@@ -211,26 +231,84 @@ jobs:
           );
           INSERT INTO public.org_branch_state (
             branch_id,org_id,branch_status,is_primary,is_active,is_public,status,
-            is_operational,search_visibility_version,search_epoch_ulid
+            is_operational,transition_source,search_visibility_version,search_epoch_ulid
           ) VALUES (
             '44000000-0000-4000-8000-000000000011',
             '44000000-0000-4000-8000-000000000001',
-            'active',false,true,true,'active',true,1,'01P4BSEARCH000000000000000'
-          );
-          INSERT INTO public.branch_outbox_events (
-            outbox_id,tenant_id,branch_id,event_type,payload,created_at,process_after,
-            status,attempt_count,max_attempts,correlation_id,leased_by,leased_until
-          ) VALUES (
-            '44000000-0000-4000-8000-000000000021',
-            '44000000-0000-4000-8000-000000000001',
-            '44000000-0000-4000-8000-000000000011',
-            'branch.search_deindex','{"stale_label":true}'::jsonb,
-            clock_timestamp(),clock_timestamp(),'processing',1,5,
-            '44000000-0000-4000-8000-000000000031',
-            '44000000-0000-4000-8000-000000000041',
-            clock_timestamp() + interval '10 minutes'
+            'active',true,true,true,'active',true,'api',1,'01P4BSEARCH000000000000000'
           );
           COMMIT;
+          SQL
+
+      - name: Enqueue a deindex event then make its label stale
+        run: |
+          set -euo pipefail
+          PGPASSWORD="${GENERAL_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','44000000-0000-4000-8000-000000000001',true);
+          SELECT pg_catalog.set_config('app.current_user_id','44000000-0000-4000-8000-000000000051',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          UPDATE public.org_branch_state
+          SET is_public=false
+          WHERE branch_id='44000000-0000-4000-8000-000000000011'
+            AND org_id='44000000-0000-4000-8000-000000000001';
+          COMMIT;
+          SQL
+
+          enqueued="$(PGPASSWORD="${MAINTENANCE_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U lifecycle_maintenance_test_runtime -d gymflow_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.internal_maintenance','lifecycle',true);
+          SELECT app_secure.enqueue_branch_search_reconciliation(10);
+          COMMIT;
+          SQL
+          )"
+          test "$(printf '%s\n' "${enqueued}" | grep -E '^[0-9]+$' | tail -1)" = '1'
+
+          outbox_id="$(PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL' | grep -E '^[0-9a-f-]{36}$' | tail -1
+          BEGIN;
+          SET LOCAL ROLE app_security_owner;
+          SELECT outbox_id
+          FROM public.branch_outbox_events
+          WHERE branch_id='44000000-0000-4000-8000-000000000011'
+            AND event_type='branch.search_deindex'
+            AND status='pending'
+          ORDER BY created_at DESC
+          LIMIT 1;
+          COMMIT;
+          SQL
+          )"
+          test -n "${outbox_id}"
+          echo "P4B_OUTBOX_ID=${outbox_id}" >> "${GITHUB_ENV}"
+
+          PGPASSWORD="${GENERAL_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','44000000-0000-4000-8000-000000000001',true);
+          SELECT pg_catalog.set_config('app.current_user_id','44000000-0000-4000-8000-000000000051',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          UPDATE public.org_branch_state
+          SET is_public=true
+          WHERE branch_id='44000000-0000-4000-8000-000000000011'
+            AND org_id='44000000-0000-4000-8000-000000000001';
+          COMMIT;
+          SQL
+
+          PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_test <<SQL
+          UPDATE public.branch_outbox_events
+          SET status='processing',
+              attempt_count=attempt_count+1,
+              last_attempted_at=pg_catalog.clock_timestamp(),
+              last_error=NULL,
+              leased_by='44000000-0000-4000-8000-000000000041',
+              leased_until=pg_catalog.clock_timestamp()+INTERVAL '10 minutes'
+          WHERE outbox_id='${P4B_OUTBOX_ID}'
+            AND status='pending';
           SQL
 
       - name: Prove stale event label is not authority and evidence gates sync state
@@ -238,48 +316,63 @@ jobs:
           set -euo pipefail
           projection="$(PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -F '|' -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U worker_test_runtime -d gymflow_test \
-            -c "SELECT tenant_id,branch_id,operation,desired_version,document->>'name' FROM app_secure.claim_branch_search_projection('44000000-0000-4000-8000-000000000021','44000000-0000-4000-8000-000000000041')")"
-          test "${projection}" = '44000000-0000-4000-8000-000000000001|44000000-0000-4000-8000-000000000011|index|1|P4B Search Branch'
+            -c "SELECT tenant_id,branch_id,operation,desired_version,document->>'name' FROM app_secure.claim_branch_search_projection('${P4B_OUTBOX_ID}','44000000-0000-4000-8000-000000000041')")"
+          test "${projection}" = '44000000-0000-4000-8000-000000000001|44000000-0000-4000-8000-000000000011|index|3|P4B Search Branch'
 
           PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U worker_test_runtime -d gymflow_test <<'SQL'
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_test <<SQL
           SELECT app_secure.acknowledge_branch_search_effect(
-            '44000000-0000-4000-8000-000000000021',
+            '${P4B_OUTBOX_ID}',
             '44000000-0000-4000-8000-000000000041',
-            1,'index','opensearch','branches-v1',
+            3,'index','opensearch','branches-v1',
             '44000000-0000-4000-8000-000000000011',
-            repeat('a',64),1,repeat('b',64),repeat('c',64)
+            repeat('a',64),3,repeat('b',64),repeat('c',64)
           );
           SQL
 
           PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
-          DO $$
+            -h 127.0.0.1 -U migration_owner -d gymflow_test <<SQL
+          BEGIN;
+          SET LOCAL ROLE app_security_owner;
+          DO \$\$
           DECLARE v_status text; v_ack bigint; v_sync timestamptz; v_attempts bigint;
           BEGIN
             SELECT status INTO v_status FROM public.branch_outbox_events
-              WHERE outbox_id='44000000-0000-4000-8000-000000000021';
+              WHERE outbox_id='${P4B_OUTBOX_ID}';
             SELECT search_provider_ack_version,search_last_synced_at INTO v_ack,v_sync
               FROM public.org_branch_state
               WHERE branch_id='44000000-0000-4000-8000-000000000011';
             SELECT count(*) INTO v_attempts FROM public.branch_search_effect_attempts
-              WHERE outbox_id='44000000-0000-4000-8000-000000000021'
-                AND outcome='definite_success';
-            IF v_status <> 'delivered' OR v_ack <> 1 OR v_sync IS NULL OR v_attempts <> 1 THEN
+              WHERE outbox_id='${P4B_OUTBOX_ID}' AND outcome='definite_success';
+            IF v_status <> 'delivered' OR v_ack <> 3 OR v_sync IS NULL OR v_attempts <> 1 THEN
               RAISE EXCEPTION 'P4B provider evidence did not atomically establish sync state';
             END IF;
           END
-          $$;
+          \$\$;
+          COMMIT;
           SQL
 
       - name: Prove searchable state changes invalidate prior acknowledgement
         run: |
           set -euo pipefail
-          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
+          PGPASSWORD="${GENERAL_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.current_org_id','44000000-0000-4000-8000-000000000001',true);
+          SELECT pg_catalog.set_config('app.current_user_id','44000000-0000-4000-8000-000000000051',true);
+          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
+          SELECT pg_catalog.set_config('app.current_role','owner',true);
           UPDATE public.org_branch_state
           SET is_public=false
-          WHERE branch_id='44000000-0000-4000-8000-000000000011';
+          WHERE branch_id='44000000-0000-4000-8000-000000000011'
+            AND org_id='44000000-0000-4000-8000-000000000001';
+          COMMIT;
+          SQL
+
+          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
+          BEGIN;
+          SET LOCAL ROLE app_security_owner;
           DO $$
           DECLARE v_desired bigint; v_ack bigint; v_sync timestamptz;
           BEGIN
@@ -287,11 +380,12 @@ jobs:
             INTO v_desired,v_ack,v_sync
             FROM public.org_branch_state
             WHERE branch_id='44000000-0000-4000-8000-000000000011';
-            IF v_desired <> 2 OR v_ack <> 1 OR v_sync IS NOT NULL THEN
+            IF v_desired <> 4 OR v_ack <> 3 OR v_sync IS NOT NULL THEN
               RAISE EXCEPTION 'searchable state change did not invalidate prior sync evidence';
             END IF;
           END
           $$;
+          COMMIT;
           SQL
 
       - name: Prove maintenance reconciliation only enqueues durable work
@@ -303,15 +397,20 @@ jobs:
             echo 'reconciliation unexpectedly ran without lifecycle maintenance context' >&2
             exit 1
           fi
-          PGPASSWORD="${MAINTENANCE_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+          enqueued="$(PGPASSWORD="${MAINTENANCE_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U lifecycle_maintenance_test_runtime -d gymflow_test <<'SQL'
           BEGIN;
           SELECT pg_catalog.set_config('app.internal_maintenance','lifecycle',true);
           SELECT app_secure.enqueue_branch_search_reconciliation(10);
           COMMIT;
           SQL
+          )"
+          test "$(printf '%s\n' "${enqueued}" | grep -E '^[0-9]+$' | tail -1)" = '1'
+
           PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
+          BEGIN;
+          SET LOCAL ROLE app_security_owner;
           DO $$
           DECLARE v_pending bigint; v_desired bigint; v_ack bigint; v_sync timestamptz;
           BEGIN
@@ -322,11 +421,12 @@ jobs:
               INTO v_desired,v_ack,v_sync
               FROM public.org_branch_state
               WHERE branch_id='44000000-0000-4000-8000-000000000011';
-            IF v_pending <> 1 OR v_desired <> 2 OR v_ack <> 1 OR v_sync IS NOT NULL THEN
+            IF v_pending <> 1 OR v_desired <> 4 OR v_ack <> 3 OR v_sync IS NOT NULL THEN
               RAISE EXCEPTION 'reconciliation changed success state instead of only enqueueing work';
             END IF;
           END
           $$;
+          COMMIT;
           SQL
 
       - name: Prove clean P4B downgrade and re-upgrade on unused migration database
