@@ -78,7 +78,8 @@ def test_asset_migrations_keep_reduced_role_and_identity_domain_contracts() -> N
     q07 = _source("alembic/versions/q07d8e9f0a31_p3e_asset_claim_ambiguity.py")
     r07 = _source("alembic/versions/r07d8e9f0a32_p3e_modern_owner_asset_provenance.py")
     s07 = _source("alembic/versions/s07d8e9f0a33_p3e_asset_live_owner_authority.py")
-    combined = "\n".join((n07, o07, p07, q07, r07, s07)).lower()
+    t07 = _source("alembic/versions/t07d8e9f0a34_p3e_asset_status_enum_recovery.py")
+    combined = "\n".join((n07, o07, p07, q07, r07, s07, t07)).lower()
     normalized_p07 = " ".join(p07.lower().split())
 
     assert "bypassrls" in combined
@@ -139,10 +140,14 @@ def test_asset_migrations_keep_reduced_role_and_identity_domain_contracts() -> N
     assert "GRANT SELECT (email_verified)" not in s07
     assert "REVOKE SELECT (email_verified)" not in s07
     assert "SET LOCAL ROLE app_security_owner" in s07
-    assert "WHEN organization.logo_key IS NULL THEN NULL ELSE 'ready'" in s07
-    assert "WHEN organization.cover_key IS NULL THEN NULL ELSE 'ready'" in s07
+
+    assert 'down_revision = "s07d8e9f0a33"' in t07
+    assert "'ready'::public.asset_status_enum" in t07
+    assert "SET LOCAL ROLE app_security_owner" in t07
+    assert "GRANT " not in t07
+    assert "REVOKE " not in t07
 
 
-def test_p3e_fresh_database_harness_targets_live_owner_authority_head() -> None:
+def test_p3e_fresh_database_harness_targets_typed_recovery_head() -> None:
     source = _source("scripts/ci/prepare_p3e_pg16.sh")
-    assert "s07d8e9f0a33" in source
+    assert "t07d8e9f0a34" in source
