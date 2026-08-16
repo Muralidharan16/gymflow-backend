@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import httpx
 
-from app.observability.search_metrics import record_provider_call
+from app.observability.search_metrics import configure_search_metrics, record_provider_call
 
 
 _PROVIDER_CODE = "opensearch"
@@ -115,6 +115,11 @@ class OpenSearchProvider:
         timeout_seconds: float = 5.0,
         verify_tls: bool = True,
         client: httpx.AsyncClient | None = None,
+        metrics_required: bool = False,
+        metrics_otlp_endpoint: str = "",
+        metrics_export_interval_seconds: float = 30.0,
+        metrics_export_timeout_seconds: float = 5.0,
+        environment: str = "development",
     ) -> None:
         self.mode = mode.strip().lower()
         self.base_url = base_url.strip().rstrip("/")
@@ -124,6 +129,11 @@ class OpenSearchProvider:
         self.timeout_seconds = float(timeout_seconds)
         self.verify_tls = bool(verify_tls)
         self._client = client
+        self.metrics_required = bool(metrics_required)
+        self.metrics_otlp_endpoint = metrics_otlp_endpoint.strip()
+        self.metrics_export_interval_seconds = float(metrics_export_interval_seconds)
+        self.metrics_export_timeout_seconds = float(metrics_export_timeout_seconds)
+        self.environment = environment.strip() or "unknown"
 
     @classmethod
     def from_settings(cls, config: Any | None = None) -> "OpenSearchProvider":
@@ -132,6 +142,7 @@ class OpenSearchProvider:
             # profile/database settings construction.
             from app.core.config import settings as config
 
+        environment = str(getattr(config, "ENVIRONMENT", "development"))
         return cls(
             mode=str(getattr(config, "SEARCH_PROVIDER_MODE", "disabled")),
             base_url=str(getattr(config, "OPENSEARCH_URL", "")),
@@ -142,6 +153,17 @@ class OpenSearchProvider:
                 getattr(config, "OPENSEARCH_TIMEOUT_SECONDS", 5.0)
             ),
             verify_tls=bool(getattr(config, "OPENSEARCH_VERIFY_TLS", True)),
+            metrics_required=environment.strip().lower() == "production",
+            metrics_otlp_endpoint=str(
+                getattr(config, "SEARCH_METRICS_OTLP_ENDPOINT", "")
+            ),
+            metrics_export_interval_seconds=float(
+                getattr(config, "SEARCH_METRICS_EXPORT_INTERVAL_SECONDS", 30.0)
+            ),
+            metrics_export_timeout_seconds=float(
+                getattr(config, "SEARCH_METRICS_EXPORT_TIMEOUT_SECONDS", 5.0)
+            ),
+            environment=environment,
         )
 
     @staticmethod
@@ -248,6 +270,29 @@ class OpenSearchProvider:
             document=document,
         )
         started = time.monotonic()
+
+        if self.metrics_required and self.mode == _PROVIDER_CODE:
+            try:
+                configure_search_metrics(
+                    endpoint=self.metrics_otlp_endpoint,
+                    export_interval_seconds=self.metrics_export_interval_seconds,
+                    export_timeout_seconds=self.metrics_export_timeout_seconds,
+                    environment=self.environment,
+                )
+            except (ValueError, RuntimeError) as exc:
+                classified = SearchProviderError(
+                    f"Search metrics configuration is not ready: {exc}",
+                    outcome="retryable_failure",
+                    error_code="search_metrics_configuration_invalid",
+                    request_sha256=request_sha256,
+                )
+                record_provider_call(
+                    operation=operation,
+                    outcome=classified.outcome,
+                    duration_ms=(time.monotonic() - started) * 1000,
+                )
+                raise classified from exc
+
         try:
             self._validate_configuration(request_sha256)
             if self._client is not None:
