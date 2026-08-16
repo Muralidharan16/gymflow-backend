@@ -242,11 +242,11 @@ jobs:
           COMMIT;
           SQL
 
-      - name: Make branch non-public through tenant runtime
+      - name: Prove tenant runtime cannot directly mutate lifecycle-controlled search state
         run: |
           set -euo pipefail
-          PGPASSWORD="${GENERAL_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
+          if PGPASSWORD="${GENERAL_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
           BEGIN;
           SELECT pg_catalog.set_config('app.current_org_id','44000000-0000-4000-8000-000000000001',true);
           SELECT pg_catalog.set_config('app.current_user_id','44000000-0000-4000-8000-000000000051',true);
@@ -257,6 +257,20 @@ jobs:
           WHERE branch_id='44000000-0000-4000-8000-000000000011'
             AND org_id='44000000-0000-4000-8000-000000000001';
           COMMIT;
+          SQL
+          then
+            echo 'tenant runtime unexpectedly mutated lifecycle-controlled search state' >&2
+            exit 1
+          fi
+
+      - name: Make branch non-public through CI infrastructure fixture authority
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<'SQL'
+          UPDATE public.org_branch_state
+          SET is_public=false
+          WHERE branch_id='44000000-0000-4000-8000-000000000011'
+            AND org_id='44000000-0000-4000-8000-000000000001';
           SQL
 
       - name: Enqueue deindex through maintenance capability
@@ -281,21 +295,14 @@ jobs:
           test -n "${outbox_id}"
           echo "P4B_OUTBOX_ID=${outbox_id}" >> "${GITHUB_ENV}"
 
-      - name: Make queued deindex label stale
+      - name: Make queued deindex label stale through CI infrastructure fixture authority
         run: |
           set -euo pipefail
-          PGPASSWORD="${GENERAL_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
-          BEGIN;
-          SELECT pg_catalog.set_config('app.current_org_id','44000000-0000-4000-8000-000000000001',true);
-          SELECT pg_catalog.set_config('app.current_user_id','44000000-0000-4000-8000-000000000051',true);
-          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
-          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<'SQL'
           UPDATE public.org_branch_state
           SET is_public=true
           WHERE branch_id='44000000-0000-4000-8000-000000000011'
             AND org_id='44000000-0000-4000-8000-000000000001';
-          COMMIT;
           SQL
 
       - name: Lease stale-labeled event through worker queue policy
@@ -354,18 +361,11 @@ jobs:
       - name: Prove searchable state changes invalidate prior acknowledgement
         run: |
           set -euo pipefail
-          PGPASSWORD="${GENERAL_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
-          BEGIN;
-          SELECT pg_catalog.set_config('app.current_org_id','44000000-0000-4000-8000-000000000001',true);
-          SELECT pg_catalog.set_config('app.current_user_id','44000000-0000-4000-8000-000000000051',true);
-          SELECT pg_catalog.set_config('app.current_principal_type','owner',true);
-          SELECT pg_catalog.set_config('app.current_role','owner',true);
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<'SQL'
           UPDATE public.org_branch_state
           SET is_public=false
           WHERE branch_id='44000000-0000-4000-8000-000000000011'
             AND org_id='44000000-0000-4000-8000-000000000001';
-          COMMIT;
           SQL
 
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<'SQL'
