@@ -147,6 +147,17 @@ def test_live_opensearch_external_version_idempotency_drift_delete_and_missing_r
     assert deleted.provider_version == 41
     assert deleted.document_sha256 is None
 
+    duplicate_delete = asyncio.run(
+        provider.apply(
+            branch_id=delete_id,
+            operation="delete",
+            desired_version=41,
+            document=None,
+        )
+    )
+    assert duplicate_delete.provider_version == 41
+    assert duplicate_delete.document_sha256 is None
+
     missing_id = str(uuid.uuid4())
     missing_doc = _document(missing_id, name="Missing Repair", search_version=50)
     asyncio.run(
