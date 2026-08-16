@@ -215,7 +215,7 @@ jobs:
           ) VALUES (
             '44000000-0000-4000-8000-000000000011',
             '44000000-0000-4000-8000-000000000001',
-            'active',false,true,true,'active',true,1,'01P4BSEARCH0000000000000000'
+            'active',false,true,true,'active',true,1,'01P4BSEARCH000000000000000'
           );
           INSERT INTO public.branch_outbox_events (
             outbox_id,tenant_id,branch_id,event_type,payload,created_at,process_after,
