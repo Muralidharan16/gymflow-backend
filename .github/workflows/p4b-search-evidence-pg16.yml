@@ -242,7 +242,7 @@ jobs:
           COMMIT;
           SQL
 
-      - name: Enqueue a deindex event then make its label stale
+      - name: Make branch non-public through tenant runtime
         run: |
           set -euo pipefail
           PGPASSWORD="${GENERAL_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
@@ -259,6 +259,9 @@ jobs:
           COMMIT;
           SQL
 
+      - name: Enqueue deindex through maintenance capability
+        run: |
+          set -euo pipefail
           enqueued="$(PGPASSWORD="${MAINTENANCE_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U lifecycle_maintenance_test_runtime -d gymflow_test <<'SQL'
           BEGIN;
@@ -269,23 +272,18 @@ jobs:
           )"
           test "$(printf '%s\n' "${enqueued}" | grep -E '^[0-9]+$' | tail -1)" = '1'
 
-          outbox_id="$(PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL' | grep -E '^[0-9a-f-]{36}$' | tail -1
-          BEGIN;
-          SET LOCAL ROLE app_security_owner;
-          SELECT outbox_id
-          FROM public.branch_outbox_events
-          WHERE branch_id='44000000-0000-4000-8000-000000000011'
-            AND event_type='branch.search_deindex'
-            AND status='pending'
-          ORDER BY created_at DESC
-          LIMIT 1;
-          COMMIT;
-          SQL
-          )"
+      - name: Discover pending search event through worker queue policy
+        run: |
+          set -euo pipefail
+          outbox_id="$(PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_test \
+            -c "SELECT outbox_id FROM public.branch_outbox_events WHERE branch_id='44000000-0000-4000-8000-000000000011' AND event_type='branch.search_deindex' AND status='pending' ORDER BY created_at DESC LIMIT 1")"
           test -n "${outbox_id}"
           echo "P4B_OUTBOX_ID=${outbox_id}" >> "${GITHUB_ENV}"
 
+      - name: Make queued deindex label stale
+        run: |
+          set -euo pipefail
           PGPASSWORD="${GENERAL_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U app_test_runtime -d gymflow_test <<'SQL'
           BEGIN;
@@ -300,6 +298,9 @@ jobs:
           COMMIT;
           SQL
 
+      - name: Lease stale-labeled event through worker queue policy
+        run: |
+          set -euo pipefail
           PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U worker_test_runtime -d gymflow_test <<SQL
           UPDATE public.branch_outbox_events
@@ -309,7 +310,7 @@ jobs:
               last_error=NULL,
               leased_by='44000000-0000-4000-8000-000000000041',
               leased_until=pg_catalog.clock_timestamp()+INTERVAL '10 minutes'
-          WHERE outbox_id='${outbox_id}'
+          WHERE outbox_id='${P4B_OUTBOX_ID}'
             AND status='pending';
           SQL
 
@@ -332,10 +333,7 @@ jobs:
           );
           SQL
 
-          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U migration_owner -d gymflow_test <<SQL
-          BEGIN;
-          SET LOCAL ROLE app_security_owner;
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<SQL
           DO \$\$
           DECLARE v_status text; v_ack bigint; v_sync timestamptz; v_attempts bigint;
           BEGIN
@@ -351,7 +349,6 @@ jobs:
             END IF;
           END
           \$\$;
-          COMMIT;
           SQL
 
       - name: Prove searchable state changes invalidate prior acknowledgement
@@ -371,10 +368,7 @@ jobs:
           COMMIT;
           SQL
 
-          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
-          BEGIN;
-          SET LOCAL ROLE app_security_owner;
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<'SQL'
           DO $$
           DECLARE v_desired bigint; v_ack bigint; v_sync timestamptz;
           BEGIN
@@ -387,7 +381,6 @@ jobs:
             END IF;
           END
           $$;
-          COMMIT;
           SQL
 
       - name: Prove maintenance reconciliation only enqueues durable work
@@ -409,10 +402,7 @@ jobs:
           )"
           test "$(printf '%s\n' "${enqueued}" | grep -E '^[0-9]+$' | tail -1)" = '1'
 
-          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
-          BEGIN;
-          SET LOCAL ROLE app_security_owner;
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test <<'SQL'
           DO $$
           DECLARE v_pending bigint; v_desired bigint; v_ack bigint; v_sync timestamptz;
           BEGIN
@@ -428,7 +418,6 @@ jobs:
             END IF;
           END
           $$;
-          COMMIT;
           SQL
 
       - name: Prove clean P4B downgrade and re-upgrade on unused migration database
