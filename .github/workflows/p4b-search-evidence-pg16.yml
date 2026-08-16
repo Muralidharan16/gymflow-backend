@@ -1,0 +1,315 @@
+name: P4B Search Evidence PG16
+
+on:
+  pull_request:
+    branches:
+      - hardening/p4a-external-effects-contract
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p4b-search-evidence-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  search-evidence:
+    name: Fresh PG16 search projection, evidence and reconciliation boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
+      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Compile and prove P4B static contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            alembic/versions/u07d8e9f0a35_p4b_search_external_evidence.py \
+            tests/test_p4b_search_evidence_static_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4b_search_evidence_static_contracts.py
+
+      - name: Install PostgreSQL 16 and canonical cluster roles
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime LOGIN PASSWORD 'ci-auth-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-worker-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-lifecycle-maintenance-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_test_runtime SET row_security='on';
+          ALTER ROLE auth_test_runtime SET row_security='on';
+          ALTER ROLE worker_test_runtime SET row_security='on';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_migration_test OWNER migration_owner;
+          CREATE DATABASE gymflow_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_test
+            TO app_test_runtime, auth_test_runtime, worker_test_runtime,
+               lifecycle_maintenance_test_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_migration_test
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_test
+
+      - name: Fresh P4B migration lineage
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/migration_semantics_gate.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'u07d8e9f0a35'
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_test" \
+            python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Prove P4B runtime ACL separation
+        run: |
+          set -euo pipefail
+          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
+          DO $$
+          DECLARE role_name text;
+          BEGIN
+            FOREACH role_name IN ARRAY ARRAY[
+              'app_runtime','auth_runtime','worker_runtime','lifecycle_maintenance_runtime'
+            ] LOOP
+              IF pg_catalog.has_table_privilege(
+                  role_name,'public.branch_search_effect_attempts','SELECT'
+              ) OR pg_catalog.has_table_privilege(
+                  role_name,'public.branch_search_effect_attempts','INSERT'
+              ) OR pg_catalog.has_table_privilege(
+                  role_name,'public.branch_search_effect_attempts','UPDATE'
+              ) OR pg_catalog.has_table_privilege(
+                  role_name,'public.branch_search_effect_attempts','DELETE'
+              ) THEN
+                RAISE EXCEPTION '% has direct P4B evidence-table CRUD', role_name;
+              END IF;
+            END LOOP;
+
+            IF NOT pg_catalog.has_function_privilege(
+              'worker_runtime','app_secure.claim_branch_search_projection(uuid,uuid)','EXECUTE'
+            ) OR NOT pg_catalog.has_function_privilege(
+              'worker_runtime',
+              'app_secure.acknowledge_branch_search_effect(uuid,uuid,bigint,text,text,text,text,text,bigint,text,text)',
+              'EXECUTE'
+            ) OR NOT pg_catalog.has_function_privilege(
+              'worker_runtime',
+              'app_secure.record_branch_search_failure(uuid,uuid,bigint,text,text,text,text,text)',
+              'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'worker lacks exact P4B search capabilities';
+            END IF;
+            IF pg_catalog.has_function_privilege(
+              'worker_runtime','app_secure.enqueue_branch_search_reconciliation(integer)','EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'worker received global search reconciliation capability';
+            END IF;
+            IF NOT pg_catalog.has_function_privilege(
+              'lifecycle_maintenance_runtime',
+              'app_secure.enqueue_branch_search_reconciliation(integer)','EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'maintenance lacks bounded search reconciliation enqueue';
+            END IF;
+            IF pg_catalog.has_schema_privilege('migration_owner','app_secure','USAGE') THEN
+              RAISE EXCEPTION 'migration_owner retained temporary app_secure USAGE';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Seed authoritative branch and intentionally stale search event
+        run: |
+          set -euo pipefail
+          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
+          INSERT INTO public.organizations (
+            id,name,slug,tier,is_active,max_branches,default_currency_code,
+            website_verified,social_links,verification_status,country,profile_completed
+          ) VALUES (
+            '44000000-0000-4000-8000-000000000001','P4B Search Org',
+            'p4b-search-org','basic',true,10,'INR',false,'{}'::jsonb,'pending','India',false
+          );
+          INSERT INTO public.org_branches (
+            id,org_id,branch_name,branch_code,internal_slug,timezone,currency_code,
+            region_code,country_code
+          ) VALUES (
+            '44000000-0000-4000-8000-000000000011',
+            '44000000-0000-4000-8000-000000000001',
+            'P4B Search Branch','P4B-01','p4b-search-branch','Asia/Kolkata','INR','PY','IN'
+          );
+          INSERT INTO public.org_branch_state (
+            branch_id,org_id,branch_status,is_primary,is_active,is_public,status,
+            is_operational,search_visibility_version,search_epoch_ulid
+          ) VALUES (
+            '44000000-0000-4000-8000-000000000011',
+            '44000000-0000-4000-8000-000000000001',
+            'active',false,true,true,'active',true,1,'01P4BSEARCH0000000000000000'
+          );
+          INSERT INTO public.branch_outbox_events (
+            outbox_id,tenant_id,branch_id,event_type,payload,created_at,process_after,
+            status,attempt_count,max_attempts,correlation_id,leased_by,leased_until
+          ) VALUES (
+            '44000000-0000-4000-8000-000000000021',
+            '44000000-0000-4000-8000-000000000001',
+            '44000000-0000-4000-8000-000000000011',
+            'branch.search_deindex','{"stale_label":true}'::jsonb,
+            clock_timestamp(),clock_timestamp(),'processing',1,5,
+            '44000000-0000-4000-8000-000000000031',
+            '44000000-0000-4000-8000-000000000041',
+            clock_timestamp() + interval '10 minutes'
+          );
+          SQL
+
+      - name: Prove stale event label is not authority and evidence gates sync state
+        run: |
+          set -euo pipefail
+          projection="$(PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -F '|' -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_test \
+            -c "SELECT tenant_id,branch_id,operation,desired_version,document->>'name' FROM app_secure.claim_branch_search_projection('44000000-0000-4000-8000-000000000021','44000000-0000-4000-8000-000000000041')")"
+          test "${projection}" = '44000000-0000-4000-8000-000000000001|44000000-0000-4000-8000-000000000011|index|1|P4B Search Branch'
+
+          PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U worker_test_runtime -d gymflow_test <<'SQL'
+          SELECT app_secure.acknowledge_branch_search_effect(
+            '44000000-0000-4000-8000-000000000021',
+            '44000000-0000-4000-8000-000000000041',
+            1,'index','opensearch','branches-v1',
+            '44000000-0000-4000-8000-000000000011',
+            repeat('a',64),1,repeat('b',64),repeat('c',64)
+          );
+          SQL
+
+          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
+          DO $$
+          DECLARE v_status text; v_ack bigint; v_sync timestamptz; v_attempts bigint;
+          BEGIN
+            SELECT status INTO v_status FROM public.branch_outbox_events
+              WHERE outbox_id='44000000-0000-4000-8000-000000000021';
+            SELECT search_provider_ack_version,search_last_synced_at INTO v_ack,v_sync
+              FROM public.org_branch_state
+              WHERE branch_id='44000000-0000-4000-8000-000000000011';
+            SELECT count(*) INTO v_attempts FROM public.branch_search_effect_attempts
+              WHERE outbox_id='44000000-0000-4000-8000-000000000021'
+                AND outcome='definite_success';
+            IF v_status <> 'delivered' OR v_ack <> 1 OR v_sync IS NULL OR v_attempts <> 1 THEN
+              RAISE EXCEPTION 'P4B provider evidence did not atomically establish sync state';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Prove searchable state changes invalidate prior acknowledgement
+        run: |
+          set -euo pipefail
+          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
+          UPDATE public.org_branch_state
+          SET is_public=false
+          WHERE branch_id='44000000-0000-4000-8000-000000000011';
+          DO $$
+          DECLARE v_desired bigint; v_ack bigint; v_sync timestamptz;
+          BEGIN
+            SELECT search_visibility_version,search_provider_ack_version,search_last_synced_at
+            INTO v_desired,v_ack,v_sync
+            FROM public.org_branch_state
+            WHERE branch_id='44000000-0000-4000-8000-000000000011';
+            IF v_desired <> 2 OR v_ack <> 1 OR v_sync IS NOT NULL THEN
+              RAISE EXCEPTION 'searchable state change did not invalidate prior sync evidence';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Prove maintenance reconciliation only enqueues durable work
+        run: |
+          set -euo pipefail
+          if PGPASSWORD="${MAINTENANCE_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 -U lifecycle_maintenance_test_runtime -d gymflow_test \
+              -c "SELECT app_secure.enqueue_branch_search_reconciliation(10)"; then
+            echo 'reconciliation unexpectedly ran without lifecycle maintenance context' >&2
+            exit 1
+          fi
+          PGPASSWORD="${MAINTENANCE_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U lifecycle_maintenance_test_runtime -d gymflow_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config('app.internal_maintenance','lifecycle',true);
+          SELECT app_secure.enqueue_branch_search_reconciliation(10);
+          COMMIT;
+          SQL
+          PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_test <<'SQL'
+          DO $$
+          DECLARE v_pending bigint; v_desired bigint; v_ack bigint; v_sync timestamptz;
+          BEGIN
+            SELECT count(*) INTO v_pending FROM public.branch_outbox_events
+            WHERE branch_id='44000000-0000-4000-8000-000000000011'
+              AND event_type='branch.search_deindex' AND status='pending';
+            SELECT search_visibility_version,search_provider_ack_version,search_last_synced_at
+              INTO v_desired,v_ack,v_sync
+              FROM public.org_branch_state
+              WHERE branch_id='44000000-0000-4000-8000-000000000011';
+            IF v_pending <> 1 OR v_desired <> 2 OR v_ack <> 1 OR v_sync IS NOT NULL THEN
+              RAISE EXCEPTION 'reconciliation changed success state instead of only enqueueing work';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Prove clean P4B downgrade and re-upgrade on unused migration database
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini downgrade t07d8e9f0a34
+          test "$(python -s -m alembic -c alembic.ini current | awk '{print $1}')" = 't07d8e9f0a34'
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Reprove cluster identities after P4B
+        run: |
+          set -euo pipefail
+          bash scripts/ci/verify_cluster_roles.sh
+          python -s scripts/verify_cluster_identity_graph.py
