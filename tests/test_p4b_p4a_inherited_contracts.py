@@ -55,12 +55,13 @@ def test_p4b_evolves_only_search_events_to_provider_execution() -> None:
     source = POLLER_PATH.read_text(encoding="utf-8")
     search_handler = _function_source(source, "_process_search_event", "_fail_event")
     deferred_handler = _function_source(source, "_process_deferred_external_event", "_process_event")
-    router = _function_source(source, "_process_event", "_poll_once")
+    router = _function_source(source, "_process_event", "_poll_outbox")
 
     assert "OpenSearchProvider.from_settings()" in search_handler
     assert "await provider.apply(" in search_handler
     assert "await _acknowledge_search_effect(" in search_handler
     assert "await _record_search_failure(" in search_handler
+    assert "await _repair_search_drift(" in search_handler
     assert "_mark_delivered(" not in search_handler
 
     assert "No production handler is configured" in deferred_handler
