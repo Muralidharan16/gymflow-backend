@@ -4,7 +4,6 @@ import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
 
 import psycopg
 import pytest
@@ -85,9 +84,7 @@ def _enqueue(
 ) -> uuid.UUID:
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT app_secure.enqueue_organization_asset_job(%s, %s, %s, %s)
-            """,
+            "SELECT app_secure.enqueue_organization_asset_job(%s, %s, %s, %s)",
             (asset_type, upload_id, focal_y, "127.0.0.1"),
         )
         return cur.fetchone()[0]
@@ -120,16 +117,24 @@ def _finalize(conn, job_id: uuid.UUID, lease_token: uuid.UUID):
         return cur.fetchone()
 
 
-def _reset_state() -> None:
+def _set_owner_verified(value: bool) -> None:
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE public.owners SET org_id = %s WHERE id = %s",
-                (_ORG1, _OWNER1),
+                "UPDATE public.owners SET email_verified = %s WHERE id = %s",
+                (value, _OWNER1),
             )
+        conn.commit()
+
+
+def _reset_state() -> None:
+    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as conn:
+        with conn.cursor() as cur:
+            # Principal id/org binding is deliberately immutable. Only reset the
+            # mutable authority bit used by real owner login and P3E async recheck.
             cur.execute(
-                "UPDATE public.owners SET org_id = %s WHERE id = %s",
-                (_ORG2, _OWNER2),
+                "UPDATE public.owners SET email_verified = true WHERE id IN (%s, %s)",
+                (_OWNER1, _OWNER2),
             )
             cur.execute(
                 "DELETE FROM public.organization_asset_cleanup_jobs "
@@ -155,18 +160,22 @@ def _reset_state() -> None:
                     logo_full_key = 'legacy/logo-full',
                     logo_meta = '{}'::jsonb,
                     logo_status = 'ready',
+                    logo_updated_by = NULL,
+                    logo_updated_by_owner_id = NULL,
                     cover_key = 'legacy/cover-original',
                     cover_mobile_key = 'legacy/cover-mobile',
                     cover_tablet_key = 'legacy/cover-tablet',
                     cover_desktop_key = 'legacy/cover-desktop',
                     cover_meta = '{}'::jsonb,
-                    cover_status = 'ready'
+                    cover_status = 'ready',
+                    cover_updated_by = NULL,
+                    cover_updated_by_owner_id = NULL
                 WHERE id = %s
                 """,
                 (_ORG1,),
             )
-            # The reset UPDATE correctly fires the durable cleanup trigger; those
-            # rows are fixture noise and are removed before each assertion.
+            # The reset UPDATE fires the durable cleanup trigger; these are
+            # fixture-only rows and are removed before each assertion.
             cur.execute(
                 "DELETE FROM public.organization_asset_cleanup_jobs "
                 "WHERE organization_id = %s",
@@ -212,13 +221,7 @@ def test_asset_and_cleanup_execute_acl_matrix_and_no_direct_tables() -> None:
                     "public.organization_asset_jobs",
                     "public.organization_asset_cleanup_jobs",
                 ):
-                    for privilege in (
-                        "SELECT",
-                        "INSERT",
-                        "UPDATE",
-                        "DELETE",
-                        "TRUNCATE",
-                    ):
+                    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
                         cur.execute(
                             "SELECT pg_catalog.has_table_privilege(current_user, %s, %s)",
                             (relation, privilege),
@@ -228,7 +231,6 @@ def test_asset_and_cleanup_execute_acl_matrix_and_no_direct_tables() -> None:
 
 def test_enqueue_requires_live_owner_binding_and_is_idempotent_under_concurrency() -> None:
     upload_id = uuid.uuid4().hex
-
     with _connect(_APP_LOGIN, "GENERAL_RUNTIME_PASSWORD") as conn:
         with conn.transaction():
             _set_app_context(conn, principal_type="organization_user", role="admin")
@@ -321,8 +323,7 @@ def test_finalize_derives_keys_atomically_and_persists_cleanup_intents() -> None
 
     lease = uuid.uuid4()
     with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as worker:
-        claimed = _claim(worker, job_id, lease)
-        assert claimed is not None
+        assert _claim(worker, job_id, lease) is not None
         worker.commit()
         applied, old_keys = _finalize(worker, job_id, lease)
         assert applied is True
@@ -343,7 +344,7 @@ def test_finalize_derives_keys_atomically_and_persists_cleanup_intents() -> None
             cur.execute(
                 """
                 SELECT logo_key, logo_thumb_key, logo_medium_key, logo_full_key,
-                       logo_status, logo_updated_by
+                       logo_status, logo_updated_by, logo_updated_by_owner_id
                 FROM public.organizations WHERE id = %s
                 """,
                 (_ORG1,),
@@ -354,6 +355,7 @@ def test_finalize_derives_keys_atomically_and_persists_cleanup_intents() -> None
                 expected_medium,
                 expected_full,
                 "ready",
+                None,
                 _OWNER1,
             )
             cur.execute(
@@ -368,9 +370,12 @@ def test_finalize_derives_keys_atomically_and_persists_cleanup_intents() -> None
             )
             cleanup_keys = {row[0] for row in cur.fetchall()}
             cur.execute(
-                "SELECT action, changed_by, new_s3_key, action_detail "
-                "FROM public.organization_asset_audit "
-                "WHERE org_id = %s AND action = 'uploaded'",
+                """
+                SELECT action, changed_by, changed_by_owner_id,
+                       new_s3_key, action_detail
+                FROM public.organization_asset_audit
+                WHERE org_id = %s AND action = 'uploaded'
+                """,
                 (_ORG1,),
             )
             audit = cur.fetchone()
@@ -383,9 +388,10 @@ def test_finalize_derives_keys_atomically_and_persists_cleanup_intents() -> None
         f"quarantine/{_ORG1}/{upload_id}",
     }.issubset(cleanup_keys)
     assert audit[0] == "uploaded"
-    assert audit[1] == _OWNER1
-    assert audit[2] == expected_original
-    assert audit[3]["source"] == "p3e_fenced_worker"
+    assert audit[1] is None
+    assert audit[2] == _OWNER1
+    assert audit[3] == expected_original
+    assert audit[4]["source"] == "p3e_fenced_worker"
 
     with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as worker:
         assert _finalize(worker, job_id, lease)[0] is False
@@ -399,13 +405,7 @@ def test_live_owner_is_revalidated_at_claim() -> None:
         job_id = _enqueue(app, upload_id)
         app.commit()
 
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as admin:
-        with admin.cursor() as cur:
-            cur.execute(
-                "UPDATE public.owners SET org_id = %s WHERE id = %s",
-                (_ORG2, _OWNER1),
-            )
-        admin.commit()
+    _set_owner_verified(False)
 
     with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as worker:
         assert _claim(worker, job_id, uuid.uuid4()) is None
@@ -418,6 +418,38 @@ def test_live_owner_is_revalidated_at_claim() -> None:
                 (job_id,),
             )
             assert cur.fetchone() == ("cancelled", "owner_membership_revoked")
+
+
+def test_live_owner_is_revalidated_again_before_finalize() -> None:
+    upload_id = uuid.uuid4().hex
+    with _connect(_APP_LOGIN, "GENERAL_RUNTIME_PASSWORD") as app:
+        _set_app_context(app)
+        job_id = _enqueue(app, upload_id)
+        app.commit()
+
+    lease = uuid.uuid4()
+    with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as worker:
+        assert _claim(worker, job_id, lease) is not None
+        worker.commit()
+
+    _set_owner_verified(False)
+
+    with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as worker:
+        assert _finalize(worker, job_id, lease)[0] is False
+        worker.commit()
+
+    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as admin:
+        with admin.cursor() as cur:
+            cur.execute(
+                "SELECT status, failure_code, lease_token FROM public.organization_asset_jobs WHERE id = %s",
+                (job_id,),
+            )
+            assert cur.fetchone() == ("cancelled", "owner_membership_revoked", None)
+            cur.execute(
+                "SELECT logo_key, logo_status FROM public.organizations WHERE id = %s",
+                (_ORG1,),
+            )
+            assert cur.fetchone() == ("legacy/logo-original", "processing")
 
 
 def test_delete_cancels_active_lease_and_stale_worker_cannot_republish() -> None:
@@ -435,9 +467,7 @@ def test_delete_cancels_active_lease_and_stale_worker_cannot_republish() -> None
     with _connect(_APP_LOGIN, "GENERAL_RUNTIME_PASSWORD") as app:
         _set_app_context(app)
         with app.cursor() as cur:
-            cur.execute(
-                "SELECT app_secure.delete_current_organization_asset('logo')"
-            )
+            cur.execute("SELECT app_secure.delete_current_organization_asset('logo')")
             returned = set(cur.fetchone()[0])
         app.commit()
     assert returned == {
