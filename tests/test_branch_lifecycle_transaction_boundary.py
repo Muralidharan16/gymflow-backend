@@ -6,6 +6,9 @@ from pathlib import Path
 
 SOURCE = Path("app/services/branch_lifecycle_service.py")
 WORKER_SOURCE = Path("app/tasks/branch_outbox_poller.py")
+SEARCH_EVIDENCE_MIGRATION = Path(
+    "alembic/versions/u07d8e9f0a35_p4b_search_external_evidence.py"
+)
 SERVICE_CLASS = "BranchLifecycleService"
 
 
@@ -15,6 +18,10 @@ def _source() -> str:
 
 def _worker_source() -> str:
     return WORKER_SOURCE.read_text(encoding="utf-8")
+
+
+def _search_evidence_source() -> str:
+    return SEARCH_EVIDENCE_MIGRATION.read_text(encoding="utf-8")
 
 
 def _method_node(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
@@ -185,15 +192,35 @@ def test_optional_booking_surface_is_checked_before_update_without_swallowing_er
     assert "return await _fail_event(event, worker_id, exc, permanent=False)" in worker
 
 
-def test_reconciliation_isolates_per_branch_failures_with_savepoints() -> None:
+def test_reconciliation_delegates_bounded_claiming_to_p4b_database_capability() -> None:
     reconcile = _method_source("run_reconciliation_sweep")
+    migration = _search_evidence_source()
+    capability = migration.split(
+        "CREATE FUNCTION app_secure.enqueue_branch_search_reconciliation", 1
+    )[1].split("$function$;", 1)[0]
 
-    assert "async with self.db.begin_nested():" in reconcile
-    assert "update_result.rowcount != 1" in reconcile
-    assert "clear_result.rowcount != 1" in reconcile
-    assert "search_sync_failed_at = :now" in reconcile
-    assert "return synced_count" in reconcile
-    assert "return len(claimed_ids)" not in reconcile
+    # P4B moved cross-tenant discovery/locking into one maintenance-only
+    # SECURITY DEFINER capability. Python must not independently rescan and
+    # mutate branch search truth or reintroduce per-row transaction ownership.
+    assert "app_secure.enqueue_branch_search_reconciliation" in reconcile
+    assert '{"batch_size": 100}' in reconcile
+    assert "await self.db.commit()" in reconcile
+    assert "return int(enqueued_count or 0)" in reconcile
+    assert "async with self.db.begin_nested():" not in reconcile
+    assert "search_last_synced_at" not in reconcile
+    assert "search_provider_ack_version" not in reconcile
+
+    # The database capability is bounded and concurrency-safe. Existing
+    # unresolved search effects suppress duplicate enqueue, and provider success
+    # is still established only by the separate evidence-backed worker path.
+    assert "LIMIT p_batch_size" in capability
+    assert "FOR UPDATE SKIP LOCKED" in capability
+    assert "NOT EXISTS" in capability
+    assert "FROM public.branch_outbox_events AS existing" in capability
+    assert "INSERT INTO public.branch_outbox_events" in capability
+    assert "SELECT count(*)::integer INTO v_count FROM inserted" in capability
+    assert "search_last_synced_at" not in capability
+    assert "search_provider_ack_version" in capability  # read only to detect drift
 
 
 def test_watchdog_refuses_missing_transition_timestamp_instead_of_crashing_math() -> None:
