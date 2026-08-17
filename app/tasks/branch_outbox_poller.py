@@ -11,6 +11,7 @@ from app.core.celery_app import celery_app
 from app.core.database import update_session_context, worker_async_session_maker
 from app.observability.search_metrics import record_drift_repair
 from app.services.branch_lifecycle_service import BranchLifecycleService
+from app.services.notification_delivery_service import process_notification_event
 from app.services.search_provider import OpenSearchProvider, SearchProviderError
 
 
@@ -23,8 +24,12 @@ _SEARCH_EVENT_TYPES = {
     "branch.search_deindex",
     "branch.search_index",
 }
-_DEFERRED_EXTERNAL_EVENT_TYPES = {
+_NOTIFICATION_EVENT_TYPES = {
     "branch.member_notification",
+    "notification.delivery",
+    "notification.reconcile",
+}
+_DEFERRED_EXTERNAL_EVENT_TYPES = {
     "branch.refund_required",
 }
 
@@ -621,7 +626,7 @@ async def _process_deferred_external_event(
     event: dict[str, Any],
     worker_id: uuid.UUID,
 ) -> str:
-    """Keep P4C/P4D commands fail-closed until their provider slices exist."""
+    """Keep P4D refund commands fail-closed until their provider slice exists."""
 
     return await _fail_event(
         event,
@@ -639,6 +644,20 @@ async def _process_event(event: dict[str, Any], worker_id: uuid.UUID) -> str:
         return await _process_saga_event(event, worker_id)
     if event_type in _SEARCH_EVENT_TYPES:
         return await _process_search_event(event, worker_id)
+    if event_type in _NOTIFICATION_EVENT_TYPES:
+        try:
+            return await process_notification_event(event, worker_id)
+        except Exception as exc:
+            if event_type in {"notification.delivery", "notification.reconcile"}:
+                # Once an external-effect command is claimed, an unexpected
+                # failure may have an unknown provider/DB commit point. Preserve
+                # the live lease; the fenced crash-recovery path owns reclaim.
+                logger.exception(
+                    "Unexpected P4C notification processing failure; preserving lease for fenced reclaim",
+                    extra={"outbox_id": str(event["outbox_id"]), "event_type": event_type},
+                )
+                return "lease_lost"
+            return await _fail_event(event, worker_id, exc, permanent=False)
     if event_type in _DEFERRED_EXTERNAL_EVENT_TYPES:
         return await _process_deferred_external_event(event, worker_id)
     return await _fail_event(
@@ -655,6 +674,7 @@ async def _poll_outbox() -> dict[str, int]:
     summary = {
         "claimed": len(events),
         "delivered": 0,
+        "provider_accepted": 0,
         "superseded": 0,
         "retry": 0,
         "dead_lettered": 0,
