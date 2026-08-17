@@ -27,6 +27,22 @@ def _process_manifest() -> dict:
     return raw
 
 
+def _validate_notification_metrics(endpoint: str, interval: float, timeout: float) -> None:
+    parsed = urlparse(endpoint.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(
+            "NOTIFICATION_METRICS_OTLP_ENDPOINT must be an HTTP(S) URL"
+        )
+    if not 1 <= interval <= 300:
+        raise ValueError(
+            "NOTIFICATION_METRICS_EXPORT_INTERVAL_SECONDS must be in the range [1, 300]"
+        )
+    if not 0 < timeout <= 60:
+        raise ValueError(
+            "NOTIFICATION_METRICS_EXPORT_TIMEOUT_SECONDS must be in the range (0, 60]"
+        )
+
+
 class Settings(DoersSettingsSchema):
     def _raw_runtime_value(self, component: str) -> str:
         from app.core.runtime_principal_attestation import load_runtime_binding_contract
@@ -127,15 +143,17 @@ class Settings(DoersSettingsSchema):
             )
         notification_key = self.P4C_RESEND_API_KEY.strip()
         webhook_secret = self.RESEND_WEBHOOK_SECRET.strip()
+        notification_metrics_endpoint = self.NOTIFICATION_METRICS_OTLP_ENDPOINT.strip()
+
         if profile_name == "worker":
             if webhook_secret:
                 raise ValueError(
                     "RESEND_WEBHOOK_SECRET is restricted to the API profile"
                 )
             if notification_mode == "disabled":
-                if notification_key:
+                if notification_key or notification_metrics_endpoint:
                     raise ValueError(
-                        "disabled notification workers must not receive P4C_RESEND_API_KEY"
+                        "disabled notification workers must not receive P4C provider or metrics configuration"
                     )
             else:
                 if not notification_key:
@@ -155,15 +173,31 @@ class Settings(DoersSettingsSchema):
                     raise ValueError(
                         "NOTIFICATION_PROVIDER_TIMEOUT_SECONDS must be in the range (0, 60]"
                     )
-        elif profile_name == "api":
-            if notification_mode != "disabled" or notification_key:
-                raise ValueError(
-                    "P4C Resend sending authority is restricted to the worker profile"
+                _validate_notification_metrics(
+                    notification_metrics_endpoint,
+                    self.NOTIFICATION_METRICS_EXPORT_INTERVAL_SECONDS,
+                    self.NOTIFICATION_METRICS_EXPORT_TIMEOUT_SECONDS,
                 )
-        else:
+        elif profile_name == "api":
+            if notification_mode != "disabled" or notification_key or notification_metrics_endpoint:
+                raise ValueError(
+                    "P4C Resend sending and notification-metrics authority is restricted away from the API profile"
+                )
+        elif profile_name == "maintenance":
             if notification_mode != "disabled" or notification_key or webhook_secret:
                 raise ValueError(
-                    "P4C notification provider configuration is forbidden for maintenance/beat profiles"
+                    "P4C notification sending/webhook credentials are forbidden for maintenance"
+                )
+            if notification_metrics_endpoint:
+                _validate_notification_metrics(
+                    notification_metrics_endpoint,
+                    self.NOTIFICATION_METRICS_EXPORT_INTERVAL_SECONDS,
+                    self.NOTIFICATION_METRICS_EXPORT_TIMEOUT_SECONDS,
+                )
+        else:
+            if notification_mode != "disabled" or notification_key or webhook_secret or notification_metrics_endpoint:
+                raise ValueError(
+                    "P4C notification provider/webhook/metrics configuration is forbidden for beat profiles"
                 )
 
         search_mode = self.SEARCH_PROVIDER_MODE.strip().lower()
