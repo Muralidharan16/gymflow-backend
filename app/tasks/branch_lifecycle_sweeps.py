@@ -4,9 +4,14 @@ import logging
 from celery import shared_task
 from sqlalchemy import text
 
+from app.core.config import settings
 from app.core.database import (
     maintenance_async_session_maker,
     update_session_context,
+)
+from app.observability.notification_metrics import (
+    configure_notification_metrics,
+    record_operational_snapshot,
 )
 from app.services.branch_lifecycle_service import BranchLifecycleService
 
@@ -80,17 +85,43 @@ async def _run_notification_reconciliation_sweep(batch_size: int = 100) -> int:
                 )
                 or 0
             )
-            await session.commit()
-            if enqueued_count:
-                logger.info(
-                    "Notification reconciliation sweep enqueued %s provider checks",
-                    enqueued_count,
+            snapshot = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT pending_count,provider_accepted_count,dead_letter_count,
+                               oldest_pending_age_seconds
+                        FROM app_secure.notification_operational_snapshot()
+                        """
+                    )
                 )
-            return enqueued_count
+            ).mappings().one()
+            await session.commit()
         except Exception:
             await session.rollback()
             logger.exception("Notification reconciliation sweep failed")
             raise
+
+    if settings.NOTIFICATION_METRICS_OTLP_ENDPOINT.strip():
+        configure_notification_metrics(
+            endpoint=settings.NOTIFICATION_METRICS_OTLP_ENDPOINT,
+            export_interval_seconds=settings.NOTIFICATION_METRICS_EXPORT_INTERVAL_SECONDS,
+            export_timeout_seconds=settings.NOTIFICATION_METRICS_EXPORT_TIMEOUT_SECONDS,
+            environment=settings.ENVIRONMENT,
+            service_name="doers-notification-maintenance",
+        )
+        record_operational_snapshot(
+            pending=int(snapshot["pending_count"] or 0) + int(snapshot["provider_accepted_count"] or 0),
+            dead_lettered=int(snapshot["dead_letter_count"] or 0),
+            oldest_age_seconds=float(snapshot["oldest_pending_age_seconds"] or 0.0),
+        )
+
+    if enqueued_count:
+        logger.info(
+            "Notification reconciliation sweep enqueued %s provider checks",
+            enqueued_count,
+        )
+    return enqueued_count
 
 
 @shared_task(
