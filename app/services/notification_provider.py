@@ -1,8 +1,9 @@
 """Evidence-backed P4C notification provider adapters.
 
-Provider submission is deliberately non-terminal.  The Resend adapter returns a
+Provider submission is deliberately non-terminal. The Resend adapter returns a
 provider reference plus hashed acknowledgement evidence; final delivery is
-established later by signed webhook or reconciliation evidence.
+established later by signed webhook or reconciliation evidence. Production
+provider I/O is blocked until the process-local OTLP metric pipeline is ready.
 """
 
 from __future__ import annotations
@@ -10,11 +11,19 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import time
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import Any, Mapping
 
 import httpx
+
+from app.observability.notification_metrics import (
+    configure_notification_metrics,
+    record_provider_accepted,
+    record_provider_call,
+    record_reconciliation_result,
+)
 
 
 _PROVIDER = "resend"
@@ -95,6 +104,11 @@ class ResendEmailProvider:
         base_url: str = "https://api.resend.com",
         timeout_seconds: float = 8.0,
         client: httpx.AsyncClient | None = None,
+        metrics_required: bool = False,
+        metrics_otlp_endpoint: str = "",
+        metrics_export_interval_seconds: float = 30.0,
+        metrics_export_timeout_seconds: float = 5.0,
+        environment: str = "unknown",
     ) -> None:
         self.mode = mode.strip().lower()
         self.api_key = api_key.strip()
@@ -102,6 +116,11 @@ class ResendEmailProvider:
         self.base_url = base_url.strip().rstrip("/")
         self.timeout_seconds = float(timeout_seconds)
         self._client = client
+        self.metrics_required = bool(metrics_required)
+        self.metrics_otlp_endpoint = metrics_otlp_endpoint.strip()
+        self.metrics_export_interval_seconds = float(metrics_export_interval_seconds)
+        self.metrics_export_timeout_seconds = float(metrics_export_timeout_seconds)
+        self.environment = environment.strip() or "unknown"
 
     @classmethod
     def from_settings(cls, config: Any | None = None) -> "ResendEmailProvider":
@@ -113,6 +132,15 @@ class ResendEmailProvider:
             from_email=str(getattr(config, "NOTIFICATION_EMAIL_FROM", getattr(config, "MAIL_FROM", ""))),
             base_url=str(getattr(config, "RESEND_API_BASE_URL", "https://api.resend.com")),
             timeout_seconds=float(getattr(config, "NOTIFICATION_PROVIDER_TIMEOUT_SECONDS", 8.0)),
+            metrics_required=str(getattr(config, "ENVIRONMENT", "development")) == "production",
+            metrics_otlp_endpoint=str(getattr(config, "NOTIFICATION_METRICS_OTLP_ENDPOINT", "")),
+            metrics_export_interval_seconds=float(
+                getattr(config, "NOTIFICATION_METRICS_EXPORT_INTERVAL_SECONDS", 30.0)
+            ),
+            metrics_export_timeout_seconds=float(
+                getattr(config, "NOTIFICATION_METRICS_EXPORT_TIMEOUT_SECONDS", 5.0)
+            ),
+            environment=str(getattr(config, "ENVIRONMENT", "unknown")),
         )
 
     def _validate_configuration(self, request_sha256: str) -> None:
@@ -144,6 +172,24 @@ class ResendEmailProvider:
                 error_code="provider_timeout_invalid",
                 request_sha256=request_sha256,
             )
+
+    def _ensure_metrics_ready(self, request_sha256: str) -> None:
+        if not self.metrics_required:
+            return
+        try:
+            configure_notification_metrics(
+                endpoint=self.metrics_otlp_endpoint,
+                export_interval_seconds=self.metrics_export_interval_seconds,
+                export_timeout_seconds=self.metrics_export_timeout_seconds,
+                environment=self.environment,
+            )
+        except Exception as exc:
+            raise NotificationProviderError(
+                "P4C notification telemetry is not ready",
+                outcome="retryable_failure",
+                error_code="notification_metrics_configuration_invalid",
+                request_sha256=request_sha256,
+            ) from exc
 
     @staticmethod
     def _render_lifecycle_message(
@@ -234,6 +280,7 @@ class ResendEmailProvider:
         )
         request_sha256 = _sha256_json(payload)
         self._validate_configuration(request_sha256)
+        self._ensure_metrics_ready(request_sha256)
         if not idempotency_key.strip() or len(idempotency_key) > 256:
             raise NotificationProviderError(
                 "P4C notification idempotency key is invalid",
@@ -255,10 +302,16 @@ class ResendEmailProvider:
                 timeout=httpx.Timeout(self.timeout_seconds),
                 follow_redirects=False,
             )
+        started = time.monotonic()
         try:
             try:
                 response = await client.post("/emails", headers=headers, json=payload)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
+                record_provider_call(
+                    operation="send",
+                    outcome="ambiguous_outcome",
+                    duration_ms=(time.monotonic() - started) * 1000,
+                )
                 raise NotificationProviderError(
                     "Resend submission has an unknown commit point",
                     outcome="ambiguous_outcome",
@@ -274,12 +327,23 @@ class ResendEmailProvider:
         if 200 <= response.status_code < 300:
             reference = body.get("id") if isinstance(body, dict) else None
             if not isinstance(reference, str) or not reference.strip():
+                record_provider_call(
+                    operation="send",
+                    outcome="ambiguous_outcome",
+                    duration_ms=(time.monotonic() - started) * 1000,
+                )
                 raise NotificationProviderError(
                     "Resend accepted submission without a provider email id",
                     outcome="ambiguous_outcome",
                     error_code="provider_reference_missing",
                     request_sha256=request_sha256,
                 )
+            record_provider_call(
+                operation="send",
+                outcome="provider_accepted_nonterminal",
+                duration_ms=(time.monotonic() - started) * 1000,
+            )
+            record_provider_accepted()
             return NotificationProviderEvidence(
                 provider_code=_PROVIDER,
                 provider_reference_id=reference,
@@ -291,12 +355,14 @@ class ResendEmailProvider:
         if response.status_code == 429 or response.status_code >= 500:
             outcome = "retryable_failure"
         elif response.status_code == 409:
-            # Same logical idempotency key may be concurrently in-flight or
-            # already committed; retrying the same key is safe but the current
-            # call cannot prove whether an external effect already exists.
             outcome = "ambiguous_outcome"
         else:
             outcome = "permanent_rejection"
+        record_provider_call(
+            operation="send",
+            outcome=outcome,
+            duration_ms=(time.monotonic() - started) * 1000,
+        )
         raise NotificationProviderError(
             f"Resend submission returned HTTP {response.status_code}",
             outcome=outcome,
@@ -310,6 +376,7 @@ class ResendEmailProvider:
             raise ValueError("provider_reference_id is required")
         request_sha256 = _sha256_json({"provider": _PROVIDER, "reference": provider_reference_id, "op": "get"})
         self._validate_configuration(request_sha256)
+        self._ensure_metrics_ready(request_sha256)
         headers = {"Authorization": f"Bearer {self.api_key}"}
         client = self._client
         owns_client = client is None
@@ -319,10 +386,17 @@ class ResendEmailProvider:
                 timeout=httpx.Timeout(self.timeout_seconds),
                 follow_redirects=False,
             )
+        started = time.monotonic()
         try:
             try:
                 response = await client.get(f"/emails/{provider_reference_id}", headers=headers)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
+                record_provider_call(
+                    operation="reconcile",
+                    outcome="retryable_failure",
+                    duration_ms=(time.monotonic() - started) * 1000,
+                )
+                record_reconciliation_result(result="retryable_failure")
                 raise NotificationProviderError(
                     "Resend reconciliation request failed",
                     outcome="retryable_failure",
@@ -335,6 +409,12 @@ class ResendEmailProvider:
         body = self._safe_json(response)
         if response.status_code != 200 or not isinstance(body, dict):
             outcome = "retryable_failure" if response.status_code in {404, 429} or response.status_code >= 500 else "permanent_rejection"
+            record_provider_call(
+                operation="reconcile",
+                outcome=outcome,
+                duration_ms=(time.monotonic() - started) * 1000,
+            )
+            record_reconciliation_result(result=outcome)
             raise NotificationProviderError(
                 f"Resend reconciliation returned HTTP {response.status_code}",
                 outcome=outcome,
@@ -344,12 +424,24 @@ class ResendEmailProvider:
             )
         last_event = body.get("last_event")
         if not isinstance(last_event, str) or last_event not in _TERMINAL_LAST_EVENTS | _NONTERMINAL_LAST_EVENTS:
+            record_provider_call(
+                operation="reconcile",
+                outcome="retryable_failure",
+                duration_ms=(time.monotonic() - started) * 1000,
+            )
+            record_reconciliation_result(result="unknown_event")
             raise NotificationProviderError(
                 "Resend reconciliation omitted a supported last_event",
                 outcome="retryable_failure",
                 error_code="reconciliation_last_event_unknown",
                 request_sha256=request_sha256,
             )
+        record_provider_call(
+            operation="reconcile",
+            outcome="definite_success",
+            duration_ms=(time.monotonic() - started) * 1000,
+        )
+        record_reconciliation_result(result=last_event)
         return NotificationReconciliationEvidence(
             provider_code=_PROVIDER,
             provider_reference_id=provider_reference_id,
