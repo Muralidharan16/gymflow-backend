@@ -50,8 +50,11 @@ jobs:
             alembic/versions/w07d8e9f0a37_p4c_notification_delivery.py \
             alembic/versions/x07d8e9f0a38_p4c_notification_reconciliation.py \
             alembic/versions/y07d8e9f0a39_p4c_notification_crash_recovery.py \
-            alembic/versions/z07d8e9f0a3a_p4c_notification_operations.py
-          python -m pytest --noconftest -q --maxfail=1 tests/test_p4c_notification_static_contracts.py
+            alembic/versions/z07d8e9f0a3a_p4c_notification_operations.py \
+            alembic/versions/za07d8e9f0a3b_p4c_notification_history_read_boundary.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4c_notification_static_contracts.py \
+            tests/test_p4c_notification_history_boundary.py
 
       - name: Install PostgreSQL 16 and reduced identities
         run: |
@@ -83,7 +86,7 @@ jobs:
         run: |
           set -euo pipefail
           python -s scripts/verify_alembic_graph.py
-          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'z07d8e9f0a3a'
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'za07d8e9f0a3b'
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
 
