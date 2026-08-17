@@ -41,6 +41,34 @@ Search failures that remain retryable use the lifecycle outbox backoff policy; p
 
 For operational visibility, alert on search provider request failure outcomes, latency degradation, drift-repair activity, and lifecycle search events entering `dead_lettered`. A lack of current provider acknowledgement or reconciliation evidence is a degraded state even if the API remains healthy.
 
+## P4C durable notification boundary
+
+P4C admits lifecycle member email as a real external effect through the shared branch outbox. Legacy reminder and daily-digest entry points remain fail-closed because their old global discovery implementations are not tenant-bound durable command producers. WhatsApp also remains outside the admitted P4C delivery channel until it receives equivalent provider evidence and callback semantics. `branch.refund_required` remains deferred to P4D.
+
+The lifecycle `branch.member_notification` event does not authorize a recipient. Under a live worker lease, `app_secure.materialize_branch_member_notifications(...)` re-reads authoritative branch history, branch metadata, active members and current communication preferences from PostgreSQL, creates one deterministic command per eligible member, and supersedes the parent fanout event. The child `notification.delivery` command contains only an internal command identifier; delivery claim re-reads the current member email and suppression state immediately before provider I/O.
+
+The ordinary worker is the only process allowed to receive `P4C_RESEND_API_KEY` and `NOTIFICATION_EMAIL_PROVIDER_MODE=resend`. The API must receive neither. Conversely, only the API receives `RESEND_WEBHOOK_SECRET`; the ordinary worker, maintenance worker, beat and Flower must not receive it. The public webhook path `/webhooks/notifications/resend` is exempt from tenant/JWT authentication only because it authenticates the untouched raw request body with the Resend/Svix signature before invoking any database capability. Tenant, member, destination and message fields from the webhook are never authorization authority.
+
+Production notification workers must receive `NOTIFICATION_METRICS_OTLP_ENDPOINT` and bounded export interval/timeout values. The Resend adapter initializes the process-local OTLP/HTTP metric reader before its first network request. Missing or invalid telemetry configuration is a retryable operational failure and **no provider request is issued**. Notification metrics use low-cardinality provider/operation/outcome/channel/result attributes only; member IDs, tenant IDs, email addresses, provider message IDs and request bodies are forbidden metric dimensions.
+
+Provider HTTP acceptance is explicitly non-terminal. A successful Resend POST stores the provider email ID plus request/evidence hashes and moves the command/outbox to `provider_accepted`; it does not mean `delivered`. Terminal success requires a verified provider event or reconciliation result. Duplicate provider events are idempotent. Stale events are retained as immutable provider evidence but do not rewind current truth. Once a message is proven delivered, a later complaint/bounce/suppression signal may suppress future communication while historical delivery remains `succeeded/delivered`.
+
+A worker crash after delivery claim is handled by lease fencing. The old worker cannot acknowledge after its lease expires. Reclaiming an expired in-flight command records the abandoned attempt as an `ambiguous_outcome` (`worker_lease_expired_commit_unknown`) and retries with the same deterministic logical idempotency key. If provider acceptance is known, retries do not blindly submit another logical notification; the provider reference enters reconciliation.
+
+### P4C reconciliation
+
+Global discovery belongs only to the maintenance identity. Every five minutes the maintenance worker calls the bounded `app_secure.enqueue_notification_reconciliation(...)` capability, which uses `FOR UPDATE SKIP LOCKED` and enqueues provider checks for old `provider_accepted` commands. Maintenance never receives the Resend send credential and never queries the provider itself. The ordinary worker claims `notification.reconcile`, performs the provider GET, and persists the evidence through a fenced capability. Non-terminal provider state schedules another bounded check; terminal provider state updates the command through the same monotonic evidence rules as the signed webhook.
+
+Maintenance also exports a PII-free operational snapshot through `app_secure.notification_operational_snapshot()`: pending/provider-accepted depth, dead-letter depth and oldest outstanding age. Alert on sustained provider failures, provider latency, provider-accepted age, reconciliation failure, backlog age and DLQ growth rather than relying on HTTP error rate alone.
+
+### P4C dead-letter/operator recovery
+
+`dead_lettered` does not authorize blind resend. Operators first inspect the command identifier, attempts/evidence, provider status and root cause. The maintenance-only `app_secure.list_notification_dead_letters(...)` returns bounded identifiers/status/reason metadata without message bodies or destinations.
+
+After a proven no-effect failure is corrected, an operator may call `app_secure.requeue_dead_lettered_notification(command_id, reason)`. That capability re-reads current member eligibility/contact preferences, keeps the existing deterministic command/idempotency identity, records an immutable `notification_operator_actions` audit row and restores a bounded retry budget. It accepts no arbitrary destination or message body.
+
+Replay is deliberately refused when a provider reference exists or when any attempt is ambiguous, provider-accepted or otherwise proves that an external effect may already exist. Such commands must be resolved through provider reconciliation; manually editing `notification_commands`, deleting attempt evidence, changing provider IDs or sending directly through Resend is forbidden because it can counterfeit convergence or duplicate member communication.
+
 ## Container deployment
 
 `docker-compose.yml` is a development convenience configuration. Apply `deploy/docker-compose.production-identities.yml` (or reproduce the same environment isolation in Kubernetes/systemd/another orchestrator) for production identity compartmentalization.
@@ -53,7 +81,8 @@ Do not place all database URLs or external-provider credentials in one shared pr
 2. Deployment logins are provisioned with the exact runtime binding contract.
 3. Alembic runs separately as `migration_owner` and reaches the single repository HEAD.
 4. API/worker/maintenance startup attestation verifies the live PostgreSQL principal before work begins.
-5. The ordinary worker receives the P4B OpenSearch and OTLP search-metrics configuration; non-worker processes receive neither.
-6. RLS remains enabled and forced on governed tenant tables; no production process disables it.
+5. The ordinary worker receives the P4B OpenSearch/search-telemetry configuration and, when P4C email is enabled, the P4C Resend send credential plus notification telemetry configuration.
+6. The API receives only the P4C Resend webhook verification secret; maintenance receives only notification operational telemetry; beat and Flower receive neither notification credential.
+7. RLS remains enabled and forced on governed tenant tables; no production process disables it.
 
 A green application health check is not a substitute for these identity proofs.
