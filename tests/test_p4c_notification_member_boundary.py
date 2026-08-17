@@ -28,7 +28,7 @@ def test_member_boundary_preserves_force_rls_and_adds_no_runtime_grant() -> None
         "TO app_security_owner"
     ) in source
     assert (
-        "GRANT UPDATE (max_attempts) ON TABLE public.branch_outbox_events "
+        "GRANT UPDATE (max_attempts, process_after) ON TABLE public.branch_outbox_events "
         "TO app_security_owner"
     ) in source
     assert "GRANT SELECT ON TABLE public.branch_outbox_events TO app_security_owner" not in source
@@ -42,7 +42,10 @@ def test_member_boundary_preserves_force_rls_and_adds_no_runtime_grant() -> None
         assert f"GRANT SELECT ON TABLE public.members TO {role}" not in source
         assert f"GRANT INSERT ON TABLE public.branch_outbox_events TO {role}" not in source
         assert f"GRANT SELECT (payload) ON TABLE public.branch_outbox_events TO {role}" not in source
-        assert f"GRANT UPDATE (max_attempts) ON TABLE public.branch_outbox_events TO {role}" not in source
+        assert (
+            f"GRANT UPDATE (max_attempts, process_after) ON TABLE public.branch_outbox_events TO {role}"
+            not in source
+        )
     assert "BYPASSRLS" not in source
     assert "DISABLE ROW LEVEL SECURITY" not in source
     assert "NO FORCE ROW LEVEL SECURITY" not in source
@@ -186,7 +189,7 @@ def test_member_boundary_downgrade_removes_only_its_delta() -> None:
     assert "DROP POLICY IF EXISTS p4c_notification_delivery_security_owner_insert" in downgrade
     assert "DROP POLICY IF EXISTS p4c_notification_member_security_owner_select" in downgrade
     assert (
-        "REVOKE UPDATE (max_attempts) ON TABLE public.branch_outbox_events "
+        "REVOKE UPDATE (max_attempts, process_after) ON TABLE public.branch_outbox_events "
         "FROM app_security_owner"
     ) in downgrade
     assert (

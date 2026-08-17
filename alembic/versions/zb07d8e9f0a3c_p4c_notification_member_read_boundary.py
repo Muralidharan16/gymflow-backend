@@ -16,10 +16,11 @@ work in the FORCE-RLS lifecycle outbox. Existing lifecycle infrastructure gives
 not include the payload column. Reconciliation is the first P4C capability that
 must read ``payload->>'command_id'`` from a live worker-owned outbox lease, so
 this still-uncertified boundary adds SELECT on exactly ``payload`` to the
-no-login security owner. Safe operator replay also resets the durable outbox
-retry ceiling through a SECURITY DEFINER capability, so this boundary adds
-UPDATE on exactly ``max_attempts`` to the same no-login owner. Runtime roles
-receive no new table privilege and cannot SET ROLE to the security owner.
+no-login security owner. Safe operator replay resets the durable outbox retry
+ceiling and next processing time through a SECURITY DEFINER capability, so this
+boundary adds UPDATE on exactly ``max_attempts`` and ``process_after`` to the
+same no-login owner. Runtime roles receive no new table privilege and cannot
+SET ROLE to the security owner.
 """
 
 from __future__ import annotations
@@ -184,6 +185,10 @@ def _require_predecessor(bind) -> None:
         raise RuntimeError(
             "zb07 refuses ambiguous predecessor app_security_owner outbox max_attempts UPDATE"
         )
+    if _has_column_privilege(bind, _OUTBOX, "process_after", "UPDATE"):
+        raise RuntimeError(
+            "zb07 refuses ambiguous predecessor app_security_owner outbox process_after UPDATE"
+        )
 
     if not bind.execute(
         sa.text(
@@ -225,6 +230,8 @@ def _post_install_proof(bind) -> None:
         raise RuntimeError("zb07 app_security_owner outbox payload SELECT was not installed")
     if not _has_column_privilege(bind, _OUTBOX, "max_attempts", "UPDATE"):
         raise RuntimeError("zb07 app_security_owner outbox max_attempts UPDATE was not installed")
+    if not _has_column_privilege(bind, _OUTBOX, "process_after", "UPDATE"):
+        raise RuntimeError("zb07 app_security_owner outbox process_after UPDATE was not installed")
 
     # Runtime outbox privileges predate P4C and are certified by their owning
     # migrations. Do not infer a predecessor ACL contract here. The P4C delta
@@ -293,7 +300,7 @@ def upgrade() -> None:
         "GRANT SELECT (payload) ON TABLE public.branch_outbox_events TO app_security_owner"
     )
     op.execute(
-        "GRANT UPDATE (max_attempts) ON TABLE public.branch_outbox_events TO app_security_owner"
+        "GRANT UPDATE (max_attempts, process_after) ON TABLE public.branch_outbox_events TO app_security_owner"
     )
 
     op.execute(
@@ -421,7 +428,7 @@ def downgrade() -> None:
         "ON public.members"
     )
     op.execute(
-        "REVOKE UPDATE (max_attempts) ON TABLE public.branch_outbox_events FROM app_security_owner"
+        "REVOKE UPDATE (max_attempts, process_after) ON TABLE public.branch_outbox_events FROM app_security_owner"
     )
     op.execute(
         "REVOKE SELECT (payload) ON TABLE public.branch_outbox_events FROM app_security_owner"
