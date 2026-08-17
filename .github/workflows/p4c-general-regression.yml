@@ -104,7 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           python -s scripts/verify_alembic_graph.py
-          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'za07d8e9f0a3b'
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'zb07d8e9f0a3c'
           python -s -m alembic -c alembic.ini upgrade head
           DATABASE_URL=postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test \
             python -s -m alembic -c alembic.ini upgrade head
