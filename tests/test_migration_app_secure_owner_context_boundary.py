@@ -211,9 +211,15 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         _P3E_ASSET_PROVENANCE_MIGRATION: set(),
         _P3E_ASSET_LIVE_OWNER_MIGRATION: set(),
         _P3E_ASSET_ENUM_RECOVERY_MIGRATION: set(),
-        # P4B's app_secure changes are bounded function/table-column contracts;
-        # neither migration adds schema/view/policy DDL recognized here.
-        _P4B_SEARCH_EVIDENCE_MIGRATION: set(),
+        # P4B's external-evidence migration installs/removes schema exposure and
+        # its bounded owner policy. Drift repair remains a function/table-column
+        # contract without schema/view/policy DDL recognized here.
+        _P4B_SEARCH_EVIDENCE_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
         _P4B_SEARCH_DRIFT_MIGRATION: set(),
         # The closed inventory follows the literal app_secure migration token,
         # not the phase name. ZA/ZB contain app_security_owner boundary DDL but
