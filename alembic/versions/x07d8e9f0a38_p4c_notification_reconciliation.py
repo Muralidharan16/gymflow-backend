@@ -26,6 +26,8 @@ _SECURITY_OWNER = "app_security_owner"
 _WORKER = "worker_runtime"
 _MAINTENANCE = "lifecycle_maintenance_runtime"
 _APP = "app_runtime"
+_REPLAY_MEMBER_POLICY = "p4c_notification_replay_security_owner_select"
+_REPLAY_COMMAND_GUC = "app.notification_replay_command_id"
 
 _OLD_WEBHOOK = "app_secure.apply_resend_notification_event(text,text,text,timestamptz,text)"
 _V2_WEBHOOK = "app_secure.apply_resend_notification_event_v2(text,text,text,timestamptz,text)"
@@ -74,6 +76,7 @@ def _require_predecessor(bind) -> None:
         "public.notification_provider_events",
         "public.member_notification_preferences",
         "public.branch_outbox_events",
+        "public.members",
     ):
         if bind.execute(
             sa.text("SELECT pg_catalog.to_regclass(:relation) IS NULL"),
@@ -84,6 +87,18 @@ def _require_predecessor(bind) -> None:
         sa.text("SELECT pg_catalog.to_regclass('public.notification_operator_actions') IS NOT NULL")
     ).scalar_one():
         raise RuntimeError("x07 notification operator action relation already exists")
+    if bind.execute(
+        sa.text(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM pg_catalog.pg_policy
+                WHERE polrelid='public.members'::regclass AND polname=:policy
+            )
+            """
+        ),
+        {"policy": _REPLAY_MEMBER_POLICY},
+    ).scalar_one():
+        raise RuntimeError("x07 notification replay member policy already exists")
 
 
 def _create_storage() -> None:
@@ -140,6 +155,41 @@ def _create_storage() -> None:
     )
     op.execute(
         "GRANT SELECT,INSERT ON TABLE public.notification_operator_actions TO app_security_owner"
+    )
+    op.execute(
+        """
+        CREATE POLICY p4c_notification_replay_security_owner_select
+        ON public.members
+        FOR SELECT TO app_security_owner
+        USING (
+            pg_catalog.pg_has_role(
+                session_user,
+                'lifecycle_maintenance_runtime',
+                'MEMBER'
+            )
+            AND pg_catalog.pg_input_is_valid(
+                NULLIF(
+                    pg_catalog.current_setting('app.notification_replay_command_id',true),
+                    ''
+                ),
+                'uuid'
+            )
+            AND EXISTS (
+                SELECT 1
+                FROM public.notification_commands AS command_data
+                WHERE command_data.command_id=CAST(
+                    NULLIF(
+                        pg_catalog.current_setting('app.notification_replay_command_id',true),
+                        ''
+                    ) AS uuid
+                )
+                  AND command_data.status='dead_lettered'
+                  AND command_data.member_id=members.id
+                  AND command_data.tenant_id=members.org_id
+                  AND command_data.branch_id=members.home_branch_id
+            )
+        )
+        """
     )
 
 
@@ -488,6 +538,9 @@ def _create_functions() -> None:
                 RAISE EXCEPTION 'dead-letter replay refused: external effect may already exist'
                   USING ERRCODE='55000';
             END IF;
+            PERFORM pg_catalog.set_config(
+                'app.notification_replay_command_id',p_command_id::text,true
+            );
             SELECT NULLIF(pg_catalog.btrim(m.email),'') IS NOT NULL
                    AND m.is_active IS TRUE AND m.status::text='active'
                    AND m.home_branch_id=v_command.branch_id
@@ -497,6 +550,7 @@ def _create_functions() -> None:
             LEFT JOIN public.member_notification_preferences p
               ON p.tenant_id=m.org_id AND p.member_id=m.id
             WHERE m.id=v_command.member_id AND m.org_id=v_command.tenant_id;
+            PERFORM pg_catalog.set_config('app.notification_replay_command_id','',true);
             IF NOT COALESCE(v_allowed,false) THEN
                 RAISE EXCEPTION 'dead-letter replay refused: current recipient is not eligible'
                   USING ERRCODE='55000';
@@ -577,6 +631,44 @@ def _post_install_proof(bind) -> None:
         ).scalar_one():
             raise RuntimeError(f"x07 leaked direct operator-action ACL: {role_name}")
 
+    replay_policy = bind.execute(
+        sa.text(
+            """
+            SELECT p.polcmd::text AS command,
+                   ARRAY(
+                       SELECT r.rolname::text
+                       FROM pg_catalog.pg_roles r
+                       WHERE r.oid=ANY(p.polroles)
+                       ORDER BY r.rolname
+                   ) AS roles
+            FROM pg_catalog.pg_policy p
+            WHERE p.polrelid='public.members'::regclass AND p.polname=:policy
+            """
+        ),
+        {"policy": _REPLAY_MEMBER_POLICY},
+    ).mappings().one_or_none()
+    if (
+        replay_policy is None
+        or replay_policy["command"] != "r"
+        or list(replay_policy["roles"]) != [_SECURITY_OWNER]
+    ):
+        raise RuntimeError("x07 notification replay member policy role/command drift")
+
+    if bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.has_table_privilege(
+                       :role,'public.members'::regclass,'SELECT'
+                   )
+                OR pg_catalog.has_any_column_privilege(
+                       :role,'public.members'::regclass,'SELECT'
+                   )
+            """
+        ),
+        {"role": _MAINTENANCE},
+    ).scalar_one():
+        raise RuntimeError("x07 leaked direct member SELECT to lifecycle maintenance")
+
 
 def upgrade() -> None:
     bind=op.get_bind()
@@ -607,6 +699,9 @@ def downgrade() -> None:
         op.execute(f"DROP FUNCTION IF EXISTS {signature}")
     op.execute(f"GRANT EXECUTE ON FUNCTION {_OLD_WEBHOOK} TO app_runtime")
     op.execute("RESET ROLE")
+    op.execute(
+        "DROP POLICY IF EXISTS p4c_notification_replay_security_owner_select ON public.members"
+    )
     op.execute("DROP TABLE public.notification_operator_actions")
     op.execute("DROP INDEX public.ix_notification_commands_reconcile_due")
     op.execute(
