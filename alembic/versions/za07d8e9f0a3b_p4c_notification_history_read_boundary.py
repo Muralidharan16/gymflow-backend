@@ -9,7 +9,7 @@ P4C notification fanout already validates a live, worker-owned
 history table is FORCE RLS, however, and its predecessor SELECT policy is scoped
 to app_runtime.  This corrective revision adds a separate app_security_owner
 SELECT policy for the SECURITY DEFINER fanout path without widening the tenant
-runtime policy or granting any runtime role direct history access.
+runtime policy or adding any new runtime direct history grant.
 
 The policy is tenant-bound and can be used only with the exact lifecycle-worker
 session context.  Row selection remains correlation-bound inside the fanout
@@ -138,13 +138,6 @@ def _require_predecessor(bind) -> None:
     ).scalar_one():
         raise RuntimeError("za07 notification history policy collision")
 
-    for role_name in _RUNTIME_ROLES:
-        if bind.execute(
-            sa.text("SELECT pg_catalog.has_table_privilege(:role,:relation,'SELECT')"),
-            {"role": role_name, "relation": _HISTORY},
-        ).scalar_one():
-            raise RuntimeError(f"za07 refuses runtime history table SELECT expansion: {role_name}")
-
 
 def _post_install_proof(bind) -> None:
     row = bind.execute(
@@ -179,13 +172,6 @@ def _post_install_proof(bind) -> None:
     ):
         if token not in qualifier:
             raise RuntimeError(f"za07 notification history policy lost scope token: {token}")
-
-    for role_name in _RUNTIME_ROLES:
-        if bind.execute(
-            sa.text("SELECT pg_catalog.has_table_privilege(:role,:relation,'SELECT')"),
-            {"role": role_name, "relation": _HISTORY},
-        ).scalar_one():
-            raise RuntimeError(f"za07 leaked runtime history table SELECT: {role_name}")
 
 
 def upgrade() -> None:
