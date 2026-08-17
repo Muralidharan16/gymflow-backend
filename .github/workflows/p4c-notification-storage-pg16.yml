@@ -246,6 +246,9 @@ jobs:
           PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U worker_test_runtime -d gymflow_p4c_test <<SQL
           BEGIN;
           SELECT set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',true);
+          SELECT set_config('app.current_role','branch_lifecycle_worker',true);
+          SELECT set_config('app.internal_maintenance','branch_lifecycle_saga',true);
+          SELECT set_config('app.worker_id','46000000-0000-4000-8000-000000000061',true);
           UPDATE public.branch_outbox_events SET status='processing',attempt_count=attempt_count+1,
             leased_by='46000000-0000-4000-8000-000000000061',leased_until=clock_timestamp()+INTERVAL '10 minutes'
           WHERE outbox_id='${c1}' AND status='pending';
@@ -254,7 +257,7 @@ jobs:
           );
           COMMIT;
           SQL
-          projection="$(PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -F '|' -v ON_ERROR_STOP=1 -h 127.0.0.1 -U worker_test_runtime -d gymflow_p4c_test -c "BEGIN; SELECT set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',true); SELECT destination FROM app_secure.claim_notification_delivery_v2('${c1}','46000000-0000-4000-8000-000000000061'); ROLLBACK;" 2>/dev/null || true)"
+          projection="$(PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -F '|' -v ON_ERROR_STOP=1 -h 127.0.0.1 -U worker_test_runtime -d gymflow_p4c_test -c "BEGIN; SELECT set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',true); SELECT set_config('app.current_role','branch_lifecycle_worker',true); SELECT set_config('app.internal_maintenance','branch_lifecycle_saga',true); SELECT set_config('app.worker_id','46000000-0000-4000-8000-000000000061',true); SELECT destination FROM app_secure.claim_notification_delivery_v2('${c1}','46000000-0000-4000-8000-000000000061'); ROLLBACK;" 2>/dev/null || true)"
           # The second claim is intentionally not claimable; verify persisted current email directly as migration owner.
           test "$(sudo -u postgres psql -X -At -d gymflow_p4c_test -c "SELECT email FROM public.members WHERE id='46000000-0000-4000-8000-000000000021'")" = 'current-one@example.test'
 
@@ -264,6 +267,9 @@ jobs:
           PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U worker_test_runtime -d gymflow_p4c_test <<SQL
           BEGIN;
           SELECT set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',true);
+          SELECT set_config('app.current_role','branch_lifecycle_worker',true);
+          SELECT set_config('app.internal_maintenance','branch_lifecycle_saga',true);
+          SELECT set_config('app.worker_id','46000000-0000-4000-8000-000000000061',true);
           SELECT app_secure.acknowledge_notification_provider_acceptance(
             '${C1}','46000000-0000-4000-8000-000000000061','resend-email-001',repeat('a',64),repeat('b',64)
           );
@@ -292,6 +298,9 @@ jobs:
           PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U worker_test_runtime -d gymflow_p4c_test <<SQL
           BEGIN;
           SELECT set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',true);
+          SELECT set_config('app.current_role','branch_lifecycle_worker',true);
+          SELECT set_config('app.internal_maintenance','branch_lifecycle_saga',true);
+          SELECT set_config('app.worker_id','46000000-0000-4000-8000-000000000061',true);
           UPDATE public.branch_outbox_events SET status='processing',attempt_count=attempt_count+1,
             leased_by='46000000-0000-4000-8000-000000000061',leased_until=clock_timestamp()+INTERVAL '10 minutes'
           WHERE outbox_id='${c2}' AND status='pending';
@@ -314,6 +323,9 @@ jobs:
           PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 -h 127.0.0.1 -U worker_test_runtime -d gymflow_p4c_test <<SQL
           BEGIN;
           SELECT set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',true);
+          SELECT set_config('app.current_role','branch_lifecycle_worker',true);
+          SELECT set_config('app.internal_maintenance','branch_lifecycle_saga',true);
+          SELECT set_config('app.worker_id','46000000-0000-4000-8000-000000000061',true);
           UPDATE public.branch_outbox_events SET status='processing',attempt_count=attempt_count+1,
             leased_by='46000000-0000-4000-8000-000000000061',leased_until=clock_timestamp()+INTERVAL '10 minutes'
           WHERE outbox_id='${r1}' AND status='pending';
@@ -339,6 +351,9 @@ jobs:
           PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -At -v ON_ERROR_STOP=1 -h 127.0.0.1 -U worker_test_runtime -d gymflow_p4c_test <<SQL
           BEGIN;
           SELECT set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',true);
+          SELECT set_config('app.current_role','branch_lifecycle_worker',true);
+          SELECT set_config('app.internal_maintenance','branch_lifecycle_saga',true);
+          SELECT set_config('app.worker_id','46000000-0000-4000-8000-000000000061',true);
           SELECT attempt_number FROM app_secure.claim_notification_delivery_v2('${c3}','46000000-0000-4000-8000-000000000061');
           COMMIT;
           SQL
