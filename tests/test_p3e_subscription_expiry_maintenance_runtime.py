@@ -59,6 +59,186 @@ def _call_capability(conn: psycopg.Connection, batch_size: int) -> int:
         return int(cur.fetchone()[0])
 
 
+def _restore_subscription_organization(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.organizations (
+                id, name, slug, tier, is_active, max_branches,
+                default_currency_code, website_verified, social_links,
+                verification_status, country, profile_completed
+            )
+            VALUES (
+                %s, 'P3E Subscription Fixture', 'p3e-subscription-fixture',
+                'basic'::public.orgtier, true, 10, 'INR', false, '{}'::jsonb,
+                'pending', 'India', false
+            )
+            ON CONFLICT (id) DO UPDATE
+            SET name = EXCLUDED.name,
+                slug = EXCLUDED.slug,
+                tier = EXCLUDED.tier,
+                is_active = EXCLUDED.is_active,
+                max_branches = EXCLUDED.max_branches,
+                default_currency_code = EXCLUDED.default_currency_code,
+                website_verified = EXCLUDED.website_verified,
+                social_links = EXCLUDED.social_links,
+                verification_status = EXCLUDED.verification_status,
+                country = EXCLUDED.country,
+                profile_completed = EXCLUDED.profile_completed
+            """,
+            (_ORG_ID,),
+        )
+
+
+def _restore_subscription_gym(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.gyms (
+                id, org_id, name, facility_type, gymu_id, is_active
+            )
+            VALUES (
+                %s, %s, 'P3E Fixture Gym', 'gym'::public.facilitytype,
+                'P3EG000001', true
+            )
+            ON CONFLICT (id) DO UPDATE
+            SET org_id = EXCLUDED.org_id,
+                name = EXCLUDED.name,
+                facility_type = EXCLUDED.facility_type,
+                gymu_id = EXCLUDED.gymu_id,
+                is_active = EXCLUDED.is_active
+            """,
+            (_GYM_ID, _ORG_ID),
+        )
+
+
+def _restore_subscription_plan(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO public.subscription_plans (
+                id, gym_id, name, duration_days, price,
+                max_freeze_days, features, is_active
+            )
+            VALUES (
+                %s, %s, 'P3E Fixture Plan', 30, 1000.00, 0, '{}'::jsonb, true
+            )
+            ON CONFLICT (id) DO UPDATE
+            SET gym_id = EXCLUDED.gym_id,
+                name = EXCLUDED.name,
+                duration_days = EXCLUDED.duration_days,
+                price = EXCLUDED.price,
+                max_freeze_days = EXCLUDED.max_freeze_days,
+                features = EXCLUDED.features,
+                is_active = EXCLUDED.is_active
+            """,
+            (_PLAN_ID, _GYM_ID),
+        )
+
+
+def _restore_subscription_member_if_absent() -> None:
+    with _connect(_APP_LOGIN, "GENERAL_RUNTIME_PASSWORD") as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_catalog.set_config('app.current_org_id', %s, false)",
+                (str(_ORG_ID),),
+            )
+            cur.execute(
+                """
+                INSERT INTO public.members (
+                    id, gym_id, org_id, member_uid, member_number, name,
+                    status, is_active, is_migrated
+                )
+                VALUES (
+                    %s, %s, %s, 'P3EM000001', 1, 'P3E Fixture Member',
+                    'active'::public.memberstatus, true, false
+                )
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (_MEMBER_ID, _GYM_ID, _ORG_ID),
+            )
+
+
+def _restore_subscription_member_with_superuser() -> bool:
+    dsn = os.environ.get("P3E_FIXTURE_SUPERUSER_DATABASE_URL")
+    if not dsn:
+        return False
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM public.member_subscriptions WHERE id = ANY(%s::uuid[])",
+                ([str(value) for value in _SUB_IDS.values()],),
+            )
+            cur.execute("DELETE FROM public.members WHERE id = %s", (_MEMBER_ID,))
+            cur.execute(
+                """
+                INSERT INTO public.members (
+                    id, gym_id, org_id, member_uid, member_number, name,
+                    status, is_active, is_migrated
+                )
+                VALUES (
+                    %s, %s, %s, 'P3EM000001', 1, 'P3E Fixture Member',
+                    'active'::public.memberstatus, true, false
+                )
+                """,
+                (_MEMBER_ID, _GYM_ID, _ORG_ID),
+            )
+    return True
+
+
+def _assert_subscription_member_fixture() -> None:
+    with _connect(_APP_LOGIN, "GENERAL_RUNTIME_PASSWORD") as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_catalog.set_config('app.current_org_id', %s, false)",
+                (str(_ORG_ID),),
+            )
+            cur.execute(
+                """
+                SELECT gym_id, org_id, member_uid, member_number, name,
+                       status::text, is_active, is_migrated
+                FROM public.members
+                WHERE id = %s
+                """,
+                (_MEMBER_ID,),
+            )
+            row = cur.fetchone()
+
+    expected = (
+        _GYM_ID,
+        _ORG_ID,
+        "P3EM000001",
+        1,
+        "P3E Fixture Member",
+        "active",
+        True,
+        False,
+    )
+    if row == expected:
+        return
+
+    if _restore_subscription_member_with_superuser():
+        _assert_subscription_member_fixture()
+        return
+
+    raise RuntimeError(
+        "P3E subscription member fixture is not authoritative; "
+        "public.members is FORCE RLS protected, so restoring a corrupted "
+        "reserved member row requires isolated test-harness superuser setup via "
+        "P3E_FIXTURE_SUPERUSER_DATABASE_URL."
+    )
+
+
+def _restore_subscription_parents() -> None:
+    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as conn:
+        _restore_subscription_organization(conn)
+        _restore_subscription_gym(conn)
+        _restore_subscription_plan(conn)
+    _restore_subscription_member_if_absent()
+    _assert_subscription_member_fixture()
+
+
 def _reset_subscription_rows() -> None:
     today = date.today()
     rows = (
@@ -67,6 +247,7 @@ def _reset_subscription_rows() -> None:
         (_SUB_IDS["future"], today + timedelta(days=5), "active"),
         (_SUB_IDS["already_expired"], today - timedelta(days=20), "expired"),
     )
+    _restore_subscription_parents()
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as conn:
         with conn.cursor() as cur:
             cur.execute(

@@ -67,6 +67,11 @@ async def cleanup_lifecycle_fixture() -> None:
             text(
                 """
                 TRUNCATE TABLE
+                    public.notification_operator_actions,
+                    public.notification_provider_events,
+                    public.notification_delivery_attempts,
+                    public.notification_commands,
+                    public.branch_search_effect_attempts,
                     public.branch_watchdog_alerts,
                     public.branch_lifecycle_events,
                     public.branch_outbox_events,
@@ -603,13 +608,14 @@ async def test_watchdog_alerts_without_compensating_retryable_saga(
 
 
 @pytest.mark.asyncio
-async def test_reconciliation_sweep_releases_claim_and_advances_projection(
+async def test_reconciliation_sweep_enqueues_without_fabricating_provider_ack(
     lifecycle_setup, maintenance_db_session
 ):
     branch1_id = lifecycle_setup["branch1_id"]
 
-    # Reconciliation markers are maintenance-owned state. Seed and execute the
-    # scenario through the same dedicated identity used by the scheduled task.
+    # P4B made search acknowledgement provider-evidence-only. Maintenance may
+    # enqueue bounded reconciliation work, but it must not mutate the desired
+    # version or manufacture a fresh search sync timestamp by itself.
     await set_maintenance_session_context(maintenance_db_session)
     service = BranchLifecycleService(maintenance_db_session)
 
@@ -621,7 +627,8 @@ async def test_reconciliation_sweep_releases_claim_and_advances_projection(
     assert state.status == "active"
     assert state.lifecycle_transition_in_progress is False
     starting_version = state.search_visibility_version
-    state.search_last_synced_at = datetime.now(timezone.utc) - timedelta(days=2)
+    stale_synced_at = datetime.now(timezone.utc) - timedelta(days=2)
+    state.search_last_synced_at = stale_synced_at
     state.reconciliation_claimed_by = None
     state.reconciliation_claimed_at = None
     await maintenance_db_session.commit()
@@ -634,13 +641,9 @@ async def test_reconciliation_sweep_releases_claim_and_advances_projection(
             select(OrgBranchState).where(OrgBranchState.branch_id == branch1_id)
         )
     ).scalar_one()
-    # Reconciliation is intentionally set-based SQL and production sessions
-    # keep expire_on_commit=False. Explicitly refresh the already-loaded ORM
-    # identity before asserting the persisted row rather than confusing a
-    # caller-local identity-map cache with a failed database update.
     await maintenance_db_session.refresh(reconciled_state)
     assert reconciled_state.reconciliation_claimed_by is None
     assert reconciled_state.reconciliation_claimed_at is None
     assert reconciled_state.search_sync_failed_at is None
-    assert reconciled_state.search_last_synced_at is not None
-    assert reconciled_state.search_visibility_version > starting_version
+    assert reconciled_state.search_last_synced_at == stale_synced_at
+    assert reconciled_state.search_visibility_version == starting_version

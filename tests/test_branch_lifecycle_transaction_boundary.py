@@ -6,6 +6,9 @@ from pathlib import Path
 
 SOURCE = Path("app/services/branch_lifecycle_service.py")
 WORKER_SOURCE = Path("app/tasks/branch_outbox_poller.py")
+SEARCH_EVIDENCE_MIGRATION = Path(
+    "alembic/versions/u07d8e9f0a35_p4b_search_external_evidence.py"
+)
 SERVICE_CLASS = "BranchLifecycleService"
 
 
@@ -15,6 +18,10 @@ def _source() -> str:
 
 def _worker_source() -> str:
     return WORKER_SOURCE.read_text(encoding="utf-8")
+
+
+def _search_evidence_source() -> str:
+    return SEARCH_EVIDENCE_MIGRATION.read_text(encoding="utf-8")
 
 
 def _method_node(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
@@ -46,6 +53,13 @@ def _method_source(name: str) -> str:
     assert node.end_lineno is not None
     lines = source.splitlines(keepends=True)
     return "".join(lines[node.lineno - 1 : node.end_lineno])
+
+
+def _method_executable_source(name: str) -> str:
+    """Return executable method body only, excluding its descriptive docstring."""
+    node = _method_node(name)
+    body = node.body[1:] if ast.get_docstring(node, clean=False) is not None else node.body
+    return "\n".join(ast.unparse(statement) for statement in body)
 
 
 def _worker_function_source(name: str) -> str:
@@ -167,10 +181,6 @@ def test_optional_booking_surface_is_checked_before_update_without_swallowing_er
     assert update_sql in saga
     assert saga.index(existence_probe) < saga.index("if relation_exists:") < saga.index(update_sql)
 
-    # Missing optional infrastructure is handled before DML. Once the table is
-    # present, SQL/ACL/data failures are real Transaction-B failures. The service
-    # therefore must not catch and suppress them or perform synchronous in-method
-    # compensation; the leased worker owns retry/dead-letter behavior.
     assert "except Exception" not in saga
     assert "await self.db.rollback()" not in saga
     assert "_compensate_saga" not in saga
@@ -185,15 +195,36 @@ def test_optional_booking_surface_is_checked_before_update_without_swallowing_er
     assert "return await _fail_event(event, worker_id, exc, permanent=False)" in worker
 
 
-def test_reconciliation_isolates_per_branch_failures_with_savepoints() -> None:
+def test_reconciliation_delegates_bounded_claiming_to_p4b_database_capability() -> None:
     reconcile = _method_source("run_reconciliation_sweep")
+    executable = _method_executable_source("run_reconciliation_sweep")
+    migration = _search_evidence_source()
+    capability = migration.split(
+        "CREATE FUNCTION app_secure.enqueue_branch_search_reconciliation", 1
+    )[1].split("$function$;", 1)[0]
 
-    assert "async with self.db.begin_nested():" in reconcile
-    assert "update_result.rowcount != 1" in reconcile
-    assert "clear_result.rowcount != 1" in reconcile
-    assert "search_sync_failed_at = :now" in reconcile
-    assert "return synced_count" in reconcile
-    assert "return len(claimed_ids)" not in reconcile
+    # P4B moved cross-tenant discovery/locking into one maintenance-only
+    # SECURITY DEFINER capability. Python must not independently rescan and
+    # mutate branch search truth or reintroduce per-row transaction ownership.
+    assert "app_secure.enqueue_branch_search_reconciliation" in reconcile
+    assert '{"batch_size": 100}' in reconcile
+    assert "await self.db.commit()" in reconcile
+    assert "return int(enqueued_count or 0)" in reconcile
+    assert "begin_nested" not in executable
+    assert "search_last_synced_at" not in executable
+    assert "search_provider_ack_version" not in executable
+
+    # The database capability is bounded and concurrency-safe. Existing
+    # unresolved search effects suppress duplicate enqueue, and provider success
+    # is still established only by the separate evidence-backed worker path.
+    assert "LIMIT p_batch_size" in capability
+    assert "FOR UPDATE SKIP LOCKED" in capability
+    assert "NOT EXISTS" in capability
+    assert "FROM public.branch_outbox_events AS existing" in capability
+    assert "INSERT INTO public.branch_outbox_events" in capability
+    assert "SELECT count(*)::integer INTO v_count FROM inserted" in capability
+    assert "search_last_synced_at" not in capability
+    assert "search_provider_ack_version" in capability
 
 
 def test_watchdog_refuses_missing_transition_timestamp_instead_of_crashing_math() -> None:
@@ -229,9 +260,6 @@ def test_watchdog_refuses_missing_transition_timestamp_instead_of_crashing_math(
     assert len(duration_assignments) == 1
     assert guard.lineno < duration_assignments[0].lineno
 
-    # A missing timestamp is an observability condition, not a mutation path.
-    # The guard must exit this loop iteration before alert creation, commits, or
-    # state/outbox work can be reached.
     assert not any(
         isinstance(child, ast.Call)
         and _call_name(child) in {"add", "commit", "execute", "flush"}

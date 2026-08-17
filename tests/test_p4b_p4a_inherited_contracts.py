@@ -12,8 +12,10 @@ POLLER_PATH = ROOT / "app" / "tasks" / "branch_outbox_poller.py"
 LIFECYCLE_SERVICE_PATH = ROOT / "app" / "services" / "branch_lifecycle_service.py"
 
 SEARCH_EVENTS = {"branch.search_index", "branch.search_deindex"}
-DEFERRED_EVENTS = {"branch.member_notification", "branch.refund_required"}
-ALL_EXTERNAL_EVENTS = SEARCH_EVENTS | DEFERRED_EVENTS
+NOTIFICATION_LIFECYCLE_EVENTS = {"branch.member_notification"}
+DEFERRED_EVENTS = {"branch.refund_required"}
+INTERNAL_NOTIFICATION_EVENTS = {"notification.delivery", "notification.reconcile"}
+ALL_EXTERNAL_EVENTS = SEARCH_EVENTS | NOTIFICATION_LIFECYCLE_EVENTS | DEFERRED_EVENTS
 
 
 def _literal_assignment(source: str, name: str) -> set[str]:
@@ -42,16 +44,22 @@ def test_p4b_preserves_the_p4a_external_event_inventory_as_an_explicit_partition
     inventoried = {entry["event_type"] for entry in inventory["lifecycle_external_events"]}
     poller = POLLER_PATH.read_text(encoding="utf-8")
     search = _literal_assignment(poller, "_SEARCH_EVENT_TYPES")
+    notification = _literal_assignment(poller, "_NOTIFICATION_EVENT_TYPES")
     deferred = _literal_assignment(poller, "_DEFERRED_EXTERNAL_EVENT_TYPES")
 
     assert inventoried == ALL_EXTERNAL_EVENTS
     assert search == SEARCH_EVENTS
+    assert notification & inventoried == NOTIFICATION_LIFECYCLE_EVENTS
+    assert INTERNAL_NOTIFICATION_EVENTS <= notification
+    assert INTERNAL_NOTIFICATION_EVENTS.isdisjoint(inventoried)
     assert deferred == DEFERRED_EVENTS
+    assert search.isdisjoint(notification)
     assert search.isdisjoint(deferred)
-    assert search | deferred == inventoried
+    assert notification.isdisjoint(deferred)
+    assert search | (notification & inventoried) | deferred == inventoried
 
 
-def test_p4b_evolves_only_search_events_to_provider_execution() -> None:
+def test_p4b_evolves_search_to_provider_execution_and_preserves_deferred_refund() -> None:
     source = POLLER_PATH.read_text(encoding="utf-8")
     search_handler = _function_source(source, "_process_search_event", "_fail_event")
     deferred_handler = _function_source(source, "_process_deferred_external_event", "_process_event")

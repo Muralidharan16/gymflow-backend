@@ -10,8 +10,8 @@ INVENTORY = ROOT / "docs" / "architecture" / "p4_external_effect_inventory.json"
 
 def test_inventory_entries_have_required_operational_fields() -> None:
     data = json.loads(INVENTORY.read_text(encoding="utf-8"))
-    assert data["schema_version"] == 1
-    assert data["phase"] == "P4A"
+    assert data["schema_version"] == 2
+    assert data["phase"] == "P4 rolling external-effect contract"
 
     required_event_fields = {
         "event_type",
@@ -21,6 +21,7 @@ def test_inventory_entries_have_required_operational_fields() -> None:
         "p4_stage",
         "current_status",
         "terminal_success_requires",
+        "certification_status",
     }
     for entry in data["lifecycle_external_events"]:
         assert required_event_fields <= set(entry)
@@ -35,3 +36,18 @@ def test_inventory_entries_have_required_operational_fields() -> None:
     }
     for entry in data["known_p4_gaps"]:
         assert required_gap_fields <= set(entry)
+
+    required_internal_event_fields = required_event_fields
+    for entry in data["internal_notification_events"]:
+        assert required_internal_event_fields <= set(entry)
+
+    required_resolved_gap_fields = {
+        "id",
+        "source",
+        "method",
+        "p4_stage",
+        "resolution_status",
+        "resolution",
+    }
+    for entry in data["resolved_p4_gaps"]:
+        assert required_resolved_gap_fields <= set(entry)

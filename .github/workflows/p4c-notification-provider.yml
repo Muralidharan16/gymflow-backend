@@ -1,0 +1,55 @@
+name: P4C Notification Provider
+
+on:
+  pull_request:
+    branches:
+      - hardening/p4b-search-integration
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p4c-notification-provider-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  provider:
+    name: Resend evidence, webhook, telemetry and deployment semantics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+      - name: Prove provider webhook telemetry and deployment semantics
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            app/services/notification_provider.py \
+            app/services/resend_webhook.py \
+            app/services/notification_delivery_service.py \
+            app/routers/notification_webhooks.py \
+            app/observability/notification_metrics.py \
+            app/tasks/branch_lifecycle_sweeps.py \
+            app/tasks/branch_outbox_poller.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4c_notification_provider.py \
+            tests/test_p4c_resend_webhook.py \
+            tests/test_p4c_notification_metrics_export.py \
+            tests/test_p4c_notification_deployment_contract.py \
+            tests/test_p4c_notification_static_contracts.py

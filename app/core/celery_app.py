@@ -15,6 +15,7 @@ MAINTENANCE_QUEUE = "lifecycle-maintenance"
 MAINTENANCE_TASKS = (
     "app.tasks.branch_lifecycle_sweeps.watchdog",
     "app.tasks.branch_lifecycle_sweeps.reconciliation",
+    "app.tasks.branch_lifecycle_sweeps.notification_reconciliation",
     "app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
     "app.tasks.platform_maintenance.advance_trial_lifecycles",
     "app.tasks.platform_maintenance.dispatch_organization_asset_jobs",
@@ -100,11 +101,10 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute="*"),
         "options": {"queue": MAINTENANCE_QUEUE},
     },
-    # Legacy reminder, daily-digest and orphan-object sweep schedules are
-    # intentionally absent. Their prior implementations performed cross-tenant
-    # discovery and/or external side effects under worker_runtime without a
-    # durable authorization/idempotency boundary. P3E keeps them fail-closed
-    # until they are rebuilt as tenant-bound durable delivery/cleanup workflows.
+    # Legacy reminder and daily-digest schedules remain intentionally absent.
+    # Their prior implementations performed cross-tenant discovery and inline
+    # external side effects. P4C first admits lifecycle member notifications
+    # through the tenant-bound durable command/evidence pipeline.
     "daily-branch-hours-audit-partition-readiness": {
         "task": "app.tasks.branch_hours_partition.run",
         "schedule": crontab(hour=3, minute=15),
@@ -125,6 +125,11 @@ celery_app.conf.beat_schedule = {
     "reconciliation-sweep": {
         "task": "app.tasks.branch_lifecycle_sweeps.reconciliation",
         "schedule": crontab(minute="*/15"),
+        "options": {"queue": MAINTENANCE_QUEUE},
+    },
+    "notification-reconciliation-sweep": {
+        "task": "app.tasks.branch_lifecycle_sweeps.notification_reconciliation",
+        "schedule": crontab(minute="*/5"),
         "options": {"queue": MAINTENANCE_QUEUE},
     },
     "platform-idempotency-zombie-reclaim": {

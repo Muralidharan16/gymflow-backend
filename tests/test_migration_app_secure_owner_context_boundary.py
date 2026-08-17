@@ -80,6 +80,12 @@ _P3E_ASSET_LIVE_OWNER_MIGRATION = (
 _P3E_ASSET_ENUM_RECOVERY_MIGRATION = (
     "t07d8e9f0a34_p3e_asset_status_enum_recovery.py"
 )
+_P4B_SEARCH_EVIDENCE_MIGRATION = "u07d8e9f0a35_p4b_search_external_evidence.py"
+_P4B_SEARCH_DRIFT_MIGRATION = "v07d8e9f0a36_p4b_search_provider_drift_repair.py"
+_P4C_DELIVERY_MIGRATION = "w07d8e9f0a37_p4c_notification_delivery.py"
+_P4C_RECONCILIATION_MIGRATION = "x07d8e9f0a38_p4c_notification_reconciliation.py"
+_P4C_CRASH_RECOVERY_MIGRATION = "y07d8e9f0a39_p4c_notification_crash_recovery.py"
+_P4C_OPERATIONS_MIGRATION = "z07d8e9f0a3a_p4c_notification_operations.py"
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -106,6 +112,12 @@ APP_SECURE_FILES.update(
         _P3E_ASSET_PROVENANCE_MIGRATION,
         _P3E_ASSET_LIVE_OWNER_MIGRATION,
         _P3E_ASSET_ENUM_RECOVERY_MIGRATION,
+        _P4B_SEARCH_EVIDENCE_MIGRATION,
+        _P4B_SEARCH_DRIFT_MIGRATION,
+        _P4C_DELIVERY_MIGRATION,
+        _P4C_RECONCILIATION_MIGRATION,
+        _P4C_CRASH_RECOVERY_MIGRATION,
+        _P4C_OPERATIONS_MIGRATION,
     }
 )
 
@@ -199,6 +211,24 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         _P3E_ASSET_PROVENANCE_MIGRATION: set(),
         _P3E_ASSET_LIVE_OWNER_MIGRATION: set(),
         _P3E_ASSET_ENUM_RECOVERY_MIGRATION: set(),
+        # P4B's external-evidence migration installs/removes schema exposure and
+        # its bounded owner policy. Drift repair remains a function/table-column
+        # contract without schema/view/policy DDL recognized here.
+        _P4B_SEARCH_EVIDENCE_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
+        _P4B_SEARCH_DRIFT_MIGRATION: set(),
+        # The closed inventory follows the literal app_secure migration token,
+        # not the phase name. ZA/ZB contain app_security_owner boundary DDL but
+        # no app_secure object reference, so their dedicated tests cover them
+        # and they are intentionally absent here.
+        _P4C_DELIVERY_MIGRATION: {"create_policy"},
+        _P4C_RECONCILIATION_MIGRATION: {"create_policy", "drop_policy"},
+        _P4C_CRASH_RECOVERY_MIGRATION: set(),
+        _P4C_OPERATIONS_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {

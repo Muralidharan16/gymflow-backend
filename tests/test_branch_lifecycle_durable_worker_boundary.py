@@ -103,15 +103,25 @@ def test_worker_claims_reclaims_and_commits_parent_with_transaction_b() -> None:
     assert "2 ** max(attempts - 1, 0)" in source
 
 
-def test_external_commands_fail_closed_until_real_handlers_exist() -> None:
+def test_external_commands_route_only_certified_handlers_and_keep_refunds_fail_closed() -> None:
     source = _source(POLLER)
 
-    assert "Logging is not delivery" in source
-    assert "No production handler is configured" in source
-    assert "branch.search_deindex" in source
-    assert "branch.search_index" in source
-    assert "branch.member_notification" in source
-    assert "branch.refund_required" in source
+    assert "_SEARCH_EVENT_TYPES" in source
+    assert '"branch.search_deindex"' in source
+    assert '"branch.search_index"' in source
+    assert "OpenSearchProvider" in source
+
+    assert "_NOTIFICATION_EVENT_TYPES" in source
+    assert '"branch.member_notification"' in source
+    assert '"notification.delivery"' in source
+    assert '"notification.reconcile"' in source
+    assert "process_notification_event" in source
+
+    deferred = source.split("_DEFERRED_EXTERNAL_EVENT_TYPES", 1)[1].split("}", 1)[0]
+    assert '"branch.refund_required"' in deferred
+    assert '"branch.member_notification"' not in deferred
+    assert '"branch.search_deindex"' not in deferred
+    assert '"branch.search_index"' not in deferred
     assert "mock" not in source.lower()
 
 

@@ -24,6 +24,9 @@ class DoersSettingsSchema(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:5174"
 
+    # Legacy/authentication mail path. P4C lifecycle delivery intentionally uses
+    # its own worker credential below so onboarding mail and member effects do
+    # not share a deployment secret by accident.
     MAIL_PROVIDER: str = "smtp"
     MAIL_FROM: str = "noreply@doers.io"
     MAIL_SERVER: str = "sandbox.smtp.mailtrap.io"
@@ -31,6 +34,18 @@ class DoersSettingsSchema(BaseSettings):
     MAIL_USERNAME: str = ""
     MAIL_PASSWORD: str = ""
     RESEND_API_KEY: str = ""
+
+    # P4C durable member notifications. Sending authority belongs to the
+    # ordinary worker; webhook verification belongs to the API boundary.
+    NOTIFICATION_EMAIL_PROVIDER_MODE: str = "disabled"
+    P4C_RESEND_API_KEY: str = ""
+    NOTIFICATION_EMAIL_FROM: str = "members@doers.io"
+    RESEND_API_BASE_URL: str = "https://api.resend.com"
+    NOTIFICATION_PROVIDER_TIMEOUT_SECONDS: float = 8.0
+    RESEND_WEBHOOK_SECRET: str = ""
+    NOTIFICATION_METRICS_OTLP_ENDPOINT: str = ""
+    NOTIFICATION_METRICS_EXPORT_INTERVAL_SECONDS: float = 30.0
+    NOTIFICATION_METRICS_EXPORT_TIMEOUT_SECONDS: float = 5.0
 
     WA_PHONE_NUMBER_ID: str = ""
     WA_ACCESS_TOKEN: str = ""

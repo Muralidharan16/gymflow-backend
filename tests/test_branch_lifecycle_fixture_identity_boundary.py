@@ -179,7 +179,7 @@ def test_watchdog_behavior_splits_tenant_transaction_from_maintenance_sweep() ->
 
 def test_reconciliation_behavior_executes_only_on_maintenance_identity() -> None:
     test_source = _function_source(
-        "test_reconciliation_sweep_releases_claim_and_advances_projection"
+        "test_reconciliation_sweep_enqueues_without_fabricating_provider_ack"
     )
 
     assert "maintenance_db_session" in test_source

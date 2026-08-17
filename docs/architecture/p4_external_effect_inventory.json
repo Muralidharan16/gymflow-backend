@@ -1,44 +1,48 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "certified_base_sha": "882406537584861da2b2b6d44fd37b016a9f8462",
-  "phase": "P4A",
+  "phase": "P4 rolling external-effect contract",
   "governing_rule": "local_attempt_is_not_external_success",
   "lifecycle_external_events": [
     {
       "event_type": "branch.search_index",
       "domain": "search",
       "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
-      "consumer": "app.tasks.branch_outbox_poller",
+      "consumer": "app.tasks.branch_outbox_poller._process_search_event",
       "p4_stage": "P4B",
-      "current_status": "fail_closed_pending_real_provider",
-      "terminal_success_requires": "authoritative_search_provider_evidence"
+      "current_status": "provider_backed_p4b_certified",
+      "terminal_success_requires": "authoritative_search_provider_evidence",
+      "certification_status": "certified"
     },
     {
       "event_type": "branch.search_deindex",
       "domain": "search",
       "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
-      "consumer": "app.tasks.branch_outbox_poller",
+      "consumer": "app.tasks.branch_outbox_poller._process_search_event",
       "p4_stage": "P4B",
-      "current_status": "fail_closed_pending_real_provider",
-      "terminal_success_requires": "authoritative_search_provider_evidence"
+      "current_status": "provider_backed_p4b_certified",
+      "terminal_success_requires": "authoritative_search_provider_evidence",
+      "certification_status": "certified"
     },
     {
       "event_type": "branch.member_notification",
       "domain": "notification",
       "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
-      "consumer": "app.tasks.branch_outbox_poller",
+      "consumer": "app.services.notification_delivery_service.materialize_member_notifications",
       "p4_stage": "P4C",
-      "current_status": "fail_closed_pending_real_provider",
-      "terminal_success_requires": "provider_acceptance_and_channel_terminal_evidence_where_available"
+      "current_status": "implemented_p4c_candidate_not_certified",
+      "terminal_success_requires": "provider_acceptance_and_channel_terminal_evidence_where_available",
+      "certification_status": "candidate"
     },
     {
       "event_type": "branch.refund_required",
       "domain": "finance_refund",
       "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
-      "consumer": "app.tasks.branch_outbox_poller",
+      "consumer": "app.tasks.branch_outbox_poller._process_deferred_external_event",
       "p4_stage": "P4D",
-      "current_status": "fail_closed_pending_real_provider",
-      "terminal_success_requires": "authoritative_refund_provider_evidence"
+      "current_status": "fail_closed_deferred_to_p4d",
+      "terminal_success_requires": "authoritative_refund_provider_evidence",
+      "certification_status": "deferred"
     }
   ],
   "legacy_notification_entrypoints": [
@@ -63,20 +67,12 @@
   ],
   "known_p4_gaps": [
     {
-      "id": "search_marker_only_reconciliation",
-      "source": "app/services/branch_lifecycle_service.py",
-      "method": "run_reconciliation_sweep",
-      "p4_stage": "P4B",
-      "risk": "local search sync markers can advance without downstream provider evidence",
-      "required_resolution": "replace marker-only reconciliation with provider-backed compare_and_repair semantics"
-    },
-    {
-      "id": "lifecycle_external_handler_fail_closed",
+      "id": "lifecycle_refund_provider_deferred",
       "source": "app/tasks/branch_outbox_poller.py",
-      "method": "_process_external_event",
-      "p4_stage": "P4B_P4C_P4D",
-      "risk": "external commands cannot complete until real handlers exist",
-      "required_resolution": "add domain handlers without changing attempted_into_succeeded semantics"
+      "method": "_process_deferred_external_event",
+      "p4_stage": "P4D",
+      "risk": "lifecycle refund obligations remain intentionally fail-closed until authoritative Finance/refund provider execution and reconciliation are certified",
+      "required_resolution": "connect branch.refund_required to Finance/refund provider commands with durable evidence, idempotency, lease/fencing, reconciliation, and no request-submission-as-success shortcut"
     }
   ],
   "finance_foundation": {
@@ -129,5 +125,45 @@
       "correlation_id",
       "dead_letter_reason"
     ]
-  }
+  },
+  "internal_notification_events": [
+    {
+      "event_type": "notification.delivery",
+      "domain": "notification",
+      "producer": "app_secure.materialize_branch_member_notifications",
+      "consumer": "app.services.notification_delivery_service.process_delivery",
+      "p4_stage": "P4C",
+      "current_status": "implemented_p4c_candidate_not_certified",
+      "certification_status": "candidate",
+      "terminal_success_requires": "durable_provider_acceptance_then_terminal_delivery_evidence_where_available"
+    },
+    {
+      "event_type": "notification.reconcile",
+      "domain": "notification",
+      "producer": "app_secure.enqueue_notification_reconciliation",
+      "consumer": "app.services.notification_delivery_service.process_reconciliation",
+      "p4_stage": "P4C",
+      "current_status": "implemented_p4c_candidate_not_certified",
+      "certification_status": "candidate",
+      "terminal_success_requires": "authoritative_notification_provider_reconciliation_evidence"
+    }
+  ],
+  "resolved_p4_gaps": [
+    {
+      "id": "search_marker_only_reconciliation",
+      "source": "app/services/branch_lifecycle_service.py",
+      "method": "run_reconciliation_sweep",
+      "p4_stage": "P4B",
+      "resolution_status": "resolved_by_certified_p4b",
+      "resolution": "maintenance now enqueues provider-backed search reconciliation work through app_secure.enqueue_branch_search_reconciliation; only the leased search worker can persist provider evidence and local sync truth"
+    },
+    {
+      "id": "lifecycle_external_handler_fail_closed_for_search_and_notification",
+      "source": "app/tasks/branch_outbox_poller.py",
+      "method": "_process_event",
+      "p4_stage": "P4B_P4C",
+      "resolution_status": "search_certified_p4b_notification_p4c_candidate",
+      "resolution": "search routes to _process_search_event; branch.member_notification routes into durable P4C notification materialization; only branch.refund_required remains deferred"
+    }
+  ]
 }
