@@ -209,8 +209,14 @@ def test_webhook_http_boundary_verifies_raw_body_before_database_evidence_applic
     assert "apply_resend_notification_event_v2" in route
     assert route.index("verify_resend_webhook(") < route.index("apply_resend_notification_event_v2")
     assert 'EXEMPT_PATHS.add("/webhooks/notifications/resend")' in main
-    assert "tenant_id" not in route
-    assert "destination" not in route
+    # The provider callback can identify only its own event/message reference.
+    # It has no executable tenant/destination/body parameters that could become
+    # authorization or delivery authority.
+    assert ":tenant_id" not in route
+    assert "event.tenant_id" not in route
+    assert ":destination" not in route
+    assert "event.destination" not in route
+    assert ":message_body" not in route
 
 
 def test_p4c_lifecycle_notifications_are_active_but_refunds_and_legacy_scans_remain_fail_closed() -> None:
