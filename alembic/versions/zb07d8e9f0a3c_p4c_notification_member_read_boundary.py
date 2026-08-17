@@ -16,8 +16,10 @@ work in the FORCE-RLS lifecycle outbox. Existing lifecycle infrastructure gives
 not include the payload column. Reconciliation is the first P4C capability that
 must read ``payload->>'command_id'`` from a live worker-owned outbox lease, so
 this still-uncertified boundary adds SELECT on exactly ``payload`` to the
-no-login security owner. Runtime roles receive no new table privilege and
-cannot SET ROLE to the security owner.
+no-login security owner. Safe operator replay also resets the durable outbox
+retry ceiling through a SECURITY DEFINER capability, so this boundary adds
+UPDATE on exactly ``max_attempts`` to the same no-login owner. Runtime roles
+receive no new table privilege and cannot SET ROLE to the security owner.
 """
 
 from __future__ import annotations
@@ -178,6 +180,10 @@ def _require_predecessor(bind) -> None:
         raise RuntimeError(
             "zb07 refuses ambiguous predecessor app_security_owner outbox payload SELECT"
         )
+    if _has_column_privilege(bind, _OUTBOX, "max_attempts", "UPDATE"):
+        raise RuntimeError(
+            "zb07 refuses ambiguous predecessor app_security_owner outbox max_attempts UPDATE"
+        )
 
     if not bind.execute(
         sa.text(
@@ -217,11 +223,13 @@ def _policy_row(bind, relation: str, policy: str):
 def _post_install_proof(bind) -> None:
     if not _has_column_privilege(bind, _OUTBOX, "payload", "SELECT"):
         raise RuntimeError("zb07 app_security_owner outbox payload SELECT was not installed")
+    if not _has_column_privilege(bind, _OUTBOX, "max_attempts", "UPDATE"):
+        raise RuntimeError("zb07 app_security_owner outbox max_attempts UPDATE was not installed")
 
     # Runtime outbox privileges predate P4C and are certified by their owning
     # migrations. Do not infer a predecessor ACL contract here. The P4C delta
-    # is proven statically as one column grant to app_security_owner, while the
-    # identity proof above guarantees no runtime can SET ROLE to that owner.
+    # is proven as exact column grants to app_security_owner, while the identity
+    # proof above guarantees no runtime can SET ROLE to that owner.
     member = _policy_row(bind, _MEMBERS, _MEMBER_POLICY)
     if member is None or member["command"] != "r" or list(member["roles"]) != [_SECURITY_OWNER]:
         raise RuntimeError("zb07 notification member policy role/command drift")
@@ -283,6 +291,9 @@ def upgrade() -> None:
 
     op.execute(
         "GRANT SELECT (payload) ON TABLE public.branch_outbox_events TO app_security_owner"
+    )
+    op.execute(
+        "GRANT UPDATE (max_attempts) ON TABLE public.branch_outbox_events TO app_security_owner"
     )
 
     op.execute(
@@ -408,6 +419,9 @@ def downgrade() -> None:
     op.execute(
         "DROP POLICY IF EXISTS p4c_notification_member_security_owner_select "
         "ON public.members"
+    )
+    op.execute(
+        "REVOKE UPDATE (max_attempts) ON TABLE public.branch_outbox_events FROM app_security_owner"
     )
     op.execute(
         "REVOKE SELECT (payload) ON TABLE public.branch_outbox_events FROM app_security_owner"
