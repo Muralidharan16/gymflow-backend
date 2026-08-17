@@ -174,13 +174,21 @@ jobs:
             ('46000000-0000-4000-8000-000000000022','46000000-0000-4000-8000-000000000001','46000000-0000-4000-8000-000000000011','P4CMEMBER0002',2,'P4C Member Two','two@example.test','active',true,false,clock_timestamp(),clock_timestamp()),
             ('46000000-0000-4000-8000-000000000023','46000000-0000-4000-8000-000000000001','46000000-0000-4000-8000-000000000011','P4CMEMBER0003',3,'P4C Member Three','three@example.test','active',true,false,clock_timestamp(),clock_timestamp()),
             ('46000000-0000-4000-8000-000000000024','46000000-0000-4000-8000-000000000001','46000000-0000-4000-8000-000000000011','P4CMEMBER0004',4,'P4C Member Four','four@example.test','active',true,false,clock_timestamp(),clock_timestamp());
+          INSERT INTO public.branch_lifecycle_events(
+            event_id,branch_id,event_type,event_version,payload,emitted_at,correlation_id,step_sequence
+          ) VALUES (
+            '46000000-0000-4000-8000-000000000030','46000000-0000-4000-8000-000000000011',
+            'status_change_initiated',1,
+            '{"from_status":"active","to_status":"temporarily_closed","source":"p4c_certification_fixture"}'::jsonb,
+            '2026-08-17T00:00:00Z'::timestamptz,'46000000-0000-4000-8000-000000000041',1
+          );
           INSERT INTO public.branch_status_history(
             history_id,branch_id,from_status,to_status,changed_by,changed_at,reason,
             transition_source,snapshot,correlation_id,correlation_emitted_at
           ) VALUES (
             '46000000-0000-4000-8000-000000000031','46000000-0000-4000-8000-000000000011',
             'active','temporarily_closed',NULL,clock_timestamp(),'P4C fixture','api','{}'::jsonb,
-            '46000000-0000-4000-8000-000000000041',clock_timestamp()
+            '46000000-0000-4000-8000-000000000041','2026-08-17T00:00:00Z'::timestamptz
           );
           INSERT INTO public.branch_outbox_events(
             outbox_id,tenant_id,branch_id,event_type,payload,created_at,process_after,status,
