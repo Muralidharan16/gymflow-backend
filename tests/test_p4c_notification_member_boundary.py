@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "alembic" / "versions" / "zb07d8e9f0a3c_p4c_notification_member_read_boundary.py"
 DELIVERY = ROOT / "alembic" / "versions" / "w07d8e9f0a37_p4c_notification_delivery.py"
+CRASH_RECOVERY = ROOT / "alembic" / "versions" / "y07d8e9f0a39_p4c_notification_crash_recovery.py"
 
 
 def test_member_boundary_is_append_only_after_history_boundary() -> None:
@@ -105,6 +106,23 @@ def test_fanout_and_claim_remain_live_projection_bound() -> None:
     assert "m.id=v_command.member_id AND m.org_id=v_command.tenant_id" in claim
     assert "m.home_branch_id=v_command.branch_id" in claim
     assert "m.is_active IS TRUE AND m.status::text='active'" in claim
+
+
+def test_v2_claim_qualifies_return_table_identifier_collisions() -> None:
+    source = CRASH_RECOVERY.read_text(encoding="utf-8")
+    claim = source.split("CREATE FUNCTION app_secure.claim_notification_delivery_v2", 1)[1].split(
+        "$function$;", 1
+    )[0]
+
+    # RETURNS TABLE exposes command_id/attempt_number as PL/pgSQL variables.
+    # SQL statements inside the function must therefore use explicit relation
+    # aliases (or named constraints) instead of ambiguous bare identifiers.
+    assert "WHERE command_id=v_command.command_id" not in claim
+    assert "ON CONFLICT(command_id,attempt_number)" not in claim
+    assert claim.count("WHERE command_data.command_id=v_command.command_id") == 3
+    assert "ON CONFLICT ON CONSTRAINT notification_delivery_attempts_command_id_attempt_number_key" in claim
+    assert "FROM public.notification_commands AS command_data" in claim
+    assert "UPDATE public.notification_commands AS command_data" in claim
 
 
 def test_member_boundary_downgrade_removes_only_its_policies() -> None:
