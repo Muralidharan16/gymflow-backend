@@ -56,7 +56,7 @@ async def _claim_delivery(event: dict[str, Any], worker_id: uuid.UUID) -> dict[s
                 """
                 SELECT eligible,command_id,tenant_id,branch_id,member_id,channel,destination,
                        member_name,template_key,template_data,idempotency_key,attempt_number,provider_code
-                FROM app_secure.claim_notification_delivery(
+                FROM app_secure.claim_notification_delivery_v2(
                     CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid)
                 )
                 """
@@ -69,9 +69,7 @@ async def _claim_delivery(event: dict[str, Any], worker_id: uuid.UUID) -> dict[s
         return projection
 
 
-async def _ack_delivery(
-    event: dict[str, Any], worker_id: uuid.UUID, evidence
-) -> None:
+async def _ack_delivery(event: dict[str, Any], worker_id: uuid.UUID, evidence) -> None:
     async with worker_async_session_maker() as session:
         await _install_context(session, event, worker_id)
         applied = await session.scalar(
@@ -138,7 +136,17 @@ async def process_delivery(event: dict[str, Any], worker_id: uuid.UUID) -> str:
             idempotency_key=str(projection["idempotency_key"]),
         )
     except NotificationProviderError as exc:
-        return await _record_delivery_failure(event, worker_id, exc)
+        try:
+            return await _record_delivery_failure(event, worker_id, exc)
+        except Exception:
+            # Do not release the outbox lease after an unknown database commit
+            # point. Lease expiry + claim_notification_delivery_v2 will mark the
+            # abandoned attempt ambiguous and retry the same logical idempotency key.
+            logger.exception(
+                "Failed to persist classified notification provider failure; leaving lease for fenced reclaim",
+                extra={"outbox_id": str(event["outbox_id"]), "provider_error_code": exc.error_code},
+            )
+            return "lease_lost"
     except Exception as exc:
         try:
             request_sha256 = provider.request_sha256(
@@ -156,9 +164,30 @@ async def process_delivery(event: dict[str, Any], worker_id: uuid.UUID) -> str:
             error_code="notification_adapter_internal_error",
             request_sha256=request_sha256,
         )
-        return await _record_delivery_failure(event, worker_id, classified)
+        try:
+            return await _record_delivery_failure(event, worker_id, classified)
+        except Exception:
+            logger.exception(
+                "Failed to persist unexpected notification adapter failure; leaving lease for fenced reclaim",
+                extra={"outbox_id": str(event["outbox_id"])},
+            )
+            return "lease_lost"
 
-    await _ack_delivery(event, worker_id, evidence)
+    try:
+        await _ack_delivery(event, worker_id, evidence)
+    except Exception:
+        # The provider may already have accepted the effect. Never turn this into
+        # a generic queue retry that loses command fencing. The expired in-flight
+        # command will be reclaimed as ambiguous using the same idempotency key.
+        logger.exception(
+            "Provider accepted notification but acknowledgement persistence failed; leaving lease for fenced reclaim",
+            extra={
+                "outbox_id": str(event["outbox_id"]),
+                "provider_reference_id": evidence.provider_reference_id,
+            },
+        )
+        return "lease_lost"
+
     logger.info(
         "Notification provider accepted command; awaiting terminal evidence",
         extra={
@@ -189,9 +218,7 @@ async def _claim_reconciliation(event: dict[str, Any], worker_id: uuid.UUID) -> 
         return projection
 
 
-async def _complete_reconciliation(
-    event: dict[str, Any], worker_id: uuid.UUID, evidence
-) -> str:
+async def _complete_reconciliation(event: dict[str, Any], worker_id: uuid.UUID, evidence) -> str:
     async with worker_async_session_maker() as session:
         await _install_context(session, event, worker_id)
         result = await session.scalar(
@@ -254,7 +281,14 @@ async def process_reconciliation(event: dict[str, Any], worker_id: uuid.UUID) ->
     try:
         evidence = await provider.reconcile(str(projection["provider_reference_id"]))
     except NotificationProviderError as exc:
-        return await _record_reconciliation_failure(event, worker_id, exc)
+        try:
+            return await _record_reconciliation_failure(event, worker_id, exc)
+        except Exception:
+            logger.exception(
+                "Failed to persist notification reconciliation failure; leaving lease for reclaim",
+                extra={"outbox_id": str(event["outbox_id"]), "provider_error_code": exc.error_code},
+            )
+            return "lease_lost"
     except Exception as exc:
         classified = NotificationProviderError(
             f"Unexpected notification reconciliation failure: {type(exc).__name__}",
@@ -262,8 +296,22 @@ async def process_reconciliation(event: dict[str, Any], worker_id: uuid.UUID) ->
             error_code="notification_reconciliation_internal_error",
             request_sha256="0" * 64,
         )
-        return await _record_reconciliation_failure(event, worker_id, classified)
-    return await _complete_reconciliation(event, worker_id, evidence)
+        try:
+            return await _record_reconciliation_failure(event, worker_id, classified)
+        except Exception:
+            logger.exception(
+                "Failed to persist unexpected reconciliation failure; leaving lease for reclaim",
+                extra={"outbox_id": str(event["outbox_id"])},
+            )
+            return "lease_lost"
+    try:
+        return await _complete_reconciliation(event, worker_id, evidence)
+    except Exception:
+        logger.exception(
+            "Failed to persist notification reconciliation evidence; leaving lease for reclaim",
+            extra={"outbox_id": str(event["outbox_id"])},
+        )
+        return "lease_lost"
 
 
 async def process_notification_event(event: dict[str, Any], worker_id: uuid.UUID) -> str:
