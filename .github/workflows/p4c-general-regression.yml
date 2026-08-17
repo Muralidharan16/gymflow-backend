@@ -1,0 +1,120 @@
+name: P4C General Regression
+
+on:
+  pull_request:
+    branches:
+      - hardening/p4b-search-integration
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p4c-general-regression-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  general-regressions:
+    name: Fresh PG16 lineage and broad non-billing regression suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
+      WORKER_RUNTIME_PASSWORD: ci-worker-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-runtime@127.0.0.1:5432/gymflow_test
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+      - name: Install PostgreSQL 16 and canonical roles
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE test_runner LOGIN PASSWORD 'ci-test-runner' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-test-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime LOGIN PASSWORD 'ci-auth-test-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-worker-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-lifecycle-maintenance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE app_test_runtime SET row_security='on';
+          ALTER ROLE auth_test_runtime SET row_security='on';
+          ALTER ROLE worker_test_runtime SET row_security='on';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
+          CREATE DATABASE gymflow_migration_test OWNER migration_owner;
+          CREATE DATABASE gymflow_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_test TO app_test_runtime,auth_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          for database in gymflow_migration_test gymflow_test; do
+            bash scripts/ci/provision_infrastructure_extensions.sh "$database"
+          done
+      - name: Fresh Alembic lineage on migration and test databases
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'z07d8e9f0a3a'
+          python -s -m alembic -c alembic.ini upgrade head
+          DATABASE_URL=postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test \
+            python -s -m alembic -c alembic.ini upgrade head
+      - name: Reprove reduced runtime separation
+        run: |
+          set -euo pipefail
+          PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_test_runtime -d gymflow_test -c "SELECT current_user, pg_catalog.pg_has_role(current_user,'worker_runtime','MEMBER'), pg_catalog.pg_has_role(current_user,'lifecycle_maintenance_runtime','MEMBER');"
+          PGPASSWORD="$WORKER_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U worker_test_runtime -d gymflow_test -c "SELECT current_user, pg_catalog.pg_has_role(current_user,'worker_runtime','MEMBER'), pg_catalog.pg_has_role(current_user,'app_runtime','MEMBER');"
+          PGPASSWORD="$MAINTENANCE_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U lifecycle_maintenance_test_runtime -d gymflow_test -c "SELECT current_user, pg_catalog.pg_has_role(current_user,'lifecycle_maintenance_runtime','MEMBER'), pg_catalog.pg_has_role(current_user,'worker_runtime','MEMBER');"
+      - name: Run broad regression suite fail-fast
+        run: |
+          set -euo pipefail
+          python -m pytest -q --maxfail=1 --ignore=tests/platform_billing
