@@ -57,20 +57,26 @@ def upgrade() -> None:
             v_outbox_lease timestamptz;
             v_reclaim boolean := false;
         BEGIN
-            SELECT o.leased_until INTO v_outbox_lease
-            FROM public.branch_outbox_events o
-            WHERE o.outbox_id=p_outbox_id AND o.event_type='notification.delivery'
-              AND o.status='processing' AND o.leased_by=p_worker_id
-              AND o.leased_until>pg_catalog.clock_timestamp();
+            SELECT outbox_data.leased_until INTO v_outbox_lease
+            FROM public.branch_outbox_events AS outbox_data
+            WHERE outbox_data.outbox_id=p_outbox_id
+              AND outbox_data.event_type='notification.delivery'
+              AND outbox_data.status='processing'
+              AND outbox_data.leased_by=p_worker_id
+              AND outbox_data.leased_until>pg_catalog.clock_timestamp();
             IF NOT FOUND THEN
                 RAISE EXCEPTION 'notification claim requires live owned outbox lease' USING ERRCODE='42501';
             END IF;
 
-            SELECT c.* INTO v_command FROM public.notification_commands c
-            WHERE c.command_id=p_outbox_id
+            SELECT command_data.* INTO v_command
+            FROM public.notification_commands AS command_data
+            WHERE command_data.command_id=p_outbox_id
               AND (
-                    c.status IN ('pending','retry_pending')
-                    OR (c.status='processing' AND c.leased_until<=pg_catalog.clock_timestamp())
+                    command_data.status IN ('pending','retry_pending')
+                    OR (
+                        command_data.status='processing'
+                        AND command_data.leased_until<=pg_catalog.clock_timestamp()
+                    )
                   )
             FOR UPDATE;
             IF NOT FOUND THEN
@@ -86,31 +92,37 @@ def upgrade() -> None:
                     pg_catalog.gen_random_uuid(),v_command.command_id,v_command.tenant_id,
                     v_command.attempt_count,'ambiguous_outcome','resend',repeat('0',64),
                     'worker_lease_expired_commit_unknown',pg_catalog.clock_timestamp()
-                ) ON CONFLICT(command_id,attempt_number) DO NOTHING;
+                ) ON CONFLICT ON CONSTRAINT notification_delivery_attempts_command_id_attempt_number_key
+                  DO NOTHING;
             END IF;
 
-            SELECT m.email,m.name,
-                   NULLIF(pg_catalog.btrim(m.email),'') IS NOT NULL
-                   AND COALESCE(p.email_enabled,true) IS TRUE
-                   AND p.email_suppressed_at IS NULL
+            SELECT member_data.email,member_data.name,
+                   NULLIF(pg_catalog.btrim(member_data.email),'') IS NOT NULL
+                   AND COALESCE(preference_data.email_enabled,true) IS TRUE
+                   AND preference_data.email_suppressed_at IS NULL
               INTO v_destination,v_name,v_allowed
-            FROM public.members m
-            LEFT JOIN public.member_notification_preferences p
-              ON p.tenant_id=m.org_id AND p.member_id=m.id
-            WHERE m.id=v_command.member_id AND m.org_id=v_command.tenant_id
-              AND m.home_branch_id=v_command.branch_id
-              AND m.is_active IS TRUE AND m.status::text='active';
+            FROM public.members AS member_data
+            LEFT JOIN public.member_notification_preferences AS preference_data
+              ON preference_data.tenant_id=member_data.org_id
+             AND preference_data.member_id=member_data.id
+            WHERE member_data.id=v_command.member_id
+              AND member_data.org_id=v_command.tenant_id
+              AND member_data.home_branch_id=v_command.branch_id
+              AND member_data.is_active IS TRUE
+              AND member_data.status::text='active';
 
             IF NOT FOUND OR NOT COALESCE(v_allowed,false) OR v_command.channel<>'email' THEN
-                UPDATE public.notification_commands
+                UPDATE public.notification_commands AS command_data
                 SET status='cancelled',delivery_outcome='suppressed',
                     completed_at=pg_catalog.clock_timestamp(),last_error='recipient_or_channel_not_eligible',
                     leased_by=NULL,leased_until=NULL,updated_at=pg_catalog.clock_timestamp()
-                WHERE command_id=v_command.command_id;
-                UPDATE public.branch_outbox_events
+                WHERE command_data.command_id=v_command.command_id;
+                UPDATE public.branch_outbox_events AS outbox_data
                 SET status='superseded',leased_by=NULL,leased_until=NULL,
                     last_error='notification_recipient_suppressed'
-                WHERE outbox_id=p_outbox_id AND status='processing' AND leased_by=p_worker_id;
+                WHERE outbox_data.outbox_id=p_outbox_id
+                  AND outbox_data.status='processing'
+                  AND outbox_data.leased_by=p_worker_id;
                 RETURN QUERY SELECT false,v_command.command_id,v_command.tenant_id,v_command.branch_id,
                     v_command.member_id,v_command.channel,NULL::text,NULL::text,v_command.template_key,
                     v_command.template_data,v_command.idempotency_key,v_command.attempt_count,'resend'::text;
@@ -118,17 +130,19 @@ def upgrade() -> None:
             END IF;
 
             IF v_command.attempt_count>=v_command.max_attempts THEN
-                UPDATE public.notification_commands
+                UPDATE public.notification_commands AS command_data
                 SET status='dead_lettered',leased_by=NULL,leased_until=NULL,
                     completed_at=pg_catalog.clock_timestamp(),
                     dead_letter_reason='attempt_budget_exhausted_after_crash_recovery',
                     last_error='attempt_budget_exhausted_after_crash_recovery',
                     updated_at=pg_catalog.clock_timestamp()
-                WHERE command_id=v_command.command_id;
-                UPDATE public.branch_outbox_events
+                WHERE command_data.command_id=v_command.command_id;
+                UPDATE public.branch_outbox_events AS outbox_data
                 SET status='dead_lettered',leased_by=NULL,leased_until=NULL,
                     last_error='attempt_budget_exhausted_after_crash_recovery'
-                WHERE outbox_id=p_outbox_id AND status='processing' AND leased_by=p_worker_id;
+                WHERE outbox_data.outbox_id=p_outbox_id
+                  AND outbox_data.status='processing'
+                  AND outbox_data.leased_by=p_worker_id;
                 RETURN QUERY SELECT false,v_command.command_id,v_command.tenant_id,v_command.branch_id,
                     v_command.member_id,v_command.channel,NULL::text,NULL::text,v_command.template_key,
                     v_command.template_data,v_command.idempotency_key,v_command.attempt_count,'resend'::text;
@@ -136,11 +150,11 @@ def upgrade() -> None:
             END IF;
 
             v_attempt := v_command.attempt_count+1;
-            UPDATE public.notification_commands
+            UPDATE public.notification_commands AS command_data
             SET status='processing',attempt_count=v_attempt,leased_by=p_worker_id,
                 leased_until=v_outbox_lease,attempted_at=pg_catalog.clock_timestamp(),
                 provider_code='resend',updated_at=pg_catalog.clock_timestamp()
-            WHERE command_id=v_command.command_id;
+            WHERE command_data.command_id=v_command.command_id;
 
             RETURN QUERY SELECT true,v_command.command_id,v_command.tenant_id,v_command.branch_id,
                 v_command.member_id,v_command.channel,v_destination,v_name,v_command.template_key,
