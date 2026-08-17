@@ -83,14 +83,16 @@ def test_notification_child_policy_is_canonical_and_parent_lease_bound() -> None
     assert "WITH CHECK (true)" not in policy.lower()
 
 
-def test_fanout_and_claim_remain_live_projection_bound() -> None:
-    source = DELIVERY.read_text(encoding="utf-8")
-    fanout = source.split(
+def test_fanout_and_v2_claim_remain_live_projection_bound() -> None:
+    delivery_source = DELIVERY.read_text(encoding="utf-8")
+    fanout = delivery_source.split(
         "CREATE FUNCTION app_secure.materialize_branch_member_notifications", 1
     )[1].split("CREATE FUNCTION app_secure.claim_notification_delivery", 1)[0]
-    claim = source.split(
-        "CREATE FUNCTION app_secure.claim_notification_delivery", 1
-    )[1].split("CREATE FUNCTION app_secure.acknowledge_notification_provider_acceptance", 1)[0]
+
+    claim_source = CRASH_RECOVERY.read_text(encoding="utf-8")
+    claim = claim_source.split(
+        "CREATE FUNCTION app_secure.claim_notification_delivery_v2", 1
+    )[1].split("$function$;", 1)[0]
 
     assert fanout.index("notification fanout requires live owned lease") < fanout.index(
         "FROM public.members m"
@@ -101,11 +103,14 @@ def test_fanout_and_claim_remain_live_projection_bound() -> None:
     assert "jsonb_build_object('command_id',c.command_id::text)" in fanout
 
     assert claim.index("notification claim requires live owned outbox lease") < claim.index(
-        "FROM public.members m"
+        "FROM public.members AS member_data"
     )
-    assert "m.id=v_command.member_id AND m.org_id=v_command.tenant_id" in claim
-    assert "m.home_branch_id=v_command.branch_id" in claim
-    assert "m.is_active IS TRUE AND m.status::text='active'" in claim
+    assert "member_data.id=v_command.member_id" in claim
+    assert "member_data.org_id=v_command.tenant_id" in claim
+    assert "member_data.home_branch_id=v_command.branch_id" in claim
+    assert "member_data.is_active IS TRUE" in claim
+    assert "member_data.status::text='active'" in claim
+    assert "preference_data.email_suppressed_at IS NULL" in claim
 
 
 def test_v2_claim_qualifies_return_table_identifier_collisions() -> None:
