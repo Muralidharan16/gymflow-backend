@@ -152,6 +152,8 @@ jobs:
             '46000000-0000-4000-8000-000000000001','P4C Notification Org','p4c-notification-org',
             'basic',true,10,'INR',false,'{}'::jsonb,'pending','India',false
           );
+          SELECT pg_catalog.set_config('app.current_org_id','46000000-0000-4000-8000-000000000001',false);
+          SELECT pg_catalog.set_config('app.current_role','p4c_certification_fixture',false);
           INSERT INTO public.org_branches(
             id,org_id,branch_name,branch_code,internal_slug,timezone,currency_code,
             region_code,country_code
