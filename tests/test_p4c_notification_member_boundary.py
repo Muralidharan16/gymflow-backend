@@ -23,6 +23,11 @@ def test_member_boundary_preserves_force_rls_and_adds_no_runtime_grant() -> None
     assert "CREATE POLICY p4c_notification_delivery_security_owner_insert" in source
     assert "CREATE POLICY p4c_notification_reconcile_security_owner_insert" in source
     assert source.count("FOR INSERT TO app_security_owner") == 2
+    assert (
+        "GRANT SELECT (payload) ON TABLE public.branch_outbox_events "
+        "TO app_security_owner"
+    ) in source
+    assert "GRANT SELECT ON TABLE public.branch_outbox_events TO app_security_owner" not in source
     for role in (
         "app_runtime",
         "auth_runtime",
@@ -31,6 +36,7 @@ def test_member_boundary_preserves_force_rls_and_adds_no_runtime_grant() -> None
     ):
         assert f"GRANT SELECT ON TABLE public.members TO {role}" not in source
         assert f"GRANT INSERT ON TABLE public.branch_outbox_events TO {role}" not in source
+        assert f"GRANT SELECT (payload) ON TABLE public.branch_outbox_events TO {role}" not in source
     assert "BYPASSRLS" not in source
     assert "DISABLE ROW LEVEL SECURITY" not in source
     assert "NO FORCE ROW LEVEL SECURITY" not in source
@@ -167,11 +173,15 @@ def test_v2_claim_qualifies_return_table_identifier_collisions() -> None:
     assert "UPDATE public.notification_commands AS command_data" in claim
 
 
-def test_member_boundary_downgrade_removes_only_its_policies() -> None:
+def test_member_boundary_downgrade_removes_only_its_delta() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     downgrade = source.split("def downgrade()", 1)[1]
     assert "DROP POLICY IF EXISTS p4c_notification_reconcile_security_owner_insert" in downgrade
     assert "DROP POLICY IF EXISTS p4c_notification_delivery_security_owner_insert" in downgrade
     assert "DROP POLICY IF EXISTS p4c_notification_member_security_owner_select" in downgrade
-    assert "REVOKE" not in downgrade
+    assert (
+        "REVOKE SELECT (payload) ON TABLE public.branch_outbox_events "
+        "FROM app_security_owner"
+    ) in downgrade
+    assert downgrade.count("REVOKE") == 1
     assert "DROP TABLE" not in downgrade

@@ -5,25 +5,19 @@ Revises: za07d8e9f0a3b
 Create Date: 2026-08-17
 
 P4C notification fanout and delivery claims resolve recipients from the live
-``members`` projection after establishing a worker-owned outbox lease.  The
+``members`` projection after establishing a worker-owned outbox lease. The
 members table is FORCE RLS and its tenant CRUD policies intentionally target
-``app_runtime`` only.  Column-scoped SELECT granted to ``app_security_owner``
-is therefore insufficient for the SECURITY DEFINER notification functions.
+``app_runtime`` only. Column-scoped SELECT granted to ``app_security_owner`` is
+therefore insufficient without a bounded security-owner policy.
 
-P4C also creates two kinds of durable child work in the FORCE-RLS lifecycle
-outbox: tenant-bound ``notification.delivery`` rows during worker fanout, and
-global-discovery ``notification.reconcile`` rows from the maintenance control
-plane.  P4C inherits exact app_security_owner column INSERT ACLs, but FORCE RLS
-must independently authorize both canonical row shapes.
-
-This still-uncertified corrective revision therefore adds narrowly scoped
-``app_security_owner`` policies for tenant-bound member SELECT, worker-owned
-delivery-child INSERT, and maintenance-owned reconciliation-child INSERT.  The
-delivery path is bound to an authoritative notification command and its live
-worker-owned ``branch.member_notification`` parent.  The reconciliation path is
-bound to an already provider-accepted Resend command that is old enough for
-reconciliation and to the exact maintenance session context.  Runtime roles
-receive no new table privilege and cannot SET ROLE to the security owner.
+P4C also creates durable notification.delivery and notification.reconcile child
+work in the FORCE-RLS lifecycle outbox. Existing lifecycle infrastructure gives
+``app_security_owner`` a bounded outbox read capability but intentionally did
+not include the payload column. Reconciliation is the first P4C capability that
+must read ``payload->>'command_id'`` from a live worker-owned outbox lease, so
+this still-uncertified boundary adds SELECT on exactly ``payload`` to the
+no-login security owner. Runtime roles receive no new table privilege and
+cannot SET ROLE to the security owner.
 """
 
 from __future__ import annotations
@@ -141,6 +135,22 @@ def _require_force_rls(bind, relation: str) -> None:
         raise RuntimeError(f"zb07 requires {relation} ENABLE+FORCE RLS")
 
 
+def _has_column_privilege(bind, relation: str, column: str, privilege: str) -> bool:
+    return bool(
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_column_privilege(:role,:relation,:column,:privilege)"
+            ),
+            {
+                "role": _SECURITY_OWNER,
+                "relation": relation,
+                "column": column,
+                "privilege": privilege,
+            },
+        ).scalar_one()
+    )
+
+
 def _require_predecessor(bind) -> None:
     for relation in (_MEMBERS, _OUTBOX, _COMMANDS):
         if bind.execute(
@@ -153,26 +163,21 @@ def _require_predecessor(bind) -> None:
     _require_force_rls(bind, _OUTBOX)
 
     for column in _MEMBER_COLUMNS:
-        if not bind.execute(
-            sa.text(
-                "SELECT pg_catalog.has_column_privilege(:role,:relation,:column,'SELECT')"
-            ),
-            {"role": _SECURITY_OWNER, "relation": _MEMBERS, "column": column},
-        ).scalar_one():
+        if not _has_column_privilege(bind, _MEMBERS, column, "SELECT"):
             raise RuntimeError(
                 f"zb07 missing P4C predecessor app_security_owner member column SELECT: {column}"
             )
 
     for column in _OUTBOX_INSERT_COLUMNS:
-        if not bind.execute(
-            sa.text(
-                "SELECT pg_catalog.has_column_privilege(:role,:relation,:column,'INSERT')"
-            ),
-            {"role": _SECURITY_OWNER, "relation": _OUTBOX, "column": column},
-        ).scalar_one():
+        if not _has_column_privilege(bind, _OUTBOX, column, "INSERT"):
             raise RuntimeError(
                 f"zb07 missing predecessor app_security_owner outbox column INSERT: {column}"
             )
+
+    if _has_column_privilege(bind, _OUTBOX, "payload", "SELECT"):
+        raise RuntimeError(
+            "zb07 refuses ambiguous predecessor app_security_owner outbox payload SELECT"
+        )
 
     if not bind.execute(
         sa.text(
@@ -187,7 +192,7 @@ def _require_predecessor(bind) -> None:
     _require_policy_absent(bind, _OUTBOX, _RECONCILE_OUTBOX_POLICY)
 
 
-def _policy_row(bind, policy: str):
+def _policy_row(bind, relation: str, policy: str):
     return bind.execute(
         sa.text(
             """
@@ -205,18 +210,25 @@ def _policy_row(bind, policy: str):
               AND p.polname=:policy
             """
         ),
-        {
-            "relation": _MEMBERS if policy == _MEMBER_POLICY else _OUTBOX,
-            "policy": policy,
-        },
+        {"relation": relation, "policy": policy},
     ).mappings().one_or_none()
 
 
 def _post_install_proof(bind) -> None:
-    member = _policy_row(bind, _MEMBER_POLICY)
+    if not _has_column_privilege(bind, _OUTBOX, "payload", "SELECT"):
+        raise RuntimeError("zb07 app_security_owner outbox payload SELECT was not installed")
+    for role_name in _RUNTIME_ROLES:
+        if bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_column_privilege(:role,:relation,'payload','SELECT')"
+            ),
+            {"role": role_name, "relation": _OUTBOX},
+        ).scalar_one():
+            raise RuntimeError(f"zb07 runtime received outbox payload SELECT: {role_name}")
+
+    member = _policy_row(bind, _MEMBERS, _MEMBER_POLICY)
     if member is None or member["command"] != "r" or list(member["roles"]) != [_SECURITY_OWNER]:
         raise RuntimeError("zb07 notification member policy role/command drift")
-    member_qualifier = member["qualifier"] or ""
     for token in (
         "app.current_role",
         "branch_lifecycle_worker",
@@ -226,13 +238,12 @@ def _post_install_proof(bind) -> None:
         "app.worker_id",
         "org_id",
     ):
-        if token not in member_qualifier:
+        if token not in (member["qualifier"] or ""):
             raise RuntimeError(f"zb07 notification member policy lost scope token: {token}")
 
-    delivery = _policy_row(bind, _DELIVERY_OUTBOX_POLICY)
+    delivery = _policy_row(bind, _OUTBOX, _DELIVERY_OUTBOX_POLICY)
     if delivery is None or delivery["command"] != "a" or list(delivery["roles"]) != [_SECURITY_OWNER]:
         raise RuntimeError("zb07 notification delivery outbox policy role/command drift")
-    delivery_check = delivery["check_qualifier"] or ""
     for token in (
         "notification.delivery",
         "notification_commands",
@@ -246,13 +257,12 @@ def _post_install_proof(bind) -> None:
         "command_id",
         "source_outbox_id",
     ):
-        if token not in delivery_check:
+        if token not in (delivery["check_qualifier"] or ""):
             raise RuntimeError(f"zb07 notification delivery policy lost scope token: {token}")
 
-    reconcile = _policy_row(bind, _RECONCILE_OUTBOX_POLICY)
+    reconcile = _policy_row(bind, _OUTBOX, _RECONCILE_OUTBOX_POLICY)
     if reconcile is None or reconcile["command"] != "a" or list(reconcile["roles"]) != [_SECURITY_OWNER]:
         raise RuntimeError("zb07 notification reconcile outbox policy role/command drift")
-    reconcile_check = reconcile["check_qualifier"] or ""
     for token in (
         "notification.reconcile",
         "notification_commands",
@@ -266,7 +276,7 @@ def _post_install_proof(bind) -> None:
         "lifecycle",
         "command_id",
     ):
-        if token not in reconcile_check:
+        if token not in (reconcile["check_qualifier"] or ""):
             raise RuntimeError(f"zb07 notification reconcile policy lost scope token: {token}")
 
 
@@ -274,6 +284,10 @@ def upgrade() -> None:
     bind = op.get_bind()
     _require_identity_contract(bind)
     _require_predecessor(bind)
+
+    op.execute(
+        "GRANT SELECT (payload) ON TABLE public.branch_outbox_events TO app_security_owner"
+    )
 
     op.execute(
         """
@@ -398,4 +412,7 @@ def downgrade() -> None:
     op.execute(
         "DROP POLICY IF EXISTS p4c_notification_member_security_owner_select "
         "ON public.members"
+    )
+    op.execute(
+        "REVOKE SELECT (payload) ON TABLE public.branch_outbox_events FROM app_security_owner"
     )

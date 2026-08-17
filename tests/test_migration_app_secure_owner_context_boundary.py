@@ -80,6 +80,16 @@ _P3E_ASSET_LIVE_OWNER_MIGRATION = (
 _P3E_ASSET_ENUM_RECOVERY_MIGRATION = (
     "t07d8e9f0a34_p3e_asset_status_enum_recovery.py"
 )
+_P4C_DELIVERY_MIGRATION = "w07d8e9f0a37_p4c_notification_delivery.py"
+_P4C_RECONCILIATION_MIGRATION = "x07d8e9f0a38_p4c_notification_reconciliation.py"
+_P4C_CRASH_RECOVERY_MIGRATION = "y07d8e9f0a39_p4c_notification_crash_recovery.py"
+_P4C_OPERATIONS_MIGRATION = "z07d8e9f0a3a_p4c_notification_operations.py"
+_P4C_HISTORY_BOUNDARY_MIGRATION = (
+    "za07d8e9f0a3b_p4c_notification_history_read_boundary.py"
+)
+_P4C_MEMBER_BOUNDARY_MIGRATION = (
+    "zb07d8e9f0a3c_p4c_notification_member_read_boundary.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -106,6 +116,12 @@ APP_SECURE_FILES.update(
         _P3E_ASSET_PROVENANCE_MIGRATION,
         _P3E_ASSET_LIVE_OWNER_MIGRATION,
         _P3E_ASSET_ENUM_RECOVERY_MIGRATION,
+        _P4C_DELIVERY_MIGRATION,
+        _P4C_RECONCILIATION_MIGRATION,
+        _P4C_CRASH_RECOVERY_MIGRATION,
+        _P4C_OPERATIONS_MIGRATION,
+        _P4C_HISTORY_BOUNDARY_MIGRATION,
+        _P4C_MEMBER_BOUNDARY_MIGRATION,
     }
 )
 
@@ -199,6 +215,18 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         _P3E_ASSET_PROVENANCE_MIGRATION: set(),
         _P3E_ASSET_LIVE_OWNER_MIGRATION: set(),
         _P3E_ASSET_ENUM_RECOVERY_MIGRATION: set(),
+        # P4C adds SECURITY DEFINER functions and exact table/policy boundaries.
+        # W/X/Y/Z/ZA do not create app_secure schema/view/policy DDL. ZB creates
+        # and removes the P4C FORCE-RLS policies and is therefore policy-scoped.
+        _P4C_DELIVERY_MIGRATION: set(),
+        _P4C_RECONCILIATION_MIGRATION: set(),
+        _P4C_CRASH_RECOVERY_MIGRATION: set(),
+        _P4C_OPERATIONS_MIGRATION: set(),
+        _P4C_HISTORY_BOUNDARY_MIGRATION: set(),
+        _P4C_MEMBER_BOUNDARY_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+        },
         A1.name: view_contract,
     }
     actual = {
