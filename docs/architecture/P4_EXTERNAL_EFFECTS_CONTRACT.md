@@ -22,22 +22,24 @@ This contract applies to at least:
 - external provider webhooks/callbacks;
 - reconciliation and operator replay of those effects.
 
-## 2. Current P3E baseline and P4 inventory
+## 2. Current P4 inventory and implementation progression
 
-The certified P3E line already persists lifecycle external commands in `public.branch_outbox_events`. The current lifecycle external event types are:
+The certified P3E line established the durable lifecycle external-command inventory in `public.branch_outbox_events`. The lifecycle-produced external event types remain exactly:
 
 - `branch.search_index`
 - `branch.search_deindex`
 - `branch.member_notification`
 - `branch.refund_required`
 
-`app/tasks/branch_outbox_poller.py` deliberately fails these commands closed because no production handler is wired. That fail-closed behavior remains correct until the relevant P4 provider boundary is certified.
+That P4A inventory remains the baseline, but later phases have advanced the implementation status by domain.
 
-The current lifecycle service also has a search reconciliation path that advances local search synchronization markers without downstream search-provider evidence. P4B must replace that marker-only behavior; a reconciliation sweep may not declare synchronization merely because a database update succeeded.
+P4B certified the search provider boundary for `branch.search_index` and `branch.search_deindex`. These events now route through `_process_search_event`, which claims the authoritative projection, performs provider work through the search provider boundary, and persists provider evidence through database capabilities. Search reconciliation no longer advances local sync markers directly; maintenance enqueues provider-backed reconciliation work and the leased worker owns provider-evidence acknowledgement.
 
-P3E deliberately leaves the historical global reminder and digest entry points fail-closed. P4C may re-enable notification products only through tenant-bound durable discovery and delivery commands satisfying this contract.
+The current P4C candidate routes `branch.member_notification` into durable notification materialization. The resulting internal notification commands, including `notification.delivery` and `notification.reconcile`, are P4C processing events rather than lifecycle-produced event types. They use the shared P4 rule: provider acceptance is not terminal delivery evidence, and crash ambiguity remains fenced by lease/reclaim semantics. P4C is not certified until its decisive same-head gates are green.
 
-The Finance domain already contains payment, refund, credit-note, ledger, provider-event, idempotency and outbox primitives. P4D must connect lifecycle refund obligations to those authoritative Finance records and then to the real refund provider without trusting queue-supplied amounts or treating request submission as refund completion.
+`branch.refund_required` remains intentionally fail-closed and deferred to P4D. The Finance domain already contains payment, refund, credit-note, ledger, provider-event, idempotency and outbox primitives. P4D must connect lifecycle refund obligations to those authoritative Finance records and then to the real refund provider without trusting queue-supplied amounts or treating request submission as refund completion.
+
+P3E deliberately leaves the historical global reminder, birthday and digest entry points fail-closed. P4C or later work may re-enable notification products only through tenant-bound durable discovery and delivery commands satisfying this contract.
 
 ## 3. Canonical external-effect lifecycle
 
@@ -276,14 +278,16 @@ P4 will proceed in this order:
 5. P4E — cross-domain operational recovery, observability and final external-effect certification.
 6. Final P4 same-head regression/certification including inherited P1/P2/P3.
 
-## 16. P4A hard-stop criteria
+## 16. P4A hard-stop criteria and inherited checks
 
 P4A is complete only when repository contracts prove:
 
 - the four lifecycle external event types are inventoried;
-- the lifecycle outbox external handler remains fail-closed until a certified provider handler exists;
-- reminder/digest legacy global paths remain fail-closed during P4A;
+- a lifecycle outbox event remains fail-closed until its domain has a certified or active candidate provider handler;
+- reminder/birthday/digest legacy global paths remain fail-closed until replaced by tenant-bound durable discovery;
 - search reconciliation cannot be accepted as production-complete while it only advances local markers;
 - Finance refund infrastructure exists but lifecycle refund commands are not falsely treated as completed;
 - the canonical evidence/idempotency/lease/reconciliation/dead-letter requirements in this document cannot be removed silently;
 - inherited P3E certification boundaries remain unchanged.
+
+Later phase inherited checks must preserve the same governing rule while tracking current status accurately: P4B search is certified provider-backed, the current P4C notification candidate is implemented but not yet certified, and P4D refund execution remains deferred/fail-closed.

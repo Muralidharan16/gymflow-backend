@@ -10,15 +10,25 @@ CONTRACT_PATH = ROOT / "docs" / "architecture" / "P4_EXTERNAL_EFFECTS_CONTRACT.m
 INVENTORY_PATH = ROOT / "docs" / "architecture" / "p4_external_effect_inventory.json"
 LIFECYCLE_POLLER = ROOT / "app" / "tasks" / "branch_outbox_poller.py"
 LIFECYCLE_SERVICE = ROOT / "app" / "services" / "branch_lifecycle_service.py"
+NOTIFICATION_SERVICE = ROOT / "app" / "services" / "notification_delivery_service.py"
 REMINDERS = ROOT / "app" / "tasks" / "reminders.py"
 DAILY_DIGEST = ROOT / "app" / "tasks" / "daily_digest.py"
 FINANCE_FOUNDATION = ROOT / "app" / "finance_core" / "models" / "foundation.py"
 
-EXPECTED_LIFECYCLE_EXTERNAL_EVENTS = {
+EXPECTED_SEARCH_LIFECYCLE_EVENTS = {
     "branch.search_index",
     "branch.search_deindex",
-    "branch.member_notification",
-    "branch.refund_required",
+}
+EXPECTED_NOTIFICATION_LIFECYCLE_EVENTS = {"branch.member_notification"}
+EXPECTED_DEFERRED_LIFECYCLE_EVENTS = {"branch.refund_required"}
+EXPECTED_LIFECYCLE_EXTERNAL_EVENTS = (
+    EXPECTED_SEARCH_LIFECYCLE_EVENTS
+    | EXPECTED_NOTIFICATION_LIFECYCLE_EVENTS
+    | EXPECTED_DEFERRED_LIFECYCLE_EVENTS
+)
+EXPECTED_INTERNAL_NOTIFICATION_EVENTS = {
+    "notification.delivery",
+    "notification.reconcile",
 }
 EXPECTED_PROVIDER_OUTCOMES = {
     "definite_success",
@@ -81,6 +91,17 @@ def _assignment_string_set(source: str, name: str) -> set[str]:
     return set(_assignment_literal(source, name))
 
 
+def _function_source(source: str, name: str, next_name: str | None = None) -> str:
+    marker = f"async def {name}"
+    assert marker in source
+    body = source.split(marker, 1)[1]
+    if next_name is not None:
+        next_marker = f"async def {next_name}"
+        assert next_marker in body
+        body = body.split(next_marker, 1)[0]
+    return body
+
+
 def test_contract_is_bound_to_certified_p3e_base_and_forbids_attempt_equals_success() -> None:
     contract = CONTRACT_PATH.read_text(encoding="utf-8")
     inventory = _inventory()
@@ -93,38 +114,82 @@ def test_contract_is_bound_to_certified_p3e_base_and_forbids_attempt_equals_succ
     assert "terminal success" in contract
 
 
-def test_inventory_exactly_tracks_current_lifecycle_external_events() -> None:
+def test_inventory_exactly_tracks_current_lifecycle_external_events_by_domain() -> None:
     inventory = _inventory()
-    inventoried = {
-        entry["event_type"] for entry in inventory["lifecycle_external_events"]
-    }
+    lifecycle_entries = inventory["lifecycle_external_events"]
+    inventoried = {entry["event_type"] for entry in lifecycle_entries}
+    by_event = {entry["event_type"]: entry for entry in lifecycle_entries}
     source = LIFECYCLE_POLLER.read_text(encoding="utf-8")
-    runtime = _assignment_string_set(source, "_EXTERNAL_EVENT_TYPES")
+
+    search_runtime = _assignment_string_set(source, "_SEARCH_EVENT_TYPES")
+    notification_runtime = _assignment_string_set(source, "_NOTIFICATION_EVENT_TYPES")
+    deferred_runtime = _assignment_string_set(source, "_DEFERRED_EXTERNAL_EVENT_TYPES")
+    internal_notifications = {
+        entry["event_type"] for entry in inventory["internal_notification_events"]
+    }
 
     assert inventoried == EXPECTED_LIFECYCLE_EXTERNAL_EVENTS
-    assert runtime == EXPECTED_LIFECYCLE_EXTERNAL_EVENTS
+    assert search_runtime == EXPECTED_SEARCH_LIFECYCLE_EVENTS
+    assert notification_runtime & inventoried == EXPECTED_NOTIFICATION_LIFECYCLE_EVENTS
+    assert internal_notifications == EXPECTED_INTERNAL_NOTIFICATION_EVENTS
+    assert internal_notifications <= notification_runtime
+    assert internal_notifications.isdisjoint(inventoried)
+    assert deferred_runtime == EXPECTED_DEFERRED_LIFECYCLE_EVENTS
+    assert search_runtime | (notification_runtime & inventoried) | deferred_runtime == inventoried
 
-    for entry in inventory["lifecycle_external_events"]:
-        assert entry["current_status"] == "fail_closed_pending_real_provider"
-        assert entry["terminal_success_requires"]
+    assert by_event["branch.search_index"]["current_status"] == "provider_backed_p4b_certified"
+    assert by_event["branch.search_deindex"]["current_status"] == "provider_backed_p4b_certified"
+    assert by_event["branch.member_notification"]["current_status"] == "implemented_p4c_candidate_not_certified"
+    assert by_event["branch.member_notification"]["certification_status"] == "candidate"
+    assert by_event["branch.refund_required"]["current_status"] == "fail_closed_deferred_to_p4d"
 
 
-def test_p4a_external_handler_remains_fail_closed_until_real_provider_stage() -> None:
+def test_current_poller_routes_search_notification_and_refund_without_success_shortcuts() -> None:
     source = LIFECYCLE_POLLER.read_text(encoding="utf-8")
+    router = _function_source(source, "_process_event", "_poll_outbox")
+    search_handler = _function_source(source, "_process_search_event", "_fail_event")
+    deferred_handler = _function_source(source, "_process_deferred_external_event", "_process_event")
 
-    assert "async def _process_external_event" in source
-    assert "No production handler is configured" in source
-    assert "Logging is not delivery" in source
-    assert "return await _fail_event(" in source
+    assert "if event_type in _SEARCH_EVENT_TYPES:" in router
+    assert "return await _process_search_event(event, worker_id)" in router
+    assert "if event_type in _NOTIFICATION_EVENT_TYPES:" in router
+    assert "return await process_notification_event(event, worker_id)" in router
+    assert "if event_type in _DEFERRED_EXTERNAL_EVENT_TYPES:" in router
+    assert "return await _process_deferred_external_event(event, worker_id)" in router
+    assert "Unsupported lifecycle outbox event type" in router
 
-    # P4A must not create a false-delivery shortcut around the fail-closed handler.
-    external_handler = source.split("async def _process_external_event", 1)[1].split(
-        "async def _process_event", 1
-    )[0]
-    assert "_mark_delivered(" not in external_handler
+    assert "OpenSearchProvider.from_settings()" in search_handler
+    assert "await provider.apply(" in search_handler
+    assert "await _acknowledge_search_effect(" in search_handler
+    assert "provider_evidence_sha256" in source
+    assert "_mark_delivered(" not in search_handler
+
+    assert "No production handler is configured" in deferred_handler
+    assert "return await _fail_event(" in deferred_handler
+    assert "_mark_delivered(" not in deferred_handler
 
 
-def test_legacy_global_notification_entrypoints_remain_fail_closed_in_p4a() -> None:
+def test_p4c_notification_candidate_routing_uses_durable_fenced_machinery() -> None:
+    source = NOTIFICATION_SERVICE.read_text(encoding="utf-8")
+    router = _function_source(source, "process_notification_event")
+
+    assert 'event_type == "branch.member_notification"' in router
+    assert "return await materialize_member_notifications(event, worker_id)" in router
+    assert 'event_type == "notification.delivery"' in router
+    assert "return await process_delivery(event, worker_id)" in router
+    assert 'event_type == "notification.reconcile"' in router
+    assert "return await process_reconciliation(event, worker_id)" in router
+    assert "unsupported P4C notification event" in router
+
+    assert "claim_notification_delivery_v2" in source
+    assert "acknowledge_notification_provider_acceptance" in source
+    assert "provider_accepted" in source
+    assert "complete_notification_reconciliation" in source
+    assert 'event["payload"]["destination"]' not in source
+    assert 'event["payload"]["email"]' not in source
+
+
+def test_legacy_global_notification_entrypoints_remain_fail_closed() -> None:
     inventory = _inventory()
     tasks = {entry["task"] for entry in inventory["legacy_notification_entrypoints"]}
     assert tasks == {
@@ -144,17 +209,24 @@ def test_legacy_global_notification_entrypoints_remain_fail_closed_in_p4a() -> N
     assert "raise RuntimeError(_DISABLED_MESSAGE)" in digest
 
 
-def test_inventory_records_marker_only_search_reconciliation_as_p4b_gap() -> None:
+def test_inventory_records_search_gap_resolved_and_refund_gap_still_open() -> None:
     inventory = _inventory()
+    resolved = {entry["id"]: entry for entry in inventory["resolved_p4_gaps"]}
     gaps = {entry["id"]: entry for entry in inventory["known_p4_gaps"]}
-    gap = gaps["search_marker_only_reconciliation"]
-    assert gap["p4_stage"] == "P4B"
-    assert "downstream provider evidence" in gap["risk"]
+
+    search_gap = resolved["search_marker_only_reconciliation"]
+    assert search_gap["resolution_status"] == "resolved_by_certified_p4b"
+    assert "enqueue_branch_search_reconciliation" in search_gap["resolution"]
 
     source = LIFECYCLE_SERVICE.read_text(encoding="utf-8")
     reconciliation = source.split("async def run_reconciliation_sweep", 1)[1]
-    assert "search_last_synced_at = :now" in reconciliation
-    assert "search_visibility_version = search_visibility_version + 1" in reconciliation
+    assert "app_secure.enqueue_branch_search_reconciliation" in reconciliation
+    assert "search_last_synced_at = :now" not in reconciliation
+    assert "search_visibility_version = search_visibility_version + 1" not in reconciliation
+
+    refund_gap = gaps["lifecycle_refund_provider_deferred"]
+    assert refund_gap["p4_stage"] == "P4D"
+    assert "fail-closed" in refund_gap["risk"]
 
 
 def test_finance_refund_foundation_exists_without_claiming_lifecycle_completion() -> None:
@@ -170,7 +242,8 @@ def test_finance_refund_foundation_exists_without_claiming_lifecycle_completion(
     assert "class FinanceOutboxEvent(Base):" in source
 
     poller = LIFECYCLE_POLLER.read_text(encoding="utf-8")
-    assert '"branch.refund_required"' in poller
+    deferred = _assignment_string_set(poller, "_DEFERRED_EXTERNAL_EVENT_TYPES")
+    assert deferred == {"branch.refund_required"}
     assert "No production handler is configured" in poller
 
 

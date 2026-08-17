@@ -31,6 +31,24 @@ _TRIAL_IDS = {
     for index, key in enumerate(_ORG_IDS, start=11)
 }
 _AUDIT_ACTIONS = ("TRIAL_SOFT_LOCKED", "TRIAL_HARD_LOCKED")
+_ORG_FIXTURES = {
+    "soft_due": (
+        "P3E Trial Soft Fixture",
+        "p3e-trial-soft-fixture",
+    ),
+    "hard_due": (
+        "P3E Trial Hard Fixture",
+        "p3e-trial-hard-fixture",
+    ),
+    "future": (
+        "P3E Trial Future Fixture",
+        "p3e-trial-future-fixture",
+    ),
+    "converted": (
+        "P3E Trial Converted Fixture",
+        "p3e-trial-converted-fixture",
+    ),
+}
 
 
 def _connect(login: str, password_env: str, *, autocommit: bool = True) -> psycopg.Connection:
@@ -65,6 +83,36 @@ def _call_capability(
             (batch_size,),
         )
         return [(row[0], str(row[1])) for row in cur.fetchall()]
+
+
+def _restore_trial_organizations(cur: psycopg.Cursor) -> None:
+    for key, (name, slug) in _ORG_FIXTURES.items():
+        cur.execute(
+            """
+            INSERT INTO public.organizations (
+                id, name, slug, tier, is_active, max_branches,
+                default_currency_code, website_verified, social_links,
+                verification_status, country, profile_completed
+            )
+            VALUES (
+                %s, %s, %s, 'basic'::public.orgtier, true, 10, 'INR',
+                false, '{}'::jsonb, 'pending', 'India', false
+            )
+            ON CONFLICT (id) DO UPDATE
+            SET name = EXCLUDED.name,
+                slug = EXCLUDED.slug,
+                tier = EXCLUDED.tier,
+                is_active = EXCLUDED.is_active,
+                max_branches = EXCLUDED.max_branches,
+                default_currency_code = EXCLUDED.default_currency_code,
+                website_verified = EXCLUDED.website_verified,
+                social_links = EXCLUDED.social_links,
+                verification_status = EXCLUDED.verification_status,
+                country = EXCLUDED.country,
+                profile_completed = EXCLUDED.profile_completed
+            """,
+            (_ORG_IDS[key], name, slug),
+        )
 
 
 def _reset_trials() -> None:
@@ -106,6 +154,7 @@ def _reset_trials() -> None:
 
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as conn:
         with conn.cursor() as cur:
+            _restore_trial_organizations(cur)
             cur.execute(
                 "DELETE FROM public.audit_logs "
                 "WHERE organization_id = ANY(%s::uuid[]) "

@@ -682,16 +682,28 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind=op.get_bind()
     _require_identity_contract(bind)
-    if bind.execute(sa.text("SELECT count(*) FROM public.notification_operator_actions")).scalar_one():
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        has_operator_evidence = bind.execute(
+            sa.text("SELECT count(*) FROM public.notification_operator_actions")
+        ).scalar_one()
+    finally:
+        op.execute("RESET ROLE")
+    if has_operator_evidence:
         raise RuntimeError("x07 downgrade refuses loss of notification operator audit evidence")
-    if bind.execute(
-        sa.text(
-            """
-            SELECT count(*) FROM public.notification_commands
-            WHERE reconciliation_pending IS TRUE OR reconciliation_attempt_count>0 OR operator_replay_count>0
-            """
-        )
-    ).scalar_one():
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        has_reconciliation_evidence = bind.execute(
+            sa.text(
+                """
+                SELECT count(*) FROM public.notification_commands
+                WHERE reconciliation_pending IS TRUE OR reconciliation_attempt_count>0 OR operator_replay_count>0
+                """
+            )
+        ).scalar_one()
+    finally:
+        op.execute("RESET ROLE")
+    if has_reconciliation_evidence:
         raise RuntimeError("x07 downgrade refuses loss of live notification reconciliation/replay state")
 
     op.execute("SET LOCAL ROLE app_security_owner")

@@ -171,14 +171,18 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     _require_identity(bind)
-    unsafe = bind.execute(
-        sa.text(
-            """
-            SELECT count(*) FROM public.notification_delivery_attempts
-            WHERE error_code='worker_lease_expired_commit_unknown'
-            """
-        )
-    ).scalar_one()
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        unsafe = bind.execute(
+            sa.text(
+                """
+                SELECT count(*) FROM public.notification_delivery_attempts
+                WHERE error_code='worker_lease_expired_commit_unknown'
+                """
+            )
+        ).scalar_one()
+    finally:
+        op.execute("RESET ROLE")
     if unsafe:
         raise RuntimeError("y07 downgrade refuses loss of crash-recovery ambiguity evidence")
     op.execute("SET LOCAL ROLE app_security_owner")

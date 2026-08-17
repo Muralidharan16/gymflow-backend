@@ -127,13 +127,92 @@ def _set_owner_verified(value: bool) -> None:
         conn.commit()
 
 
+def _restore_asset_fixture_roots(cur) -> None:
+    cur.execute(
+        """
+        INSERT INTO public.organizations (
+            id, name, slug, tier, is_active, max_branches,
+            default_currency_code, website_verified, social_links,
+            verification_status, country, profile_completed
+        )
+        VALUES
+        (
+            %s, 'P3E Asset Fixture One', 'p3e-asset-fixture-one',
+            'basic'::public.orgtier, true, 10, 'INR', false, '{}'::jsonb,
+            'pending', 'India', false
+        ),
+        (
+            %s, 'P3E Asset Fixture Two', 'p3e-asset-fixture-two',
+            'basic'::public.orgtier, true, 10, 'INR', false, '{}'::jsonb,
+            'pending', 'India', false
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET name = EXCLUDED.name,
+            slug = EXCLUDED.slug,
+            tier = EXCLUDED.tier,
+            is_active = EXCLUDED.is_active,
+            max_branches = EXCLUDED.max_branches,
+            default_currency_code = EXCLUDED.default_currency_code,
+            website_verified = EXCLUDED.website_verified,
+            social_links = EXCLUDED.social_links,
+            verification_status = EXCLUDED.verification_status,
+            country = EXCLUDED.country,
+            profile_completed = EXCLUDED.profile_completed
+        """,
+        (_ORG1, _ORG2),
+    )
+    cur.execute(
+        """
+        INSERT INTO public.owners (
+            id, org_id, owner_name, email, hashed_password,
+            email_verified, onboarding_completed
+        )
+        VALUES
+        (
+            %s, %s, 'P3E Asset Owner One',
+            'p3e-asset-owner-one@example.test',
+            'fixture-not-a-real-password-hash', true, true
+        ),
+        (
+            %s, %s, 'P3E Asset Owner Two',
+            'p3e-asset-owner-two@example.test',
+            'fixture-not-a-real-password-hash', true, true
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET org_id = EXCLUDED.org_id,
+            owner_name = EXCLUDED.owner_name,
+            email = EXCLUDED.email,
+            hashed_password = EXCLUDED.hashed_password,
+            email_verified = EXCLUDED.email_verified,
+            onboarding_completed = EXCLUDED.onboarding_completed
+        """,
+        (_OWNER1, _ORG1, _OWNER2, _ORG2),
+    )
+
+
 def _reset_state() -> None:
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as conn:
         with conn.cursor() as cur:
+            _restore_asset_fixture_roots(cur)
             cur.execute(
                 "UPDATE public.owners SET email_verified = true WHERE id IN (%s, %s)",
                 (_OWNER1, _OWNER2),
             )
+            cur.execute(
+                """
+                UPDATE public.owners AS owner_row
+                SET org_id = expected.org_id
+                FROM (
+                    VALUES (%s::uuid, %s::uuid), (%s::uuid, %s::uuid)
+                ) AS expected(owner_id, org_id)
+                WHERE owner_row.id = expected.owner_id
+                """,
+                (_OWNER1, _ORG1, _OWNER2, _ORG2),
+            )
+            if cur.rowcount != 2:
+                raise RuntimeError(
+                    "P3E asset fixture requires both authoritative owner bindings"
+                )
             cur.execute(
                 "DELETE FROM public.organization_asset_cleanup_jobs "
                 "WHERE organization_id IN (%s, %s)",

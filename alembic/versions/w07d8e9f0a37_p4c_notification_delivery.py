@@ -727,15 +727,19 @@ def downgrade() -> None:
     _require_identity_contract(bind)
 
     if bind.execute(sa.text("SELECT pg_catalog.to_regclass(:r) IS NOT NULL"), {"r": _COMMANDS}).scalar_one():
-        unsafe = int(bind.execute(
-            sa.text(
-                """
-                SELECT count(*) FROM public.notification_commands
-                WHERE status IN ('processing','provider_accepted','succeeded','dead_lettered')
-                   OR provider_reference_id IS NOT NULL OR provider_evidence_sha256 IS NOT NULL
-                """
-            )
-        ).scalar_one())
+        op.execute("SET LOCAL ROLE app_security_owner")
+        try:
+            unsafe = int(bind.execute(
+                sa.text(
+                    """
+                    SELECT count(*) FROM public.notification_commands
+                    WHERE status IN ('processing','provider_accepted','succeeded','dead_lettered')
+                       OR provider_reference_id IS NOT NULL OR provider_evidence_sha256 IS NOT NULL
+                    """
+                )
+            ).scalar_one())
+        finally:
+            op.execute("RESET ROLE")
         if unsafe:
             raise RuntimeError("w07 downgrade refuses loss of live/provider-backed notification state")
 
