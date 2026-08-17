@@ -135,12 +135,12 @@ def test_lifecycle_fanout_is_deterministic_db_authoritative_and_not_false_delive
 def test_delivery_claim_rechecks_current_member_contact_and_suppression() -> None:
     source = CRASH_RECOVERY.read_text(encoding="utf-8")
     claim = source.split("CREATE FUNCTION app_secure.claim_notification_delivery_v2", 1)[1]
-    assert "FROM public.members m" in claim
-    assert "LEFT JOIN public.member_notification_preferences p" in claim
-    assert "m.email" in claim
-    assert "m.is_active IS TRUE" in claim
-    assert "m.status::text='active'" in claim
-    assert "p.email_suppressed_at IS NULL" in claim
+    assert "FROM public.members AS member_data" in claim
+    assert "LEFT JOIN public.member_notification_preferences AS preference_data" in claim
+    assert "member_data.email" in claim
+    assert "member_data.is_active IS TRUE" in claim
+    assert "member_data.status::text='active'" in claim
+    assert "preference_data.email_suppressed_at IS NULL" in claim
     assert "recipient_or_channel_not_eligible" in claim
     assert "worker_lease_expired_commit_unknown" in claim
     assert "ambiguous_outcome" in claim
