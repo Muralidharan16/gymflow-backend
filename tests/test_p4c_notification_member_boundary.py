@@ -21,7 +21,8 @@ def test_member_boundary_preserves_force_rls_and_adds_no_runtime_grant() -> None
     assert "CREATE POLICY p4c_notification_member_security_owner_select" in source
     assert "FOR SELECT TO app_security_owner" in source
     assert "CREATE POLICY p4c_notification_delivery_security_owner_insert" in source
-    assert "FOR INSERT TO app_security_owner" in source
+    assert "CREATE POLICY p4c_notification_reconcile_security_owner_insert" in source
+    assert source.count("FOR INSERT TO app_security_owner") == 2
     for role in (
         "app_runtime",
         "auth_runtime",
@@ -51,11 +52,13 @@ def test_member_policy_is_tenant_and_worker_context_bound() -> None:
         assert token in source
 
 
-def test_notification_child_policy_is_canonical_and_parent_lease_bound() -> None:
+def test_notification_delivery_child_policy_is_canonical_and_parent_lease_bound() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     policy = source.split(
         "CREATE POLICY p4c_notification_delivery_security_owner_insert", 1
-    )[1].split("_post_install_proof(bind)", 1)[0]
+    )[1].split(
+        "CREATE POLICY p4c_notification_reconcile_security_owner_insert", 1
+    )[0]
 
     for token in (
         "event_type='notification.delivery'",
@@ -81,6 +84,43 @@ def test_notification_child_policy_is_canonical_and_parent_lease_bound() -> None
     assert "app.current_org_id" in policy
     assert "app.worker_id" in policy
     assert "WITH CHECK (true)" not in policy.lower()
+
+
+def test_notification_reconcile_child_policy_is_maintenance_and_authority_bound() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    policy = source.split(
+        "CREATE POLICY p4c_notification_reconcile_security_owner_insert", 1
+    )[1].split("_post_install_proof(bind)", 1)[0]
+
+    for token in (
+        "app.current_role",
+        "'lifecycle_maintenance'",
+        "app.internal_maintenance",
+        "'lifecycle'",
+        "event_type='notification.reconcile'",
+        "status='pending'",
+        "attempt_count=0",
+        "max_attempts=8",
+        "leased_by IS NULL",
+        "leased_until IS NULL",
+        "pg_input_is_valid(NULLIF(payload->>'command_id',''),'uuid')",
+        "payload=pg_catalog.jsonb_build_object('command_id',payload->>'command_id')",
+        "FROM public.notification_commands AS command_data",
+        "command_data.command_id=CAST(NULLIF(branch_outbox_events.payload->>'command_id','') AS uuid)",
+        "command_data.tenant_id=branch_outbox_events.tenant_id",
+        "command_data.branch_id=branch_outbox_events.branch_id",
+        "command_data.correlation_id=branch_outbox_events.correlation_id",
+        "command_data.status='provider_accepted'",
+        "command_data.provider_code='resend'",
+        "command_data.provider_reference_id IS NOT NULL",
+        "command_data.acknowledged_at IS NOT NULL",
+        "command_data.acknowledged_at<=pg_catalog.clock_timestamp()-INTERVAL '2 minutes'",
+    ):
+        assert token in policy
+
+    assert "WITH CHECK (true)" not in policy.lower()
+    assert "app.current_org_id" not in policy
+    assert "app.worker_id" not in policy
 
 
 def test_fanout_and_v2_claim_remain_live_projection_bound() -> None:
@@ -119,9 +159,6 @@ def test_v2_claim_qualifies_return_table_identifier_collisions() -> None:
         "$function$;", 1
     )[0]
 
-    # RETURNS TABLE exposes command_id/attempt_number as PL/pgSQL variables.
-    # SQL statements inside the function must therefore use explicit relation
-    # aliases (or named constraints) instead of ambiguous bare identifiers.
     assert "WHERE command_id=v_command.command_id" not in claim
     assert "ON CONFLICT(command_id,attempt_number)" not in claim
     assert claim.count("WHERE command_data.command_id=v_command.command_id") == 3
@@ -133,6 +170,7 @@ def test_v2_claim_qualifies_return_table_identifier_collisions() -> None:
 def test_member_boundary_downgrade_removes_only_its_policies() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     downgrade = source.split("def downgrade()", 1)[1]
+    assert "DROP POLICY IF EXISTS p4c_notification_reconcile_security_owner_insert" in downgrade
     assert "DROP POLICY IF EXISTS p4c_notification_delivery_security_owner_insert" in downgrade
     assert "DROP POLICY IF EXISTS p4c_notification_member_security_owner_select" in downgrade
     assert "REVOKE" not in downgrade
