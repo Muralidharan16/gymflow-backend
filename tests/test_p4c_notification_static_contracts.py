@@ -200,6 +200,42 @@ def test_operator_replay_cannot_create_arbitrary_or_duplicate_external_effects()
     assert "p_destination" not in replay
     assert "p_message" not in replay
 
+    assert replay.count("app.notification_replay_command_id") == 2
+    scope_start = "'app.notification_replay_command_id',p_command_id::text,true"
+    scope_clear = "'app.notification_replay_command_id','',true"
+    assert scope_start in _normalized(replay)
+    assert scope_clear in _normalized(replay)
+    normalized_replay = _normalized(replay)
+    assert normalized_replay.index(scope_start) < normalized_replay.index("FROM public.members m")
+    assert normalized_replay.index("FROM public.members m") < normalized_replay.index(scope_clear)
+
+
+def test_operator_replay_member_visibility_is_exact_command_and_maintenance_bound() -> None:
+    source = RECONCILIATION.read_text(encoding="utf-8")
+    policy = source.split(
+        "CREATE POLICY p4c_notification_replay_security_owner_select", 1
+    )[1].split("def _create_functions", 1)[0]
+    normalized = _normalized(policy)
+
+    for token in (
+        "FOR SELECT TO app_security_owner",
+        "pg_catalog.pg_has_role( session_user, 'lifecycle_maintenance_runtime', 'MEMBER' )",
+        "app.notification_replay_command_id",
+        "pg_catalog.pg_input_is_valid",
+        "FROM public.notification_commands AS command_data",
+        "command_data.status='dead_lettered'",
+        "command_data.member_id=members.id",
+        "command_data.tenant_id=members.org_id",
+        "command_data.branch_id=members.home_branch_id",
+    ):
+        assert token in normalized
+
+    assert "WITH CHECK (true)" not in normalized.lower()
+    assert "GRANT SELECT ON TABLE public.members TO lifecycle_maintenance_runtime" not in source
+    assert "GRANT SELECT (" not in policy
+    downgrade = source.split("def downgrade()", 1)[1]
+    assert "DROP POLICY IF EXISTS p4c_notification_replay_security_owner_select" in downgrade
+
 
 def test_webhook_http_boundary_verifies_raw_body_before_database_evidence_application() -> None:
     route = WEBHOOK_ROUTE.read_text(encoding="utf-8")
