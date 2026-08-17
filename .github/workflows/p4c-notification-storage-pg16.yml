@@ -179,7 +179,7 @@ jobs:
             transition_source,snapshot,correlation_id,correlation_emitted_at
           ) VALUES (
             '46000000-0000-4000-8000-000000000031','46000000-0000-4000-8000-000000000011',
-            'active','temporarily_closed',NULL,clock_timestamp(),'P4C fixture','ci','{}'::jsonb,
+            'active','temporarily_closed',NULL,clock_timestamp(),'P4C fixture','api','{}'::jsonb,
             '46000000-0000-4000-8000-000000000041',clock_timestamp()
           );
           INSERT INTO public.branch_outbox_events(
