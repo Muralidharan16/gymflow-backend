@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   provider:
-    name: Resend idempotency, evidence and webhook semantics
+    name: Resend evidence, webhook, telemetry and deployment semantics
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -36,10 +36,20 @@ jobs:
           python -m pip check
           python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
           diff -u requirements-test.lock /tmp/resolved.txt
-      - name: Prove provider and raw webhook semantics
+      - name: Prove provider webhook telemetry and deployment semantics
         run: |
           set -euo pipefail
-          python -m py_compile app/services/notification_provider.py app/services/resend_webhook.py
+          python -m py_compile \
+            app/services/notification_provider.py \
+            app/services/resend_webhook.py \
+            app/services/notification_delivery_service.py \
+            app/routers/notification_webhooks.py \
+            app/observability/notification_metrics.py \
+            app/tasks/branch_lifecycle_sweeps.py \
+            app/tasks/branch_outbox_poller.py
           python -m pytest --noconftest -q --maxfail=1 \
             tests/test_p4c_notification_provider.py \
-            tests/test_p4c_resend_webhook.py
+            tests/test_p4c_resend_webhook.py \
+            tests/test_p4c_notification_metrics_export.py \
+            tests/test_p4c_notification_deployment_contract.py \
+            tests/test_p4c_notification_static_contracts.py
