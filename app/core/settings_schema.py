@@ -43,6 +43,9 @@ class DoersSettingsSchema(BaseSettings):
     RESEND_API_BASE_URL: str = "https://api.resend.com"
     NOTIFICATION_PROVIDER_TIMEOUT_SECONDS: float = 8.0
     RESEND_WEBHOOK_SECRET: str = ""
+    NOTIFICATION_METRICS_OTLP_ENDPOINT: str = ""
+    NOTIFICATION_METRICS_EXPORT_INTERVAL_SECONDS: float = 30.0
+    NOTIFICATION_METRICS_EXPORT_TIMEOUT_SECONDS: float = 5.0
 
     WA_PHONE_NUMBER_ID: str = ""
     WA_ACCESS_TOKEN: str = ""
