@@ -30,6 +30,7 @@ from app.core.config import settings
 from app.core.middleware import (
     AdaptiveWriteThrottler,
     CorrelationIdMiddleware,
+    EXEMPT_PATHS,
     IdempotencyMiddleware,
     OpenTelemetryTraceMiddleware,
     RedisRateLimiterMiddleware,
@@ -55,6 +56,7 @@ from app.routers import (
     gyms,
     imports,
     members,
+    notification_webhooks,
     onboarding,
     organizations,
     payments,
@@ -69,6 +71,12 @@ from app.platform_billing.api import checkout_options as platform_billing_checko
 from app.platform_billing.api import checkout as platform_billing_checkout
 from app.platform_billing.api import checkout_simulation as platform_billing_checkout_simulation
 from app.finance_core.api import payment_boundary as finance_payment_boundary
+
+
+# Resend is not a tenant/JWT caller. The exact webhook path bypasses tenant auth,
+# while provider authenticity is established from the untouched raw body and
+# Svix headers inside the P4C router before any database capability is invoked.
+EXEMPT_PATHS.add("/webhooks/notifications/resend")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,6 +176,7 @@ app.include_router(branch_lifecycle.router)
 app.include_router(geo.router)
 app.include_router(membership_plans.router)
 app.include_router(member_subscriptions_v2.router)
+app.include_router(notification_webhooks.router)
 app.include_router(platform_billing_tenant.router)
 app.include_router(platform_billing_checkout_options.router)
 app.include_router(platform_billing_checkout.router)
