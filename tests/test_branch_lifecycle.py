@@ -67,6 +67,11 @@ async def cleanup_lifecycle_fixture() -> None:
             text(
                 """
                 TRUNCATE TABLE
+                    public.notification_operator_actions,
+                    public.notification_provider_events,
+                    public.notification_delivery_attempts,
+                    public.notification_commands,
+                    public.branch_search_effect_attempts,
                     public.branch_watchdog_alerts,
                     public.branch_lifecycle_events,
                     public.branch_outbox_events,
