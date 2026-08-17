@@ -44,10 +44,10 @@ jobs:
             tests/test_p4a_external_effect_contracts.py::test_finance_refund_foundation_exists_without_claiming_lifecycle_completion \
             tests/test_p4a_external_effect_contracts.py::test_inventory_freezes_shared_p4_semantics \
             tests/test_p4a_external_effect_contracts.py::test_contract_requires_idempotency_fencing_reconciliation_dlq_and_webhook_security
-      - name: Reprove explicit P4A to P4B compatibility contract
+      - name: Reprove explicit P4A P4B to P4C compatibility contract
         run: |
           set -euo pipefail
-          python -m pytest --noconftest -q --maxfail=1 tests/test_p4b_p4a_inherited_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p4c_inherited_contracts.py
       - name: Reprove certified P4B provider deployment and telemetry semantics
         run: |
           set -euo pipefail
