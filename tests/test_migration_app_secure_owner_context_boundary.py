@@ -86,6 +86,7 @@ _P4C_DELIVERY_MIGRATION = "w07d8e9f0a37_p4c_notification_delivery.py"
 _P4C_RECONCILIATION_MIGRATION = "x07d8e9f0a38_p4c_notification_reconciliation.py"
 _P4C_CRASH_RECOVERY_MIGRATION = "y07d8e9f0a39_p4c_notification_crash_recovery.py"
 _P4C_OPERATIONS_MIGRATION = "z07d8e9f0a3a_p4c_notification_operations.py"
+_P4D_REFUND_AUTHORITY_MIGRATION = "zc07d8e9f0a3d_p4d_refund_authority_boundary.py"
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -118,6 +119,7 @@ APP_SECURE_FILES.update(
         _P4C_RECONCILIATION_MIGRATION,
         _P4C_CRASH_RECOVERY_MIGRATION,
         _P4C_OPERATIONS_MIGRATION,
+        _P4D_REFUND_AUTHORITY_MIGRATION,
     }
 )
 
@@ -229,6 +231,10 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         _P4C_RECONCILIATION_MIGRATION: {"create_policy", "drop_policy"},
         _P4C_CRASH_RECOVERY_MIGRATION: set(),
         _P4C_OPERATIONS_MIGRATION: set(),
+        _P4D_REFUND_AUTHORITY_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+        },
         A1.name: view_contract,
     }
     actual = {

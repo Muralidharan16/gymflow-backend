@@ -3,7 +3,7 @@ name: P4C General Regression
 on:
   pull_request:
     branches:
-      - hardening/p4b-search-integration
+      - hardening/p4c-durable-notifications
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
@@ -32,9 +32,11 @@ jobs:
     env:
       MIGRATION_PASSWORD: ci-migration-owner
       GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+      APP_RUNTIME_PASSWORD: ci-app-test-runtime
       AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
       MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
       WORKER_RUNTIME_PASSWORD: ci-worker-runtime
+      P4D_REFUND_TEST_DATABASE: gymflow_p4d_test
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
       TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
       TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
@@ -93,23 +95,35 @@ jobs:
           ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
           CREATE DATABASE gymflow_migration_test OWNER migration_owner;
           CREATE DATABASE gymflow_test OWNER migration_owner;
+          CREATE DATABASE gymflow_p4d_test OWNER migration_owner;
+          REVOKE ALL ON DATABASE gymflow_p4d_test FROM PUBLIC;
+          GRANT CONNECT ON DATABASE gymflow_migration_test TO app_test_runtime;
           GRANT CONNECT ON DATABASE gymflow_test TO app_test_runtime,auth_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime;
+          GRANT CONNECT ON DATABASE gymflow_p4d_test TO app_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime;
           SQL
           bash scripts/ci/verify_cluster_roles.sh
-          for database in gymflow_migration_test gymflow_test; do
+          for database in gymflow_migration_test gymflow_test gymflow_p4d_test; do
             bash scripts/ci/provision_infrastructure_extensions.sh "$database"
           done
       - name: Fresh Alembic lineage on migration and test databases
         run: |
           set -euo pipefail
           python -s scripts/verify_alembic_graph.py
-          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'zb07d8e9f0a3c'
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'zc07d8e9f0a3d'
           python -s -m alembic -c alembic.ini upgrade head
           DATABASE_URL=postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test \
             python -s -m alembic -c alembic.ini upgrade head
+          DATABASE_URL=postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p4d_test \
+            python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          DATABASE_URL=postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test \
+            python -s -m alembic -c alembic.ini current --check-heads
+          DATABASE_URL=postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p4d_test \
+            python -s -m alembic -c alembic.ini current --check-heads
       - name: Reprove reduced runtime separation
         run: |
           set -euo pipefail
+          PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_test_runtime -d gymflow_migration_test -c "SELECT current_user, pg_catalog.pg_has_role(current_user,'migration_owner','MEMBER'), pg_catalog.has_database_privilege(current_user,current_database(),'CREATE');"
           PGPASSWORD="$GENERAL_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U app_test_runtime -d gymflow_test -c "SELECT current_user, pg_catalog.pg_has_role(current_user,'worker_runtime','MEMBER'), pg_catalog.pg_has_role(current_user,'lifecycle_maintenance_runtime','MEMBER');"
           PGPASSWORD="$WORKER_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U worker_test_runtime -d gymflow_test -c "SELECT current_user, pg_catalog.pg_has_role(current_user,'worker_runtime','MEMBER'), pg_catalog.pg_has_role(current_user,'app_runtime','MEMBER');"
           PGPASSWORD="$MAINTENANCE_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U lifecycle_maintenance_test_runtime -d gymflow_test -c "SELECT current_user, pg_catalog.pg_has_role(current_user,'lifecycle_maintenance_runtime','MEMBER'), pg_catalog.pg_has_role(current_user,'worker_runtime','MEMBER');"

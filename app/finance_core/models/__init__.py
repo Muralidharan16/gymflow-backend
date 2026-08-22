@@ -23,6 +23,7 @@ from app.finance_core.models.foundation import (
     FinancePaymentAllocation,
     FinancePaymentEvent,
     FinanceRefund,
+    FinanceRefundExecutionCommand,
     FinanceTaxCode,
     FinanceTaxRecord,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "FinancePaymentAllocation",
     "FinancePaymentEvent",
     "FinanceRefund",
+    "FinanceRefundExecutionCommand",
     "FinanceTaxCode",
     "FinanceTaxRecord",
 ]
