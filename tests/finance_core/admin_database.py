@@ -23,6 +23,7 @@ FINANCE_TEST_TABLES: tuple[str, ...] = (
     "ledger_entries",
     "credit_note_lines",
     "credit_notes",
+    "refund_execution_commands",
     "refunds",
     "payment_events",
     "payment_allocations",

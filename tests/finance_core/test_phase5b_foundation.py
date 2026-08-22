@@ -32,6 +32,7 @@ from app.finance_core.models import (
     FinancePaymentAllocation,
     FinancePaymentEvent,
     FinanceRefund,
+    FinanceRefundExecutionCommand,
     FinanceTaxCode,
     FinanceTaxRecord,
 )
@@ -59,6 +60,7 @@ FINANCE_TABLES = {
     "payment_allocations",
     "payment_events",
     "refunds",
+    "refund_execution_commands",
     "credit_notes",
     "credit_note_lines",
     "ledger_entries",
@@ -93,6 +95,7 @@ MODEL_TABLES = {
         FinancePaymentAllocation,
         FinancePaymentEvent,
         FinanceRefund,
+        FinanceRefundExecutionCommand,
         FinanceTaxCode,
         FinanceTaxRecord,
     }
@@ -332,6 +335,16 @@ async def test_security_is_prepared_without_public_finance_api_surface():
 
     api_files = list((REPO_ROOT / "app").glob("**/*finance*api*.py"))
     assert api_files == []
+
+
+def test_finance_refund_model_declares_partial_payment_reason_index():
+    indexes = [item for item in FinanceRefund.__table_args__ if getattr(item, "name", None) == "uq_finance_refunds_payment_reason_not_null"]
+    assert len(indexes) == 1
+    index = indexes[0]
+    assert index.unique is True
+    assert [column.name for column in index.columns] == ["payment_id", "reason_code"]
+    assert str(index.dialect_options["postgresql"]["where"]) == "reason_code IS NOT NULL"
+
 
 
 def test_phase5b_migration_has_no_real_razorpay_or_activation_behavior():

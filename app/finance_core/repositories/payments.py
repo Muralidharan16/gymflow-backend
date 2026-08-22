@@ -437,6 +437,7 @@ class FinancePaymentRepository:
             division_id=payment.division_id,
             brand_id=payment.brand_id,
             amount=amount,
+            currency_code=payment.currency_code,
             status="requested",
             reason_code=refund_ref,
         )

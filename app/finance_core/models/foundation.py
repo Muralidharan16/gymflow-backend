@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import CHAR
@@ -333,6 +333,7 @@ class FinancePayment(Base):
     __tablename__ = "payments"
     __table_args__ = (
         UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
         CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
         CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
         CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
@@ -398,6 +399,20 @@ class FinanceRefund(Base):
     __table_args__ = (
         CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
         CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
         {"schema": SCHEMA},
     )
 
@@ -408,10 +423,84 @@ class FinanceRefund(Base):
     division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
     brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
     reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
 
 
 class FinanceCreditNote(Base):

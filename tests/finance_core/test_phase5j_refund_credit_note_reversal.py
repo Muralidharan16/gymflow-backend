@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from app.core.database import AsyncSessionLocal
 from app.finance_core.domain.invoice_engine import FinanceInvoiceStateError
@@ -294,6 +296,113 @@ async def test_refund_ref_duplicate_and_idempotency_conflict_are_enforced():
                 )
             )
         await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refund_intents_serialize_on_payment_and_cannot_over_refund():
+    _invoice, payment = await paid_invoice_with_payment(
+        invoice_key="invoice-5j-refund-race",
+        payment_key="pay-5j-refund-race",
+        payment_ref="pay_5j_refund_race",
+    )
+
+    async def attempt(suffix: str):
+        try:
+            return await create_refund_intent(
+                payment.payment_id,
+                refund_ref=f"RF-5J-RACE-{suffix}",
+                amount="700.00",
+                idempotency_key=f"refund-5j-race-{suffix}",
+            )
+        except FinancePaymentStateError as exc:
+            return exc
+
+    results = await asyncio.gather(attempt("A"), attempt("B"))
+
+    assert sum(not isinstance(result, Exception) for result in results) == 1
+    assert sum(isinstance(result, FinancePaymentStateError) for result in results) == 1
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.refunds WHERE payment_id = :payment_id",
+        {"payment_id": payment.payment_id},
+    ) == 1
+    assert await fetch_scalar(
+        "SELECT coalesce(sum(amount), 0) FROM finance.refunds "
+        "WHERE payment_id = :payment_id",
+        {"payment_id": payment.payment_id},
+    ) == Decimal("700.00")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reserved_status", ["failed", "rejected"])
+async def test_failed_and_rejected_refund_intents_conservatively_retain_reservation(
+    reserved_status: str,
+):
+    _invoice, payment = await paid_invoice_with_payment(
+        invoice_key=f"invoice-5j-reserved-{reserved_status}",
+        payment_key=f"pay-5j-reserved-{reserved_status}",
+        payment_ref=f"pay_5j_reserved_{reserved_status}",
+    )
+    first = await create_refund_intent(
+        payment.payment_id,
+        refund_ref=f"RF-5J-RESERVED-{reserved_status}",
+        amount="700.00",
+        idempotency_key=f"refund-5j-reserved-{reserved_status}",
+    )
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            text("UPDATE finance.refunds SET status = :status WHERE id = :refund_id"),
+            {"status": reserved_status, "refund_id": first.refund_id},
+        )
+        await session.commit()
+
+    with pytest.raises(FinancePaymentStateError):
+        await create_refund_intent(
+            payment.payment_id,
+            refund_ref=f"RF-5J-AFTER-{reserved_status}",
+            amount="500.00",
+            idempotency_key=f"refund-5j-after-{reserved_status}",
+        )
+
+    assert await fetch_scalar(
+        "SELECT coalesce(sum(amount), 0) FROM finance.refunds "
+        "WHERE payment_id = :payment_id AND status <> 'cancelled'",
+        {"payment_id": payment.payment_id},
+    ) == Decimal("700.00")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_refund_intent_releases_reserved_refundable_balance():
+    _invoice, payment = await paid_invoice_with_payment(
+        invoice_key="invoice-5j-cancel-release",
+        payment_key="pay-5j-cancel-release",
+        payment_ref="pay_5j_cancel_release",
+    )
+    first = await create_refund_intent(
+        payment.payment_id,
+        refund_ref="RF-5J-CANCEL-RESERVED",
+        amount="700.00",
+        idempotency_key="refund-5j-cancel-reserved",
+    )
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            text("UPDATE finance.refunds SET status = 'cancelled' WHERE id = :refund_id"),
+            {"refund_id": first.refund_id},
+        )
+        await session.commit()
+
+    second = await create_refund_intent(
+        payment.payment_id,
+        refund_ref="RF-5J-AFTER-CANCEL",
+        amount="500.00",
+        idempotency_key="refund-5j-after-cancel",
+    )
+
+    assert second.amount == Decimal("500.00")
+    assert await fetch_scalar(
+        "SELECT coalesce(sum(amount), 0) FROM finance.refunds "
+        "WHERE payment_id = :payment_id AND status <> 'cancelled'",
+        {"payment_id": payment.payment_id},
+    ) == Decimal("500.00")
 
 
 def test_phase5j_has_no_live_provider_frontend_or_production_enablement():
