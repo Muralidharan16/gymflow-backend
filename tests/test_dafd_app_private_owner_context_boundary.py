@@ -36,6 +36,8 @@ APP_PRIVATE_FILES = {
     DAFD.name,
     "dbeb400472ec_add_branch_operating_hours.py",
     "f71f231fb001_rbac_hardening_phase_10_partitioned_.py",
+    "zd07d8e9f0a3e_p4d_refund_obligation_resolution.py",
+    "ze07d8e9f0a3f_audit_partition_lifecycle.py",
 }
 
 APP_RLS_EXECUTOR_FILES = {
@@ -496,6 +498,20 @@ def test_complete_app_private_ddl_category_allowlist_is_exact() -> None:
             "drop_function",
         },
         "f71f231fb001_rbac_hardening_phase_10_partitioned_.py": set(),
+        "zd07d8e9f0a3e_p4d_refund_obligation_resolution.py": {
+            "create_private_table",
+            "drop_private_table",
+            "grant_schema",
+            "revoke_schema",
+        },
+        "ze07d8e9f0a3f_audit_partition_lifecycle.py": {
+            "create_function",
+            "drop_function",
+            "grant_function",
+            "grant_schema",
+            "revoke_function",
+            "revoke_schema",
+        },
     }
     actual = {
         name: _app_private_ddl_categories(VERSIONS / name)

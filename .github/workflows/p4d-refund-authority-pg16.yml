@@ -34,6 +34,7 @@ jobs:
       APP_RUNTIME_PASSWORD: ci-app-test-runtime
       WORKER_RUNTIME_PASSWORD: ci-worker-runtime
       MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
+      FINANCE_CONFIG_RUNTIME_PASSWORD: ci-finance-config-runtime
       FINANCE_RUNTIME_PASSWORD: ci-finance-runtime
       SYNTHETIC_RUNTIME_PASSWORD: ci-synthetic-runtime
       P4D_REFUND_TEST_DATABASE: gymflow_p4d_test
@@ -43,6 +44,7 @@ jobs:
       FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_test_runtime:ci-finance-runtime@127.0.0.1:5432/gymflow_p4d_test
       FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p4d_test
       SYNTHETIC_ORG_TEST_DATABASE_URL: postgresql+asyncpg://synthetic_test_runtime:ci-synthetic-runtime@127.0.0.1:5432/gymflow_p4d_test
+      FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-finance-config-runtime@127.0.0.1:5432/gymflow_p4d_test
       REDIS_URL: redis://127.0.0.1:6379/0
       CELERY_BROKER_URL: redis://127.0.0.1:6379/1
       CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
@@ -87,6 +89,7 @@ jobs:
           CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-test-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-worker-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-lifecycle-maintenance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-finance-config-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           GRANT app_runtime TO finance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO finance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT test_runner TO synthetic_test_runtime WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
@@ -94,17 +97,28 @@ jobs:
           GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_config_runtime TO finance_config_deployment WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           ALTER ROLE finance_test_runtime SET row_security='on';
           ALTER ROLE synthetic_test_runtime SET row_security='on';
           ALTER ROLE app_test_runtime SET row_security='on';
           ALTER ROLE worker_test_runtime SET row_security='on';
           ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
+          ALTER ROLE finance_config_deployment SET row_security='on';
           CREATE DATABASE gymflow_p4d_test OWNER migration_owner;
           REVOKE ALL ON DATABASE gymflow_p4d_test FROM PUBLIC;
-          GRANT CONNECT ON DATABASE gymflow_p4d_test TO migration_owner,finance_test_runtime,synthetic_test_runtime,app_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime;
+          GRANT CONNECT ON DATABASE gymflow_p4d_test TO migration_owner,finance_test_runtime,synthetic_test_runtime,app_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime,finance_config_deployment;
           SQL
           bash scripts/ci/verify_cluster_roles.sh
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p4d_test
+
+      - name: Prove PostgreSQL UTF8 text adapter contract
+        run: |
+          set -euo pipefail
+          server_encoding=$(sudo -u postgres psql -X -v ON_ERROR_STOP=1 -At -d postgres -c 'SHOW server_encoding;')
+          client_encoding=$(sudo -u postgres psql -X -v ON_ERROR_STOP=1 -At -d postgres -c 'SHOW client_encoding;')
+          test "${server_encoding}" = 'UTF8'
+          test "${client_encoding}" = 'UTF8'
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c "SELECT current_setting('server_encoding') AS server_encoding, current_setting('client_encoding') AS client_encoding;"
 
       - name: Prove static and inherited contracts
         run: |
@@ -115,7 +129,7 @@ jobs:
         run: |
           set -euo pipefail
           python -s scripts/verify_alembic_graph.py
-          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'zc07d8e9f0a3d'
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'zd07d8e9f0a3e'
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
           python -s -m alembic -c alembic.ini downgrade zb07d8e9f0a3c
@@ -126,27 +140,22 @@ jobs:
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
 
-      - name: Grant bounded test-only Finance surfaces
+      - name: Grant bounded synthetic test-only surfaces
         run: |
           set -euo pipefail
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_p4d_test <<'SQL'
-          GRANT USAGE ON SCHEMA finance TO finance_test_runtime;
-          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA finance TO finance_test_runtime;
-          GRANT SELECT ON TABLE public.organizations TO finance_test_runtime;
           GRANT SELECT, INSERT, UPDATE ON TABLE public.organizations TO synthetic_test_runtime;
           GRANT SELECT, INSERT ON TABLE public.organization_creation_idempotency TO synthetic_test_runtime;
           GRANT SELECT ON TABLE public.owners, public.gyms, public.organization_users, public.organization_members, public.org_branches TO synthetic_test_runtime;
-          GRANT USAGE ON SCHEMA finance TO synthetic_test_runtime;
-          GRANT SELECT ON TABLE finance.billing_parties, finance.invoices, finance.payments TO synthetic_test_runtime;
           SQL
 
       - name: Run P4D authority and Finance regression suites
         run: |
           set -euo pipefail
-          python -m pytest --noconftest -q --maxfail=1 tests/test_p4d_refund_authority_runtime.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p4d_refund_authority_runtime.py tests/test_p4d_refund_obligation_resolution_runtime.py
           python -m pytest -q --maxfail=1 tests/finance_core
 
-      - name: Prove protected evidence downgrade refusal
+      - name: Prove inherited P4D-1 protected evidence downgrade refusal
         run: |
           set -euo pipefail
           python -m pytest --noconftest -q --maxfail=1             tests/test_p4d_refund_authority_runtime.py::test_materialization_derives_authority_and_is_stable_across_transactions
@@ -156,3 +165,14 @@ jobs:
           fi
           python -s -m alembic -c alembic.ini current --check-heads
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_p4d_test             -c "SELECT current_user,session_user,current_setting('role'),to_regclass('finance.refund_execution_commands');"
+
+      - name: Prove P4D-2 obligation evidence downgrade refusal
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1             tests/test_p4d_refund_obligation_resolution_runtime.py::test_exactly_one_refundable_payment_creates_authoritative_refund_and_command
+          if python -s -m alembic -c alembic.ini downgrade zc07d8e9f0a3d; then
+            echo 'zd07 downgrade destroyed P4D-2-derived refund execution evidence' >&2
+            exit 1
+          fi
+          python -s -m alembic -c alembic.ini current --check-heads
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_p4d_test             -c "SELECT count(*) AS p4d2_commands FROM finance.refund_execution_commands WHERE idempotency_key LIKE 'branch-refund-required/%';"

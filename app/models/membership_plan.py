@@ -92,6 +92,7 @@ class MembershipPlan(Base, TimestampMixin):
     )
 
     __table_args__ = (
+        UniqueConstraint("id", "org_id", name="uq_membership_plans_id_org"),
         UniqueConstraint("org_id", "plan_code", name="uix_org_plan_code"),
         CheckConstraint("price >= 0", name="chk_plan_price_positive"),
         CheckConstraint(

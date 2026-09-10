@@ -112,6 +112,20 @@
       "purpose": "Tenant-scoped branch read group.",
       "role": "branch_viewer"
     },
+    "finance_config_runtime": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "Dedicated internal Finance configuration control-plane capability group. Deployment configuration logins may inherit this role, but finance_config_runtime is NOLOGIN/NOBYPASSRLS, owns no schema objects, receives no direct Finance table DML, and must never be granted to migration_owner.",
+      "purpose": "Bounded internal deployment/configuration provisioning for protected Finance accounting and tax profiles through exact app_secure functions only.",
+      "role": "finance_config_runtime"
+    },
     "lifecycle_maintenance_runtime": {
       "attributes": {
         "bypass_rls": false,

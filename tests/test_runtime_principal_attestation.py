@@ -73,7 +73,7 @@ def _codes(observation: RuntimePrincipalObservation) -> set[str]:
 def test_runtime_binding_contract_matches_p2b_p2c_role_model() -> None:
     contract = load_runtime_binding_contract()
     assert validate_runtime_binding_contract(contract) == ()
-    assert set(contract.bindings) == {"api", "auth", "worker", "maintenance"}
+    assert set(contract.bindings) == {"api", "auth", "worker", "maintenance", "finance_config"}
     assert set(contract.bindings["api"].direct_capabilities) == {
         "app_runtime", "app_user"
     }
@@ -84,6 +84,9 @@ def test_runtime_binding_contract_matches_p2b_p2c_role_model() -> None:
     assert contract.bindings["worker"].direct_capabilities == ("worker_runtime",)
     assert contract.bindings["maintenance"].direct_capabilities == (
         "lifecycle_maintenance_runtime",
+    )
+    assert contract.bindings["finance_config"].direct_capabilities == (
+        "finance_config_runtime",
     )
     assert contract.bindings["api"].session_settings == {
         "row_security": "on",
@@ -105,6 +108,7 @@ def test_all_canonical_runtime_login_overlays_pass() -> None:
         _canonical_observation("auth", "auth_login"),
         _canonical_observation("worker", "worker_login"),
         _canonical_observation("maintenance", "maintenance_login"),
+        _canonical_observation("finance_config", "finance_config_deployment"),
     )
     for observation in observations:
         assert evaluate_runtime_principal_observation(observation) == ()
@@ -117,6 +121,7 @@ def test_same_login_behind_different_urls_is_rejected_before_connect() -> None:
         "auth": "postgresql+asyncpg://shared:b@db/prod?application_name=auth",
         "worker": "postgresql+asyncpg://worker:c@db/prod",
         "maintenance": "postgresql+asyncpg://maintenance:d@db/prod",
+        "finance_config": "postgresql+psycopg://finance_config_deployment:e@db/prod",
     }
     assert "runtime.config.login_reuse" in {
         item.code for item in validate_runtime_url_configuration(urls)
@@ -129,6 +134,7 @@ def test_runtime_urls_must_target_same_database() -> None:
         "auth": "postgresql+asyncpg://auth:b@db/prod",
         "worker": "postgresql+asyncpg://worker:c@db/prod",
         "maintenance": "postgresql+asyncpg://maintenance:d@db/other",
+        "finance_config": "postgresql+psycopg://finance_config_deployment:e@db/prod",
     }
     assert "runtime.config.database_divergence" in {
         item.code for item in validate_runtime_url_configuration(urls)
@@ -259,6 +265,7 @@ def test_runtime_binding_set_rejects_login_reuse() -> None:
         _canonical_observation("auth", "shared_login"),
         _canonical_observation("worker", "worker_login"),
         _canonical_observation("maintenance", "maintenance_login"),
+        _canonical_observation("finance_config", "finance_config_deployment"),
     )
     assert "runtime.binding_set.login_reuse" in {
         item.code for item in evaluate_runtime_binding_set(observations)

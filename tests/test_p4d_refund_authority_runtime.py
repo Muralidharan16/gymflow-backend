@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import psycopg
 import pytest
+from sqlalchemy.engine import make_url
 from psycopg.errors import (
     CheckViolation,
     ForeignKeyViolation,
@@ -16,13 +17,44 @@ from psycopg.errors import (
 )
 
 
-_DB_HOST = os.environ.get("P4D_REFUND_TEST_HOST", "127.0.0.1")
-_DB_PORT = int(os.environ.get("PGPORT", "5432"))
-_DB_NAME = os.environ.get("P4D_REFUND_TEST_DATABASE", "gymflow_p4d_test")
+_TOPOLOGY_URL_ENV = "TEST_DATABASE_URL"
+_ADMIN_TOPOLOGY_URL_ENV = "TEST_ADMIN_DATABASE_URL"
 _ADMIN_LOGIN = "migration_owner"
 _APP_LOGIN = "app_test_runtime"
 _WORKER_LOGIN = "worker_test_runtime"
 _MAINTENANCE_LOGIN = "lifecycle_maintenance_test_runtime"
+_CONFIG_LOGIN = "finance_config_deployment"
+
+
+def _required_database_url(env_name: str):
+    raw = os.environ.get(env_name)
+    if not raw:
+        raise RuntimeError(f"P4D refund runtime tests require {env_name}; fixed local database defaults are forbidden")
+    url = make_url(raw)
+    if not url.host or not url.port or not url.database:
+        raise RuntimeError(f"P4D refund runtime {env_name} must include host, port, and database")
+    return url
+
+
+def _runtime_topology():
+    url = _required_database_url(_TOPOLOGY_URL_ENV)
+    return str(url.host), int(url.port), str(url.database)
+
+
+def _admin_topology():
+    url = _required_database_url(_ADMIN_TOPOLOGY_URL_ENV)
+    return str(url.host), int(url.port), str(url.database)
+
+
+def _assert_same_disposable_topology() -> tuple[str, int, str]:
+    runtime = _runtime_topology()
+    admin = _admin_topology()
+    if admin != runtime:
+        raise RuntimeError(
+            "P4D refund runtime TEST_ADMIN_DATABASE_URL must target the same disposable "
+            f"host/port/database as TEST_DATABASE_URL: runtime={runtime!r}, admin={admin!r}"
+        )
+    return runtime
 
 _ORG_A = uuid.UUID("d4100000-0000-4000-8000-000000000001")
 _ORG_B = uuid.UUID("d4100000-0000-4000-8000-000000000002")
@@ -46,8 +78,11 @@ _FAILURE = "app_secure.record_refund_execution_failure(uuid,uuid,bigint,text,boo
 _DISCOVER = "app_secure.discover_refund_execution_maintenance(integer)"
 
 
-def _validate_safe_p4d_database(db_name: str = _DB_NAME, host: str = _DB_HOST) -> None:
-    if db_name != "gymflow_p4d_test":
+def _validate_safe_p4d_database(db_name: str | None = None, host: str | None = None) -> None:
+    resolved_host, _resolved_port, resolved_db = _assert_same_disposable_topology()
+    db_name = db_name or resolved_db
+    host = host or resolved_host
+    if "test" not in db_name:
         raise RuntimeError(f"unsafe P4D refund runtime database: {db_name}")
     if db_name in {"gymflow", "gymflow_test", "gymflow_migration_test", "production"}:
         raise RuntimeError(f"unsafe P4D refund runtime database: {db_name}")
@@ -56,10 +91,11 @@ def _validate_safe_p4d_database(db_name: str = _DB_NAME, host: str = _DB_HOST) -
 
 
 def _connect(login: str, password_env: str, *, autocommit: bool = False):
+    host, port, db_name = _assert_same_disposable_topology()
     return psycopg.connect(
-        host=_DB_HOST,
-        port=_DB_PORT,
-        dbname=_DB_NAME,
+        host=host,
+        port=port,
+        dbname=db_name,
         user=login,
         password=os.environ[password_env],
         autocommit=autocommit,
@@ -203,13 +239,17 @@ def _fresh_refund_authority_state() -> None:
     _reset_state()
 
 
-def test_destructive_runtime_database_validator_rejects_non_p4d_databases() -> None:
-    _validate_safe_p4d_database("gymflow_p4d_test", "127.0.0.1")
+def test_p4d_runtime_database_routing_is_environment_driven_and_disposable() -> None:
+    host, port, db_name = _assert_same_disposable_topology()
+    assert host in {"127.0.0.1", "localhost"}
+    assert port != 5432 or os.environ.get("P4D_REFUND_ALLOW_DEFAULT_PORT_FOR_CI") == "1"
+    assert "test" in db_name
+    _validate_safe_p4d_database(db_name, host)
     for unsafe in ("gymflow_test", "gymflow_migration_test", "gymflow", "production", "arbitrary_env_db"):
         with pytest.raises(RuntimeError):
             _validate_safe_p4d_database(unsafe, "127.0.0.1")
     with pytest.raises(RuntimeError):
-        _validate_safe_p4d_database("gymflow_p4d_test", "db.prod.internal")
+        _validate_safe_p4d_database(db_name, "db.prod.internal")
 
 
 def _materialize(idempotency_key: str):
@@ -233,7 +273,10 @@ def _security_owner_fetchone(sql: str, params: tuple[object, ...] = ()):
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as conn:
         with conn.cursor() as cur:
             cur.execute("SET LOCAL ROLE app_security_owner")
-            cur.execute(sql, params)
+            if params:
+                cur.execute(sql, params)
+            else:
+                cur.execute(sql)
             row = cur.fetchone()
         conn.commit()
         return row

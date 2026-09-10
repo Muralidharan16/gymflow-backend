@@ -37,7 +37,7 @@ P4B certified the search provider boundary for `branch.search_index` and `branch
 
 The current P4C candidate routes `branch.member_notification` into durable notification materialization. The resulting internal notification commands, including `notification.delivery` and `notification.reconcile`, are P4C processing events rather than lifecycle-produced event types. They use the shared P4 rule: provider acceptance is not terminal delivery evidence, and crash ambiguity remains fenced by lease/reclaim semantics. P4C is not certified until its decisive same-head gates are green.
 
-`branch.refund_required` remains intentionally fail-closed and deferred to P4D. The Finance domain already contains payment, refund, credit-note, ledger, provider-event, idempotency and outbox primitives. P4D must connect lifecycle refund obligations to those authoritative Finance records and then to the real refund provider without trusting queue-supplied amounts or treating request submission as refund completion.
+`branch.refund_required` now resolves only the lifecycle-to-Finance obligation boundary: the worker re-reads authoritative Finance state, creates or reuses a deterministic refund intent, and materializes a P4D refund execution command. Provider refund submission, webhook handling, reconciliation, and terminal provider evidence remain outside P4D-2 and must not be inferred from command materialization.
 
 P3E deliberately leaves the historical global reminder, birthday and digest entry points fail-closed. P4C or later work may re-enable notification products only through tenant-bound durable discovery and delivery commands satisfying this contract.
 

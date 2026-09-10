@@ -24,6 +24,7 @@ MAINTENANCE_TASKS = (
     "app.tasks.platform_maintenance.archive_expired_idempotency",
     "app.tasks.platform_maintenance.geocoding_reverification",
     "app.tasks.platform_maintenance.cleanup_places_cache",
+    "app.tasks.platform_maintenance.maintain_branch_audit_partitions",
 )
 
 celery_app = Celery(
@@ -150,6 +151,11 @@ celery_app.conf.beat_schedule = {
     "platform-places-cache-cleanup": {
         "task": "app.tasks.platform_maintenance.cleanup_places_cache",
         "schedule": crontab(hour=4, minute=10),
+        "options": {"queue": MAINTENANCE_QUEUE},
+    },
+    "branch-audit-partition-maintenance": {
+        "task": "app.tasks.platform_maintenance.maintain_branch_audit_partitions",
+        "schedule": crontab(hour=2, minute=45),
         "options": {"queue": MAINTENANCE_QUEUE},
     },
 }

@@ -129,17 +129,12 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_finance_test_ci
         run: python -s -m alembic -c alembic.ini upgrade head
-      - name: Grant bounded test-only runtime surfaces
+      - name: Grant bounded synthetic test-only surfaces
         run: |
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_finance_test_ci <<'SQL'
-          GRANT USAGE ON SCHEMA finance TO finance_test_runtime;
-          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA finance TO finance_test_runtime;
-          GRANT SELECT ON TABLE public.organizations TO finance_test_runtime;
           GRANT SELECT, INSERT, UPDATE ON TABLE public.organizations TO synthetic_test_runtime;
           GRANT SELECT, INSERT ON TABLE public.organization_creation_idempotency TO synthetic_test_runtime;
           GRANT SELECT ON TABLE public.owners, public.gyms, public.organization_users, public.organization_members, public.org_branches TO synthetic_test_runtime;
-          GRANT USAGE ON SCHEMA finance TO synthetic_test_runtime;
-          GRANT SELECT ON TABLE finance.billing_parties, finance.invoices, finance.payments TO synthetic_test_runtime;
           SQL
       - name: Prove isolated Finance Core runtime posture
         run: |
@@ -153,8 +148,8 @@ jobs:
             IF EXISTS (SELECT 1 FROM pg_catalog.pg_database WHERE datname = current_database() AND pg_catalog.pg_get_userbyid(datdba) = current_user) THEN RAISE EXCEPTION 'Finance Core runtime owns its database'; END IF;
             IF pg_catalog.has_database_privilege(current_user, current_database(), 'CREATE') OR pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE') OR pg_catalog.has_schema_privilege(current_user, 'finance', 'CREATE') THEN RAISE EXCEPTION 'Finance Core runtime has object-creation capability'; END IF;
             IF pg_catalog.pg_has_role(current_user, 'app_runtime', 'SET') OR pg_catalog.pg_has_role(current_user, 'app_user', 'SET') OR pg_catalog.pg_has_role(current_user, 'auth_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'worker_runtime', 'MEMBER') OR pg_catalog.pg_has_role(current_user, 'test_runner', 'MEMBER') THEN RAISE EXCEPTION 'Finance Core runtime has an invalid application/auth/worker/test role edge'; END IF;
-            IF NOT pg_catalog.has_schema_privilege(current_user, 'finance', 'USAGE') THEN RAISE EXCEPTION 'Finance Core runtime lacks finance schema USAGE'; END IF;
-            IF EXISTS (SELECT 1 FROM pg_catalog.pg_class AS relation_data JOIN pg_catalog.pg_namespace AS namespace_data ON namespace_data.oid = relation_data.relnamespace WHERE namespace_data.nspname = 'finance' AND relation_data.relkind IN ('r', 'p') AND (NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'SELECT') OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'INSERT') OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'UPDATE') OR NOT pg_catalog.has_table_privilege(current_user, relation_data.oid, 'DELETE'))) THEN RAISE EXCEPTION 'Finance Core runtime DML surface is incomplete'; END IF;
+            IF pg_catalog.has_schema_privilege(current_user, 'finance', 'USAGE') THEN RAISE EXCEPTION 'Finance Core runtime has direct finance schema USAGE'; END IF;
+            IF EXISTS (SELECT 1 FROM pg_catalog.pg_class AS relation_data JOIN pg_catalog.pg_namespace AS namespace_data ON namespace_data.oid = relation_data.relnamespace WHERE namespace_data.nspname = 'finance' AND relation_data.relkind IN ('r', 'p') AND (pg_catalog.has_table_privilege(current_user, relation_data.oid, 'SELECT') OR pg_catalog.has_table_privilege(current_user, relation_data.oid, 'INSERT') OR pg_catalog.has_table_privilege(current_user, relation_data.oid, 'UPDATE') OR pg_catalog.has_table_privilege(current_user, relation_data.oid, 'DELETE'))) THEN RAISE EXCEPTION 'Finance Core runtime has direct Finance table DML'; END IF;
             IF EXISTS (SELECT 1 FROM pg_catalog.pg_class AS relation_data JOIN pg_catalog.pg_namespace AS namespace_data ON namespace_data.oid = relation_data.relnamespace WHERE namespace_data.nspname = 'finance' AND relation_data.relkind IN ('r', 'p') AND pg_catalog.has_table_privilege(current_user, relation_data.oid, 'TRUNCATE')) THEN RAISE EXCEPTION 'Finance Core runtime may TRUNCATE finance tables'; END IF;
           END
           $$;

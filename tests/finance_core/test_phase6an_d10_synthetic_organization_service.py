@@ -217,9 +217,29 @@ async def test_valid_synthetic_organization_creation_is_sanitized_and_isolated()
         assert await count_scalar(session, "SELECT count(*) FROM organization_users WHERE org_id = :id", {"id": result.organization_id}) == 0
         assert await count_scalar(session, "SELECT count(*) FROM organization_members WHERE org_id = :id", {"id": result.organization_id}) == 0
         assert await count_scalar(session, "SELECT count(*) FROM org_branches WHERE org_id = :id", {"id": result.organization_id}) == 0
-        assert await count_scalar(session, "SELECT count(*) FROM finance.billing_parties WHERE organization_id = :id", {"id": result.organization_id}) == 0
-        assert await count_scalar(session, "SELECT count(*) FROM finance.invoices WHERE organization_id = :id", {"id": result.organization_id}) == 0
-        assert await count_scalar(session, "SELECT count(*) FROM finance.payments WHERE organization_id = :id", {"id": result.organization_id}) == 0
+        finance_isolation = (
+            await session.execute(
+                text(
+                    """
+                    SELECT
+                        current_user::text AS role_name,
+                        pg_catalog.has_schema_privilege(
+                            current_user,
+                            'finance',
+                            'USAGE'
+                        ) AS finance_schema_usage,
+                        pg_catalog.pg_has_role(
+                            current_user,
+                            'app_runtime',
+                            'MEMBER'
+                        ) AS app_runtime_member
+                    """
+                )
+            )
+        ).mappings().one()
+        assert finance_isolation["role_name"] == "synthetic_test_runtime"
+        assert finance_isolation["finance_schema_usage"] is False
+        assert finance_isolation["app_runtime_member"] is False
         await tx.rollback()
 
 

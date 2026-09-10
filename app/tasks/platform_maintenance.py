@@ -220,6 +220,36 @@ async def _run_geocoding_reverification() -> int:
     return len(rows)
 
 
+async def _run_maintain_branch_audit_partitions() -> int:
+    """Ensure current and next two branch-audit partitions exist."""
+
+    async with maintenance_async_session_maker() as session:
+        await _prepare_platform_maintenance_session(session)
+        try:
+            result = await session.scalar(
+                sa.text(
+                    "SELECT "
+                    "app_secure."
+                    "maintain_branch_audit_partitions()"
+                )
+            )
+            await session.commit()
+            created = int(result or 0)
+            if created:
+                logger.info(
+                    "Created %s branch audit partitions",
+                    created,
+                )
+            return created
+        except Exception:
+            await session.rollback()
+            logger.exception(
+                "Branch audit partition maintenance failed"
+            )
+            raise
+
+
+
 async def _run_places_cache_cleanup() -> int:
     async with maintenance_async_session_maker() as session:
         await _prepare_platform_maintenance_session(session)
@@ -320,6 +350,21 @@ def archive_expired_idempotency() -> int:
 )
 def geocoding_reverification() -> int:
     return asyncio.run(_run_geocoding_reverification())
+
+
+@shared_task(
+    name="app.tasks.platform_maintenance.maintain_branch_audit_partitions",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=5,
+)
+def maintain_branch_audit_partitions() -> int:
+    return asyncio.run(
+        _run_maintain_branch_audit_partitions()
+    )
+
 
 
 @shared_task(

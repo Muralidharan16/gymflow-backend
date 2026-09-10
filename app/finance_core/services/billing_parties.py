@@ -4,6 +4,7 @@ import re
 import uuid
 from typing import Any, Mapping
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.finance_core.domain.billing_parties import (
@@ -19,7 +20,6 @@ from app.finance_core.repositories.billing_parties import FinanceBillingPartyRep
 
 
 IDEMPOTENCY_SCOPE = "finance.billing_party.create"
-_TEST_WORDS = ("test", "sandbox", "dummy", "demo", "dev", "local", "mock", "staging", "qa")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z0-9]{13}$")
 _PAN_PATTERN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
@@ -57,18 +57,35 @@ class FinanceBillingPartyCreationService:
                     "BILLING_PARTY_ORGANIZATION_INACTIVE",
                     "Billing party organization is not active.",
                 )
-            if command.synthetic_mode and not _is_test_organization(organization):
+            if command.synthetic_mode and not organization.synthetic_billing_party_allowed:
                 raise FinanceBillingPartyError(
                     "BILLING_PARTY_SYNTHETIC_ORGANIZATION_REJECTED",
                     "Synthetic billing party creation requires an approved test organization.",
                 )
 
-            idem, idempotency_created = await self._repo.reserve_idempotency_key(
-                organization_id=command.organization_id,
-                scope=IDEMPOTENCY_SCOPE,
-                idempotency_key=normalized["idempotency_key"],
-                request_hash=request_hash,
-            )
+            try:
+                idem, idempotency_created = await self._repo.reserve_idempotency_key(
+                    organization_id=command.organization_id,
+                    scope=IDEMPOTENCY_SCOPE,
+                    idempotency_key=normalized["idempotency_key"],
+                    request_hash=request_hash,
+                )
+            except IntegrityError as exc:
+                message = str(
+                    getattr(exc, "orig", None) or exc
+                )
+                if (
+                    "P4D finance idempotency request conflict"
+                    in message
+                ):
+                    raise FinanceBillingPartyError(
+                        "BILLING_PARTY_IDEMPOTENCY_CONFLICT",
+                        (
+                            "Billing party request idempotency key "
+                            "has already been used for a different request."
+                        ),
+                    ) from exc
+                raise
             await self._repo.acquire_organization_creation_lock(command.organization_id)
 
             existing = await self._repo.get_by_organization(command.organization_id, for_update=True)
@@ -309,13 +326,6 @@ def _normalize_metadata(metadata: Mapping[str, Any], *, synthetic_mode: bool) ->
                 )
     return dict(sorted(normalized.items()))
 
-
-def _is_test_organization(organization) -> bool:
-    haystack = " ".join(
-        str(value or "").lower()
-        for value in (organization.name, organization.slug, organization.business_type, organization.description)
-    )
-    return any(word in haystack for word in _TEST_WORDS)
 
 
 def _safe_label(value: str) -> str:

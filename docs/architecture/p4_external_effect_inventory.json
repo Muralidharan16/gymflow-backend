@@ -38,11 +38,11 @@
       "event_type": "branch.refund_required",
       "domain": "finance_refund",
       "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
-      "consumer": "app.tasks.branch_outbox_poller._process_deferred_external_event",
+      "consumer": "app.tasks.branch_outbox_poller._process_refund_required_event",
       "p4_stage": "P4D",
-      "current_status": "fail_closed_deferred_to_p4d",
-      "terminal_success_requires": "authoritative_refund_provider_evidence",
-      "certification_status": "deferred"
+      "current_status": "implemented_p4d_candidate_finance_obligation_command_not_provider_execution",
+      "terminal_success_requires": "authoritative_refund_provider_evidence_after separate provider execution and reconciliation phases",
+      "certification_status": "candidate"
     }
   ],
   "legacy_notification_entrypoints": [
@@ -67,12 +67,12 @@
   ],
   "known_p4_gaps": [
     {
-      "id": "lifecycle_refund_provider_deferred",
+      "id": "lifecycle_refund_provider_execution_deferred",
       "source": "app/tasks/branch_outbox_poller.py",
-      "method": "_process_deferred_external_event",
+      "method": "_process_refund_required_event",
       "p4_stage": "P4D",
-      "risk": "lifecycle refund obligations remain intentionally fail-closed until authoritative Finance/refund provider execution and reconciliation are certified",
-      "required_resolution": "connect branch.refund_required to Finance/refund provider commands with durable evidence, idempotency, lease/fencing, reconciliation, and no request-submission-as-success shortcut"
+      "risk": "lifecycle refund obligations now materialize authoritative Finance refund intents and execution commands, but provider refund execution and reconciliation remain intentionally out of scope",
+      "required_resolution": "connect P4D refund execution commands to provider-backed refund submission, durable evidence, webhooks, reconciliation, and no request-submission-as-success shortcut"
     }
   ],
   "finance_foundation": {
@@ -162,8 +162,8 @@
       "source": "app/tasks/branch_outbox_poller.py",
       "method": "_process_event",
       "p4_stage": "P4B_P4C",
-      "resolution_status": "search_certified_p4b_notification_p4c_candidate",
-      "resolution": "search routes to _process_search_event; branch.member_notification routes into durable P4C notification materialization; only branch.refund_required remains deferred"
+      "resolution_status": "search_certified_p4b_notification_p4c_candidate_refund_obligation_p4d_candidate",
+      "resolution": "search routes to _process_search_event; branch.member_notification routes into durable P4C notification materialization; branch.refund_required routes into P4D-2 Finance refund-obligation resolution without provider execution"
     }
   ]
 }

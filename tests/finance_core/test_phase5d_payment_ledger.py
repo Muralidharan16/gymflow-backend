@@ -37,6 +37,7 @@ from tests.finance_core.test_phase5c_invoice_engine import (
     issue_invoice,
     line,
     seed_master_data,
+    set_current_org_context,
 )
 
 
@@ -57,6 +58,7 @@ LEDGER_ACCOUNTS = {
 async def seed_finance_foundation(*, buyer_state_code: str = "33") -> None:
     await seed_master_data(buyer_state_code=buyer_state_code)
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         for code, (name, account_type) in LEDGER_ACCOUNTS.items():
             await session.execute(
                 text(
@@ -80,6 +82,7 @@ async def seed_finance_foundation(*, buyer_state_code: str = "33") -> None:
 def payment_command(
     *,
     provider_payment_ref: str = "pay_test_1",
+    provider_order_ref: str | None = None,
     amount: str = "1180.00",
     status: str = "captured",
     idempotency_key: str = "payment-key-1",
@@ -92,7 +95,15 @@ def payment_command(
         brand_id=BRAND_ID,
         provider_code="test_provider",
         provider_payment_ref=provider_payment_ref,
-        provider_order_ref="order_test_1",
+        provider_order_ref=(
+            provider_order_ref
+            if provider_order_ref is not None
+            else (
+                "order_test_1"
+                if provider_payment_ref == "pay_test_1"
+                else f"order_{provider_payment_ref}"
+            )
+        ),
         provider_signature_hash=None,
         amount=Decimal(amount),
         currency_code="INR",
@@ -104,6 +115,7 @@ def payment_command(
 
 async def record_payment(command: RecordPaymentCommand | None = None):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         result = await service.record_payment(command or payment_command())
         await session.commit()
@@ -112,6 +124,7 @@ async def record_payment(command: RecordPaymentCommand | None = None):
 
 async def allocate_payment(payment_id: uuid.UUID, invoice_id: uuid.UUID, *, amount: str = "1180.00", idempotency_key: str = "alloc-key-1"):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         result = await service.allocate_payment_to_invoice(
             AllocatePaymentCommand(
@@ -171,6 +184,7 @@ async def test_duplicate_provider_payment_ref_is_rejected_and_idempotency_replay
     assert replay.replayed is True
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentConflictError):
             await service.record_payment(
@@ -184,6 +198,7 @@ async def test_same_idempotency_key_with_different_payment_payload_conflicts():
     await seed_finance_foundation()
     await record_payment(payment_command(provider_payment_ref="pay_idem", amount="1180.00", idempotency_key="pay-idem"))
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentConflictError):
             await service.record_payment(
@@ -205,6 +220,7 @@ async def test_record_payment_event_is_idempotent_and_duplicate_provider_event_c
         idempotency_key="event-key-1",
     )
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         first = await service.record_payment_event(command)
         replay = await service.record_payment_event(command)
@@ -258,6 +274,7 @@ async def test_pending_failed_or_cancelled_payment_cannot_be_allocated(status: s
         payment_command(provider_payment_ref=f"pay_{status}", status=status, idempotency_key=f"pay-{status}")
     )
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.allocate_payment_to_invoice(
@@ -277,6 +294,7 @@ async def test_allocation_cannot_exceed_payment_balance_or_invoice_outstanding_a
     invoice = await issued_invoice()
     small_payment = await record_payment(payment_command(provider_payment_ref="pay_small", amount="100.00", idempotency_key="pay-small"))
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.allocate_payment_to_invoice(
@@ -291,6 +309,7 @@ async def test_allocation_cannot_exceed_payment_balance_or_invoice_outstanding_a
 
     large_payment = await record_payment(payment_command(provider_payment_ref="pay_large", amount="2000.00", idempotency_key="pay-large"))
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.allocate_payment_to_invoice(
@@ -307,6 +326,7 @@ async def test_allocation_cannot_exceed_payment_balance_or_invoice_outstanding_a
     await allocate_payment(full_payment.payment_id, invoice.invoice_id, idempotency_key="alloc-paid")
     second_payment = await record_payment(payment_command(provider_payment_ref="pay_overpaid", amount="1.00", idempotency_key="pay-overpaid"))
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinanceInvoiceStateError):
             await service.allocate_payment_to_invoice(
@@ -326,6 +346,7 @@ async def test_draft_invoice_cannot_receive_final_payment_allocation():
     draft = await create_draft(draft_command(idempotency_key="draft-no-alloc"))
     payment = await record_payment(payment_command(provider_payment_ref="pay_draft", idempotency_key="pay-draft"))
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinanceInvoiceStateError):
             await service.allocate_payment_to_invoice(
@@ -343,6 +364,7 @@ async def test_draft_invoice_cannot_receive_final_payment_allocation():
 async def test_ledger_entry_must_balance_and_lines_must_be_one_sided():
     await seed_finance_foundation()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinanceLedgerValidationError):
             await service.post_ledger_entry(
@@ -384,6 +406,7 @@ async def test_invoice_issued_ledger_entry_balances():
     await seed_finance_foundation()
     invoice = await issued_invoice()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         entry = await service.post_invoice_issued_entry(invoice_id=invoice.invoice_id, idempotency_key="ledger-invoice-issued")
         await session.commit()
@@ -420,6 +443,7 @@ async def test_issued_invoice_remains_immutable_through_invoice_service_after_pa
     await seed_finance_foundation()
     invoice = await issued_invoice()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         engine = FinanceInvoiceEngine(session)
         with pytest.raises(FinanceInvoiceStateError):
             await engine.replace_draft_lines(

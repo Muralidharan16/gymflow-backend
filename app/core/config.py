@@ -71,13 +71,13 @@ class Settings(DoersSettingsSchema):
         manifest = _process_manifest()
         profiles = manifest["profiles"]
         profile_name = self.process_profile
-        if set(profiles) != {"api", "worker", "maintenance", "beat"}:
+        if set(profiles) != {"api", "worker", "maintenance", "finance_config", "beat"}:
             raise ValueError("P2E process manifest has invalid profile coverage")
         profile = profiles.get(profile_name)
         if profile is None:
             raise ValueError(
                 "DOERS_PROCESS_PROFILE is required in production and must be "
-                "api, worker, maintenance, or beat"
+                "api, worker, maintenance, finance_config, or beat"
             )
 
         governed_variables = set(manifest.get("database_environment_variables", ()))
@@ -258,7 +258,7 @@ class Settings(DoersSettingsSchema):
         return self.DOERS_PROCESS_PROFILE.strip().lower()
 
     def database_component_enabled(self, component: str) -> bool:
-        if component not in {"api", "auth", "worker", "maintenance"}:
+        if component not in {"api", "auth", "worker", "maintenance", "finance_config"}:
             raise ValueError(f"unknown database component: {component!r}")
         if not self.is_production:
             return True
@@ -290,6 +290,10 @@ class Settings(DoersSettingsSchema):
     @property
     def MAINTENANCE_DATABASE_URL(self) -> str:
         return self._exposed_runtime_value("maintenance", allow_empty=True)
+
+    @property
+    def FINANCE_CONFIG_DATABASE_URL(self) -> str:
+        return self._exposed_runtime_value("finance_config", allow_empty=True)
 
     @property
     def worker_database_url(self) -> str:

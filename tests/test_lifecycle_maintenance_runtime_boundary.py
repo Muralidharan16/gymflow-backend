@@ -89,7 +89,7 @@ def _executed_sql_fragments(path: Path) -> list[str]:
     return fragments
 
 
-def test_production_requires_four_distinct_database_identities() -> None:
+def test_production_requires_five_distinct_database_identities() -> None:
     runtime = load_runtime_binding_contract()
     profiles = json.loads(_source(PROCESS_PROFILES))["profiles"]
 
@@ -102,9 +102,10 @@ def test_production_requires_four_distinct_database_identities() -> None:
         runtime.bindings["api"].environment_variable,
         runtime.bindings["auth"].environment_variable,
         runtime.bindings["worker"].environment_variable,
+        runtime.bindings["finance_config"].environment_variable,
     }
     assert maintenance["celery_worker_profile"] == "maintenance"
-    assert len({binding.environment_variable for binding in runtime.bindings.values()}) == 4
+    assert len({binding.environment_variable for binding in runtime.bindings.values()}) == 5
 
 
 def test_maintenance_pool_is_nullpooled_and_separate_from_api_worker_pools() -> None:

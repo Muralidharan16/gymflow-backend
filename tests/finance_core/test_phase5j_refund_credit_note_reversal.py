@@ -16,7 +16,7 @@ from app.finance_core.domain.payment_ledger import (
     FinancePaymentStateError,
 )
 from app.finance_core.services.payment_ledger import FinancePaymentLedgerService
-from tests.finance_core.test_phase5c_invoice_engine import create_draft, draft_command, fetch_one, fetch_scalar
+from tests.finance_core.test_phase5c_invoice_engine import create_draft, draft_command, fetch_one, fetch_scalar, set_current_org_context
 from tests.finance_core.test_phase5d_payment_ledger import issued_invoice, payment_command, record_payment, seed_finance_foundation
 from tests.finance_core.test_phase5h_invoice_settlement_gate import apply_payment
 
@@ -50,6 +50,7 @@ async def create_credit_note(
     idempotency_key: str = "credit-5j-1",
 ):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         result = await service.create_credit_note(
             CreateCreditNoteCommand(
@@ -74,6 +75,7 @@ async def create_refund_intent(
     idempotency_key: str = "refund-5j-1",
 ):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         result = await service.create_refund_intent(
             CreateRefundIntentCommand(
@@ -137,6 +139,7 @@ async def test_draft_invoice_cannot_receive_credit_note():
     draft = await create_draft(draft_command(idempotency_key="draft-5j-credit"))
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinanceInvoiceStateError):
             await service.create_credit_note(
@@ -158,6 +161,7 @@ async def test_credit_note_cannot_exceed_eligible_amount_and_does_not_mutate_inv
     before_snapshot = await fetch_one(_invoice_snapshot_sql(), {"id": invoice.invoice_id})
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.create_credit_note(
@@ -190,6 +194,7 @@ async def test_credit_note_idempotency_replay_and_conflict_do_not_duplicate_ledg
     assert await fetch_scalar("SELECT count(*) FROM finance.ledger_entries WHERE source_type = 'credit_note'") == 1
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentConflictError):
             await service.create_credit_note(
@@ -235,6 +240,7 @@ async def test_unqualified_payment_cannot_receive_refund_intent(status: str):
     )
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.create_refund_intent(
@@ -272,6 +278,7 @@ async def test_refund_ref_duplicate_and_idempotency_conflict_are_enforced():
     assert replay.replayed is True
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentConflictError):
             await service.create_refund_intent(
@@ -349,6 +356,7 @@ async def test_failed_and_rejected_refund_intents_conservatively_retain_reservat
         idempotency_key=f"refund-5j-reserved-{reserved_status}",
     )
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         await session.execute(
             text("UPDATE finance.refunds SET status = :status WHERE id = :refund_id"),
             {"status": reserved_status, "refund_id": first.refund_id},
@@ -384,6 +392,7 @@ async def test_cancelled_refund_intent_releases_reserved_refundable_balance():
         idempotency_key="refund-5j-cancel-reserved",
     )
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         await session.execute(
             text("UPDATE finance.refunds SET status = 'cancelled' WHERE id = :refund_id"),
             {"refund_id": first.refund_id},

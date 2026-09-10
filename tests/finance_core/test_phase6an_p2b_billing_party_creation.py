@@ -38,6 +38,7 @@ from tests.finance_core.test_phase5c_invoice_engine import (
     fetch_one,
     fetch_scalar,
     seed_master_data,
+    set_current_org_context,
 )
 
 ORG_B_ID = uuid.UUID("92000000-0000-0000-0000-000000000902")
@@ -79,10 +80,40 @@ async def reset_finance_and_orgs() -> None:
     """Reset fixture state only through the guarded Finance admin identity."""
     async with finance_admin_session() as session:
         await truncate_finance_test_tables(session)
-        await session.execute(
-            text("DELETE FROM organizations WHERE id IN (:org_a, :org_b, :prod_org)"),
-            {"org_a": ORG_ID, "org_b": ORG_B_ID, "prod_org": PROD_ORG_ID},
-        )
+
+        # Public org_branches is FORCE-RLS protected. Clean each
+        # deterministic fixture organization under its own tenant
+        # context before deleting the parent organization.
+        for organization_id in (
+            ORG_ID,
+            ORG_B_ID,
+            PROD_ORG_ID,
+        ):
+            await set_current_org_context(
+                session,
+                organization_id,
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM org_branches "
+                    "WHERE org_id = :organization_id"
+                ),
+                {
+                    "organization_id":
+                        organization_id,
+                },
+            )
+            await session.execute(
+                text(
+                    "DELETE FROM organizations "
+                    "WHERE id = :organization_id"
+                ),
+                {
+                    "organization_id":
+                        organization_id,
+                },
+            )
+
         await session.commit()
 
 
@@ -127,6 +158,8 @@ async def ensure_secondary_test_organization() -> None:
 async def create_party(command_: BillingPartyCreationCommand):
     # The behavior under test stays on the reduced Finance runtime.
     async with AsyncSessionLocal() as session:
+        if command_.actor_organization_id is not None:
+            await set_current_org_context(session, command_.actor_organization_id)
         service = FinanceBillingPartyCreationService(session)
         result = await service.create_billing_party(command_)
         await session.commit()
@@ -302,6 +335,7 @@ async def test_concurrent_identical_and_conflicting_creation_respect_organizatio
 async def test_late_failure_rolls_back_billing_party_and_idempotency():
     await seed_test_organizations()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceBillingPartyCreationService(session)
         original = service._repo.complete_idempotency_key
 
@@ -375,6 +409,7 @@ async def test_invoice_same_organization_billing_party_succeeds():
     await seed_master_data()
     await ensure_secondary_test_organization()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         result = await FinanceInvoiceEngine(session).create_draft_invoice(
             invoice_command()
         )
@@ -395,17 +430,17 @@ async def test_invoice_same_organization_billing_party_succeeds():
         (
             "UPDATE finance.billing_parties SET organization_id = :org_b WHERE id = :billing_party_id",
             {},
-            "does not belong",
+            "master data is incomplete or unavailable",
         ),
         (
             "UPDATE finance.billing_parties SET organization_id = NULL WHERE id = :billing_party_id",
             {},
-            "ownership is required",
+            "master data is incomplete or unavailable",
         ),
         (
             "UPDATE finance.billing_parties SET status = 'inactive' WHERE id = :billing_party_id",
             {},
-            "not active",
+            "master data is incomplete or unavailable",
         ),
         ("", {"organization_id": None}, "organization is required"),
         (
@@ -421,7 +456,7 @@ async def test_invoice_same_organization_billing_party_succeeds():
         (
             "",
             {"billing_party_id": uuid.UUID("92000000-0000-0000-0000-000000000999")},
-            "master data is incomplete",
+            "master data is incomplete or unavailable",
         ),
     ],
 )
@@ -448,6 +483,7 @@ async def test_invoice_ownership_rejections_are_zero_mutation(
     before = await invoice_rejection_counts()
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session, command_overrides.get("organization_id") or ORG_ID)
         with pytest.raises(FinanceInvoiceValidationError, match=message):
             await FinanceInvoiceEngine(session).create_draft_invoice(
                 invoice_command(**command_overrides)
@@ -461,6 +497,7 @@ async def test_invoice_ownership_rejections_are_zero_mutation(
 async def test_issue_invoice_revalidates_billing_party_before_number_consumption():
     await seed_master_data()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         draft = await FinanceInvoiceEngine(session).create_draft_invoice(
             invoice_command(idempotency_key="issue-guard-draft")
         )
@@ -479,7 +516,8 @@ async def test_issue_invoice_revalidates_billing_party_before_number_consumption
     before["lines"] = 1
 
     async with AsyncSessionLocal() as session:
-        with pytest.raises(FinanceInvoiceValidationError, match="does not belong"):
+        await set_current_org_context(session)
+        with pytest.raises(FinanceInvoiceValidationError, match="persisted finance data failed validation"):
             await FinanceInvoiceEngine(session).issue_invoice(
                 IssueInvoiceCommand(
                     invoice_id=draft.invoice_id, idempotency_key="issue-guard"
@@ -501,6 +539,7 @@ async def test_issue_invoice_revalidates_billing_party_before_number_consumption
 async def test_issue_invoice_revalidates_active_organization_before_number_consumption():
     await seed_master_data()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         draft = await FinanceInvoiceEngine(session).create_draft_invoice(
             invoice_command(idempotency_key="issue-org-guard-draft")
         )
@@ -516,8 +555,9 @@ async def test_issue_invoice_revalidates_active_organization_before_number_consu
     before["lines"] = 1
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         with pytest.raises(
-            FinanceInvoiceValidationError, match="organization is not active"
+            FinanceInvoiceValidationError, match="persisted finance data failed validation"
         ):
             await FinanceInvoiceEngine(session).issue_invoice(
                 IssueInvoiceCommand(
@@ -558,8 +598,9 @@ async def test_billing_party_metadata_cannot_override_invoice_ownership():
         )
         await session.commit()
 
-    with pytest.raises(FinanceInvoiceValidationError, match="does not belong"):
+    with pytest.raises(FinanceInvoiceValidationError, match="master data is incomplete or unavailable"):
         async with AsyncSessionLocal() as session:
+            await set_current_org_context(session)
             await FinanceInvoiceEngine(session).create_draft_invoice(
                 invoice_command(idempotency_key="metadata-no-auth")
             )

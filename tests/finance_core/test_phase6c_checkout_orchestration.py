@@ -32,6 +32,7 @@ from tests.finance_core.test_phase5c_invoice_engine import (
     fetch_one,
     fetch_scalar,
     seed_master_data,
+    set_current_org_context,
 )
 from tests.finance_core.test_phase6b_razorpay_sandbox_adapter import sandbox_config
 
@@ -91,6 +92,7 @@ def command(*, idempotency_key: str = "phase6c-checkout-key") -> CreateCheckoutS
 async def orchestrate(command_: CreateCheckoutSessionCommand, *, client: FakeRazorpayClient | None = None, guard=None):
     client = client or FakeRazorpayClient()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceCheckoutOrchestrationService(
             session,
             plan_resolver=FakePlanResolver(),

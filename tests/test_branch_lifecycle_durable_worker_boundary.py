@@ -103,7 +103,7 @@ def test_worker_claims_reclaims_and_commits_parent_with_transaction_b() -> None:
     assert "2 ** max(attempts - 1, 0)" in source
 
 
-def test_external_commands_route_only_certified_handlers_and_keep_refunds_fail_closed() -> None:
+def test_external_commands_route_certified_handlers_and_p4d_refund_evaluation() -> None:
     source = _source(POLLER)
 
     assert "_SEARCH_EVENT_TYPES" in source
@@ -117,11 +117,14 @@ def test_external_commands_route_only_certified_handlers_and_keep_refunds_fail_c
     assert '"notification.reconcile"' in source
     assert "process_notification_event" in source
 
-    deferred = source.split("_DEFERRED_EXTERNAL_EVENT_TYPES", 1)[1].split("}", 1)[0]
-    assert '"branch.refund_required"' in deferred
+    refund_eval = source.split("_REFUND_EVALUATION_EVENT_TYPES", 1)[1].split("}", 1)[0]
+    deferred = source.split("_DEFERRED_EXTERNAL_EVENT_TYPES", 1)[1].split("_REFUND_EVALUATION_EVENT_TYPES", 1)[0]
+    assert '"branch.refund_required"' in refund_eval
+    assert '"branch.refund_required"' not in deferred
     assert '"branch.member_notification"' not in deferred
     assert '"branch.search_deindex"' not in deferred
     assert '"branch.search_index"' not in deferred
+    assert "resolve_branch_refund_required" in source
     assert "mock" not in source.lower()
 
 

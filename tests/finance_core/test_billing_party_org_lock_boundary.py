@@ -40,7 +40,8 @@ def test_organization_serialization_uses_advisory_lock_not_row_update_lock() -> 
 
     assert "if for_update:" in get_org
     assert "await self.acquire_organization_creation_lock(organization_id)" in get_org
-    assert "select(Organization)" in get_org
+    assert "app_secure.resolve_finance_billing_party_organization(:organization_id)" in get_org
+    assert "select(Organization)" not in get_org
 
     assert "pg_advisory_xact_lock" in lock
     assert "finance:billing_party:" in lock

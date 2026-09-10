@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, text
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.finance_core.domain.billing_parties import FinanceBillingPartyError
 from app.finance_core.models.foundation import FinanceBillingParty, FinanceIdempotencyKey
-from app.models.organization import Organization
+
+
+@dataclass(frozen=True)
+class FinanceBillingPartyOrganization:
+    id: uuid.UUID
+    is_active: bool
+    synthetic_billing_party_allowed: bool
 
 
 class FinanceBillingPartyRepository:
@@ -21,21 +27,34 @@ class FinanceBillingPartyRepository:
         organization_id: uuid.UUID,
         *,
         for_update: bool = False,
-    ) -> Organization | None:
-        """Read the tenant root, optionally serialized by an advisory tx lock.
+    ) -> FinanceBillingPartyOrganization | None:
+        """Resolve billing-party organization authority through app_secure.
 
-        Finance runtime intentionally has SELECT-only access to ``organizations``.
-        A PostgreSQL ``SELECT ... FOR UPDATE`` would require UPDATE privilege on
-        that tenant-root table and would broaden Finance capability beyond its
-        business need. When serialization is requested, take the same bounded
-        transaction-scoped advisory lock used for organization-bound billing-party
-        creation, then perform an ordinary SELECT.
+        The Finance runtime must not directly browse ``public.organizations``.
+        When serialization is requested, take the bounded transaction-scoped
+        advisory lock used for organization-bound billing-party creation, then
+        call the app-runtime capability that validates the trusted tenant
+        context and returns only the fields this service consumes.
         """
         if for_update:
             await self.acquire_organization_creation_lock(organization_id)
-        statement = select(Organization).where(Organization.id == organization_id)
-        result = await self._session.execute(statement)
-        return result.scalar_one_or_none()
+        result = await self._session.execute(
+            text(
+                """
+                SELECT organization_id, is_active, synthetic_billing_party_allowed
+                FROM app_secure.resolve_finance_billing_party_organization(:organization_id)
+                """
+            ),
+            {"organization_id": organization_id},
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        return FinanceBillingPartyOrganization(
+            id=row["organization_id"],
+            is_active=row["is_active"],
+            synthetic_billing_party_allowed=row["synthetic_billing_party_allowed"],
+        )
 
     async def acquire_organization_creation_lock(
         self, organization_id: uuid.UUID
@@ -54,41 +73,37 @@ class FinanceBillingPartyRepository:
         request_hash: str,
     ) -> tuple[FinanceIdempotencyKey, bool]:
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-        statement = (
-            insert(FinanceIdempotencyKey)
-            .values(
-                organization_id=organization_id,
-                scope=scope,
-                idempotency_key=idempotency_key,
-                request_hash_sha256=request_hash,
-                status="processing",
-                expires_at=expires_at,
-            )
-            .on_conflict_do_nothing(
-                constraint="uq_finance_idempotency_keys_scope_key"
-            )
-            .returning(FinanceIdempotencyKey)
+        result = await self._session.execute(
+            text(
+                """
+                SELECT id, organization_id, scope, idempotency_key, request_hash_sha256,
+                       status, response_ref, created_at, expires_at, inserted
+                FROM app_secure.reserve_finance_idempotency(
+                    :scope, :idempotency_key, :request_hash, :organization_id, :expires_at
+                )
+                """
+            ),
+            {
+                "scope": scope,
+                "idempotency_key": idempotency_key,
+                "request_hash": request_hash,
+                "organization_id": organization_id,
+                "expires_at": expires_at,
+            },
         )
-        inserted = await self._session.execute(statement)
-        row = inserted.scalar_one_or_none()
-        if row is not None:
-            return row, True
-
-        existing_result = await self._session.execute(
-            select(FinanceIdempotencyKey)
-            .where(
-                FinanceIdempotencyKey.scope == scope,
-                FinanceIdempotencyKey.idempotency_key == idempotency_key,
-            )
-            .with_for_update()
+        row = result.mappings().one()
+        key = FinanceIdempotencyKey(
+            id=row["id"],
+            organization_id=row["organization_id"],
+            scope=row["scope"],
+            idempotency_key=row["idempotency_key"],
+            request_hash_sha256=row["request_hash_sha256"],
+            status=row["status"],
+            response_ref=row["response_ref"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
         )
-        existing = existing_result.scalar_one()
-        if existing.request_hash_sha256 != request_hash:
-            raise FinanceBillingPartyError(
-                "BILLING_PARTY_IDEMPOTENCY_CONFLICT",
-                "Billing party request idempotency key has already been used for a different request.",
-            )
-        return existing, False
+        return key, bool(row["inserted"])
 
     async def complete_idempotency_key(
         self,
@@ -96,9 +111,19 @@ class FinanceBillingPartyRepository:
         *,
         response_ref: str,
     ) -> None:
-        key.status = "succeeded"
-        key.response_ref = response_ref
-        await self._session.flush()
+        result = await self._session.execute(
+            text(
+                """
+                SELECT id, organization_id, scope, idempotency_key, request_hash_sha256,
+                       status, response_ref, created_at, expires_at
+                FROM app_secure.complete_finance_idempotency(:idempotency_id, :response_ref)
+                """
+            ),
+            {"idempotency_id": key.id, "response_ref": response_ref},
+        )
+        row = result.mappings().one()
+        key.status = row["status"]
+        key.response_ref = row["response_ref"]
 
     async def get_by_organization(
         self,
@@ -144,6 +169,7 @@ class FinanceBillingPartyRepository:
     ) -> FinanceBillingParty:
         party = FinanceBillingParty(
             organization_id=organization_id,
+            buyer_kind="organization",
             billing_name=billing_name,
             party_type=party_type,
             gst_treatment=gst_treatment,
