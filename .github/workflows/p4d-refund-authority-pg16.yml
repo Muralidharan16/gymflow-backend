@@ -315,4 +315,4 @@ jobs:
             exit 1
           fi
           python -s -m alembic -c alembic.ini current --check-heads
-          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_p4d_test             -c "SELECT count(*) AS p4d2_commands FROM finance.refund_execution_commands WHERE idempotency_key LIKE 'branch-refund-required/%';"
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_p4d_test             -c "SELECT count(*) AS p4d2_commands FROM finance.refund_execution_commands c JOIN finance.refunds r ON r.id = c.refund_id WHERE r.reason_code = 'branch-refund:' || c.source_id::text AND c.logical_obligation_key = 'finance-refund/' || c.refund_id::text;"

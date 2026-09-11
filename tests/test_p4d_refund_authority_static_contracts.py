@@ -337,7 +337,11 @@ def test_p4d2_workflow_proves_obligation_evidence_blocks_downgrade() -> None:
     assert "test_exactly_one_refundable_payment_creates_authoritative_refund_and_command" in workflow
     assert "python -s -m alembic -c alembic.ini downgrade zc07d8e9f0a3d" in workflow
     assert "zd07 downgrade destroyed P4D-2-derived refund execution evidence" in workflow
-    assert "branch-refund-required/%" in workflow
+    assert "branch-refund-required/%" not in workflow
+    assert "idempotency_key LIKE 'branch-refund-required/%'" not in workflow
+    assert "JOIN finance.refunds r ON r.id = c.refund_id" in workflow
+    assert "r.reason_code = 'branch-refund:' || c.source_id::text" in workflow
+    assert "c.logical_obligation_key = 'finance-refund/' || c.refund_id::text" in workflow
 
 
 def test_p4d2_migration_identity_checks_do_not_require_migration_owner_app_secure_usage() -> None:
