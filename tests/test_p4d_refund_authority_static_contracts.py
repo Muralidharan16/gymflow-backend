@@ -1533,6 +1533,58 @@ def test_p4d2_finance_regression_harness_separates_subject_observer_and_forbids_
         assert " NOSUPERUSER" in role_clause
         assert " BYPASSRLS" not in role_clause
         assert "GRANT USAGE ON SCHEMA finance TO synthetic_test_runtime" not in source
+        assert "GRANT test_runner TO finance_test_runtime" not in source
+        assert (
+            "CREATE ROLE finance_core_test_subject LOGIN PASSWORD "
+            in source
+        )
+        subject_clause = source.split(
+            "CREATE ROLE finance_core_test_subject",
+            1,
+        )[1].split(";", 1)[0]
+        assert "NOSUPERUSER" in subject_clause
+        assert "NOCREATEDB" in subject_clause
+        assert "NOCREATEROLE" in subject_clause
+        assert "NOINHERIT" in subject_clause
+        assert "NOREPLICATION" in subject_clause
+        assert "NOBYPASSRLS" in subject_clause
+        assert (
+            "GRANT test_runner TO finance_core_test_subject "
+            "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;"
+            in source
+        )
+        assert (
+            "GRANT app_runtime TO finance_core_test_subject "
+            "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;"
+            in source
+        )
+        assert (
+            "GRANT app_user TO finance_core_test_subject "
+            "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;"
+            in source
+        )
+        assert (
+            "FINANCE_CORE_TEST_DATABASE_URL: "
+            "postgresql+asyncpg://finance_core_test_subject:"
+            in source
+        )
+        assert (
+            "TEST_DATABASE_URL: "
+            "postgresql+asyncpg://finance_test_runtime:"
+            in source
+        )
+        assert (
+            "GRANT USAGE ON SCHEMA finance TO finance_core_test_subject"
+            not in source
+        )
+        assert (
+            "GRANT migration_owner TO finance_core_test_subject"
+            not in source
+        )
+        assert (
+            "GRANT app_security_owner TO finance_core_test_subject"
+            not in source
+        )
 
     assert "GRANT USAGE ON SCHEMA finance TO finance_test_runtime" in runner_guard
     assert "GRANT SELECT ON ALL TABLES" in runner_guard

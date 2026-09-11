@@ -36,13 +36,14 @@ jobs:
       MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
       FINANCE_CONFIG_RUNTIME_PASSWORD: ci-finance-config-runtime
       FINANCE_RUNTIME_PASSWORD: ci-finance-runtime
+      FINANCE_CORE_SUBJECT_PASSWORD: ci-finance-core-subject
       SYNTHETIC_RUNTIME_PASSWORD: ci-synthetic-runtime
       P4D_REFUND_TEST_DATABASE: gymflow_p4d_test
       P4D_REFUND_ALLOW_DEFAULT_PORT_FOR_CI: '1'
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p4d_test
       TEST_DATABASE_URL: postgresql+asyncpg://finance_test_runtime:ci-finance-runtime@127.0.0.1:5432/gymflow_p4d_test
       TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p4d_test
-      FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_test_runtime:ci-finance-runtime@127.0.0.1:5432/gymflow_p4d_test
+      FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-finance-core-subject@127.0.0.1:5432/gymflow_p4d_test
       FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p4d_test
       SYNTHETIC_ORG_TEST_DATABASE_URL: postgresql+asyncpg://synthetic_test_runtime:ci-synthetic-runtime@127.0.0.1:5432/gymflow_p4d_test
       FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-finance-config-runtime@127.0.0.1:5432/gymflow_p4d_test
@@ -86,6 +87,7 @@ jobs:
           ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
           CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE finance_test_runtime LOGIN PASSWORD 'ci-finance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_core_test_subject LOGIN PASSWORD 'ci-finance-core-subject' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE synthetic_test_runtime LOGIN PASSWORD 'ci-synthetic-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-test-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-worker-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
@@ -93,6 +95,9 @@ jobs:
           CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-finance-config-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           GRANT app_runtime TO finance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO finance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT test_runner TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT test_runner TO synthetic_test_runtime WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
           GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
@@ -100,6 +105,10 @@ jobs:
           GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT finance_config_runtime TO finance_config_deployment WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           ALTER ROLE finance_test_runtime SET row_security='on';
+          ALTER ROLE finance_core_test_subject SET row_security='on';
+          ALTER ROLE finance_core_test_subject SET statement_timeout='10s';
+          ALTER ROLE finance_core_test_subject SET lock_timeout='3s';
+          ALTER ROLE finance_core_test_subject SET idle_in_transaction_session_timeout='15s';
           ALTER ROLE synthetic_test_runtime SET row_security='on';
           ALTER ROLE app_test_runtime SET row_security='on';
           ALTER ROLE worker_test_runtime SET row_security='on';
@@ -107,7 +116,7 @@ jobs:
           ALTER ROLE finance_config_deployment SET row_security='on';
           CREATE DATABASE gymflow_p4d_test OWNER migration_owner;
           REVOKE ALL ON DATABASE gymflow_p4d_test FROM PUBLIC;
-          GRANT CONNECT ON DATABASE gymflow_p4d_test TO migration_owner,finance_test_runtime,synthetic_test_runtime,app_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime,finance_config_deployment;
+          GRANT CONNECT ON DATABASE gymflow_p4d_test TO migration_owner,finance_test_runtime,finance_core_test_subject,synthetic_test_runtime,app_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime,finance_config_deployment;
           SQL
           bash scripts/ci/verify_cluster_roles.sh
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p4d_test
@@ -140,6 +149,136 @@ jobs:
           fi
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Prove Finance Core white-box subject and reduced runtime separation
+        run: |
+          set -euo pipefail
+
+          PGPASSWORD="$FINANCE_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U finance_test_runtime -d gymflow_p4d_test <<'SQL'
+          DO $$
+          BEGIN
+            IF pg_catalog.pg_has_role(
+                current_user,
+                'test_runner',
+                'MEMBER'
+            ) THEN
+              RAISE EXCEPTION
+                'finance_test_runtime inherited test_runner authority';
+            END IF;
+
+            IF pg_catalog.has_schema_privilege(
+                current_user,
+                'finance',
+                'USAGE'
+            ) THEN
+              RAISE EXCEPTION
+                'finance_test_runtime gained direct Finance schema authority';
+            END IF;
+          END
+          $$;
+          SQL
+
+          PGPASSWORD="$FINANCE_CORE_SUBJECT_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U finance_core_test_subject -d gymflow_p4d_test <<'SQL'
+          DO $$
+          DECLARE
+            subject_record record;
+          BEGIN
+            SELECT *
+              INTO subject_record
+              FROM pg_catalog.pg_roles
+             WHERE rolname = current_user;
+
+            IF NOT FOUND
+               OR NOT subject_record.rolcanlogin
+               OR subject_record.rolsuper
+               OR subject_record.rolcreatedb
+               OR subject_record.rolcreaterole
+               OR subject_record.rolinherit
+               OR subject_record.rolreplication
+               OR subject_record.rolbypassrls
+            THEN
+              RAISE EXCEPTION
+                'Finance Core white-box subject role attributes are unsafe';
+            END IF;
+
+            IF NOT pg_catalog.pg_has_role(
+                current_user,
+                'test_runner',
+                'MEMBER'
+            ) THEN
+              RAISE EXCEPTION
+                'Finance Core white-box subject lacks test_runner membership';
+            END IF;
+
+            IF NOT pg_catalog.pg_has_role(
+                current_user,
+                'app_runtime',
+                'MEMBER'
+            )
+               OR NOT pg_catalog.pg_has_role(
+                   current_user,
+                   'app_user',
+                   'MEMBER'
+               )
+            THEN
+              RAISE EXCEPTION
+                'Finance Core white-box subject lacks app capabilities';
+            END IF;
+
+            IF pg_catalog.pg_has_role(
+                current_user,
+                'migration_owner',
+                'MEMBER'
+            )
+               OR pg_catalog.pg_has_role(
+                   current_user,
+                   'app_security_owner',
+                   'MEMBER'
+               )
+               OR pg_catalog.pg_has_role(
+                   current_user,
+                   'worker_runtime',
+                   'MEMBER'
+               )
+            THEN
+              RAISE EXCEPTION
+                'Finance Core white-box subject has forbidden authority';
+            END IF;
+
+            IF pg_catalog.has_database_privilege(
+                current_user,
+                current_database(),
+                'CREATE'
+            )
+               OR pg_catalog.has_schema_privilege(
+                   current_user,
+                   'finance',
+                   'CREATE'
+               )
+            THEN
+              RAISE EXCEPTION
+                'Finance Core white-box subject has object creation authority';
+            END IF;
+
+            IF NOT pg_catalog.has_schema_privilege(
+                current_user,
+                'finance',
+                'USAGE'
+            )
+               OR NOT pg_catalog.has_table_privilege(
+                   current_user,
+                   'finance.invoices',
+                   'SELECT'
+               )
+            THEN
+              RAISE EXCEPTION
+                'test_runner Finance fixture authority did not materialize';
+            END IF;
+          END
+          $$;
+          SQL
 
       - name: Grant bounded synthetic test-only surfaces
         run: |

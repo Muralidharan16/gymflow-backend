@@ -109,6 +109,9 @@ jobs:
           ALTER ROLE maintenance_test_runtime SET lock_timeout = '2s';
           ALTER ROLE maintenance_test_runtime SET idle_in_transaction_session_timeout = '30s';
           ALTER ROLE finance_config_deployment SET row_security = 'on';
+          ALTER ROLE finance_config_deployment SET statement_timeout = '15s';
+          ALTER ROLE finance_config_deployment SET lock_timeout = '2s';
+          ALTER ROLE finance_config_deployment SET idle_in_transaction_session_timeout = '30s';
 
           GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
