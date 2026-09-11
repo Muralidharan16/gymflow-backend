@@ -6,6 +6,7 @@ import uuid
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from app.core.celery_app import celery_app
 from app.core.database import update_session_context, worker_async_session_maker
@@ -29,7 +30,8 @@ _NOTIFICATION_EVENT_TYPES = {
     "notification.delivery",
     "notification.reconcile",
 }
-_DEFERRED_EXTERNAL_EVENT_TYPES = {
+_DEFERRED_EXTERNAL_EVENT_TYPES: set[str] = set()
+_REFUND_EVALUATION_EVENT_TYPES = {
     "branch.refund_required",
 }
 
@@ -349,6 +351,70 @@ async def _repair_search_drift(
     return int(next_version) if next_version is not None else None
 
 
+
+def _is_permanent_refund_resolution_error(error: Exception) -> bool:
+    if not isinstance(error, DBAPIError):
+        return False
+    sqlstate = getattr(error.orig, "sqlstate", None) or getattr(error.orig, "pgcode", None)
+    return sqlstate in {"22023", "23514", "P0002", "42501"}
+
+
+async def _process_refund_required_event(
+    event: dict[str, Any],
+    worker_id: uuid.UUID,
+) -> str:
+    """Resolve refund evaluation into authoritative Finance intent + P4D command.
+
+    The queue payload is not financial authority. The app_secure capability
+    re-reads the leased source event, branch tenant, Finance payments, prior
+    refunds and payment allocations in one transaction, then creates or reuses
+    a deterministic refund intent and the existing P4D-1 execution command.
+    """
+
+    try:
+        async with worker_async_session_maker() as session:
+            await _install_saga_context(session, event=event, worker_id=worker_id)
+            result = await session.execute(
+                text(
+                    """
+                    SELECT *
+                    FROM app_secure.resolve_branch_refund_required(
+                        CAST(:outbox_id AS uuid), CAST(:worker_id AS uuid)
+                    )
+                    """
+                ),
+                {"outbox_id": event["outbox_id"], "worker_id": worker_id},
+            )
+            resolution = dict(result.mappings().one())
+            await _mark_delivered(
+                session,
+                outbox_id=event["outbox_id"],
+                worker_id=worker_id,
+            )
+            await session.commit()
+        logger.info(
+            "Lifecycle refund requirement evaluated without provider execution",
+            extra={
+                "outbox_id": str(event["outbox_id"]),
+                "tenant_id": str(event["tenant_id"]),
+                "branch_id": str(event["branch_id"]),
+                "outcome": resolution["outcome"],
+                "refund_id": str(resolution["refund_id"]) if resolution["refund_id"] else None,
+                "command_id": str(resolution["command_id"]) if resolution["command_id"] else None,
+                "payment_id": str(resolution["payment_id"]) if resolution["payment_id"] else None,
+                "eligible_payment_count": resolution["eligible_payment_count"],
+            },
+        )
+        return "delivered"
+    except Exception as exc:
+        return await _fail_event(
+            event,
+            worker_id,
+            exc,
+            permanent=_is_permanent_refund_resolution_error(exc),
+        )
+
+
 async def _process_search_event(
     event: dict[str, Any],
     worker_id: uuid.UUID,
@@ -626,7 +692,7 @@ async def _process_deferred_external_event(
     event: dict[str, Any],
     worker_id: uuid.UUID,
 ) -> str:
-    """Keep P4D refund commands fail-closed until their provider slice exists."""
+    """Fail closed for external event types without an admitted handler."""
 
     return await _fail_event(
         event,
@@ -658,6 +724,8 @@ async def _process_event(event: dict[str, Any], worker_id: uuid.UUID) -> str:
                 )
                 return "lease_lost"
             return await _fail_event(event, worker_id, exc, permanent=False)
+    if event_type in _REFUND_EVALUATION_EVENT_TYPES:
+        return await _process_refund_required_event(event, worker_id)
     if event_type in _DEFERRED_EXTERNAL_EVENT_TYPES:
         return await _process_deferred_external_event(event, worker_id)
     return await _fail_event(

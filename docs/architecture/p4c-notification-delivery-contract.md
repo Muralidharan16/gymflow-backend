@@ -127,7 +127,7 @@ stale queue data.
 ## Initial business flow
 
 The first admitted business flow is lifecycle `branch.member_notification`.
-`branch.refund_required` remains fail-closed for P4D. Legacy reminder, birthday,
+`branch.refund_required` is outside P4C and is handled by the P4D-2 Finance obligation resolver without provider refund execution. Legacy reminder, birthday,
 and digest schedulers remain disabled until each has a bounded tenant-authorized
 discovery path feeding this same durable notification contract.
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from app.core.database import AsyncSessionLocal
 from app.finance_core.domain.invoice_engine import FinanceInvoiceStateError
@@ -14,7 +16,7 @@ from app.finance_core.domain.payment_ledger import (
     FinancePaymentStateError,
 )
 from app.finance_core.services.payment_ledger import FinancePaymentLedgerService
-from tests.finance_core.test_phase5c_invoice_engine import create_draft, draft_command, fetch_one, fetch_scalar
+from tests.finance_core.test_phase5c_invoice_engine import create_draft, draft_command, fetch_one, fetch_scalar, set_current_org_context
 from tests.finance_core.test_phase5d_payment_ledger import issued_invoice, payment_command, record_payment, seed_finance_foundation
 from tests.finance_core.test_phase5h_invoice_settlement_gate import apply_payment
 
@@ -48,6 +50,7 @@ async def create_credit_note(
     idempotency_key: str = "credit-5j-1",
 ):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         result = await service.create_credit_note(
             CreateCreditNoteCommand(
@@ -72,6 +75,7 @@ async def create_refund_intent(
     idempotency_key: str = "refund-5j-1",
 ):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         result = await service.create_refund_intent(
             CreateRefundIntentCommand(
@@ -135,6 +139,7 @@ async def test_draft_invoice_cannot_receive_credit_note():
     draft = await create_draft(draft_command(idempotency_key="draft-5j-credit"))
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinanceInvoiceStateError):
             await service.create_credit_note(
@@ -156,6 +161,7 @@ async def test_credit_note_cannot_exceed_eligible_amount_and_does_not_mutate_inv
     before_snapshot = await fetch_one(_invoice_snapshot_sql(), {"id": invoice.invoice_id})
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.create_credit_note(
@@ -188,6 +194,7 @@ async def test_credit_note_idempotency_replay_and_conflict_do_not_duplicate_ledg
     assert await fetch_scalar("SELECT count(*) FROM finance.ledger_entries WHERE source_type = 'credit_note'") == 1
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentConflictError):
             await service.create_credit_note(
@@ -233,6 +240,7 @@ async def test_unqualified_payment_cannot_receive_refund_intent(status: str):
     )
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.create_refund_intent(
@@ -270,6 +278,7 @@ async def test_refund_ref_duplicate_and_idempotency_conflict_are_enforced():
     assert replay.replayed is True
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentConflictError):
             await service.create_refund_intent(
@@ -294,6 +303,115 @@ async def test_refund_ref_duplicate_and_idempotency_conflict_are_enforced():
                 )
             )
         await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refund_intents_serialize_on_payment_and_cannot_over_refund():
+    _invoice, payment = await paid_invoice_with_payment(
+        invoice_key="invoice-5j-refund-race",
+        payment_key="pay-5j-refund-race",
+        payment_ref="pay_5j_refund_race",
+    )
+
+    async def attempt(suffix: str):
+        try:
+            return await create_refund_intent(
+                payment.payment_id,
+                refund_ref=f"RF-5J-RACE-{suffix}",
+                amount="700.00",
+                idempotency_key=f"refund-5j-race-{suffix}",
+            )
+        except FinancePaymentStateError as exc:
+            return exc
+
+    results = await asyncio.gather(attempt("A"), attempt("B"))
+
+    assert sum(not isinstance(result, Exception) for result in results) == 1
+    assert sum(isinstance(result, FinancePaymentStateError) for result in results) == 1
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.refunds WHERE payment_id = :payment_id",
+        {"payment_id": payment.payment_id},
+    ) == 1
+    assert await fetch_scalar(
+        "SELECT coalesce(sum(amount), 0) FROM finance.refunds "
+        "WHERE payment_id = :payment_id",
+        {"payment_id": payment.payment_id},
+    ) == Decimal("700.00")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reserved_status", ["failed", "rejected"])
+async def test_failed_and_rejected_refund_intents_conservatively_retain_reservation(
+    reserved_status: str,
+):
+    _invoice, payment = await paid_invoice_with_payment(
+        invoice_key=f"invoice-5j-reserved-{reserved_status}",
+        payment_key=f"pay-5j-reserved-{reserved_status}",
+        payment_ref=f"pay_5j_reserved_{reserved_status}",
+    )
+    first = await create_refund_intent(
+        payment.payment_id,
+        refund_ref=f"RF-5J-RESERVED-{reserved_status}",
+        amount="700.00",
+        idempotency_key=f"refund-5j-reserved-{reserved_status}",
+    )
+    async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
+        await session.execute(
+            text("UPDATE finance.refunds SET status = :status WHERE id = :refund_id"),
+            {"status": reserved_status, "refund_id": first.refund_id},
+        )
+        await session.commit()
+
+    with pytest.raises(FinancePaymentStateError):
+        await create_refund_intent(
+            payment.payment_id,
+            refund_ref=f"RF-5J-AFTER-{reserved_status}",
+            amount="500.00",
+            idempotency_key=f"refund-5j-after-{reserved_status}",
+        )
+
+    assert await fetch_scalar(
+        "SELECT coalesce(sum(amount), 0) FROM finance.refunds "
+        "WHERE payment_id = :payment_id AND status <> 'cancelled'",
+        {"payment_id": payment.payment_id},
+    ) == Decimal("700.00")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_refund_intent_releases_reserved_refundable_balance():
+    _invoice, payment = await paid_invoice_with_payment(
+        invoice_key="invoice-5j-cancel-release",
+        payment_key="pay-5j-cancel-release",
+        payment_ref="pay_5j_cancel_release",
+    )
+    first = await create_refund_intent(
+        payment.payment_id,
+        refund_ref="RF-5J-CANCEL-RESERVED",
+        amount="700.00",
+        idempotency_key="refund-5j-cancel-reserved",
+    )
+    async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
+        await session.execute(
+            text("UPDATE finance.refunds SET status = 'cancelled' WHERE id = :refund_id"),
+            {"refund_id": first.refund_id},
+        )
+        await session.commit()
+
+    second = await create_refund_intent(
+        payment.payment_id,
+        refund_ref="RF-5J-AFTER-CANCEL",
+        amount="500.00",
+        idempotency_key="refund-5j-after-cancel",
+    )
+
+    assert second.amount == Decimal("500.00")
+    assert await fetch_scalar(
+        "SELECT coalesce(sum(amount), 0) FROM finance.refunds "
+        "WHERE payment_id = :payment_id AND status <> 'cancelled'",
+        {"payment_id": payment.payment_id},
+    ) == Decimal("500.00")
 
 
 def test_phase5j_has_no_live_provider_frontend_or_production_enablement():

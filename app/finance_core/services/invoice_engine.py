@@ -5,6 +5,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.finance_core.domain.invoice_engine import (
@@ -38,6 +39,7 @@ class FinanceInvoiceEngine:
             division_id=command.division_id,
             brand_id=command.brand_id,
             billing_party_id=command.billing_party_id,
+            supply_date=command.supply_date,
         )
         idem, created = await self._repo.reserve_idempotency_key(
             organization_id=command.organization_id,
@@ -46,102 +48,147 @@ class FinanceInvoiceEngine:
             request_hash=request_hash,
         )
         if not created and idem.response_ref:
-            invoice = await self._repo.get_invoice(uuid.UUID(idem.response_ref))
-            if invoice is None:
+            replayed_result = await self._repo.resolve_invoice_result(uuid.UUID(idem.response_ref))
+            if replayed_result is None:
                 raise FinanceInvoiceNotFoundError("Idempotent draft invoice response could not be found")
-            return invoice_result(invoice, replayed=True)
+            return InvoiceResult(
+                invoice_id=replayed_result.invoice_id,
+                status=replayed_result.status,
+                official_invoice_number=replayed_result.official_invoice_number,
+                brand_reference=replayed_result.brand_reference,
+                replayed=True,
+            )
         if not created:
             raise FinanceInvoiceConflictError("Invoice creation is already processing for this idempotency key")
 
         totals = calculate_invoice_totals(
-            supplier_state_code=master["gst_registration"].state_code,
-            buyer_place_of_supply_state_code=master["billing_party"].place_of_supply_state_code,
+            supplier_state_code=master.seller_state_code,
+            buyer_place_of_supply_state_code=master.buyer_place_of_supply_state_code,
             line_items=command.line_items,
         )
         invoice = await self._repo.create_invoice(
+            idempotency_key_id=idem.id,
             organization_id=command.organization_id,
             billing_party_id=command.billing_party_id,
             legal_entity_id=command.legal_entity_id,
             gst_registration_id=command.gst_registration_id,
             division_id=command.division_id,
             brand_id=command.brand_id,
+            supply_date=command.supply_date,
             financial_year=financial_year_for(command.supply_date),
             currency_code=command.currency_code.upper(),
-            seller_legal_name=master["legal_entity"].legal_name,
-            seller_gstin=master["gst_registration"].gstin,
-            seller_pan=master["legal_entity"].pan,
-            seller_registered_address=_required_text(master["gst_registration"].registered_address, "seller registered address"),
-            seller_state_code=master["gst_registration"].state_code,
-            buyer_billing_name=master["billing_party"].billing_name,
-            buyer_address=_required_text(master["billing_party"].billing_address, "buyer billing address"),
-            buyer_gstin=master["billing_party"].gstin,
-            buyer_pan=master["billing_party"].pan,
-            buyer_place_of_supply_state_code=master["billing_party"].place_of_supply_state_code,
-            buyer_gst_treatment=master["billing_party"].gst_treatment,
+            seller_legal_name=master.seller_legal_name,
+            seller_gstin=master.seller_gstin,
+            seller_pan=master.seller_pan,
+            seller_registered_address=_required_text(master.seller_registered_address, "seller registered address"),
+            seller_state_code=master.seller_state_code,
+            buyer_billing_name=master.buyer_billing_name,
+            buyer_address=_required_text(master.buyer_address, "buyer billing address"),
+            buyer_gstin=master.buyer_gstin,
+            buyer_pan=master.buyer_pan,
+            buyer_place_of_supply_state_code=master.buyer_place_of_supply_state_code,
+            buyer_gst_treatment=master.buyer_gst_treatment,
             totals=totals,
         )
         await self._repo.complete_idempotency_key(idem, response_ref=str(invoice.id))
         return invoice_result(invoice)
 
-    async def issue_invoice(self, command: IssueInvoiceCommand) -> InvoiceResult:
+    async def issue_invoice(
+        self,
+        command: IssueInvoiceCommand,
+    ) -> InvoiceResult:
         payload = {"invoice_id": str(command.invoice_id)}
         request_hash = canonical_hash(payload)
-        invoice = await self._repo.get_invoice(command.invoice_id, for_update=True)
-        if invoice is None:
-            raise FinanceInvoiceNotFoundError("Invoice was not found")
 
-        master = await self._load_master_data(
-            organization_id=invoice.organization_id,
-            legal_entity_id=invoice.legal_entity_id,
-            gst_registration_id=invoice.gst_registration_id,
-            division_id=invoice.division_id,
-            brand_id=invoice.brand_id,
-            billing_party_id=invoice.billing_party_id,
+        context = await self._repo.resolve_invoice_issue_context(
+            command.invoice_id
         )
+
+        if context is None:
+            raise FinanceInvoiceNotFoundError(
+                "Invoice was not found"
+            )
+
+        organization_id = context["organization_id"]
+
+        if not isinstance(organization_id, uuid.UUID):
+            raise FinanceInvoiceValidationError(
+                "Invoice organization context is invalid"
+            )
+
         idem, created = await self._repo.reserve_idempotency_key(
-            organization_id=invoice.organization_id,
+            organization_id=organization_id,
             scope="finance.invoice.issue",
             idempotency_key=command.idempotency_key,
             request_hash=request_hash,
         )
+
         if not created and idem.response_ref:
-            replayed = await self._repo.get_invoice(uuid.UUID(idem.response_ref), for_update=True)
+            try:
+                response_invoice_id = uuid.UUID(
+                    idem.response_ref
+                )
+            except (TypeError, ValueError) as exc:
+                raise FinanceInvoiceConflictError(
+                    "Invoice issue idempotency response is invalid"
+                ) from exc
+
+            if response_invoice_id != command.invoice_id:
+                raise FinanceInvoiceConflictError(
+                    "Invoice issue idempotency key belongs to "
+                    "another invoice"
+                )
+
+            replayed = await self._repo.resolve_invoice_result(
+                response_invoice_id
+            )
+
             if replayed is None:
-                raise FinanceInvoiceNotFoundError("Idempotent issued invoice response could not be found")
-            return invoice_result(replayed, replayed=True)
+                raise FinanceInvoiceNotFoundError(
+                    "Idempotent issued invoice response "
+                    "could not be found"
+                )
+
+            return InvoiceResult(
+                invoice_id=replayed.invoice_id,
+                status=replayed.status,
+                official_invoice_number=(
+                    replayed.official_invoice_number
+                ),
+                brand_reference=replayed.brand_reference,
+                replayed=True,
+            )
+
         if not created:
-            raise FinanceInvoiceConflictError("Invoice issue is already processing for this idempotency key")
+            raise FinanceInvoiceConflictError(
+                "Invoice issue is already processing for "
+                "this idempotency key"
+            )
 
-        if invoice.status != "draft":
-            raise FinanceInvoiceStateError("Only draft invoices can be issued")
+        try:
+            issued = await self._repo.issue_invoice_atomic(
+                invoice_id=command.invoice_id,
+                idempotency_key=command.idempotency_key,
+            )
+        except DBAPIError as exc:
+            message = str(
+                getattr(exc, "orig", None) or exc
+            )
+            if (
+                'P4D finance invoice accounting master data unavailable'
+                in message
+            ):
+                raise FinanceInvoiceValidationError(
+                    'Invoice cannot be issued because persisted finance data failed validation'
+                ) from exc
+            raise
 
-        official_number = await self._repo.allocate_official_invoice_number(
-            invoice,
-            division_code=master["division"].code,
+        await self._repo.complete_idempotency_key(
+            idem,
+            response_ref=str(issued.invoice_id),
         )
-        brand_reference = await self._repo.allocate_brand_reference(
-            invoice,
-            brand_code=master["brand"].code,
-        )
-        await self._repo.create_tax_records(invoice.id)
-        invoice.status = "issued"
-        invoice.issued_at = datetime.now(timezone.utc)
 
-        event_payload = {
-            "invoice_id": str(invoice.id),
-            "official_invoice_number": official_number,
-            "brand_reference": brand_reference,
-            "status": "issued",
-        }
-        await self._repo.create_outbox_event(
-            invoice=invoice,
-            idempotency_key=command.idempotency_key,
-            payload=event_payload,
-            payload_sha256=canonical_hash(event_payload),
-        )
-        await self._repo.complete_idempotency_key(idem, response_ref=str(invoice.id))
-        await self._session.flush()
-        return invoice_result(invoice)
+        return issued
 
     async def replace_draft_lines(
         self,
@@ -178,7 +225,8 @@ class FinanceInvoiceEngine:
         division_id: uuid.UUID,
         brand_id: uuid.UUID,
         billing_party_id: uuid.UUID,
-    ) -> dict[str, Any]:
+        supply_date,
+    ) -> Any:
         if organization_id is None:
             raise FinanceInvoiceValidationError("Invoice organization is required for billing-party ownership")
         organization = await self._repo.get_organization(organization_id)
@@ -187,32 +235,44 @@ class FinanceInvoiceEngine:
         if not organization.is_active:
             raise FinanceInvoiceValidationError("Invoice organization is not active")
 
-        legal_entity = await self._repo.get_legal_entity(legal_entity_id)
-        gst_registration = await self._repo.get_gst_registration(gst_registration_id)
-        division = await self._repo.get_division(division_id)
-        brand = await self._repo.get_brand(brand_id)
-        billing_party = await self._repo.get_billing_party(billing_party_id)
-        if not all([legal_entity, gst_registration, division, brand, billing_party]):
+        try:
+            master = await self._repo.resolve_invoice_accounting_master_data(
+                organization_id=organization_id,
+                legal_entity_id=legal_entity_id,
+                gst_registration_id=gst_registration_id,
+                division_id=division_id,
+                brand_id=brand_id,
+                billing_party_id=billing_party_id,
+                supply_date=supply_date,
+            )
+        except DBAPIError as exc:
+            message = str(
+                getattr(exc, "orig", None) or exc
+            )
+            if (
+                "P4D finance invoice accounting master data unavailable"
+                in message
+            ):
+                raise FinanceInvoiceValidationError(
+                    (
+                        "Invoice accounting master data is "
+                        "incomplete or unavailable"
+                    )
+                ) from exc
+            raise
+        if master is None:
             raise FinanceInvoiceValidationError("Invoice master data is incomplete")
-        if gst_registration.legal_entity_id != legal_entity.id:
-            raise FinanceInvoiceValidationError("GST registration does not belong to legal entity")
-        if division.legal_entity_id != legal_entity.id:
-            raise FinanceInvoiceValidationError("Division does not belong to legal entity")
-        if brand.legal_entity_id != legal_entity.id or brand.division_id != division.id:
-            raise FinanceInvoiceValidationError("Brand does not belong to division/legal entity")
-        if billing_party.organization_id is None:
-            raise FinanceInvoiceValidationError("Billing party ownership is required")
-        if billing_party.organization_id != organization_id:
-            raise FinanceInvoiceValidationError("Billing party does not belong to invoice organization")
-        if billing_party.status != "active":
-            raise FinanceInvoiceValidationError("Billing party is not active")
-        return {
-            "legal_entity": legal_entity,
-            "gst_registration": gst_registration,
-            "division": division,
-            "brand": brand,
-            "billing_party": billing_party,
-        }
+        return master
+
+
+def _invoice_supply_date(invoice) -> datetime.date:
+    value = (invoice.metadata_json or {}).get("supply_date")
+    if not isinstance(value, str):
+        raise FinanceInvoiceValidationError("Invoice supply date is required")
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise FinanceInvoiceValidationError("Invoice supply date is invalid") from exc
 
 
 def _create_payload(command: CreateDraftInvoiceCommand) -> dict[str, Any]:

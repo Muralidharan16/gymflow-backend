@@ -5,31 +5,81 @@
     "DATABASE_URL",
     "AUTH_DATABASE_URL",
     "WORKER_DATABASE_URL",
-    "MAINTENANCE_DATABASE_URL"
+    "MAINTENANCE_DATABASE_URL",
+    "FINANCE_CONFIG_DATABASE_URL"
   ],
   "profiles": {
     "api": {
-      "required_database_variables": ["DATABASE_URL", "AUTH_DATABASE_URL"],
-      "forbidden_database_variables": ["WORKER_DATABASE_URL", "MAINTENANCE_DATABASE_URL"],
-      "runtime_components": ["api", "auth"],
+      "required_database_variables": [
+        "DATABASE_URL",
+        "AUTH_DATABASE_URL"
+      ],
+      "forbidden_database_variables": [
+        "FINANCE_CONFIG_DATABASE_URL",
+        "MAINTENANCE_DATABASE_URL",
+        "WORKER_DATABASE_URL"
+      ],
+      "runtime_components": [
+        "api",
+        "auth"
+      ],
       "celery_worker_profile": null
     },
     "worker": {
-      "required_database_variables": ["WORKER_DATABASE_URL"],
-      "forbidden_database_variables": ["DATABASE_URL", "AUTH_DATABASE_URL", "MAINTENANCE_DATABASE_URL"],
-      "runtime_components": ["worker"],
+      "required_database_variables": [
+        "WORKER_DATABASE_URL"
+      ],
+      "forbidden_database_variables": [
+        "AUTH_DATABASE_URL",
+        "DATABASE_URL",
+        "FINANCE_CONFIG_DATABASE_URL",
+        "MAINTENANCE_DATABASE_URL"
+      ],
+      "runtime_components": [
+        "worker"
+      ],
       "celery_worker_profile": "worker"
     },
     "maintenance": {
-      "required_database_variables": ["MAINTENANCE_DATABASE_URL"],
-      "forbidden_database_variables": ["DATABASE_URL", "AUTH_DATABASE_URL", "WORKER_DATABASE_URL"],
-      "runtime_components": ["maintenance"],
+      "required_database_variables": [
+        "MAINTENANCE_DATABASE_URL"
+      ],
+      "forbidden_database_variables": [
+        "AUTH_DATABASE_URL",
+        "DATABASE_URL",
+        "FINANCE_CONFIG_DATABASE_URL",
+        "WORKER_DATABASE_URL"
+      ],
+      "runtime_components": [
+        "maintenance"
+      ],
       "celery_worker_profile": "maintenance"
     },
     "beat": {
       "required_database_variables": [],
-      "forbidden_database_variables": ["DATABASE_URL", "AUTH_DATABASE_URL", "WORKER_DATABASE_URL", "MAINTENANCE_DATABASE_URL"],
+      "forbidden_database_variables": [
+        "AUTH_DATABASE_URL",
+        "DATABASE_URL",
+        "FINANCE_CONFIG_DATABASE_URL",
+        "MAINTENANCE_DATABASE_URL",
+        "WORKER_DATABASE_URL"
+      ],
       "runtime_components": [],
+      "celery_worker_profile": null
+    },
+    "finance_config": {
+      "required_database_variables": [
+        "FINANCE_CONFIG_DATABASE_URL"
+      ],
+      "forbidden_database_variables": [
+        "AUTH_DATABASE_URL",
+        "DATABASE_URL",
+        "MAINTENANCE_DATABASE_URL",
+        "WORKER_DATABASE_URL"
+      ],
+      "runtime_components": [
+        "finance_config"
+      ],
       "celery_worker_profile": null
     }
   }

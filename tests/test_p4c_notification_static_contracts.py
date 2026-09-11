@@ -255,7 +255,7 @@ def test_webhook_http_boundary_verifies_raw_body_before_database_evidence_applic
     assert ":message_body" not in route
 
 
-def test_p4c_lifecycle_notifications_are_active_but_refunds_and_legacy_scans_remain_fail_closed() -> None:
+def test_p4c_lifecycle_notifications_are_active_and_refunds_remain_non_provider_evaluation_only() -> None:
     poller = POLLER.read_text(encoding="utf-8")
     delivery = DELIVERY.read_text(encoding="utf-8")
     assert '_NOTIFICATION_EVENT_TYPES' in poller
@@ -263,9 +263,11 @@ def test_p4c_lifecycle_notifications_are_active_but_refunds_and_legacy_scans_rem
     assert '"notification.delivery"' in poller
     assert '"notification.reconcile"' in poller
     assert "process_notification_event" in poller
-    deferred = poller.split("_DEFERRED_EXTERNAL_EVENT_TYPES", 1)[1].split("}", 1)[0]
-    assert '"branch.refund_required"' in deferred
-    assert '"branch.member_notification"' not in deferred
+    assert "_REFUND_EVALUATION_EVENT_TYPES" in poller
+    refund_eval = poller.split("_REFUND_EVALUATION_EVENT_TYPES", 1)[1].split("}", 1)[0]
+    assert '"branch.refund_required"' in refund_eval
+    assert "resolve_branch_refund_required" in poller
+    assert "provider refund" not in poller.lower()
     assert "claim_notification_delivery_v2" in delivery
     assert "acknowledge_notification_provider_acceptance" in delivery
     assert "record_notification_delivery_failure" in delivery

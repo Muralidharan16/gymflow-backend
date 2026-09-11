@@ -20,10 +20,12 @@ EXPECTED_SEARCH_LIFECYCLE_EVENTS = {
     "branch.search_deindex",
 }
 EXPECTED_NOTIFICATION_LIFECYCLE_EVENTS = {"branch.member_notification"}
-EXPECTED_DEFERRED_LIFECYCLE_EVENTS = {"branch.refund_required"}
+EXPECTED_DEFERRED_LIFECYCLE_EVENTS: set[str] = set()
+EXPECTED_REFUND_EVALUATION_LIFECYCLE_EVENTS = {"branch.refund_required"}
 EXPECTED_LIFECYCLE_EXTERNAL_EVENTS = (
     EXPECTED_SEARCH_LIFECYCLE_EVENTS
     | EXPECTED_NOTIFICATION_LIFECYCLE_EVENTS
+    | EXPECTED_REFUND_EVALUATION_LIFECYCLE_EVENTS
     | EXPECTED_DEFERRED_LIFECYCLE_EVENTS
 )
 EXPECTED_INTERNAL_NOTIFICATION_EVENTS = {
@@ -79,11 +81,12 @@ def _inventory() -> dict:
 def _assignment_literal(source: str, name: str):
     tree = ast.parse(source)
     for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
-            continue
-        return ast.literal_eval(node.value)
+        if isinstance(node, ast.Assign):
+            if not any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+                continue
+            return ast.literal_eval(node.value)
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
+            return ast.literal_eval(node.value)
     raise AssertionError(f"assignment {name} not found")
 
 
@@ -124,6 +127,7 @@ def test_inventory_exactly_tracks_current_lifecycle_external_events_by_domain() 
     search_runtime = _assignment_string_set(source, "_SEARCH_EVENT_TYPES")
     notification_runtime = _assignment_string_set(source, "_NOTIFICATION_EVENT_TYPES")
     deferred_runtime = _assignment_string_set(source, "_DEFERRED_EXTERNAL_EVENT_TYPES")
+    refund_runtime = _assignment_string_set(source, "_REFUND_EVALUATION_EVENT_TYPES")
     internal_notifications = {
         entry["event_type"] for entry in inventory["internal_notification_events"]
     }
@@ -135,13 +139,14 @@ def test_inventory_exactly_tracks_current_lifecycle_external_events_by_domain() 
     assert internal_notifications <= notification_runtime
     assert internal_notifications.isdisjoint(inventoried)
     assert deferred_runtime == EXPECTED_DEFERRED_LIFECYCLE_EVENTS
-    assert search_runtime | (notification_runtime & inventoried) | deferred_runtime == inventoried
+    assert refund_runtime == EXPECTED_REFUND_EVALUATION_LIFECYCLE_EVENTS
+    assert search_runtime | (notification_runtime & inventoried) | refund_runtime | deferred_runtime == inventoried
 
     assert by_event["branch.search_index"]["current_status"] == "provider_backed_p4b_certified"
     assert by_event["branch.search_deindex"]["current_status"] == "provider_backed_p4b_certified"
     assert by_event["branch.member_notification"]["current_status"] == "implemented_p4c_candidate_not_certified"
     assert by_event["branch.member_notification"]["certification_status"] == "candidate"
-    assert by_event["branch.refund_required"]["current_status"] == "fail_closed_deferred_to_p4d"
+    assert by_event["branch.refund_required"]["current_status"] == "implemented_p4d_candidate_finance_obligation_command_not_provider_execution"
 
 
 def test_current_poller_routes_search_notification_and_refund_without_success_shortcuts() -> None:
@@ -154,6 +159,8 @@ def test_current_poller_routes_search_notification_and_refund_without_success_sh
     assert "return await _process_search_event(event, worker_id)" in router
     assert "if event_type in _NOTIFICATION_EVENT_TYPES:" in router
     assert "return await process_notification_event(event, worker_id)" in router
+    assert "if event_type in _REFUND_EVALUATION_EVENT_TYPES:" in router
+    assert "return await _process_refund_required_event(event, worker_id)" in router
     assert "if event_type in _DEFERRED_EXTERNAL_EVENT_TYPES:" in router
     assert "return await _process_deferred_external_event(event, worker_id)" in router
     assert "Unsupported lifecycle outbox event type" in router
@@ -209,7 +216,7 @@ def test_legacy_global_notification_entrypoints_remain_fail_closed() -> None:
     assert "raise RuntimeError(_DISABLED_MESSAGE)" in digest
 
 
-def test_inventory_records_search_gap_resolved_and_refund_gap_still_open() -> None:
+def test_inventory_records_search_gap_resolved_and_refund_provider_execution_gap_still_open() -> None:
     inventory = _inventory()
     resolved = {entry["id"]: entry for entry in inventory["resolved_p4_gaps"]}
     gaps = {entry["id"]: entry for entry in inventory["known_p4_gaps"]}
@@ -224,9 +231,10 @@ def test_inventory_records_search_gap_resolved_and_refund_gap_still_open() -> No
     assert "search_last_synced_at = :now" not in reconciliation
     assert "search_visibility_version = search_visibility_version + 1" not in reconciliation
 
-    refund_gap = gaps["lifecycle_refund_provider_deferred"]
+    refund_gap = gaps["lifecycle_refund_provider_execution_deferred"]
     assert refund_gap["p4_stage"] == "P4D"
-    assert "fail-closed" in refund_gap["risk"]
+    assert "provider refund execution" in refund_gap["risk"]
+    assert "durable evidence" in refund_gap["required_resolution"]
 
 
 def test_finance_refund_foundation_exists_without_claiming_lifecycle_completion() -> None:
@@ -243,8 +251,10 @@ def test_finance_refund_foundation_exists_without_claiming_lifecycle_completion(
 
     poller = LIFECYCLE_POLLER.read_text(encoding="utf-8")
     deferred = _assignment_string_set(poller, "_DEFERRED_EXTERNAL_EVENT_TYPES")
-    assert deferred == {"branch.refund_required"}
-    assert "No production handler is configured" in poller
+    refund_eval = _assignment_string_set(poller, "_REFUND_EVALUATION_EVENT_TYPES")
+    assert deferred == set()
+    assert refund_eval == {"branch.refund_required"}
+    assert "resolve_branch_refund_required" in poller
 
 
 def test_inventory_freezes_shared_p4_semantics() -> None:

@@ -12,7 +12,7 @@ from app.finance_core.domain.payment_ledger import (
     ReconcilePaymentSettlementCommand,
 )
 from app.finance_core.services.payment_ledger import FinancePaymentLedgerService
-from tests.finance_core.test_phase5c_invoice_engine import fetch_one, fetch_scalar
+from tests.finance_core.test_phase5c_invoice_engine import fetch_one, fetch_scalar, set_current_org_context
 from tests.finance_core.test_phase5d_payment_ledger import issued_invoice, payment_command, record_payment, seed_finance_foundation
 from tests.finance_core.test_phase5h_invoice_settlement_gate import apply_payment
 
@@ -48,6 +48,7 @@ async def reconcile_payment(
     idempotency_key: str = "settle-5i-1",
 ):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         result = await service.reconcile_payment_settlement(
             ReconcilePaymentSettlementCommand(
@@ -104,6 +105,7 @@ async def test_unqualified_payment_status_cannot_be_reconciled(status: str):
     )
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.reconcile_payment_settlement(
@@ -123,6 +125,7 @@ async def test_captured_but_unapplied_payment_cannot_be_reconciled():
     payment = await record_payment(payment_command(provider_payment_ref="pay_5i_unapplied", idempotency_key="pay-5i-unapplied"))
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.reconcile_payment_settlement(
@@ -146,6 +149,7 @@ async def test_duplicate_settlement_ref_is_rejected_unless_idempotent_replay():
     assert replay.replayed is True
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentConflictError):
             await service.reconcile_payment_settlement(
@@ -165,6 +169,7 @@ async def test_same_idempotency_key_with_different_payload_conflicts():
     await reconcile_payment(payment.payment_id, settlement_ref="settlement-5i-idem", idempotency_key="settle-5i-idem")
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentConflictError):
             await service.reconcile_payment_settlement(
@@ -219,6 +224,7 @@ async def test_negative_or_excessive_gateway_fee_is_rejected():
 
     for fee, key in [("-1.00", "settle-5i-negative-fee"), ("1180.01", "settle-5i-excessive-fee")]:
         async with AsyncSessionLocal() as session:
+            await set_current_org_context(session)
             service = FinancePaymentLedgerService(session)
             with pytest.raises(FinancePaymentStateError):
                 await service.reconcile_payment_settlement(
@@ -238,6 +244,7 @@ async def test_settlement_amount_above_unreconciled_clearing_amount_is_rejected(
     _invoice, payment = await applied_payment(payment_key="pay-5i-over", payment_ref="pay_5i_over", invoice_key="invoice-5i-over")
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.reconcile_payment_settlement(

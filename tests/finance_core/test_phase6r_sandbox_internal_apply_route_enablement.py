@@ -14,6 +14,7 @@ from app.finance_core.api.payment_boundary import get_payment_application_gate_s
 from app.main import app
 from tests.finance_core.test_phase5c_invoice_engine import fetch_scalar
 from tests.finance_core.test_phase5d_payment_ledger import (
+    ORG_ID,
     issued_invoice,
     payment_command,
     record_payment,
@@ -40,7 +41,12 @@ class ForbiddenPaymentApplicationGateService:
 
 
 def auth_headers(*, role: str = "admin") -> dict[str, str]:
-    token = create_access_token(str(uuid.uuid4()), str(uuid.uuid4()), f"{role}@phase6r.test.local", role=role)
+    token = create_access_token(
+        str(uuid.uuid4()),
+        str(ORG_ID),
+        f"{role}@phase6r.test.local",
+        role=role,
+    )
     return {"Authorization": f"Bearer {token}"}
 
 

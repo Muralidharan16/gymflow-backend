@@ -70,20 +70,23 @@ def test_p4b_search_effects_remain_on_real_provider_path() -> None:
     assert "search_last_synced_at" not in poller
 
 
-def test_p4c_intentionally_admits_lifecycle_notifications_but_keeps_refunds_deferred() -> None:
+def test_p4c_intentionally_admits_lifecycle_notifications_and_p4d_refund_evaluation() -> None:
     poller = POLLER.read_text(encoding="utf-8")
     notification_types = _set_assignment(poller, "_NOTIFICATION_EVENT_TYPES")
     deferred_types = _set_assignment(poller, "_DEFERRED_EXTERNAL_EVENT_TYPES")
+    refund_eval_types = _set_assignment(poller, "_REFUND_EVALUATION_EVENT_TYPES")
 
     assert notification_types == {
         "branch.member_notification",
         "notification.delivery",
         "notification.reconcile",
     }
-    assert deferred_types == {"branch.refund_required"}
+    assert deferred_types == set()
+    assert refund_eval_types == {"branch.refund_required"}
     assert "branch.member_notification" not in deferred_types
     assert "branch.refund_required" not in notification_types
     assert "process_notification_event(event, worker_id)" in poller
+    assert "resolve_branch_refund_required" in poller
 
 
 def test_p4c_notification_execution_uses_fenced_db_authority_not_queue_recipient_payloads() -> None:

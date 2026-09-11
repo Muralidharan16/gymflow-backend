@@ -13,17 +13,19 @@ LIFECYCLE_SERVICE_PATH = ROOT / "app" / "services" / "branch_lifecycle_service.p
 
 SEARCH_EVENTS = {"branch.search_index", "branch.search_deindex"}
 NOTIFICATION_LIFECYCLE_EVENTS = {"branch.member_notification"}
-DEFERRED_EVENTS = {"branch.refund_required"}
+DEFERRED_EVENTS: set[str] = set()
+REFUND_EVALUATION_EVENTS = {"branch.refund_required"}
 INTERNAL_NOTIFICATION_EVENTS = {"notification.delivery", "notification.reconcile"}
-ALL_EXTERNAL_EVENTS = SEARCH_EVENTS | NOTIFICATION_LIFECYCLE_EVENTS | DEFERRED_EVENTS
+ALL_EXTERNAL_EVENTS = SEARCH_EVENTS | NOTIFICATION_LIFECYCLE_EVENTS | REFUND_EVALUATION_EVENTS | DEFERRED_EVENTS
 
 
 def _literal_assignment(source: str, name: str) -> set[str]:
     tree = ast.parse(source)
     for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+        if isinstance(node, ast.Assign):
+            if any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+                return set(ast.literal_eval(node.value))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
             return set(ast.literal_eval(node.value))
     raise AssertionError(f"assignment {name} not found")
 
@@ -46,6 +48,7 @@ def test_p4b_preserves_the_p4a_external_event_inventory_as_an_explicit_partition
     search = _literal_assignment(poller, "_SEARCH_EVENT_TYPES")
     notification = _literal_assignment(poller, "_NOTIFICATION_EVENT_TYPES")
     deferred = _literal_assignment(poller, "_DEFERRED_EXTERNAL_EVENT_TYPES")
+    refund_eval = _literal_assignment(poller, "_REFUND_EVALUATION_EVENT_TYPES")
 
     assert inventoried == ALL_EXTERNAL_EVENTS
     assert search == SEARCH_EVENTS
@@ -53,13 +56,14 @@ def test_p4b_preserves_the_p4a_external_event_inventory_as_an_explicit_partition
     assert INTERNAL_NOTIFICATION_EVENTS <= notification
     assert INTERNAL_NOTIFICATION_EVENTS.isdisjoint(inventoried)
     assert deferred == DEFERRED_EVENTS
+    assert refund_eval == REFUND_EVALUATION_EVENTS
     assert search.isdisjoint(notification)
     assert search.isdisjoint(deferred)
     assert notification.isdisjoint(deferred)
-    assert search | (notification & inventoried) | deferred == inventoried
+    assert search | (notification & inventoried) | refund_eval | deferred == inventoried
 
 
-def test_p4b_evolves_search_to_provider_execution_and_preserves_deferred_refund() -> None:
+def test_p4b_evolves_search_to_provider_execution_and_preserves_refund_evaluation_boundary() -> None:
     source = POLLER_PATH.read_text(encoding="utf-8")
     search_handler = _function_source(source, "_process_search_event", "_fail_event")
     deferred_handler = _function_source(source, "_process_deferred_external_event", "_process_event")
@@ -74,8 +78,11 @@ def test_p4b_evolves_search_to_provider_execution_and_preserves_deferred_refund(
 
     assert "No production handler is configured" in deferred_handler
     assert "return await _fail_event(" in deferred_handler
+    assert "resolve_branch_refund_required" in source
     assert "if event_type in _SEARCH_EVENT_TYPES:" in router
     assert "return await _process_search_event(event, worker_id)" in router
+    assert "if event_type in _REFUND_EVALUATION_EVENT_TYPES:" in router
+    assert "return await _process_refund_required_event(event, worker_id)" in router
     assert "if event_type in _DEFERRED_EXTERNAL_EVENT_TYPES:" in router
     assert "return await _process_deferred_external_event(event, worker_id)" in router
 

@@ -15,6 +15,7 @@ from app.finance_core.models import (
     FinanceBillingParty,
     FinanceBrand,
     FinanceBrandRefSeries,
+    FinanceBranchAccountingProfile,
     FinanceCreditNote,
     FinanceCreditNoteLine,
     FinanceDivision,
@@ -26,12 +27,16 @@ from app.finance_core.models import (
     FinanceLedgerAccount,
     FinanceLedgerEntry,
     FinanceLedgerEntryLine,
+    FinanceMemberSubscriptionCheckoutBinding,
+    FinanceMembershipPlanTaxProfile,
     FinanceLegalEntity,
     FinanceOutboxEvent,
     FinancePayment,
     FinancePaymentAllocation,
     FinancePaymentEvent,
     FinanceRefund,
+    FinanceRefundExecutionCommand,
+    FinanceRefundObligationBinding,
     FinanceTaxCode,
     FinanceTaxRecord,
 )
@@ -39,16 +44,18 @@ from app.finance_core.models import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = REPO_ROOT / "alembic" / "versions" / "1a2b3c4d5e7f_finance_core_phase_5b_foundation.py"
-ADMIN_DATABASE_URL = os.environ.get("TEST_ADMIN_DATABASE_URL")
+ADMIN_DATABASE_URL = os.environ.get("FINANCE_CORE_TEST_ADMIN_DATABASE_URL") or os.environ.get("TEST_ADMIN_DATABASE_URL")
 
 FINANCE_TABLES = {
     "legal_entities",
     "gst_registrations",
     "divisions",
     "brands",
+    "branch_accounting_profiles",
     "bank_accounts",
     "tax_codes",
     "ledger_accounts",
+    "membership_plan_tax_profiles",
     "billing_parties",
     "invoice_series",
     "brand_ref_series",
@@ -59,6 +66,9 @@ FINANCE_TABLES = {
     "payment_allocations",
     "payment_events",
     "refunds",
+    "refund_execution_commands",
+    "refund_obligation_bindings",
+    "member_subscription_checkout_bindings",
     "credit_notes",
     "credit_note_lines",
     "ledger_entries",
@@ -76,6 +86,7 @@ MODEL_TABLES = {
         FinanceBillingParty,
         FinanceBrand,
         FinanceBrandRefSeries,
+        FinanceBranchAccountingProfile,
         FinanceCreditNote,
         FinanceCreditNoteLine,
         FinanceDivision,
@@ -87,12 +98,16 @@ MODEL_TABLES = {
         FinanceLedgerAccount,
         FinanceLedgerEntry,
         FinanceLedgerEntryLine,
+        FinanceMemberSubscriptionCheckoutBinding,
+        FinanceMembershipPlanTaxProfile,
         FinanceLegalEntity,
         FinanceOutboxEvent,
         FinancePayment,
         FinancePaymentAllocation,
         FinancePaymentEvent,
         FinanceRefund,
+        FinanceRefundExecutionCommand,
+        FinanceRefundObligationBinding,
         FinanceTaxCode,
         FinanceTaxRecord,
     }
@@ -334,6 +349,16 @@ async def test_security_is_prepared_without_public_finance_api_surface():
     assert api_files == []
 
 
+def test_finance_refund_model_declares_partial_payment_reason_index():
+    indexes = [item for item in FinanceRefund.__table_args__ if getattr(item, "name", None) == "uq_finance_refunds_payment_reason_not_null"]
+    assert len(indexes) == 1
+    index = indexes[0]
+    assert index.unique is True
+    assert [column.name for column in index.columns] == ["payment_id", "reason_code"]
+    assert str(index.dialect_options["postgresql"]["where"]) == "reason_code IS NOT NULL"
+
+
+
 def test_phase5b_migration_has_no_real_razorpay_or_activation_behavior():
     source = MIGRATION.read_text(encoding="utf-8").lower()
     assert "razorpay" not in source
@@ -347,9 +372,9 @@ async def test_constraints_reject_invalid_b2b_idempotency_outbox_and_ledger_shap
     await expect_db_error(
         """
         INSERT INTO finance.billing_parties (
-            billing_name, party_type, gst_treatment, billing_address, place_of_supply_state_code
+            buyer_kind, billing_name, party_type, gst_treatment, billing_address, place_of_supply_state_code
         )
-        VALUES ('Invalid B2B', 'business', 'b2b', 'Chennai', '33')
+        VALUES ('organization', 'Invalid B2B', 'business', 'b2b', 'Chennai', '33')
         """
     )
     await expect_db_error(

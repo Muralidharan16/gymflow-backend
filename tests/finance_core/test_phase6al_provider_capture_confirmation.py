@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app.core.database import AsyncSessionLocal
 from app.finance_core.domain.payment_ledger import FinancePaymentConflictError
@@ -565,45 +566,55 @@ async def test_order_and_payment_references_must_identify_the_same_row():
 
 
 @pytest.mark.asyncio
-async def test_duplicate_provider_order_reference_is_rejected_as_ambiguous():
+async def test_duplicate_provider_order_reference_is_rejected_by_unique_constraint():
     await seed_master_data()
     client = FakeRazorpayClient()
-    first, _ = await orchestrate(checkout_command(idempotency_key="phase6al-ambiguous-first"), client=client)
-    second, _ = await orchestrate(checkout_command(idempotency_key="phase6al-ambiguous-second"), client=client)
-    async with AsyncSessionLocal() as session:
-        await session.execute(
-            text(
-                """
-                UPDATE finance.payments
-                SET status = 'authorized',
-                    raw_status = 'authorized',
-                    provider_order_ref = :order_ref,
-                    provider_payment_ref = CASE id
-                        WHEN :first_id THEN 'pay_phase6al_ambiguous_first'
-                        WHEN :second_id THEN 'pay_phase6al_ambiguous_second'
-                    END
-                WHERE id IN (:first_id, :second_id)
-                """
-            ),
-            {
-                "order_ref": ORDER_REF,
-                "first_id": first.finance_checkout_intent_id,
-                "second_id": second.finance_checkout_intent_id,
-            },
-        )
-        await session.commit()
+    first, _ = await orchestrate(
+        checkout_command(
+            idempotency_key="phase6al-ambiguous-first"
+        ),
+        client=client,
+    )
+    second, _ = await orchestrate(
+        checkout_command(
+            idempotency_key="phase6al-ambiguous-second"
+        ),
+        client=client,
+    )
+
     before = await mutation_counts()
 
-    with pytest.raises(FinanceProviderEvidenceError) as exc:
-        await confirm(
-            evidence(
-                event_id="evt_phase6al_ambiguous_order",
-                payment_ref="pay_phase6al_ambiguous_first",
-                idempotency_key="phase6al-ambiguous-order",
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(IntegrityError) as exc:
+            await session.execute(
+                text(
+                    """
+                    UPDATE finance.payments
+                    SET status = 'authorized',
+                        raw_status = 'authorized',
+                        provider_order_ref = :order_ref,
+                        provider_payment_ref = CASE id
+                            WHEN :first_id
+                                THEN 'pay_phase6al_ambiguous_first'
+                            WHEN :second_id
+                                THEN 'pay_phase6al_ambiguous_second'
+                        END
+                    WHERE id IN (:first_id, :second_id)
+                    """
+                ),
+                {
+                    "order_ref": ORDER_REF,
+                    "first_id": first.finance_checkout_intent_id,
+                    "second_id": second.finance_checkout_intent_id,
+                },
             )
-        )
 
-    assert exc.value.code == "PROVIDER_EVIDENCE_ORDER_AMBIGUOUS"
+        assert (
+            "uq_finance_payments_provider_order_ref"
+            in str(exc.value)
+        )
+        await session.rollback()
+
     assert await mutation_counts() == before
 
 
@@ -761,35 +772,77 @@ async def test_provider_capture_then_checkout_callback_does_not_downgrade():
 
 @pytest.mark.asyncio
 async def test_late_failure_rolls_back_reference_event_state_outbox_and_idempotency():
-    checkout = await seed_payment(status="created", bind_payment_ref=False)
+    checkout = await seed_payment(
+        status="created",
+        bind_payment_ref=False,
+    )
+
     async with AsyncSessionLocal() as session:
-        service = FinanceProviderCaptureConfirmationService(session, provider_code=PROVIDER_CODE)
+        service = FinanceProviderCaptureConfirmationService(
+            session,
+            provider_code=PROVIDER_CODE,
+        )
 
-        async def fail_outbox(**_kwargs):
-            raise RuntimeError("simulated sanitized outbox failure")
+        original_capability = (
+            service._repo.confirm_provider_evidence_capability
+        )
 
-        service._repo.create_outbox_event = fail_outbox
-        with pytest.raises(RuntimeError, match="simulated sanitized outbox failure"):
+        async def fail_after_secure_capability(**kwargs):
+            await original_capability(**kwargs)
+            raise RuntimeError(
+                "simulated sanitized post-capability failure"
+            )
+
+        service._repo.confirm_provider_evidence_capability = (
+            fail_after_secure_capability
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="simulated sanitized post-capability failure",
+        ):
             await service.confirm_provider_evidence(
                 evidence(
                     event_id="evt_phase6al_rollback",
                     idempotency_key="phase6al-rollback",
                 )
             )
+
+        # The secure capability ran inside the service savepoint.
+        # Committing the outer transaction after the injected exception
+        # proves that the savepoint rollback removed every mutation.
         await session.commit()
 
     payment = await fetch_one(
-        "SELECT status, provider_payment_ref FROM finance.payments WHERE id = :id",
+        """
+        SELECT status, provider_payment_ref
+        FROM finance.payments
+        WHERE id = :id
+        """,
         {"id": checkout.finance_checkout_intent_id},
     )
+
     assert payment["status"] == "created"
     assert payment["provider_payment_ref"] is None
-    assert await fetch_scalar("SELECT count(*) FROM finance.payment_events") == 0
+
     assert await fetch_scalar(
-        "SELECT count(*) FROM finance.idempotency_keys WHERE scope = 'finance.provider.capture.confirm'"
+        "SELECT count(*) FROM finance.payment_events"
     ) == 0
+
     assert await fetch_scalar(
-        "SELECT count(*) FROM finance.outbox_events WHERE event_type = 'finance.payment.state_changed'"
+        """
+        SELECT count(*)
+        FROM finance.idempotency_keys
+        WHERE scope = 'finance.provider.capture.confirm'
+        """
+    ) == 0
+
+    assert await fetch_scalar(
+        """
+        SELECT count(*)
+        FROM finance.outbox_events
+        WHERE event_type = 'finance.payment.state_changed'
+        """
     ) == 0
 
 

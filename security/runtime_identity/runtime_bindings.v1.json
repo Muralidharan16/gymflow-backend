@@ -63,6 +63,19 @@
         "lock_timeout": "2s",
         "idle_in_transaction_session_timeout": "30s"
       }
+    },
+    "finance_config": {
+      "environment_variable": "FINANCE_CONFIG_DATABASE_URL",
+      "runtime_capability": "finance_config_runtime",
+      "direct_capabilities": [
+        "finance_config_runtime"
+      ],
+      "session_settings": {
+        "row_security": "on",
+        "statement_timeout": "15s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "30s"
+      }
     }
   },
   "rules": {

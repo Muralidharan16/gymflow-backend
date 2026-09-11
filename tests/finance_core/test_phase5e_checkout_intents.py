@@ -13,7 +13,7 @@ from app.finance_core.domain.provider_boundary import (
     FinanceCheckoutIntentStateError,
 )
 from app.finance_core.services.checkout_intents import FinanceCheckoutIntentService
-from tests.finance_core.test_phase5c_invoice_engine import ORG_ID, create_draft, draft_command, fetch_scalar
+from tests.finance_core.test_phase5c_invoice_engine import ORG_ID, create_draft, draft_command, fetch_scalar, set_current_org_context
 from tests.finance_core.test_phase5d_payment_ledger import (
     allocate_payment,
     issued_invoice,
@@ -41,6 +41,7 @@ def checkout_command(
 
 async def create_checkout_intent(command: CreateCheckoutIntentCommand):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceCheckoutIntentService(session)
         result = await service.create_checkout_intent(command)
         await session.commit()
@@ -67,6 +68,7 @@ async def test_draft_invoice_cannot_create_checkout_intent():
     await seed_finance_foundation()
     draft = await create_draft(draft_command(idempotency_key="checkout-draft"))
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceCheckoutIntentService(session)
         with pytest.raises(FinanceCheckoutIntentStateError):
             await service.create_checkout_intent(checkout_command(invoice_id=draft.invoice_id, idempotency_key="checkout-draft-blocked"))
@@ -81,6 +83,7 @@ async def test_paid_invoice_cannot_create_checkout_intent():
     await allocate_payment(payment.payment_id, invoice.invoice_id, idempotency_key="alloc-checkout-paid")
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceCheckoutIntentService(session)
         with pytest.raises(FinanceCheckoutIntentStateError):
             await service.create_checkout_intent(checkout_command(invoice_id=invoice.invoice_id, idempotency_key="checkout-paid-blocked"))
@@ -97,6 +100,7 @@ async def test_checkout_intent_idempotent_replay_and_changed_payload_conflict():
     assert replay.replayed is True
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceCheckoutIntentService(session)
         with pytest.raises(FinanceCheckoutIntentConflictError):
             await service.create_checkout_intent(
@@ -114,6 +118,7 @@ async def test_checkout_intent_amount_and_currency_must_match_invoice():
     await seed_finance_foundation()
     invoice = await issued_invoice(idempotency_key="checkout-amount")
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceCheckoutIntentService(session)
         with pytest.raises(FinanceCheckoutIntentStateError):
             await service.create_checkout_intent(

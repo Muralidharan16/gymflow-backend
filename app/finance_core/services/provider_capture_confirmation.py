@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import hashlib
 import re
-from decimal import Decimal
 
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.finance_core.domain.invoice_engine import canonical_hash
 from app.finance_core.domain.payment_ledger import FinancePaymentConflictError
-from app.finance_core.domain.provider_boundary import payment_state_transition_action
+from app.finance_core.domain.provider_boundary import (
+    FinancePaymentStateTransitionError,
+)
 from app.finance_core.domain.provider_capture_confirmation import (
     SUPPORTED_CAPTURE_CONFIRMATION_EVENTS,
     VERIFIED_RAZORPAY_WEBHOOK_SOURCE,
@@ -44,172 +45,173 @@ class FinanceProviderCaptureConfirmationService:
         self,
         command: ConfirmProviderPaymentEvidenceCommand,
     ) -> ProviderPaymentEvidenceResult:
-        evidence = _validated_evidence(command, expected_provider_code=self._provider_code)
-        idempotency_key = _required_idempotency_key(command.idempotency_key)
+        evidence = _validated_evidence(
+            command,
+            expected_provider_code=self._provider_code,
+        )
+        idempotency_key = _required_idempotency_key(
+            command.idempotency_key
+        )
         payload_hash = canonical_hash(evidence)
-        target_status = _EVENT_TARGET_STATUS[command.event_type]
 
-        async with self._session.begin_nested():
-            await self._repo.acquire_provider_event_lock(
-                provider_code=command.provider_code,
-                provider_event_id=command.provider_event_id,
-            )
-            payment = await self._locked_matching_payment(command)
-            _validate_payment_value(payment, command)
-
-            existing_event = await self._repo.get_payment_event_by_provider_id(
-                provider_code=command.provider_code,
-                provider_event_id=command.provider_event_id,
-                for_update=True,
-            )
-            if existing_event is not None:
-                _validate_existing_event(
-                    existing_event,
-                    payment_id=payment.id,
-                    event_type=command.event_type,
-                    payload_hash=payload_hash,
-                )
-                idem, created = await self._repo.reserve_idempotency_key(
-                    organization_id=payment.organization_id,
-                    scope=IDEMPOTENCY_SCOPE,
-                    idempotency_key=idempotency_key,
-                    request_hash=payload_hash,
-                )
-                if created:
-                    await self._repo.complete_idempotency_key(idem, response_ref=str(existing_event.id))
-                elif not idem.response_ref:
-                    raise FinancePaymentConflictError(
-                        "Provider evidence is already processing for this request idempotency key"
-                    )
-                return ProviderPaymentEvidenceResult(
-                    payment_event_id=existing_event.id,
-                    payment_id=payment.id,
-                    provider_code=command.provider_code,
-                    provider_event_id=command.provider_event_id,
-                    event_type=command.event_type,
-                    previous_payment_status=payment.status,
-                    payment_status=payment.status,
-                    event_recorded=False,
-                    state_changed=False,
-                    state_ignored=payment.status != target_status,
-                    replayed=True,
-                )
-
-            idem, created = await self._repo.reserve_idempotency_key(
-                organization_id=payment.organization_id,
-                scope=IDEMPOTENCY_SCOPE,
-                idempotency_key=idempotency_key,
-                request_hash=payload_hash,
-            )
-            if not created:
-                raise FinancePaymentConflictError(
-                    "Provider evidence idempotency replay is inconsistent with its provider event"
-                )
-
-            transition_action = payment_state_transition_action(payment.status, target_status)
-
-            if payment.provider_payment_ref is None:
-                await self._repo.set_provider_payment_ref(
-                    payment,
-                    provider_payment_ref=command.provider_payment_ref,
-                )
-
-            event = await self._repo.create_payment_event(
-                payment_id=payment.id,
-                provider_code=command.provider_code,
-                provider_event_id=command.provider_event_id,
-                event_type=command.event_type,
-                event_payload_sha256=payload_hash,
-            )
-            previous_status = payment.status
-            state_changed = transition_action == "apply"
-            state_ignored = transition_action == "ignore_stale"
-            if state_changed:
-                await self._repo.update_payment_status(
-                    payment,
-                    status=target_status,
-                    raw_status=command.provider_payment_status,
-                )
-                await self._repo.create_outbox_event(
-                    organization_id=payment.organization_id,
-                    legal_entity_id=payment.legal_entity_id,
-                    division_id=payment.division_id,
-                    brand_id=payment.brand_id,
-                    aggregate_type="payment",
-                    aggregate_id=payment.id,
-                    event_type="finance.payment.state_changed",
-                    idempotency_key=_state_outbox_idempotency_key(
+        try:
+            async with self._session.begin_nested():
+                row = (
+                    await self._repo
+                    .confirm_provider_evidence_capability(
                         provider_code=command.provider_code,
-                        provider_event_id=command.provider_event_id,
-                    ),
-                    payload={
-                        "payment_id": str(payment.id),
-                        "previous_status": previous_status,
-                        "status": payment.status,
-                        "provider_event_id": command.provider_event_id,
-                    },
+                        provider_event_id=(
+                            command.provider_event_id
+                        ),
+                        event_type=command.event_type,
+                        provider_order_ref=(
+                            command.provider_order_ref
+                        ),
+                        provider_payment_ref=(
+                            command.provider_payment_ref
+                        ),
+                        provider_amount_subunits=(
+                            command.provider_amount_subunits
+                        ),
+                        provider_currency=(
+                            command.provider_currency
+                        ),
+                        provider_payment_status=(
+                            command.provider_payment_status
+                        ),
+                        idempotency_key=idempotency_key,
+                        request_hash=payload_hash,
+                    )
                 )
-
-            await self._repo.complete_idempotency_key(idem, response_ref=str(event.id))
-            return ProviderPaymentEvidenceResult(
-                payment_event_id=event.id,
-                payment_id=payment.id,
-                provider_code=command.provider_code,
-                provider_event_id=command.provider_event_id,
-                event_type=command.event_type,
-                previous_payment_status=previous_status,
-                payment_status=payment.status,
-                event_recorded=True,
-                state_changed=state_changed,
-                state_ignored=state_ignored,
-                replayed=False,
+        except DBAPIError as exc:
+            translated = (
+                _translate_provider_evidence_db_error(exc)
             )
+            if translated is None:
+                raise
+            raise translated from exc
 
-    async def _locked_matching_payment(self, command: ConfirmProviderPaymentEvidenceCommand):
-        candidates = await self._repo.get_payments_by_provider_references(
-            provider_code=command.provider_code,
-            provider_order_ref=command.provider_order_ref,
-            provider_payment_ref=command.provider_payment_ref,
-            for_update=True,
+        return ProviderPaymentEvidenceResult(
+            payment_event_id=row["payment_event_id"],
+            payment_id=row["payment_id"],
+            provider_code=row["provider_code"],
+            provider_event_id=row["provider_event_id"],
+            event_type=row["event_type"],
+            previous_payment_status=(
+                row["previous_payment_status"]
+            ),
+            payment_status=row["payment_status"],
+            event_recorded=row["event_recorded"],
+            state_changed=row["state_changed"],
+            state_ignored=row["state_ignored"],
+            replayed=row["replayed"],
         )
-        payments_by_order = [
-            payment for payment in candidates if payment.provider_order_ref == command.provider_order_ref
-        ]
-        payment_by_ref = next(
-            (payment for payment in candidates if payment.provider_payment_ref == command.provider_payment_ref),
-            None,
-        )
-        if not payments_by_order:
-            if payment_by_ref is not None:
-                raise FinanceProviderEvidenceError(
-                    "PROVIDER_EVIDENCE_ORDER_MISMATCH",
-                    "Provider evidence order does not match its payment.",
-                )
-            raise FinanceProviderEvidenceError(
-                "PROVIDER_EVIDENCE_PAYMENT_NOT_FOUND",
-                "Provider evidence references an unknown payment.",
-            )
-        if len(payments_by_order) != 1:
-            raise FinanceProviderEvidenceError(
-                "PROVIDER_EVIDENCE_ORDER_AMBIGUOUS",
-                "Provider order reference is associated with multiple payments.",
-            )
-        payment_by_order = payments_by_order[0]
-        if payment_by_ref is not None and payment_by_ref.id != payment_by_order.id:
-            raise FinanceProviderEvidenceError(
-                "PROVIDER_EVIDENCE_REFERENCE_MISMATCH",
-                "Provider order and payment references do not identify the same payment.",
-            )
-        if (
-            payment_by_order.provider_payment_ref is not None
-            and payment_by_order.provider_payment_ref != command.provider_payment_ref
-        ):
-            raise FinanceProviderEvidenceError(
-                "PROVIDER_EVIDENCE_PAYMENT_MISMATCH",
-                "Provider payment reference does not match the existing payment.",
-            )
-        return payment_by_order
 
+
+
+
+def _translate_provider_evidence_db_error(
+    exc: DBAPIError,
+) -> Exception | None:
+    message = str(
+        getattr(exc, "orig", None) or exc
+    )
+
+    provider_errors = (
+        (
+            "P4D provider evidence payment not found",
+            "PROVIDER_EVIDENCE_PAYMENT_NOT_FOUND",
+            "Provider evidence references an unknown payment.",
+        ),
+        (
+            "P4D provider evidence order mismatch",
+            "PROVIDER_EVIDENCE_ORDER_MISMATCH",
+            "Provider evidence order does not match its payment.",
+        ),
+        (
+            "P4D provider evidence reference mismatch",
+            "PROVIDER_EVIDENCE_REFERENCE_MISMATCH",
+            (
+                "Provider order and payment references do not "
+                "identify the same payment."
+            ),
+        ),
+        (
+            "P4D provider evidence payment mismatch",
+            "PROVIDER_EVIDENCE_PAYMENT_MISMATCH",
+            (
+                "Provider payment reference does not match "
+                "the existing payment."
+            ),
+        ),
+        (
+            "P4D provider evidence amount mismatch",
+            "PROVIDER_AMOUNT_MISMATCH",
+            (
+                "Provider payment amount does not match "
+                "the server payment."
+            ),
+        ),
+        (
+            "P4D provider evidence server amount invalid",
+            "SERVER_PAYMENT_AMOUNT_INVALID",
+            (
+                "Server payment amount cannot be represented "
+                "in provider subunits."
+            ),
+        ),
+        (
+            "P4D provider evidence currency mismatch",
+            "PROVIDER_CURRENCY_MISMATCH",
+            (
+                "Provider payment currency does not match "
+                "the server payment."
+            ),
+        ),
+        (
+            "P4D provider evidence tenant conflict",
+            "PROVIDER_EVIDENCE_TENANT_CONFLICT",
+            "Provider evidence tenant context conflicts.",
+        ),
+        (
+            "P4D provider evidence existing tenant context invalid",
+            "PROVIDER_EVIDENCE_TENANT_CONFLICT",
+            "Provider evidence tenant context is invalid.",
+        ),
+    )
+
+    for token, code, detail in provider_errors:
+        if token in message:
+            return FinanceProviderEvidenceError(
+                code,
+                detail,
+            )
+
+    if (
+        "P4D provider evidence state transition invalid"
+        in message
+    ):
+        return FinancePaymentStateTransitionError(
+            "Invalid provider payment state transition"
+        )
+
+    conflict_tokens = (
+        "P4D provider evidence event conflict",
+        "P4D provider evidence already processing",
+        "P4D provider evidence idempotency conflict",
+        "P4D provider evidence payment conflict",
+        "P4D finance idempotency request conflict",
+    )
+
+    if any(
+        token in message
+        for token in conflict_tokens
+    ):
+        return FinancePaymentConflictError(
+            "Provider evidence conflicts with existing finance state"
+        )
+
+    return None
 
 def _validated_evidence(
     command: ConfirmProviderPaymentEvidenceCommand,
@@ -348,44 +350,3 @@ def _required_reference(value: str | None, code: str) -> str:
     if not isinstance(value, str) or not _PROVIDER_REFERENCE_PATTERN.fullmatch(value):
         raise FinanceProviderEvidenceError(code, "Provider reference is required and must use the supported format.")
     return value
-
-
-def _validate_payment_value(payment, command: ConfirmProviderPaymentEvidenceCommand) -> None:
-    amount_subunits = Decimal(payment.amount) * 100
-    if amount_subunits != amount_subunits.to_integral_value():
-        raise FinanceProviderEvidenceError(
-            "SERVER_PAYMENT_AMOUNT_INVALID",
-            "Server payment amount cannot be represented in provider subunits.",
-        )
-    if int(amount_subunits) != command.provider_amount_subunits:
-        raise FinanceProviderEvidenceError(
-            "PROVIDER_AMOUNT_MISMATCH",
-            "Provider payment amount does not match the server payment.",
-        )
-    if payment.currency_code != command.provider_currency:
-        raise FinanceProviderEvidenceError(
-            "PROVIDER_CURRENCY_MISMATCH",
-            "Provider payment currency does not match the server payment.",
-        )
-
-
-def _validate_existing_event(
-    existing_event,
-    *,
-    payment_id,
-    event_type: str,
-    payload_hash: str,
-) -> None:
-    if (
-        existing_event.payment_id != payment_id
-        or existing_event.event_type != event_type
-        or existing_event.event_payload_sha256 != payload_hash
-    ):
-        raise FinancePaymentConflictError(
-            "Provider event id already exists with different normalized evidence"
-        )
-
-
-def _state_outbox_idempotency_key(*, provider_code: str, provider_event_id: str) -> str:
-    digest = hashlib.sha256(f"{provider_code}|{provider_event_id}".encode("utf-8")).hexdigest()
-    return f"provider-state:{digest}"

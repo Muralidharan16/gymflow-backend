@@ -22,6 +22,7 @@ _API = "postgresql+asyncpg://api_login@localhost/doers"
 _AUTH = "postgresql+asyncpg://auth_login@localhost/doers"
 _WORKER = "postgresql+asyncpg://worker_login@localhost/doers"
 _MAINTENANCE = "postgresql+asyncpg://maintenance_login@localhost/doers"
+_FINANCE_CONFIG = "postgresql+psycopg://finance_config_deployment@localhost/doers"
 
 
 def _settings(**values) -> Settings:
@@ -42,10 +43,12 @@ def test_api_profile_exposes_only_api_and_auth_database_components() -> None:
     assert settings.AUTH_DATABASE_URL == _AUTH
     assert settings.WORKER_DATABASE_URL == ""
     assert settings.MAINTENANCE_DATABASE_URL == ""
+    assert settings.FINANCE_CONFIG_DATABASE_URL == ""
     assert settings.database_component_enabled("api")
     assert settings.database_component_enabled("auth")
     assert not settings.database_component_enabled("worker")
     assert not settings.database_component_enabled("maintenance")
+    assert not settings.database_component_enabled("finance_config")
 
 
 def test_api_profile_rejects_worker_database_credential_exposure() -> None:
@@ -55,6 +58,7 @@ def test_api_profile_rejects_worker_database_credential_exposure() -> None:
             DATABASE_URL=_API,
             AUTH_DATABASE_URL=_AUTH,
             WORKER_DATABASE_URL=_WORKER,
+            FINANCE_CONFIG_DATABASE_URL="",
         )
 
 
@@ -67,10 +71,12 @@ def test_worker_profile_has_only_worker_database_identity() -> None:
     assert settings.WORKER_DATABASE_URL == _WORKER
     assert settings.AUTH_DATABASE_URL == ""
     assert settings.MAINTENANCE_DATABASE_URL == ""
+    assert settings.FINANCE_CONFIG_DATABASE_URL == ""
     assert "invalid.invalid" in settings.DATABASE_URL
     assert settings.database_component_enabled("worker")
     assert not settings.database_component_enabled("api")
     assert not settings.database_component_enabled("maintenance")
+    assert not settings.database_component_enabled("finance_config")
 
 
 def test_worker_profile_rejects_api_database_credential_exposure() -> None:
@@ -92,9 +98,36 @@ def test_maintenance_profile_has_only_maintenance_database_identity() -> None:
     assert settings.MAINTENANCE_DATABASE_URL == _MAINTENANCE
     assert settings.WORKER_DATABASE_URL == ""
     assert settings.AUTH_DATABASE_URL == ""
+    assert settings.FINANCE_CONFIG_DATABASE_URL == ""
     assert "invalid.invalid" in settings.DATABASE_URL
     assert settings.database_component_enabled("maintenance")
     assert not settings.database_component_enabled("worker")
+    assert not settings.database_component_enabled("finance_config")
+
+
+def test_finance_config_profile_has_only_finance_config_database_identity() -> None:
+    settings = _settings(
+        DOERS_PROCESS_PROFILE="finance_config",
+        FINANCE_CONFIG_DATABASE_URL=_FINANCE_CONFIG,
+    )
+    assert settings.FINANCE_CONFIG_DATABASE_URL == _FINANCE_CONFIG
+    assert settings.AUTH_DATABASE_URL == ""
+    assert settings.WORKER_DATABASE_URL == ""
+    assert settings.MAINTENANCE_DATABASE_URL == ""
+    assert "invalid.invalid" in settings.DATABASE_URL
+    assert settings.database_component_enabled("finance_config")
+    assert not settings.database_component_enabled("api")
+    assert not settings.database_component_enabled("worker")
+    assert not settings.database_component_enabled("maintenance")
+
+
+def test_finance_config_profile_rejects_ordinary_database_credentials() -> None:
+    with pytest.raises(ValidationError, match="forbidden database variables"):
+        _settings(
+            DOERS_PROCESS_PROFILE="finance_config",
+            FINANCE_CONFIG_DATABASE_URL=_FINANCE_CONFIG,
+            DATABASE_URL=_API,
+        )
 
 
 def test_beat_profile_has_no_database_identity() -> None:
@@ -103,9 +136,10 @@ def test_beat_profile_has_no_database_identity() -> None:
     assert settings.AUTH_DATABASE_URL == ""
     assert settings.WORKER_DATABASE_URL == ""
     assert settings.MAINTENANCE_DATABASE_URL == ""
+    assert settings.FINANCE_CONFIG_DATABASE_URL == ""
     assert not any(
         settings.database_component_enabled(component)
-        for component in ("api", "auth", "worker", "maintenance")
+        for component in ("api", "auth", "worker", "maintenance", "finance_config")
     )
 
 

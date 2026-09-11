@@ -19,6 +19,7 @@ jobs:
       AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-runtime@127.0.0.1:5432/gymflow_p2d
       WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-runtime@127.0.0.1:5432/gymflow_p2d
       MAINTENANCE_DATABASE_URL: postgresql+asyncpg://maintenance_test_runtime:ci-maintenance-runtime@127.0.0.1:5432/gymflow_p2d
+      FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-finance-config-runtime@127.0.0.1:5432/gymflow_p2d
       REDIS_URL: redis://127.0.0.1:6379/0
       CELERY_BROKER_URL: redis://127.0.0.1:6379/1
       CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
@@ -89,6 +90,7 @@ jobs:
           CREATE ROLE auth_test_runtime LOGIN PASSWORD 'ci-auth-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-worker-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE maintenance_test_runtime LOGIN PASSWORD 'ci-maintenance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-finance-config-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
 
           ALTER ROLE app_test_runtime SET row_security = 'on';
           ALTER ROLE app_test_runtime SET statement_timeout = '5s';
@@ -106,6 +108,10 @@ jobs:
           ALTER ROLE maintenance_test_runtime SET statement_timeout = '15s';
           ALTER ROLE maintenance_test_runtime SET lock_timeout = '2s';
           ALTER ROLE maintenance_test_runtime SET idle_in_transaction_session_timeout = '30s';
+          ALTER ROLE finance_config_deployment SET row_security = 'on';
+          ALTER ROLE finance_config_deployment SET statement_timeout = '15s';
+          ALTER ROLE finance_config_deployment SET lock_timeout = '2s';
+          ALTER ROLE finance_config_deployment SET idle_in_transaction_session_timeout = '30s';
 
           GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
@@ -113,9 +119,10 @@ jobs:
           GRANT app_user TO auth_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT lifecycle_maintenance_runtime TO maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_config_runtime TO finance_config_deployment WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 
           CREATE DATABASE gymflow_p2d OWNER migration_owner;
-          GRANT CONNECT ON DATABASE gymflow_p2d TO app_test_runtime, auth_test_runtime, worker_test_runtime, maintenance_test_runtime;
+          GRANT CONNECT ON DATABASE gymflow_p2d TO app_test_runtime, auth_test_runtime, worker_test_runtime, maintenance_test_runtime, finance_config_deployment;
           SQL
 
       - name: Verify P2B and P2C cluster contracts before HEAD

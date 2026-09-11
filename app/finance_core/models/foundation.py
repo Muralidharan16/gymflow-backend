@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import CHAR
@@ -152,7 +152,18 @@ class FinanceLedgerAccount(Base):
 class FinanceBillingParty(Base):
     __tablename__ = "billing_parties"
     __table_args__ = (
-        UniqueConstraint("organization_id", name="uq_finance_billing_parties_organization", deferrable=True, initially="DEFERRED"),
+        CheckConstraint("buyer_kind IN ('organization', 'member')", name="chk_finance_billing_parties_buyer_kind"),
+        CheckConstraint(
+            "(buyer_kind = 'organization' AND member_id IS NULL) OR "
+            "(buyer_kind = 'member' AND member_id IS NOT NULL AND organization_id IS NOT NULL AND party_type = 'individual' AND gst_treatment = 'b2c')",
+            name="chk_finance_billing_parties_buyer_shape",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_finance_billing_parties_member_org",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint("party_type IN ('individual', 'business', 'government')", name="chk_finance_billing_parties_party_type"),
         CheckConstraint("gst_treatment IN ('b2c', 'b2b')", name="chk_finance_billing_parties_gst_treatment"),
         CheckConstraint(
@@ -162,11 +173,15 @@ class FinanceBillingParty(Base):
         CheckConstraint("place_of_supply_state_code ~ '^[0-9]{2}$'", name="chk_finance_billing_parties_place_state"),
         CheckConstraint("status IN ('draft', 'active', 'inactive')", name="chk_finance_billing_parties_status"),
         Index("ix_finance_billing_parties_org", "organization_id", postgresql_where=text("organization_id IS NOT NULL")),
+        Index("uq_finance_billing_parties_org_buyer", "organization_id", unique=True, postgresql_where=text("buyer_kind = 'organization'")),
+        Index("uq_finance_billing_parties_member_buyer", "organization_id", "member_id", unique=True, postgresql_where=text("buyer_kind = 'member'")),
         {"schema": SCHEMA},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
     organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    buyer_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    member_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     billing_name: Mapped[str] = mapped_column(String(200), nullable=False)
     party_type: Mapped[str] = mapped_column(Text, nullable=False)
     gst_treatment: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'b2c'"))
@@ -176,6 +191,65 @@ class FinanceBillingParty(Base):
     place_of_supply_state_code: Mapped[str] = mapped_column(CHAR(2), nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceBranchAccountingProfile(Base):
+    __tablename__ = "branch_accounting_profiles"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_branch_accounting_profiles_branch_org",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("status IN ('active', 'inactive')", name="chk_branch_accounting_profiles_status"),
+        CheckConstraint("effective_until IS NULL OR effective_until > effective_from", name="chk_branch_accounting_profiles_window"),
+        Index("ix_branch_accounting_profiles_lookup", "organization_id", "branch_id", "status", "effective_from", "effective_until"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'active'"))
+    configured_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceMembershipPlanTaxProfile(Base):
+    __tablename__ = "membership_plan_tax_profiles"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["membership_plan_id", "organization_id"],
+            ["membership_plans.id", "membership_plans.org_id"],
+            name="fk_membership_plan_tax_profiles_plan_org",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("status IN ('active', 'inactive')", name="chk_membership_plan_tax_profiles_status"),
+        CheckConstraint("pricing_mode IN ('tax_exclusive', 'tax_inclusive')", name="chk_membership_plan_tax_profiles_pricing_mode"),
+        CheckConstraint("effective_until IS NULL OR effective_until > effective_from", name="chk_membership_plan_tax_profiles_window"),
+        Index("ix_membership_plan_tax_profiles_lookup", "organization_id", "membership_plan_id", "status", "effective_from", "effective_until"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    membership_plan_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    tax_code_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.tax_codes.id", ondelete="RESTRICT"), nullable=False)
+    pricing_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'active'"))
+    configured_by: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
 
@@ -333,6 +407,7 @@ class FinancePayment(Base):
     __tablename__ = "payments"
     __table_args__ = (
         UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
         CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
         CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
         CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
@@ -359,6 +434,72 @@ class FinancePayment(Base):
     raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
 
 
 class FinancePaymentAllocation(Base):
@@ -398,6 +539,20 @@ class FinanceRefund(Base):
     __table_args__ = (
         CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
         CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
         {"schema": SCHEMA},
     )
 
@@ -408,10 +563,84 @@ class FinanceRefund(Base):
     division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
     brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
     reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
 
 
 class FinanceCreditNote(Base):
@@ -515,7 +744,7 @@ class FinanceAuditEvent(Base):
 class FinanceIdempotencyKey(Base):
     __tablename__ = "idempotency_keys"
     __table_args__ = (
-        UniqueConstraint("scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
         CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
         CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
         CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),

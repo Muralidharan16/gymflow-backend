@@ -236,12 +236,12 @@ def validate_runtime_binding_contract(
     peer_runtimes = set(p2c.peer_isolation_principals) - {p2c.migration_principal}
     violations: list[ContractViolation] = []
 
-    required_components = {"api", "auth", "worker", "maintenance"}
+    required_components = {"api", "auth", "worker", "maintenance", "finance_config"}
     if set(contract.bindings) != required_components:
         violations.append(_violation(
             "runtime.contract.component_coverage",
             "bindings",
-            "P2D must define exactly api/auth/worker/maintenance bindings.",
+            "P2D must define exactly api/auth/worker/maintenance/finance_config bindings.",
         ))
 
     runtime_capabilities = {

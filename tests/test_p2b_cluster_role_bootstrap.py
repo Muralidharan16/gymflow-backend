@@ -50,6 +50,7 @@ def test_fresh_bootstrap_is_exact_manifest_driven_and_create_only() -> None:
         assert sql.count(f"CREATE ROLE {role} ") == 1
 
     assert "CREATE ROLE lifecycle_maintenance_runtime" in sql
+    assert "CREATE ROLE finance_config_runtime" in sql
     for setting, value in {
         "statement_timeout": "15s",
         "lock_timeout": "2s",
@@ -58,6 +59,10 @@ def test_fresh_bootstrap_is_exact_manifest_driven_and_create_only() -> None:
     }.items():
         assert (
             f"ALTER ROLE lifecycle_maintenance_runtime SET {setting} = '{value}';"
+            in sql
+        )
+        assert (
+            f"ALTER ROLE finance_config_runtime SET {setting} = '{value}';"
             in sql
         )
 

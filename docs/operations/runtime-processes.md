@@ -43,7 +43,7 @@ For operational visibility, alert on search provider request failure outcomes, l
 
 ## P4C durable notification boundary
 
-P4C admits lifecycle member email as a real external effect through the shared branch outbox. Legacy reminder and daily-digest entry points remain fail-closed because their old global discovery implementations are not tenant-bound durable command producers. WhatsApp also remains outside the admitted P4C delivery channel until it receives equivalent provider evidence and callback semantics. `branch.refund_required` remains deferred to P4D.
+P4C admits lifecycle member email as a real external effect through the shared branch outbox. Legacy reminder and daily-digest entry points remain fail-closed because their old global discovery implementations are not tenant-bound durable command producers. WhatsApp also remains outside the admitted P4C delivery channel until it receives equivalent provider evidence and callback semantics. `branch.refund_required` is handled by the P4D-2 Finance obligation resolver; provider refund execution remains deferred.
 
 The lifecycle `branch.member_notification` event does not authorize a recipient. Under a live worker lease, `app_secure.materialize_branch_member_notifications(...)` re-reads authoritative branch history, branch metadata, active members and current communication preferences from PostgreSQL, creates one deterministic command per eligible member, and supersedes the parent fanout event. The child `notification.delivery` command contains only an internal command identifier; delivery claim re-reads the current member email and suppression state immediately before provider I/O.
 

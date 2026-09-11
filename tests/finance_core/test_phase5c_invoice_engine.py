@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -8,6 +9,9 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.core.database import AsyncSessionLocal
 from app.finance_core.domain.invoice_engine import (
@@ -25,6 +29,8 @@ from tests.finance_core.admin_database import (
 
 
 ORG_ID = uuid.UUID("91000000-0000-0000-0000-000000000901")
+BRANCH_ID = uuid.UUID("91000000-0000-0000-0000-000000000911")
+ACCOUNTING_PROFILE_ID = uuid.UUID("91000000-0000-0000-0000-000000000921")
 LEGAL_ENTITY_ID = uuid.UUID("91000000-0000-0000-0000-000000000001")
 GST_REGISTRATION_ID = uuid.UUID("91000000-0000-0000-0000-000000000101")
 DIVISION_ID = uuid.UUID("91000000-0000-0000-0000-000000000201")
@@ -37,6 +43,11 @@ FY = "2425"
 async def cleanup_finance_tables() -> None:
     async with finance_admin_session() as session:
         await truncate_finance_test_tables(session)
+        await set_current_org_context(session)
+        await session.execute(
+            text("DELETE FROM org_branches WHERE org_id = :organization_id"),
+            {"organization_id": ORG_ID},
+        )
         await session.execute(
             text("DELETE FROM organizations WHERE id = :organization_id"),
             {"organization_id": ORG_ID},
@@ -48,6 +59,8 @@ async def seed_master_data(*, buyer_state_code: str = "33", b2b: bool = False) -
     await cleanup_finance_tables()
     async with finance_admin_session() as session:
         params = {
+            "branch_id": BRANCH_ID,
+            "accounting_profile_id": ACCOUNTING_PROFILE_ID,
             "legal_entity_id": LEGAL_ENTITY_ID,
             "gst_registration_id": GST_REGISTRATION_ID,
             "division_id": DIVISION_ID,
@@ -67,6 +80,16 @@ async def seed_master_data(*, buyer_state_code: str = "33", b2b: bool = False) -
                 """
                 INSERT INTO organizations (id, name, slug, tier, is_active, max_branches, default_currency_code)
                 VALUES (:organization_id, 'Vitara Test Finance Org', 'vitara-test-finance-org', 'basic', true, 10, 'INR');
+                """
+            ),
+            params,
+        )
+        await set_current_org_context(session)
+        await session.execute(
+            text(
+                """
+                INSERT INTO org_branches (id, org_id, branch_name, branch_code, internal_slug, timezone, currency_code, country_code)
+                VALUES (:branch_id, :organization_id, 'Vitara Test Branch', 'MAIN', 'vitara-test-finance-main', 'Asia/Kolkata', 'INR', 'IN');
                 """
             ),
             params,
@@ -117,15 +140,17 @@ async def seed_master_data(*, buyer_state_code: str = "33", b2b: bool = False) -
             ),
             params,
         )
+        await session.commit()
+        await establish_accounting_profile()
         await session.execute(
             text(
                 """
                 INSERT INTO finance.billing_parties (
-                    id, organization_id, billing_name, party_type, gst_treatment, gstin, pan,
+                    id, organization_id, buyer_kind, billing_name, party_type, gst_treatment, gstin, pan,
                     billing_address, place_of_supply_state_code, status
                 )
                 VALUES (
-                    :billing_party_id, :organization_id, :billing_name, :party_type, :gst_treatment,
+                    :billing_party_id, :organization_id, 'organization', :billing_name, :party_type, :gst_treatment,
                     :gstin, :pan, 'Buyer Test Address', :buyer_state_code, 'active'
                 );
                 """
@@ -200,19 +225,81 @@ def draft_command(
 
 
 async def fetch_one(sql: str, params: dict[str, object] | None = None):
-    async with AsyncSessionLocal() as session:
+    async with finance_admin_session() as session:
         result = await session.execute(text(sql), params or {})
         return result.mappings().one()
 
 
 async def fetch_scalar(sql: str, params: dict[str, object] | None = None):
-    async with AsyncSessionLocal() as session:
+    async with finance_admin_session() as session:
         result = await session.execute(text(sql), params or {})
         return result.scalar_one()
 
 
+async def set_current_org_context(session, organization_id: uuid.UUID = ORG_ID) -> None:
+    await session.execute(
+        text("SELECT pg_catalog.set_config('app.current_org_id', :organization_id, true)"),
+        {"organization_id": str(organization_id)},
+    )
+
+
+async def establish_accounting_profile() -> None:
+    runtime_url = os.environ.get("FINANCE_CORE_TEST_DATABASE_URL")
+    config_url = os.environ.get("FINANCE_CONFIG_DATABASE_URL")
+    if not runtime_url or not config_url:
+        raise RuntimeError(
+            "FINANCE_CORE_TEST_DATABASE_URL and FINANCE_CONFIG_DATABASE_URL are required"
+        )
+    runtime = make_url(runtime_url)
+    config = make_url(config_url)
+    if runtime.database != config.database or "test" not in str(config.database or "").lower():
+        raise RuntimeError("Finance config fixture URL must target the same disposable test database")
+    if config.username != "finance_config_deployment":
+        raise RuntimeError("Finance config fixture must use finance_config_deployment")
+
+    async_config_url = config.set(drivername="postgresql+asyncpg")
+    engine = create_async_engine(
+        async_config_url,
+        poolclass=NullPool,
+        pool_pre_ping=True,
+        echo=False,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT *
+                    FROM app_secure.establish_branch_accounting_profile(
+                        :accounting_profile_id, :branch_id, :legal_entity_id,
+                        :gst_registration_id, :division_id, :brand_id,
+                        DATE '2024-04-01', NULL
+                    );
+                    """
+                ),
+                {
+                    "accounting_profile_id": ACCOUNTING_PROFILE_ID,
+                    "branch_id": BRANCH_ID,
+                    "legal_entity_id": LEGAL_ENTITY_ID,
+                    "gst_registration_id": GST_REGISTRATION_ID,
+                    "division_id": DIVISION_ID,
+                    "brand_id": BRAND_ID,
+                },
+            )
+            row = result.mappings().one()
+            assert row["organization_id"] == ORG_ID
+            assert row["branch_id"] == BRANCH_ID
+            assert row["inserted"] is True
+            assert row["replayed"] is False
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
 async def create_draft(command: CreateDraftInvoiceCommand | None = None):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         engine = FinanceInvoiceEngine(session)
         result = await engine.create_draft_invoice(command or draft_command())
         await session.commit()
@@ -221,6 +308,7 @@ async def create_draft(command: CreateDraftInvoiceCommand | None = None):
 
 async def issue_invoice(invoice_id: uuid.UUID, *, idempotency_key: str = "issue-key-1"):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         engine = FinanceInvoiceEngine(session)
         result = await engine.issue_invoice(IssueInvoiceCommand(invoice_id=invoice_id, idempotency_key=idempotency_key))
         await session.commit()
@@ -297,6 +385,7 @@ async def test_concurrent_issue_serializes_invoice_and_brand_number_allocation()
 async def test_rollback_before_commit_does_not_leave_committed_invoice_number():
     await seed_master_data()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         engine = FinanceInvoiceEngine(session)
         draft = await engine.create_draft_invoice(draft_command(idempotency_key="draft-rollback"))
         issued = await engine.issue_invoice(IssueInvoiceCommand(invoice_id=draft.invoice_id, idempotency_key="issue-rollback"))
@@ -362,6 +451,7 @@ async def test_idempotent_draft_create_and_conflict_for_changed_payload():
     assert replay.replayed is True
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         engine = FinanceInvoiceEngine(session)
         with pytest.raises(FinanceInvoiceConflictError):
             await engine.create_draft_invoice(

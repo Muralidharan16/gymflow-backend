@@ -29,3 +29,14 @@ def test_inherited_setting_misalignment_is_rejected() -> None:
     drifted = replace(contract, bindings=bindings)
     codes = {item.code for item in validate_runtime_binding_cluster_setting_alignment(drifted)}
     assert "runtime.cluster_setting_alignment" in codes
+
+
+def test_finance_config_settings_follow_dedicated_runtime_defaults() -> None:
+    contract = load_runtime_binding_contract()
+    finance_config = contract.bindings["finance_config"]
+    assert finance_config.runtime_capability == "finance_config_runtime"
+    assert finance_config.direct_capabilities == ("finance_config_runtime",)
+    assert finance_config.environment_variable == "FINANCE_CONFIG_DATABASE_URL"
+    assert finance_config.session_settings["statement_timeout"] == "15s"
+    assert finance_config.session_settings["lock_timeout"] == "2s"
+    assert finance_config.session_settings["row_security"] == "on"

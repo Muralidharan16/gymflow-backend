@@ -14,7 +14,7 @@ from app.finance_core.domain.payment_ledger import (
     FinancePaymentStateError,
 )
 from app.finance_core.services.payment_ledger import FinancePaymentLedgerService
-from tests.finance_core.test_phase5c_invoice_engine import create_draft, draft_command, fetch_one, fetch_scalar
+from tests.finance_core.test_phase5c_invoice_engine import create_draft, draft_command, fetch_one, fetch_scalar, set_current_org_context
 from tests.finance_core.test_phase5d_payment_ledger import (
     issued_invoice,
     payment_command,
@@ -32,6 +32,7 @@ async def apply_payment(
     idempotency_key: str = "apply-key-1",
 ):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         result = await service.apply_payment_to_invoice(
             ApplyPaymentToInvoiceCommand(
@@ -93,6 +94,7 @@ async def test_non_captured_or_non_settled_payment_cannot_be_applied(status: str
     )
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.apply_payment_to_invoice(
@@ -113,6 +115,7 @@ async def test_draft_invoice_cannot_receive_explicit_settlement():
     payment = await record_payment(payment_command(provider_payment_ref="pay_5h_draft", idempotency_key="pay-5h-draft"))
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinanceInvoiceStateError):
             await service.apply_payment_to_invoice(
@@ -165,6 +168,7 @@ async def test_explicit_settlement_cannot_exceed_payment_balance_or_invoice_outs
     )
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.apply_payment_to_invoice(
@@ -181,6 +185,7 @@ async def test_explicit_settlement_cannot_exceed_payment_balance_or_invoice_outs
         payment_command(provider_payment_ref="pay_5h_large", amount="2000.00", idempotency_key="pay-5h-large")
     )
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentStateError):
             await service.apply_payment_to_invoice(
@@ -201,6 +206,7 @@ async def test_explicit_settlement_cannot_exceed_payment_balance_or_invoice_outs
         payment_command(provider_payment_ref="pay_5h_extra", amount="1.00", idempotency_key="pay-5h-extra")
     )
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinanceInvoiceStateError):
             await service.apply_payment_to_invoice(
@@ -230,6 +236,7 @@ async def test_explicit_settlement_replay_does_not_duplicate_allocation_or_ledge
 
     second_invoice = await issued_invoice(idempotency_key="invoice-5h-replay-conflict")
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinancePaymentLedgerService(session)
         with pytest.raises(FinancePaymentConflictError):
             await service.apply_payment_to_invoice(

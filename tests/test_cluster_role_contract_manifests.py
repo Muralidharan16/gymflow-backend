@@ -121,6 +121,7 @@ def test_exact_managed_role_contract() -> None:
         "ops_support",
         "worker_runtime",
         "lifecycle_maintenance_runtime",
+        "finance_config_runtime",
     }
 
     migration_attributes = roles["migration_owner"]["attributes"]
@@ -151,6 +152,7 @@ def test_exact_managed_role_contract() -> None:
         "ops_support",
         "worker_runtime",
         "lifecycle_maintenance_runtime",
+        "finance_config_runtime",
     ):
         attributes = roles[role]["attributes"]
         assert attributes == {
@@ -172,6 +174,9 @@ def test_exact_managed_role_contract() -> None:
     assert "reconciliation" in roles["lifecycle_maintenance_runtime"]["purpose"]
     assert "NOLOGIN/NOBYPASSRLS" in roles["lifecycle_maintenance_runtime"]["decision"]
     assert "must never be granted to migration_owner" in roles["lifecycle_maintenance_runtime"]["decision"]
+    assert "configuration control-plane" in roles["finance_config_runtime"]["decision"]
+    assert "NOLOGIN/NOBYPASSRLS" in roles["finance_config_runtime"]["decision"]
+    assert "must never be granted to migration_owner" in roles["finance_config_runtime"]["decision"]
 
 
 def test_role_settings_are_exact() -> None:
@@ -191,6 +196,7 @@ def test_role_settings_are_exact() -> None:
     }
     assert settings["worker_runtime"] == bounded_background_settings
     assert settings["lifecycle_maintenance_runtime"] == bounded_background_settings
+    assert settings["finance_config_runtime"] == bounded_background_settings
     assert "auth_runtime" in settings
 
     for role, values in settings.items():
@@ -198,6 +204,7 @@ def test_role_settings_are_exact() -> None:
             "app_runtime",
             "worker_runtime",
             "lifecycle_maintenance_runtime",
+            "finance_config_runtime",
         }:
             assert values == {}
 
@@ -249,6 +256,7 @@ def test_runtime_capabilities_are_not_migration_owner_memberships() -> None:
         "auth_runtime",
         "worker_runtime",
         "lifecycle_maintenance_runtime",
+        "finance_config_runtime",
     }
     assert not any(
         row["granted_role"] in runtime_roles
@@ -257,7 +265,7 @@ def test_runtime_capabilities_are_not_migration_owner_memberships() -> None:
     )
     forbidden = set(bundle.memberships["forbidden_migration_owner_memberships"])
     assert runtime_roles.isdisjoint({row["granted_role"] for row in rows})
-    assert {"worker_runtime", "lifecycle_maintenance_runtime"} <= forbidden
+    assert {"worker_runtime", "lifecycle_maintenance_runtime", "finance_config_runtime"} <= forbidden
 
 
 def test_ownership_manifest_uses_only_allowed_owners() -> None:

@@ -20,7 +20,7 @@ from app.finance_core.domain.provider_boundary import (
     validate_sandbox_provider_config,
 )
 from app.finance_core.services.provider_webhooks import FinanceProviderWebhookIntakeService
-from tests.finance_core.test_phase5c_invoice_engine import fetch_scalar
+from tests.finance_core.test_phase5c_invoice_engine import fetch_scalar, set_current_org_context
 from tests.finance_core.test_phase5d_payment_ledger import seed_finance_foundation
 
 
@@ -99,6 +99,7 @@ def test_provider_config_rejects_production_mode_without_leaking_secret():
 async def test_webhook_normalization_accepts_valid_sandbox_event_and_records_payment_event():
     await seed_finance_foundation()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceProviderWebhookIntakeService(
             session,
             config=sandbox_config(),
@@ -126,6 +127,7 @@ async def test_invalid_signature_is_rejected():
         idempotency_key=command.idempotency_key,
     )
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceProviderWebhookIntakeService(
             session,
             config=sandbox_config(),
@@ -140,6 +142,7 @@ async def test_invalid_signature_is_rejected():
 async def test_duplicate_provider_event_replay_and_changed_idempotency_conflict():
     await seed_finance_foundation()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceProviderWebhookIntakeService(
             session,
             config=sandbox_config(),
@@ -158,6 +161,7 @@ async def test_duplicate_provider_event_replay_and_changed_idempotency_conflict(
 async def test_same_idempotency_key_with_different_normalized_payload_conflicts():
     await seed_finance_foundation()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceProviderWebhookIntakeService(
             session,
             config=sandbox_config(),
@@ -175,6 +179,7 @@ async def test_same_idempotency_key_with_different_normalized_payload_conflicts(
 async def test_unknown_status_is_rejected_by_explicit_rule():
     await seed_finance_foundation()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceProviderWebhookIntakeService(
             session,
             config=sandbox_config(),
@@ -189,6 +194,7 @@ async def test_unknown_status_is_rejected_by_explicit_rule():
 async def test_webhook_intake_does_not_allocate_post_ledger_or_activate_subscription():
     await seed_finance_foundation()
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceProviderWebhookIntakeService(
             session,
             config=sandbox_config(),
