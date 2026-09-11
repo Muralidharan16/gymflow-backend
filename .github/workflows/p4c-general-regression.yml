@@ -38,6 +38,7 @@ jobs:
       FINANCE_CONFIG_RUNTIME_PASSWORD: ci-finance-config-runtime
       WORKER_RUNTIME_PASSWORD: ci-worker-runtime
       P4D_REFUND_TEST_DATABASE: gymflow_p4d_test
+      P4D_REFUND_ALLOW_DEFAULT_PORT_FOR_CI: '1'
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
       TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
       TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test

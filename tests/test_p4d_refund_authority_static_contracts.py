@@ -223,7 +223,12 @@ def test_p4d_pg16_workflow_is_dedicated_locked_and_unactivated() -> None:
     assert "test \"${server_encoding}\" = 'UTF8'" in workflow
     assert "test \"${client_encoding}\" = 'UTF8'" in workflow
     assert "SQL_ASCII" not in workflow
-    assert "zd07d8e9f0a3e" in workflow
+    assert (
+        "test \"$(python -s -m alembic -c alembic.ini heads "
+        "| awk '{print $1}')\" = 'ze07d8e9f0a3f'"
+        in workflow
+    )
+    assert "downgrade zc07d8e9f0a3d" in workflow
     assert "current --check-heads" in workflow
     assert "tests/test_p4d_refund_authority_runtime.py" in workflow
     assert "tests/finance_core" in workflow
