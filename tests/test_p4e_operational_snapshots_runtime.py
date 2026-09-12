@@ -154,6 +154,23 @@ def _insert_search_runtime_rows() -> None:
                     f"p4e-reconcile-{branch_reconciliation_only.hex}",
                 ),
             )
+            cur.execute(
+                """
+                INSERT INTO public.org_branch_state(
+                    branch_id,org_id,search_epoch_ulid
+                ) VALUES
+                    (%s,%s,%s),
+                    (%s,%s,%s)
+                """,
+                (
+                    branch_with_work,
+                    org_id,
+                    uuid.uuid4().hex[:26].upper(),
+                    branch_reconciliation_only,
+                    org_id,
+                    uuid.uuid4().hex[:26].upper(),
+                ),
+            )
         conn.commit()
 
     # Use the already-certified application enqueue path. P4B's security owner
