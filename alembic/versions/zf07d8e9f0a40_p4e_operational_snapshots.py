@@ -312,7 +312,7 @@ def _post_install_proof(bind) -> None:
             sa.text(
                 """
                 SELECT p.oid, owner.rolname, p.prosecdef,
-                       p.provolatile, p.proconfig
+                       p.provolatile::text, p.proconfig
                 FROM pg_catalog.pg_proc AS p
                 JOIN pg_catalog.pg_namespace AS n
                   ON n.oid = p.pronamespace
