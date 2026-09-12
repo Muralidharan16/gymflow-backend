@@ -11,6 +11,8 @@ MIGRATION = (
     / "alembic/versions/zf07d8e9f0a40_p4e_operational_snapshots.py"
 )
 P4D = ROOT / "alembic/versions/zc07d8e9f0a3d_p4d_refund_authority_boundary.py"
+RUNTIME = ROOT / "tests/test_p4e_operational_snapshots_runtime.py"
+WORKFLOW = ROOT / ".github/workflows/p4e-operational-snapshots-pg16.yml"
 
 
 def _source() -> str:
@@ -39,6 +41,45 @@ def test_p4e_slice1a_revision_and_parent_are_exact() -> None:
         "revision": "zf07d8e9f0a40",
         "down_revision": "ze07d8e9f0a3f",
     }
+
+
+def test_search_fixture_uses_certified_p3a_auth_bootstrap_boundary() -> None:
+    runtime = RUNTIME.read_text()
+    workflow = WORKFLOW.read_text()
+    helper = runtime.split(
+        "def _insert_canonical_initial_branch_state", 1
+    )[1].split("def _insert_search_runtime_rows", 1)[0]
+    fixture = runtime.split("def _insert_search_runtime_rows", 1)[1].split(
+        "def _insert_refund_runtime_rows", 1
+    )[0]
+    admin_setup = fixture.split(
+        "_insert_canonical_initial_branch_state(", 1
+    )[0]
+
+    assert '_AUTH_LOGIN = "auth_p4e_runtime"' in runtime
+    assert 'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD")' in helper
+    assert "app.current_role','owner'" in helper
+    assert "app.current_org_id" in helper
+    assert "app.current_user_id" in helper
+    assert "app.current_principal_type','owner'" in helper
+    assert "INSERT INTO public.org_branch_state" in helper
+    assert "RETURNING status_changed_at,updated_at" in helper
+    assert "'active',true,true,true,'active',true" in helper
+    assert "'api',NULL,NULL,false" in helper
+    assert "INSERT INTO public.org_branch_state" not in admin_setup
+
+    assert "AUTH_RUNTIME_PASSWORD: ci-auth-p4e-runtime" in workflow
+    assert "CREATE ROLE auth_p4e_runtime LOGIN" in workflow
+    assert (
+        "GRANT auth_runtime TO auth_p4e_runtime "
+        "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;"
+    ) in workflow
+    assert "ALTER ROLE auth_p4e_runtime SET row_security='on';" in workflow
+    assert (
+        "GRANT CONNECT ON DATABASE gymflow_p4e_test TO "
+        "migration_owner,auth_p4e_runtime,app_test_runtime,"
+        "worker_test_runtime,lifecycle_maintenance_test_runtime;"
+    ) in workflow
 
 
 def test_snapshots_are_no_argument_aggregate_only_security_definer() -> None:

@@ -13,6 +13,7 @@ _TOPOLOGY_URL_ENV = "TEST_DATABASE_URL"
 _ADMIN_TOPOLOGY_URL_ENV = "TEST_ADMIN_DATABASE_URL"
 
 _ADMIN_LOGIN = "migration_owner"
+_AUTH_LOGIN = "auth_p4e_runtime"
 _APP_LOGIN = "app_test_runtime"
 _WORKER_LOGIN = "worker_test_runtime"
 _MAINTENANCE_LOGIN = "lifecycle_maintenance_test_runtime"
@@ -109,8 +110,62 @@ def _snapshot(login: str, password_env: str, signature: str):
     return columns, row
 
 
+def _insert_canonical_initial_branch_state(
+    *, org_id: uuid.UUID, owner_id: uuid.UUID, branch_id: uuid.UUID
+) -> None:
+    """Create state through the certified P3A auth bootstrap boundary."""
+    with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    pg_catalog.set_config('app.current_role','owner',true),
+                    pg_catalog.set_config('app.current_org_id',%s,true),
+                    pg_catalog.set_config('app.current_user_id',%s,true),
+                    pg_catalog.set_config('app.current_principal_type','owner',true),
+                    pg_catalog.set_config('app.current_gym_id','',true)
+                """,
+                (str(org_id), str(owner_id)),
+            )
+            cur.execute(
+                """
+                INSERT INTO public.org_branch_state(
+                    branch_id,org_id,branch_status,is_primary,is_active,
+                    is_public,status,is_operational,status_changed_by,
+                    status_reason,transition_source,scheduled_transition_at,
+                    scheduled_transition_to,lifecycle_transition_in_progress,
+                    saga_last_checkpoint,saga_compensation_strategy,
+                    watchdog_recovered_at,watchdog_recovery_count,
+                    search_visibility_version,search_last_synced_at,
+                    search_sync_failed_at,reconciliation_claimed_by,
+                    reconciliation_claimed_at,worm_archive_uri,
+                    worm_archive_checksum,worm_archive_verified_at,
+                    worm_archive_status,version,search_logical_clock,
+                    search_epoch_ulid,deleted_at,archived_at,purged_at
+                ) VALUES (
+                    %s,%s,'active',true,true,true,'active',true,NULL,NULL,
+                    'api',NULL,NULL,false,NULL,NULL,NULL,0,1,NULL,NULL,NULL,
+                    NULL,NULL,NULL,NULL,NULL,1,0,%s,NULL,NULL,NULL
+                )
+                RETURNING status_changed_at,updated_at
+                """,
+                (
+                    branch_id,
+                    org_id,
+                    uuid.uuid4().hex[:26].upper(),
+                ),
+            )
+            returned = cur.fetchone()
+            assert returned is not None
+            assert all(value is not None for value in returned)
+        conn.commit()
+
+
 def _insert_search_runtime_rows() -> None:
-    org_id = uuid.uuid4()
+    work_org_id = uuid.uuid4()
+    reconciliation_org_id = uuid.uuid4()
+    work_owner_id = uuid.uuid4()
+    reconciliation_owner_id = uuid.uuid4()
     branch_with_work = uuid.uuid4()
     branch_reconciliation_only = uuid.uuid4()
     pending_id = uuid.uuid4()
@@ -124,54 +179,89 @@ def _insert_search_runtime_rows() -> None:
                 INSERT INTO public.organizations(
                     id,name,slug,tier,is_active,max_branches,
                     default_currency_code
-                ) VALUES (%s,%s,%s,'basic',true,10,'INR')
+                ) VALUES
+                    (%s,%s,%s,'basic',true,10,'INR'),
+                    (%s,%s,%s,'basic',true,10,'INR')
                 """,
                 (
-                    org_id,
-                    f"P4E Runtime {org_id}",
-                    f"p4e-runtime-{org_id.hex}",
+                    work_org_id,
+                    f"P4E Runtime Work {work_org_id}",
+                    f"p4e-runtime-work-{work_org_id.hex}",
+                    reconciliation_org_id,
+                    f"P4E Runtime Reconcile {reconciliation_org_id}",
+                    f"p4e-runtime-reconcile-{reconciliation_org_id.hex}",
                 ),
             )
             cur.execute(
-                "SELECT pg_catalog.set_config('app.current_org_id', %s, true)",
-                (str(org_id),),
-            )
-            cur.execute(
                 """
-                INSERT INTO public.org_branches(
-                    id,org_id,branch_name,branch_code,internal_slug,
-                    country_code,currency_code
+                INSERT INTO public.owners(
+                    id,org_id,owner_name,email,hashed_password,email_verified
                 ) VALUES
-                    (%s,%s,'P4E Search Work','P4E-W',%s,'IN','INR'),
-                    (%s,%s,'P4E Search Reconcile','P4E-R',%s,'IN','INR')
+                    (%s,%s,'P4E Work Owner',%s,'not-a-real-password',true),
+                    (%s,%s,'P4E Reconcile Owner',%s,'not-a-real-password',true)
                 """,
                 (
+                    work_owner_id,
+                    work_org_id,
+                    f"p4e-work-{work_owner_id.hex}@example.test",
+                    reconciliation_owner_id,
+                    reconciliation_org_id,
+                    f"p4e-reconcile-{reconciliation_owner_id.hex}@example.test",
+                ),
+            )
+            for org_id, owner_id, branch_id, branch_name, branch_code, slug in (
+                (
+                    work_org_id,
+                    work_owner_id,
                     branch_with_work,
-                    org_id,
+                    "P4E Search Work",
+                    "P4E-W",
                     f"p4e-work-{branch_with_work.hex}",
+                ),
+                (
+                    reconciliation_org_id,
+                    reconciliation_owner_id,
                     branch_reconciliation_only,
-                    org_id,
+                    "P4E Search Reconcile",
+                    "P4E-R",
                     f"p4e-reconcile-{branch_reconciliation_only.hex}",
                 ),
-            )
-            cur.execute(
-                """
-                INSERT INTO public.org_branch_state(
-                    branch_id,org_id,search_epoch_ulid
-                ) VALUES
-                    (%s,%s,%s),
-                    (%s,%s,%s)
-                """,
-                (
-                    branch_with_work,
-                    org_id,
-                    uuid.uuid4().hex[:26].upper(),
-                    branch_reconciliation_only,
-                    org_id,
-                    uuid.uuid4().hex[:26].upper(),
-                ),
-            )
+            ):
+                cur.execute(
+                    "SELECT pg_catalog.set_config('app.current_org_id', %s, true)",
+                    (str(org_id),),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO public.org_branches(
+                        id,org_id,branch_name,branch_code,internal_slug,
+                        country_code,currency_code,created_by
+                    ) VALUES (%s,%s,%s,%s,%s,'IN','INR',%s)
+                    """,
+                    (
+                        branch_id,
+                        org_id,
+                        branch_name,
+                        branch_code,
+                        slug,
+                        owner_id,
+                    ),
+                )
         conn.commit()
+
+    # P3A c77/c87 permits the auth identity to create only the canonical
+    # initial state and RETURNING timestamps. Two one-branch tenants let this
+    # aggregate fixture exercise that exact boundary for both test branches.
+    _insert_canonical_initial_branch_state(
+        org_id=work_org_id,
+        owner_id=work_owner_id,
+        branch_id=branch_with_work,
+    )
+    _insert_canonical_initial_branch_state(
+        org_id=reconciliation_org_id,
+        owner_id=reconciliation_owner_id,
+        branch_id=branch_reconciliation_only,
+    )
 
     # Use the already-certified application enqueue path. P4B's security owner
     # authority changes two rows to the other certified durable work states.
@@ -182,7 +272,7 @@ def _insert_search_runtime_rows() -> None:
             )
             cur.execute(
                 "SELECT pg_catalog.set_config('app.current_org_id', %s, true)",
-                (str(org_id),),
+                (str(work_org_id),),
             )
             cur.execute(
                 """
@@ -196,15 +286,15 @@ def _insert_search_runtime_rows() -> None:
                 """,
                 (
                     pending_id,
-                    org_id,
+                    work_org_id,
                     branch_with_work,
                     uuid.uuid4(),
                     processing_id,
-                    org_id,
+                    work_org_id,
                     branch_with_work,
                     uuid.uuid4(),
                     dead_letter_id,
-                    org_id,
+                    work_org_id,
                     branch_with_work,
                     uuid.uuid4(),
                 ),

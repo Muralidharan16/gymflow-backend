@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 75
     env:
       MIGRATION_PASSWORD: ci-migration-owner
+      AUTH_RUNTIME_PASSWORD: ci-auth-p4e-runtime
       APP_RUNTIME_PASSWORD: ci-app-test-runtime
       WORKER_RUNTIME_PASSWORD: ci-worker-runtime
       MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
@@ -55,19 +56,26 @@ jobs:
           bash scripts/ci/bootstrap_cluster_roles.sh
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
           ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE auth_p4e_runtime LOGIN PASSWORD 'ci-auth-p4e-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-test-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-worker-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-lifecycle-maintenance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT auth_runtime TO auth_p4e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_p4e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE auth_p4e_runtime SET row_security='on';
+          ALTER ROLE auth_p4e_runtime SET statement_timeout='5s';
+          ALTER ROLE auth_p4e_runtime SET lock_timeout='2s';
+          ALTER ROLE auth_p4e_runtime SET idle_in_transaction_session_timeout='15s';
           ALTER ROLE app_test_runtime SET row_security='on';
           ALTER ROLE worker_test_runtime SET row_security='on';
           ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
           CREATE DATABASE gymflow_p4e_test OWNER migration_owner;
           REVOKE ALL ON DATABASE gymflow_p4e_test FROM PUBLIC;
-          GRANT CONNECT ON DATABASE gymflow_p4e_test TO migration_owner,app_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime;
+          GRANT CONNECT ON DATABASE gymflow_p4e_test TO migration_owner,auth_p4e_runtime,app_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime;
           SQL
           bash scripts/ci/verify_cluster_roles.sh
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p4e_test
