@@ -10,6 +10,7 @@ MIGRATION = (
     ROOT
     / "alembic/versions/zf07d8e9f0a40_p4e_operational_snapshots.py"
 )
+P4D = ROOT / "alembic/versions/zc07d8e9f0a3d_p4d_refund_authority_boundary.py"
 
 
 def _source() -> str:
@@ -156,7 +157,7 @@ def test_search_snapshot_reuses_certified_p4b_semantics() -> None:
     assert "existing.status IN ('pending','processing')" in body
 
 
-def test_refund_snapshot_uses_only_certified_p4d_states() -> None:
+def test_refund_snapshot_reuses_certified_p4d_command_and_parent_semantics() -> None:
     source = _source()
     body = _function_block(
         source,
@@ -176,20 +177,36 @@ def test_refund_snapshot_uses_only_certified_p4d_states() -> None:
     for terminal in ("succeeded", "rejected", "cancelled"):
         assert f"c.status='{terminal}'" not in body
 
+    assert "JOIN finance.refunds AS r ON r.id = c.refund_id" in body
+    assert "WHERE r.status IN ('requested','approved','processing')" in body
 
-def test_acl_delta_is_one_column_and_execute_is_maintenance_only() -> None:
+    predecessor = P4D.read_text()
+    assert "JOIN finance.refunds r ON r.id = c.refund_id" in predecessor
+    assert "WHERE r.status IN ('requested','approved','processing')" in predecessor
+
+
+def test_p4e_adds_zero_direct_table_acl_and_execute_is_maintenance_only() -> None:
     source = _source()
-    normalized = " ".join(source.split())
 
-    assert "GRANT SELECT (created_at) ON TABLE public.branch_outbox_events" in source
-    assert "TO app_security_owner" in source
-    assert "REVOKE SELECT (created_at) ON TABLE public.branch_outbox_events" in source
-    assert "FROM app_security_owner" in source
+    # zc07 already provides the SECURITY DEFINER owner the table reads needed
+    # by both snapshots. P4E must not widen direct table authority at all.
+    predecessor = P4D.read_text()
+    assert (
+        "GRANT SELECT ON TABLE public.branch_outbox_events TO app_security_owner"
+        in predecessor
+    )
+    assert "GRANT SELECT, UPDATE ON TABLE finance.refunds TO app_security_owner" in predecessor
+    assert (
+        "GRANT SELECT, INSERT, UPDATE ON TABLE finance.refund_execution_commands TO app_security_owner"
+        in predecessor
+    )
 
-    assert normalized.count("GRANT SELECT (created_at)") == 1
+    assert "GRANT SELECT (" not in source
+    assert "GRANT SELECT ON TABLE" not in source
     assert "GRANT SELECT, INSERT" not in source
     assert "GRANT UPDATE" not in source
     assert "GRANT DELETE" not in source
+    assert "REVOKE SELECT (" not in source
 
     assert (
         'op.execute(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC")'
@@ -222,7 +239,7 @@ def test_no_rls_or_provider_execution_escape_hatches() -> None:
     assert "EXECUTE_REFUND" not in normalized
 
 
-def test_downgrade_drops_only_p4e_functions_and_owned_acl_delta() -> None:
+def test_downgrade_drops_only_p4e_functions_and_no_acl_or_data() -> None:
     source = _source()
     downgrade = source.split("def downgrade() -> None:", 1)[1]
 
@@ -238,5 +255,5 @@ def test_downgrade_drops_only_p4e_functions_and_owned_acl_delta() -> None:
     assert "DELETE FROM" not in downgrade
     assert "UPDATE " not in downgrade
     assert "TRUNCATE" not in downgrade
-    assert "REVOKE SELECT (created_at) ON TABLE public.branch_outbox_events" in downgrade
-    assert "FROM app_security_owner" in downgrade
+    assert "REVOKE SELECT" not in downgrade
+    assert "GRANT " not in downgrade

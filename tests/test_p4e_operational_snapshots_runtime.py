@@ -133,8 +133,7 @@ def _insert_search_runtime_rows() -> None:
                 ),
             )
             cur.execute(
-                "SELECT pg_catalog.set_config("
-                "'app.current_org_id', %s, true)",
+                "SELECT pg_catalog.set_config('app.current_org_id', %s, true)",
                 (str(org_id),),
             )
             cur.execute(
@@ -157,18 +156,15 @@ def _insert_search_runtime_rows() -> None:
             )
         conn.commit()
 
-    # Use only the already-certified app-runtime enqueue shape.  P4B's
-    # app_security_owner authority then changes two rows to the other certified
-    # operational states without widening app_runtime INSERT privileges.
+    # Use the already-certified application enqueue path. P4B's security owner
+    # authority changes two rows to the other certified durable work states.
     with _connect(_APP_LOGIN, "APP_RUNTIME_PASSWORD") as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT pg_catalog.set_config("
-                "'app.current_role','owner',true)"
+                "SELECT pg_catalog.set_config('app.current_role','owner',true)"
             )
             cur.execute(
-                "SELECT pg_catalog.set_config("
-                "'app.current_org_id', %s, true)",
+                "SELECT pg_catalog.set_config('app.current_org_id', %s, true)",
                 (str(org_id),),
             )
             cur.execute(
@@ -206,8 +202,7 @@ def _insert_search_runtime_rows() -> None:
                 UPDATE public.branch_outbox_events
                 SET status='processing',
                     leased_by=%s,
-                    leased_until=pg_catalog.clock_timestamp()
-                        + interval '10 minutes'
+                    leased_until=pg_catalog.clock_timestamp()+interval '10 minutes'
                 WHERE outbox_id=%s
                 """,
                 (uuid.uuid4(), processing_id),
@@ -215,9 +210,7 @@ def _insert_search_runtime_rows() -> None:
             cur.execute(
                 """
                 UPDATE public.branch_outbox_events
-                SET status='dead_lettered',
-                    leased_by=NULL,
-                    leased_until=NULL
+                SET status='dead_lettered',leased_by=NULL,leased_until=NULL
                 WHERE outbox_id=%s
                 """,
                 (dead_letter_id,),
@@ -226,7 +219,7 @@ def _insert_search_runtime_rows() -> None:
         conn.commit()
 
 
-def _insert_refund_runtime_rows() -> None:
+def _insert_refund_runtime_rows() -> uuid.UUID:
     org_id = uuid.uuid4()
     entity_id = uuid.uuid4()
     payment_id = uuid.uuid4()
@@ -307,16 +300,9 @@ def _insert_refund_runtime_rows() -> None:
                     leased_by,leased_until,materialized_at,updated_at
                 )
                 SELECT
-                    pg_catalog.gen_random_uuid(),
-                    r.id,
-                    %s,
-                    %s,
-                    %s,
-                    'p4e_runtime',
-                    pg_catalog.gen_random_uuid(),
-                    'p4e-runtime/' || r.id::text,
-                    1,
-                    'INR',
+                    pg_catalog.gen_random_uuid(),r.id,%s,%s,%s,
+                    'p4e_runtime',pg_catalog.gen_random_uuid(),
+                    'p4e-runtime/' || r.id::text,1,'INR',
                     CASE
                         WHEN r.seq <= 501 THEN 'pending'
                         WHEN r.seq = 502 THEN 'processing'
@@ -329,14 +315,9 @@ def _insert_refund_runtime_rows() -> None:
                         ELSE 'cancelled'
                     END,
                     CASE WHEN r.seq=502 THEN 1 ELSE 0 END,
-                    10,
-                    0,
+                    10,0,
                     pg_catalog.clock_timestamp()-interval '1 hour',
-                    CASE
-                        WHEN r.seq=502
-                        THEN pg_catalog.gen_random_uuid()
-                        ELSE NULL
-                    END,
+                    CASE WHEN r.seq=502 THEN pg_catalog.gen_random_uuid() ELSE NULL END,
                     CASE
                         WHEN r.seq=502
                         THEN pg_catalog.clock_timestamp()+interval '10 minutes'
@@ -345,12 +326,33 @@ def _insert_refund_runtime_rows() -> None:
                     pg_catalog.clock_timestamp()-interval '2 hours',
                     pg_catalog.clock_timestamp()-interval '1 hour'
                 FROM ordered_refunds AS r
-                """
-                ,
+                """,
                 (payment_id, payment_id, org_id, entity_id),
+            )
+
+            # Leave a deliberately stale pending command behind a now-cancelled
+            # parent refund. Certified P4D claim/discovery authority excludes it,
+            # and P4E telemetry must exclude it too.
+            cur.execute(
+                """
+                WITH ordered_refunds AS (
+                    SELECT
+                        r.id,
+                        row_number() OVER (ORDER BY r.id) AS seq
+                    FROM finance.refunds AS r
+                    WHERE r.payment_id=%s
+                )
+                UPDATE finance.refunds AS r
+                SET status='cancelled',updated_at=pg_catalog.clock_timestamp()
+                FROM ordered_refunds AS ordered
+                WHERE ordered.seq=501 AND r.id=ordered.id
+                """,
+                (payment_id,),
             )
             cur.execute("RESET ROLE")
         conn.commit()
+
+    return payment_id
 
 
 def test_runtime_database_is_explicit_and_disposable() -> None:
@@ -368,13 +370,12 @@ def test_snapshot_functions_are_maintenance_only_and_pii_free() -> None:
 
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as conn:
         with conn.cursor() as cur:
-            for signature, columns in expected.items():
+            for signature in expected:
                 cur.execute(
                     """
                     SELECT owner.rolname,p.prosecdef,p.provolatile,p.proconfig
                     FROM pg_catalog.pg_proc AS p
-                    JOIN pg_catalog.pg_roles AS owner
-                      ON owner.oid=p.proowner
+                    JOIN pg_catalog.pg_roles AS owner ON owner.oid=p.proowner
                     WHERE p.oid=pg_catalog.to_regprocedure(%s)
                     """,
                     (signature,),
@@ -397,11 +398,7 @@ def test_snapshot_functions_are_maintenance_only_and_pii_free() -> None:
                     ("finance_config_runtime", False),
                 ):
                     cur.execute(
-                        """
-                        SELECT pg_catalog.has_function_privilege(
-                            %s,%s,'EXECUTE'
-                        )
-                        """,
+                        "SELECT pg_catalog.has_function_privilege(%s,%s,'EXECUTE')",
                         (role, signature),
                     )
                     assert cur.fetchone()[0] is allowed
@@ -435,10 +432,7 @@ def test_snapshot_functions_are_maintenance_only_and_pii_free() -> None:
         )
         assert actual_columns == columns
         assert row is not None
-        assert all(
-            isinstance(value, (int, float))
-            for value in row
-        )
+        assert all(isinstance(value, (int, float)) for value in row)
         assert all(float(value) >= 0 for value in row)
 
     for login, password_env in (
@@ -470,19 +464,17 @@ def test_search_snapshot_tracks_durable_work_and_reconciliation_candidates() -> 
     assert after[0] == before[0] + 1
     assert after[1] == before[1] + 1
     assert after[2] == before[2] + 1
-    # The branch that has no pending/processing search command remains an
-    # enqueue candidate; the branch with live durable work is excluded.
     assert after[3] >= before[3] + 1
     assert after[4] >= 0.0
 
 
-def test_refund_snapshot_is_exact_beyond_500_row_discovery_limit() -> None:
+def test_refund_snapshot_is_exact_beyond_500_and_matches_parent_eligibility() -> None:
     _, before = _snapshot(
         _MAINTENANCE_LOGIN,
         "MAINTENANCE_RUNTIME_PASSWORD",
         _REFUND_SNAPSHOT,
     )
-    _insert_refund_runtime_rows()
+    payment_id = _insert_refund_runtime_rows()
     columns, after = _snapshot(
         _MAINTENANCE_LOGIN,
         "MAINTENANCE_RUNTIME_PASSWORD",
@@ -490,13 +482,33 @@ def test_refund_snapshot_is_exact_beyond_500_row_discovery_limit() -> None:
     )
 
     assert columns == _REFUND_COLUMNS
-    assert after[0] == before[0] + 501
+    # 501 commands were created pending, but one parent refund was then
+    # cancelled. P4E must match P4D and report only 500 eligible pending rows.
+    assert after[0] == before[0] + 500
     assert after[1] == before[1] + 1
     assert after[2] == before[2] + 1
     assert after[3] == before[3] + 1
     assert after[4] == before[4] + 1
     assert after[5] == before[5] + 1
     assert after[6] >= 60 * 60
+
+    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL ROLE app_security_owner")
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM finance.refund_execution_commands AS c
+                JOIN finance.refunds AS r ON r.id=c.refund_id
+                WHERE c.payment_id=%s
+                  AND c.status='pending'
+                  AND r.status='cancelled'
+                """,
+                (payment_id,),
+            )
+            assert cur.fetchone()[0] == 1
+            cur.execute("RESET ROLE")
+        conn.commit()
 
     with _connect(
         _MAINTENANCE_LOGIN,
@@ -510,8 +522,5 @@ def test_refund_snapshot_is_exact_beyond_500_row_discovery_limit() -> None:
             assert cur.fetchone()[0] == 500
         conn.commit()
 
-    # 501 pending plus one row in each of five other unresolved/operator
-    # attention states.  succeeded/rejected/cancelled are deliberately not
-    # represented in the unresolved aggregate.
     unresolved_delta = sum(after[index] - before[index] for index in range(6))
-    assert unresolved_delta == 506
+    assert unresolved_delta == 505

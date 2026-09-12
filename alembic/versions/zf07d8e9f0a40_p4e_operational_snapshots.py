@@ -4,9 +4,9 @@ Revision ID: zf07d8e9f0a40
 Revises: ze07d8e9f0a3f
 Create Date: 2026-09-12
 
-P4E adds observation only.  The two no-argument SECURITY DEFINER functions
+P4E adds observation only. The two no-argument SECURITY DEFINER functions
 return bounded-cardinality numeric aggregates to the existing isolated
-lifecycle maintenance capability.  They expose no tenant/entity identifiers,
+lifecycle maintenance capability. They expose no tenant/entity identifiers,
 perform no mutation, and grant no new table authority to runtime identities.
 """
 
@@ -26,7 +26,6 @@ _MAINTENANCE = "lifecycle_maintenance_runtime"
 
 _SEARCH_SNAPSHOT = "app_secure.search_operational_snapshot()"
 _REFUND_SNAPSHOT = "app_secure.refund_execution_operational_snapshot()"
-_SEARCH_OUTBOX = "public.branch_outbox_events"
 
 
 def _require_identity(bind) -> None:
@@ -46,7 +45,19 @@ def _regprocedure_exists(bind, signature: str) -> bool:
     )
 
 
-def _has_column_select(bind, role: str, relation: str, column: str) -> bool:
+def _has_table_select(bind, relation: str) -> bool:
+    return bool(
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_table_privilege("
+                ":role,:relation,'SELECT')"
+            ),
+            {"role": _SECURITY_OWNER, "relation": relation},
+        ).scalar_one()
+    )
+
+
+def _has_column_select(bind, relation: str, column: str) -> bool:
     return bool(
         bind.execute(
             sa.text(
@@ -56,7 +67,11 @@ def _has_column_select(bind, role: str, relation: str, column: str) -> bool:
                 )
                 """
             ),
-            {"role": role, "relation": relation, "column": column},
+            {
+                "role": _SECURITY_OWNER,
+                "relation": relation,
+                "column": column,
+            },
         ).scalar_one()
     )
 
@@ -68,23 +83,36 @@ def _require_upgrade_preconditions(bind) -> None:
                 f"zf07 P4E snapshot unexpectedly already exists: {signature}"
             )
 
-    # u07 deliberately granted app_security_owner only the search outbox
-    # columns needed for execution/reconciliation, not created_at.  P4E owns
-    # this one new column-level SELECT solely to compute aggregate backlog age.
-    if _has_column_select(
-        bind, _SECURITY_OWNER, _SEARCH_OUTBOX, "created_at"
+    # P4E must consume only authority already owned by the certified P4B/P4D
+    # lineage. In particular, zc07 already grants app_security_owner full
+    # SELECT on branch_outbox_events and finance.refunds, while u07 provides
+    # the search-state columns. P4E deliberately adds zero direct table ACLs.
+    for relation in (
+        "public.branch_outbox_events",
+        "finance.refunds",
+        "finance.refund_execution_commands",
     ):
-        raise RuntimeError(
-            "zf07 predecessor unexpectedly grants app_security_owner "
-            "branch_outbox_events.created_at SELECT"
-        )
+        if not _has_table_select(bind, relation):
+            raise RuntimeError(
+                "zf07 predecessor lacks required app_security_owner SELECT: "
+                f"{relation}"
+            )
+
+    for column in (
+        "branch_id",
+        "org_id",
+        "search_visibility_version",
+        "search_provider_ack_version",
+        "search_provider_reconciled_at",
+    ):
+        if not _has_column_select(bind, "public.org_branch_state", column):
+            raise RuntimeError(
+                "zf07 predecessor lacks required app_security_owner "
+                f"org_branch_state.{column} SELECT"
+            )
 
 
 def _install_snapshots() -> None:
-    op.execute(
-        "GRANT SELECT (created_at) ON TABLE public.branch_outbox_events "
-        "TO app_security_owner"
-    )
     op.execute("SET LOCAL ROLE app_security_owner")
 
     op.execute(
@@ -210,6 +238,8 @@ def _install_snapshots() -> None:
                     0
                 )::double precision
             FROM finance.refund_execution_commands AS c
+            JOIN finance.refunds AS r ON r.id = c.refund_id
+            WHERE r.status IN ('requested','approved','processing')
         $function$
         """
     )
@@ -224,13 +254,6 @@ def _install_snapshots() -> None:
 
 
 def _post_install_proof(bind) -> None:
-    if not _has_column_select(
-        bind, _SECURITY_OWNER, _SEARCH_OUTBOX, "created_at"
-    ):
-        raise RuntimeError(
-            "zf07 P4E search snapshot owner lacks created_at SELECT"
-        )
-
     for signature in (_SEARCH_SNAPSHOT, _REFUND_SNAPSHOT):
         row = bind.execute(
             sa.text(
@@ -360,15 +383,3 @@ def downgrade() -> None:
     )
     op.execute("DROP FUNCTION app_secure.search_operational_snapshot()")
     op.execute("RESET ROLE")
-
-    op.execute(
-        "REVOKE SELECT (created_at) ON TABLE public.branch_outbox_events "
-        "FROM app_security_owner"
-    )
-
-    if _has_column_select(
-        bind, _SECURITY_OWNER, _SEARCH_OUTBOX, "created_at"
-    ):
-        raise RuntimeError(
-            "zf07 downgrade failed to restore predecessor created_at ACL"
-        )
