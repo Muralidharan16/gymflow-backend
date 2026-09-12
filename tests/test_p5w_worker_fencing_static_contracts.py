@@ -11,6 +11,7 @@ LIFECYCLE_POLLER = ROOT / "app" / "tasks" / "branch_outbox_poller.py"
 TRANSACTIONAL_POLLER = ROOT / "app" / "tasks" / "outbox_poller.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "p5w-worker-fencing-pg16.yml"
 SLICE = ROOT / "docs" / "architecture" / "P5W1_WORKER_CLAIM_FENCING.md"
+RUNTIME = ROOT / "tests" / "test_p5w_worker_fencing_runtime.py"
 
 
 def _function(source: str, start: str, end: str | None) -> str:
@@ -148,6 +149,24 @@ def test_p5w_runtime_gate_uses_real_postgres_reduced_identity_and_same_head() ->
         assert phrase in source
 
 
+def test_p5w_runtime_seed_uses_canonical_actor_for_branch_hours_enqueue() -> None:
+    source = RUNTIME.read_text(encoding="utf-8")
+    seed = _function(source, "def _seed_two_final_attempt_jobs", "def _expire_claim")
+
+    assert "INSERT INTO public.owners" in seed
+    assert "email_verified,onboarding_completed" in seed
+    assert "'fixture-not-a-real-password-hash',true,true" in seed
+    assert "pg_catalog.set_config('app.current_role','saga_orchestrator',true)" in seed
+    assert "pg_catalog.set_config('app.current_role','owner',true)" in seed
+    assert "pg_catalog.set_config('app.current_user_id',%s,true)" in seed
+    assert "pg_catalog.set_config('app.current_principal_type','owner',true)" in seed
+
+    lifecycle_enqueue = seed.index("INSERT INTO public.branch_outbox_events")
+    canonical_owner = seed.index("pg_catalog.set_config('app.current_role','owner',true)")
+    branch_hours_enqueue = seed.index("SELECT public.enqueue_branch_hours_rebuild")
+    assert lifecycle_enqueue < canonical_owner < branch_hours_enqueue
+
+
 def test_p5w_slice_claims_only_its_bounded_evidence() -> None:
     source = SLICE.read_text(encoding="utf-8").lower()
 
@@ -156,6 +175,14 @@ def test_p5w_slice_claims_only_its_bounded_evidence() -> None:
     assert "ownership had no monotonic claim generation" in source
     assert "strand a worker that died during its final allowed attempt" in source
     assert "p5w_worker_fencing_pg16=pass" in source
+    for repair_evidence in (
+        "80b470b5ea9f80cdbbaa05781abbb6a8bb5f2696",
+        "34695691925",
+        "34695691928",
+        "does not weaken that production policy",
+        "failed candidate is not p5-w1 certified",
+    ):
+        assert repair_evidence in source
     for limitation in (
         "does not complete p5-w or p5",
         "real worker-process death before/after commit",

@@ -71,6 +71,22 @@ The only success marker is:
 
 `P5W_WORKER_FENCING_PG16=PASS`
 
+## First remote-proof repair record
+
+Candidate `80b470b5ea9f80cdbbaa05781abbb6a8bb5f2696` reached GitHub on the
+authorized P5 branch. Governance run `34695691925` passed, but PostgreSQL 16
+run `34695691928` failed before exercising the fence behavior. The fixture
+called `enqueue_branch_hours_rebuild` with an invented `saga_orchestrator`
+context even though the inherited FORCE-RLS contract requires a canonical,
+database-revalidated owner or branch manager.
+
+The repair does not weaken that production policy. The disposable test seed now
+creates an active, verified and onboarded owner, uses the bounded saga context
+only for the lifecycle queue insert, and switches to the canonical owner before
+calling the branch-hours enqueue capability. A static contract fixes this
+ordering. The failed candidate is not P5-W1 certified; every gate must pass
+again on the replacement immutable SHA.
+
 ## Explicit limitations
 
 P5-W1 does not complete P5-W or P5. It does not yet claim:

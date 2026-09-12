@@ -65,6 +65,7 @@ def _connect(login: str, password_env: str):
 
 def _seed_two_final_attempt_jobs() -> tuple[uuid.UUID, uuid.UUID]:
     org_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
     branch_id = uuid.uuid4()
     lifecycle_id = uuid.uuid4()
     lifecycle_correlation = uuid.uuid4()
@@ -87,6 +88,22 @@ def _seed_two_final_attempt_jobs() -> tuple[uuid.UUID, uuid.UUID]:
             cursor.execute(
                 "SELECT pg_catalog.set_config('app.current_org_id',%s,true)",
                 (str(org_id),),
+            )
+            cursor.execute(
+                """
+                INSERT INTO public.owners(
+                    id,org_id,owner_name,email,hashed_password,
+                    email_verified,onboarding_completed
+                ) VALUES (
+                    %s,%s,'P5-W Runtime Owner',%s,
+                    'fixture-not-a-real-password-hash',true,true
+                )
+                """,
+                (
+                    owner_id,
+                    org_id,
+                    f"p5w-runtime-{owner_id.hex}@example.test",
+                ),
             )
             cursor.execute(
                 """
@@ -128,6 +145,20 @@ def _seed_two_final_attempt_jobs() -> tuple[uuid.UUID, uuid.UUID]:
                 ) VALUES (%s,%s,%s,'branch.lifecycle_saga','{}'::jsonb,1,%s)
                 """,
                 (lifecycle_id, org_id, branch_id, lifecycle_correlation),
+            )
+            # The lifecycle queue has a bounded saga-orchestrator write path,
+            # while branch-hours enqueue is intentionally restricted to a
+            # canonical, database-revalidated principal. Switch to the seeded
+            # active owner rather than weakening the production RLS policy for
+            # this fault-injection fixture.
+            cursor.execute(
+                """
+                SELECT
+                    pg_catalog.set_config('app.current_role','owner',true),
+                    pg_catalog.set_config('app.current_user_id',%s,true),
+                    pg_catalog.set_config('app.current_principal_type','owner',true)
+                """,
+                (str(owner_id),),
             )
             cursor.execute(
                 "SELECT public.enqueue_branch_hours_rebuild(%s,%s)",
