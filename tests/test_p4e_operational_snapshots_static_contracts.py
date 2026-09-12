@@ -226,6 +226,20 @@ def test_p4e_adds_zero_direct_table_acl_and_execute_is_maintenance_only() -> Non
         assert f"TO {blocked}" not in source
 
 
+def test_migration_catalog_proofs_do_not_require_app_secure_schema_usage() -> None:
+    source = _source()
+
+    # migration_owner intentionally has no app_secure USAGE. Migration
+    # pre/post/downgrade proofs therefore must resolve objects through system
+    # catalogs/OIDs rather than schema-qualified reg* name resolution.
+    assert "to_regprocedure" not in source
+    assert "to_regclass" not in source
+    assert "pg_catalog.pg_proc" in source
+    assert "pg_catalog.pg_namespace" in source
+    assert "CAST(:function_oid AS oid)" in source
+    assert "CAST(:relation_oid AS oid)" in source
+
+
 def test_no_rls_or_provider_execution_escape_hatches() -> None:
     source = _source()
     normalized = source.upper()

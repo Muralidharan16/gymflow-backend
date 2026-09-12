@@ -23,9 +23,12 @@ depends_on = None
 _MIGRATION_OWNER = "migration_owner"
 _SECURITY_OWNER = "app_security_owner"
 _MAINTENANCE = "lifecycle_maintenance_runtime"
+_APP_SECURE_SCHEMA = "app_secure"
 
-_SEARCH_SNAPSHOT = "app_secure.search_operational_snapshot()"
-_REFUND_SNAPSHOT = "app_secure.refund_execution_operational_snapshot()"
+_SEARCH_SNAPSHOT_NAME = "search_operational_snapshot"
+_REFUND_SNAPSHOT_NAME = "refund_execution_operational_snapshot"
+_SEARCH_SNAPSHOT = f"{_APP_SECURE_SCHEMA}.{_SEARCH_SNAPSHOT_NAME}()"
+_REFUND_SNAPSHOT = f"{_APP_SECURE_SCHEMA}.{_REFUND_SNAPSHOT_NAME}()"
 
 
 def _require_identity(bind) -> None:
@@ -36,40 +39,84 @@ def _require_identity(bind) -> None:
         raise RuntimeError("zf07 P4E migration requires migration_owner")
 
 
-def _regprocedure_exists(bind, signature: str) -> bool:
-    return bool(
-        bind.execute(
-            sa.text("SELECT pg_catalog.to_regprocedure(:signature) IS NOT NULL"),
-            {"signature": signature},
-        ).scalar_one()
-    )
+def _function_oid(bind, function_name: str, argument_count: int = 0):
+    return bind.execute(
+        sa.text(
+            """
+            SELECT p.oid
+            FROM pg_catalog.pg_proc AS p
+            JOIN pg_catalog.pg_namespace AS n
+              ON n.oid = p.pronamespace
+            WHERE n.nspname = :schema_name
+              AND p.proname = :function_name
+              AND p.pronargs = :argument_count
+            """
+        ),
+        {
+            "schema_name": _APP_SECURE_SCHEMA,
+            "function_name": function_name,
+            "argument_count": argument_count,
+        },
+    ).scalar_one_or_none()
+
+
+def _relation_oid(bind, relation: str):
+    schema_name, relation_name = relation.split(".", 1)
+    return bind.execute(
+        sa.text(
+            """
+            SELECT c.oid
+            FROM pg_catalog.pg_class AS c
+            JOIN pg_catalog.pg_namespace AS n
+              ON n.oid = c.relnamespace
+            WHERE n.nspname = :schema_name
+              AND c.relname = :relation_name
+            """
+        ),
+        {
+            "schema_name": schema_name,
+            "relation_name": relation_name,
+        },
+    ).scalar_one_or_none()
 
 
 def _has_table_select(bind, relation: str) -> bool:
-    return bool(
-        bind.execute(
-            sa.text(
-                "SELECT pg_catalog.has_table_privilege("
-                ":role,:relation,'SELECT')"
-            ),
-            {"role": _SECURITY_OWNER, "relation": relation},
-        ).scalar_one()
-    )
-
-
-def _has_column_select(bind, relation: str, column: str) -> bool:
+    relation_oid = _relation_oid(bind, relation)
+    if relation_oid is None:
+        return False
     return bool(
         bind.execute(
             sa.text(
                 """
-                SELECT pg_catalog.has_column_privilege(
-                    :role, :relation, :column, 'SELECT'
+                SELECT pg_catalog.has_table_privilege(
+                    :role, CAST(:relation_oid AS oid), 'SELECT'
                 )
                 """
             ),
             {
                 "role": _SECURITY_OWNER,
-                "relation": relation,
+                "relation_oid": relation_oid,
+            },
+        ).scalar_one()
+    )
+
+
+def _has_column_select(bind, relation: str, column: str) -> bool:
+    relation_oid = _relation_oid(bind, relation)
+    if relation_oid is None:
+        return False
+    return bool(
+        bind.execute(
+            sa.text(
+                """
+                SELECT pg_catalog.has_column_privilege(
+                    :role, CAST(:relation_oid AS oid), :column, 'SELECT'
+                )
+                """
+            ),
+            {
+                "role": _SECURITY_OWNER,
+                "relation_oid": relation_oid,
                 "column": column,
             },
         ).scalar_one()
@@ -77,8 +124,11 @@ def _has_column_select(bind, relation: str, column: str) -> bool:
 
 
 def _require_upgrade_preconditions(bind) -> None:
-    for signature in (_SEARCH_SNAPSHOT, _REFUND_SNAPSHOT):
-        if _regprocedure_exists(bind, signature):
+    for function_name, signature in (
+        (_SEARCH_SNAPSHOT_NAME, _SEARCH_SNAPSHOT),
+        (_REFUND_SNAPSHOT_NAME, _REFUND_SNAPSHOT),
+    ):
+        if _function_oid(bind, function_name) is not None:
             raise RuntimeError(
                 f"zf07 P4E snapshot unexpectedly already exists: {signature}"
             )
@@ -254,24 +304,35 @@ def _install_snapshots() -> None:
 
 
 def _post_install_proof(bind) -> None:
-    for signature in (_SEARCH_SNAPSHOT, _REFUND_SNAPSHOT):
+    for function_name, signature in (
+        (_SEARCH_SNAPSHOT_NAME, _SEARCH_SNAPSHOT),
+        (_REFUND_SNAPSHOT_NAME, _REFUND_SNAPSHOT),
+    ):
         row = bind.execute(
             sa.text(
                 """
-                SELECT owner.rolname, p.prosecdef, p.provolatile, p.proconfig
+                SELECT p.oid, owner.rolname, p.prosecdef,
+                       p.provolatile, p.proconfig
                 FROM pg_catalog.pg_proc AS p
+                JOIN pg_catalog.pg_namespace AS n
+                  ON n.oid = p.pronamespace
                 JOIN pg_catalog.pg_roles AS owner
                   ON owner.oid = p.proowner
-                WHERE p.oid = pg_catalog.to_regprocedure(:signature)
+                WHERE n.nspname = :schema_name
+                  AND p.proname = :function_name
+                  AND p.pronargs = 0
                 """
             ),
-            {"signature": signature},
+            {
+                "schema_name": _APP_SECURE_SCHEMA,
+                "function_name": function_name,
+            },
         ).one_or_none()
         if row is None:
             raise RuntimeError(
                 f"zf07 P4E snapshot missing after install: {signature}"
             )
-        owner, security_definer, volatility, config = row
+        function_oid, owner, security_definer, volatility, config = row
         if owner != _SECURITY_OWNER or not security_definer:
             raise RuntimeError(
                 f"zf07 P4E snapshot owner/security drift: {signature}"
@@ -297,11 +358,14 @@ def _post_install_proof(bind) -> None:
                 sa.text(
                     """
                     SELECT pg_catalog.has_function_privilege(
-                        :role, :signature, 'EXECUTE'
+                        :role, CAST(:function_oid AS oid), 'EXECUTE'
                     )
                     """
                 ),
-                {"role": _MAINTENANCE, "signature": signature},
+                {
+                    "role": _MAINTENANCE,
+                    "function_oid": function_oid,
+                },
             ).scalar_one()
         ):
             raise RuntimeError(
@@ -321,13 +385,13 @@ def _post_install_proof(bind) -> None:
                                 pg_catalog.acldefault('f', p.proowner)
                             )
                         ) AS acl
-                        WHERE p.oid = pg_catalog.to_regprocedure(:signature)
+                        WHERE p.oid = CAST(:function_oid AS oid)
                           AND acl.grantee = 0
                           AND acl.privilege_type = 'EXECUTE'
                     )
                     """
                 ),
-                {"signature": signature},
+                {"function_oid": function_oid},
             ).scalar_one()
         )
         if public_execute:
@@ -346,11 +410,14 @@ def _post_install_proof(bind) -> None:
                     sa.text(
                         """
                         SELECT pg_catalog.has_function_privilege(
-                            :role, :signature, 'EXECUTE'
+                            :role, CAST(:function_oid AS oid), 'EXECUTE'
                         )
                         """
                     ),
-                    {"role": blocked_role, "signature": signature},
+                    {
+                        "role": blocked_role,
+                        "function_oid": function_oid,
+                    },
                 ).scalar_one()
             ):
                 raise RuntimeError(
@@ -371,8 +438,11 @@ def downgrade() -> None:
     bind = op.get_bind()
     _require_identity(bind)
 
-    for signature in (_SEARCH_SNAPSHOT, _REFUND_SNAPSHOT):
-        if not _regprocedure_exists(bind, signature):
+    for function_name, signature in (
+        (_SEARCH_SNAPSHOT_NAME, _SEARCH_SNAPSHOT),
+        (_REFUND_SNAPSHOT_NAME, _REFUND_SNAPSHOT),
+    ):
+        if _function_oid(bind, function_name) is None:
             raise RuntimeError(
                 f"zf07 downgrade refuses missing owned snapshot: {signature}"
             )

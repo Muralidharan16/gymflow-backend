@@ -364,23 +364,34 @@ def test_runtime_database_is_explicit_and_disposable() -> None:
 
 def test_snapshot_functions_are_maintenance_only_and_pii_free() -> None:
     expected = {
-        _SEARCH_SNAPSHOT: _SEARCH_COLUMNS,
-        _REFUND_SNAPSHOT: _REFUND_COLUMNS,
+        "search_operational_snapshot": (_SEARCH_SNAPSHOT, _SEARCH_COLUMNS),
+        "refund_execution_operational_snapshot": (
+            _REFUND_SNAPSHOT,
+            _REFUND_COLUMNS,
+        ),
     }
 
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as conn:
         with conn.cursor() as cur:
-            for signature in expected:
+            for function_name in expected:
                 cur.execute(
                     """
-                    SELECT owner.rolname,p.prosecdef,p.provolatile,p.proconfig
+                    SELECT p.oid,owner.rolname,p.prosecdef,
+                           p.provolatile,p.proconfig
                     FROM pg_catalog.pg_proc AS p
-                    JOIN pg_catalog.pg_roles AS owner ON owner.oid=p.proowner
-                    WHERE p.oid=pg_catalog.to_regprocedure(%s)
+                    JOIN pg_catalog.pg_namespace AS n
+                      ON n.oid=p.pronamespace
+                    JOIN pg_catalog.pg_roles AS owner
+                      ON owner.oid=p.proowner
+                    WHERE n.nspname='app_secure'
+                      AND p.proname=%s
+                      AND p.pronargs=0
                     """,
-                    (signature,),
+                    (function_name,),
                 )
-                owner, security_definer, volatility, config = cur.fetchone()
+                function_oid, owner, security_definer, volatility, config = (
+                    cur.fetchone()
+                )
                 assert owner == "app_security_owner"
                 assert security_definer is True
                 assert volatility == "s"
@@ -398,8 +409,12 @@ def test_snapshot_functions_are_maintenance_only_and_pii_free() -> None:
                     ("finance_config_runtime", False),
                 ):
                     cur.execute(
-                        "SELECT pg_catalog.has_function_privilege(%s,%s,'EXECUTE')",
-                        (role, signature),
+                        """
+                        SELECT pg_catalog.has_function_privilege(
+                            %s,%s::oid,'EXECUTE'
+                        )
+                        """,
+                        (role, function_oid),
                     )
                     assert cur.fetchone()[0] is allowed
 
@@ -414,17 +429,20 @@ def test_snapshot_functions_are_maintenance_only_and_pii_free() -> None:
                                 pg_catalog.acldefault('f', p.proowner)
                             )
                         ) AS acl
-                        WHERE p.oid=pg_catalog.to_regprocedure(%s)
+                        WHERE p.oid=%s::oid
                           AND acl.grantee=0
                           AND acl.privilege_type='EXECUTE'
                     )
                     """,
-                    (signature,),
+                    (function_oid,),
                 )
                 assert cur.fetchone()[0] is False
         conn.commit()
 
-    for signature, columns in expected.items():
+    for signature, columns in (
+        (_SEARCH_SNAPSHOT, _SEARCH_COLUMNS),
+        (_REFUND_SNAPSHOT, _REFUND_COLUMNS),
+    ):
         actual_columns, row = _snapshot(
             _MAINTENANCE_LOGIN,
             "MAINTENANCE_RUNTIME_PASSWORD",
@@ -440,7 +458,7 @@ def test_snapshot_functions_are_maintenance_only_and_pii_free() -> None:
         (_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD"),
     ):
         with _connect(login, password_env) as conn:
-            for signature in expected:
+            for signature in (_SEARCH_SNAPSHOT, _REFUND_SNAPSHOT):
                 with pytest.raises(InsufficientPrivilege):
                     with conn.cursor() as cur:
                         cur.execute(f"SELECT * FROM {signature}")
