@@ -144,9 +144,14 @@ def test_inventory_exactly_tracks_current_lifecycle_external_events_by_domain() 
 
     assert by_event["branch.search_index"]["current_status"] == "provider_backed_p4b_certified"
     assert by_event["branch.search_deindex"]["current_status"] == "provider_backed_p4b_certified"
-    assert by_event["branch.member_notification"]["current_status"] == "implemented_p4c_candidate_not_certified"
-    assert by_event["branch.member_notification"]["certification_status"] == "candidate"
-    assert by_event["branch.refund_required"]["current_status"] == "implemented_p4d_candidate_finance_obligation_command_not_provider_execution"
+    assert by_event["branch.member_notification"]["current_status"] == "provider_backed_p4c_certified"
+    assert by_event["branch.member_notification"]["certification_status"] == "certified"
+    assert by_event["branch.refund_required"]["current_status"] == (
+        "p4d_finance_obligation_boundary_certified_provider_execution_deferred"
+    )
+    assert by_event["branch.refund_required"]["certification_status"] == (
+        "certified_boundary_provider_execution_deferred"
+    )
 
 
 def test_current_poller_routes_search_notification_and_refund_without_success_shortcuts() -> None:

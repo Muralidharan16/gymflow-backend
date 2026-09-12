@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "phase": "P4E",
+  "governing_rule": "local_attempt_is_not_external_success",
+  "required_head_migration": "zf07d8e9f0a40",
+  "required_same_head_checks": [
+    {
+      "workflow": ".github/workflows/p4e-operational-snapshots-pg16.yml",
+      "marker": "P4E_SLICE1B_PG16_CERTIFICATION=PASS"
+    },
+    {
+      "workflow": ".github/workflows/p4e-final-external-effects-certification.yml",
+      "marker": "P4E_FINAL_EXTERNAL_EFFECT_CERTIFICATION=PASS"
+    }
+  ],
+  "gates": [
+    {
+      "id": "inventory_truth",
+      "status": "certified",
+      "evidence": [
+        "docs/architecture/p4_external_effect_inventory.json",
+        "tests/test_p4a_external_effect_contracts.py",
+        "tests/test_p4a_inventory_schema.py"
+      ]
+    },
+    {
+      "id": "attempt_is_not_success",
+      "status": "certified",
+      "evidence": [
+        "app/core/external_effect_contract.py",
+        "tests/test_p4a_external_effect_semantics.py",
+        "tests/test_p4a_provider_outcome_truth_table.py"
+      ]
+    },
+    {
+      "id": "search_provider_and_reconciliation",
+      "status": "certified",
+      "evidence": [
+        "tests/test_p4b_search_provider.py",
+        "tests/test_p4b_search_provider_adversarial.py",
+        "tests/test_p4b_search_drift_repair.py"
+      ]
+    },
+    {
+      "id": "notification_delivery_webhook_and_reconciliation",
+      "status": "certified",
+      "evidence": [
+        "tests/test_p4c_notification_provider.py",
+        "tests/test_p4c_resend_webhook.py",
+        "tests/test_p4c_notification_static_contracts.py"
+      ]
+    },
+    {
+      "id": "refund_obligation_authority_and_recovery",
+      "status": "certified",
+      "evidence": [
+        "tests/test_p4d_refund_authority_static_contracts.py",
+        ".github/workflows/p4d-refund-authority-pg16.yml"
+      ]
+    },
+    {
+      "id": "refund_provider_execution",
+      "status": "deferred_fail_closed",
+      "evidence": [
+        "app/tasks/branch_outbox_poller.py",
+        "tests/test_p4d_refund_authority_static_contracts.py"
+      ]
+    },
+    {
+      "id": "maintenance_only_aggregate_observability",
+      "status": "certified",
+      "evidence": [
+        "alembic/versions/zf07d8e9f0a40_p4e_operational_snapshots.py",
+        "app/tasks/external_effect_observability.py",
+        "app/observability/external_effect_metrics.py",
+        "tests/test_p4e_operational_snapshots_runtime.py",
+        "tests/test_p4e_operational_metrics_export.py"
+      ]
+    },
+    {
+      "id": "operator_recovery_safety",
+      "status": "certified",
+      "evidence": [
+        "docs/operations/p4-external-effects-recovery.md",
+        "tests/test_p4a_recovery_runbook_contract.py"
+      ]
+    },
+    {
+      "id": "p4e_migration_lifecycle",
+      "status": "certified",
+      "evidence": [
+        ".github/workflows/p4e-operational-snapshots-pg16.yml",
+        "tests/test_p4e_operational_snapshots_static_contracts.py"
+      ]
+    }
+  ],
+  "excluded_follow_on": {
+    "phase": "Final P4",
+    "scope": "same-head inherited P1/P2/P3 plus full P4 regression",
+    "status": "not_claimed_by_p4e"
+  }
+}

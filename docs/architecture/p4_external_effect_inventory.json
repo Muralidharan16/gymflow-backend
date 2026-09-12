@@ -1,7 +1,7 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "certified_base_sha": "882406537584861da2b2b6d44fd37b016a9f8462",
-  "phase": "P4 rolling external-effect contract",
+  "phase": "P4E operational recovery and observability",
   "governing_rule": "local_attempt_is_not_external_success",
   "lifecycle_external_events": [
     {
@@ -30,9 +30,9 @@
       "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
       "consumer": "app.services.notification_delivery_service.materialize_member_notifications",
       "p4_stage": "P4C",
-      "current_status": "implemented_p4c_candidate_not_certified",
+      "current_status": "provider_backed_p4c_certified",
       "terminal_success_requires": "provider_acceptance_and_channel_terminal_evidence_where_available",
-      "certification_status": "candidate"
+      "certification_status": "certified"
     },
     {
       "event_type": "branch.refund_required",
@@ -40,9 +40,9 @@
       "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
       "consumer": "app.tasks.branch_outbox_poller._process_refund_required_event",
       "p4_stage": "P4D",
-      "current_status": "implemented_p4d_candidate_finance_obligation_command_not_provider_execution",
+      "current_status": "p4d_finance_obligation_boundary_certified_provider_execution_deferred",
       "terminal_success_requires": "authoritative_refund_provider_evidence_after separate provider execution and reconciliation phases",
-      "certification_status": "candidate"
+      "certification_status": "certified_boundary_provider_execution_deferred"
     }
   ],
   "legacy_notification_entrypoints": [
@@ -133,8 +133,8 @@
       "producer": "app_secure.materialize_branch_member_notifications",
       "consumer": "app.services.notification_delivery_service.process_delivery",
       "p4_stage": "P4C",
-      "current_status": "implemented_p4c_candidate_not_certified",
-      "certification_status": "candidate",
+      "current_status": "provider_backed_p4c_certified",
+      "certification_status": "certified",
       "terminal_success_requires": "durable_provider_acceptance_then_terminal_delivery_evidence_where_available"
     },
     {
@@ -143,8 +143,8 @@
       "producer": "app_secure.enqueue_notification_reconciliation",
       "consumer": "app.services.notification_delivery_service.process_reconciliation",
       "p4_stage": "P4C",
-      "current_status": "implemented_p4c_candidate_not_certified",
-      "certification_status": "candidate",
+      "current_status": "provider_backed_p4c_certified",
+      "certification_status": "certified",
       "terminal_success_requires": "authoritative_notification_provider_reconciliation_evidence"
     }
   ],
@@ -162,8 +162,36 @@
       "source": "app/tasks/branch_outbox_poller.py",
       "method": "_process_event",
       "p4_stage": "P4B_P4C",
-      "resolution_status": "search_certified_p4b_notification_p4c_candidate_refund_obligation_p4d_candidate",
+      "resolution_status": "search_p4b_notification_p4c_and_refund_obligation_p4d_boundaries_certified",
       "resolution": "search routes to _process_search_event; branch.member_notification routes into durable P4C notification materialization; branch.refund_required routes into P4D-2 Finance refund-obligation resolution without provider execution"
     }
-  ]
+  ],
+  "p4e_operational_observability": {
+    "certification_gate": ".github/workflows/p4e-operational-snapshots-pg16.yml",
+    "certification_marker": "P4E_SLICE1B_PG16_CERTIFICATION=PASS",
+    "database_capability": "lifecycle_maintenance_runtime",
+    "snapshot_functions": [
+      "app_secure.search_operational_snapshot()",
+      "app_secure.refund_execution_operational_snapshot()"
+    ],
+    "consumer": "app.tasks.external_effect_observability.run_external_effect_operational_snapshot",
+    "metrics": [
+      "doers.external_effect.snapshot.depth",
+      "doers.external_effect.snapshot.oldest_age"
+    ],
+    "metric_attribute_keys": [
+      "domain",
+      "state"
+    ],
+    "forbidden_metric_attributes": [
+      "tenant_id",
+      "organization_id",
+      "branch_id",
+      "refund_id",
+      "payment_id",
+      "provider_reference_id",
+      "correlation_id"
+    ],
+    "provider_refund_execution": "deferred_fail_closed"
+  }
 }

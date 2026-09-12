@@ -290,4 +290,9 @@ P4A is complete only when repository contracts prove:
 - the canonical evidence/idempotency/lease/reconciliation/dead-letter requirements in this document cannot be removed silently;
 - inherited P3E certification boundaries remain unchanged.
 
-Later phase inherited checks must preserve the same governing rule while tracking current status accurately: P4B search is certified provider-backed, the current P4C notification candidate is implemented but not yet certified, and P4D refund execution remains deferred/fail-closed.
+Later phase inherited checks must preserve the same governing rule while tracking
+current status accurately: P4B search and P4C notification delivery are certified
+provider-backed boundaries; the P4D lifecycle-to-Finance obligation boundary is
+certified, while provider refund execution remains deferred and fail-closed. P4E
+adds maintenance-only aggregate snapshots and low-cardinality export without
+turning telemetry or operator input into external-effect authority.
