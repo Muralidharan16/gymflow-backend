@@ -16,6 +16,7 @@ MAINTENANCE_TASKS = (
     "app.tasks.branch_lifecycle_sweeps.watchdog",
     "app.tasks.branch_lifecycle_sweeps.reconciliation",
     "app.tasks.branch_lifecycle_sweeps.notification_reconciliation",
+    "app.tasks.external_effect_observability.snapshot",
     "app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
     "app.tasks.platform_maintenance.advance_trial_lifecycles",
     "app.tasks.platform_maintenance.dispatch_organization_asset_jobs",
@@ -49,6 +50,7 @@ celery_app.conf.update(
         "app.tasks.logos",
         "app.tasks.covers",
         "app.tasks.platform_maintenance",
+        "app.tasks.external_effect_observability",
     ),
     task_routes={
         task_name: {"queue": MAINTENANCE_QUEUE}
@@ -130,6 +132,11 @@ celery_app.conf.beat_schedule = {
     },
     "notification-reconciliation-sweep": {
         "task": "app.tasks.branch_lifecycle_sweeps.notification_reconciliation",
+        "schedule": crontab(minute="*/5"),
+        "options": {"queue": MAINTENANCE_QUEUE},
+    },
+    "external-effect-operational-snapshot": {
+        "task": "app.tasks.external_effect_observability.snapshot",
         "schedule": crontab(minute="*/5"),
         "options": {"queue": MAINTENANCE_QUEUE},
     },

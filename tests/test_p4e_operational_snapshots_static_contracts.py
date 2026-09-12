@@ -13,6 +13,13 @@ MIGRATION = (
 P4D = ROOT / "alembic/versions/zc07d8e9f0a3d_p4d_refund_authority_boundary.py"
 RUNTIME = ROOT / "tests/test_p4e_operational_snapshots_runtime.py"
 WORKFLOW = ROOT / ".github/workflows/p4e-operational-snapshots-pg16.yml"
+METRICS = ROOT / "app/observability/external_effect_metrics.py"
+TASK = ROOT / "app/tasks/external_effect_observability.py"
+CELERY = ROOT / "app/core/celery_app.py"
+SETTINGS = ROOT / "app/core/settings_schema.py"
+CONFIG = ROOT / "app/core/config.py"
+PRODUCTION_IDENTITIES = ROOT / "deploy/docker-compose.production-identities.yml"
+RUNBOOK = ROOT / "docs/operations/p4-external-effects-recovery.md"
 
 
 def _source() -> str:
@@ -87,6 +94,82 @@ def test_workflow_normalizes_pg_proc_volatility_in_lifecycle_fingerprints() -> N
 
     assert workflow.count("p.provolatile::text") == 2
     assert "|| p.provolatile ||" not in workflow
+
+
+def test_p4e_export_task_uses_only_certified_maintenance_snapshots() -> None:
+    task = TASK.read_text()
+    celery = CELERY.read_text()
+
+    assert "maintenance_async_session_maker" in task
+    assert 'internal_maintenance=_MAINTENANCE_CONTEXT' in task
+    assert '_MAINTENANCE_CONTEXT = "lifecycle"' in task
+    assert "AsyncSessionLocal" not in task
+    assert "worker_async_session_maker" not in task
+    assert "app_secure.search_operational_snapshot()" in task
+    assert "app_secure.refund_execution_operational_snapshot()" in task
+    assert "CROSS JOIN" in task
+    assert "record_operational_snapshots(" in task
+    assert "INSERT INTO" not in task
+    assert "UPDATE " not in task
+    assert "DELETE FROM" not in task
+    assert "provider_refund_ref" not in task
+    assert "provider_evidence_sha256" not in task
+    assert 'name="app.tasks.external_effect_observability.snapshot"' in task
+
+    assert '"app.tasks.external_effect_observability"' in celery
+    assert '"app.tasks.external_effect_observability.snapshot"' in celery
+    assert '"external-effect-operational-snapshot"' in celery
+    assert '"options": {"queue": MAINTENANCE_QUEUE}' in celery
+
+
+def test_p4e_metrics_have_fixed_low_cardinality_labels_and_no_identifiers() -> None:
+    metrics = METRICS.read_text()
+
+    assert '"doers.external_effect.snapshot.depth"' in metrics
+    assert '"doers.external_effect.snapshot.oldest_age"' in metrics
+    assert '{"domain": domain, "state": state}' in metrics
+    assert '{"domain": "search"}' in metrics
+    assert '{"domain": "refund"}' in metrics
+    for forbidden in (
+        "tenant_id",
+        "organization_id",
+        "branch_id",
+        "refund_id",
+        "payment_id",
+        "provider_refund_ref",
+        "correlation_id",
+    ):
+        assert forbidden not in metrics
+
+
+def test_p4e_metrics_configuration_is_maintenance_only_and_fail_closed() -> None:
+    schema = SETTINGS.read_text()
+    config = CONFIG.read_text()
+    overlay = PRODUCTION_IDENTITIES.read_text()
+
+    for name in (
+        "P4E_METRICS_OTLP_ENDPOINT",
+        "P4E_METRICS_EXPORT_INTERVAL_SECONDS",
+        "P4E_METRICS_EXPORT_TIMEOUT_SECONDS",
+    ):
+        assert name in schema
+    assert "required for the production" in config
+    assert "P4E operational metrics configuration is restricted" in config
+    assert '"maintenance profile"' in config
+    assert "P4E_METRICS_OTLP_ENDPOINT: ${P4E_METRICS_OTLP_ENDPOINT:?required}" in overlay
+    assert overlay.count('P4E_METRICS_OTLP_ENDPOINT: ""') == 4
+    assert "P4E_SLICE1B_PG16_CERTIFICATION=PASS" in WORKFLOW.read_text()
+
+
+def test_p4e_recovery_runbook_maps_metrics_to_non_authoritative_response() -> None:
+    runbook = RUNBOOK.read_text()
+
+    assert "doers.external_effect.snapshot.depth" in runbook
+    assert "doers.external_effect.snapshot.oldest_age" in runbook
+    assert "P4E operational recovery and observability candidate" in runbook
+    assert "contain no tenant, branch, refund, payment" in runbook
+    assert "never authorizes an" in runbook
+    assert "replacement refund" in runbook
 
 
 def test_snapshots_are_no_argument_aggregate_only_security_definer() -> None:

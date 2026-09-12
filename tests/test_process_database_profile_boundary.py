@@ -23,6 +23,7 @@ _AUTH = "postgresql+asyncpg://auth_login@localhost/doers"
 _WORKER = "postgresql+asyncpg://worker_login@localhost/doers"
 _MAINTENANCE = "postgresql+asyncpg://maintenance_login@localhost/doers"
 _FINANCE_CONFIG = "postgresql+psycopg://finance_config_deployment@localhost/doers"
+_P4E_METRICS = "https://otel.example.test/v1/metrics"
 
 
 def _settings(**values) -> Settings:
@@ -94,8 +95,10 @@ def test_maintenance_profile_has_only_maintenance_database_identity() -> None:
         DOERS_PROCESS_PROFILE="maintenance",
         CELERY_WORKER_PROFILE="maintenance",
         MAINTENANCE_DATABASE_URL=_MAINTENANCE,
+        P4E_METRICS_OTLP_ENDPOINT=_P4E_METRICS,
     )
     assert settings.MAINTENANCE_DATABASE_URL == _MAINTENANCE
+    assert settings.P4E_METRICS_OTLP_ENDPOINT == _P4E_METRICS
     assert settings.WORKER_DATABASE_URL == ""
     assert settings.AUTH_DATABASE_URL == ""
     assert settings.FINANCE_CONFIG_DATABASE_URL == ""

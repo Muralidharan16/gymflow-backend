@@ -43,6 +43,20 @@ def _validate_notification_metrics(endpoint: str, interval: float, timeout: floa
         )
 
 
+def _validate_p4e_metrics(endpoint: str, interval: float, timeout: float) -> None:
+    parsed = urlparse(endpoint.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("P4E_METRICS_OTLP_ENDPOINT must be an HTTP(S) URL")
+    if not 1 <= interval <= 300:
+        raise ValueError(
+            "P4E_METRICS_EXPORT_INTERVAL_SECONDS must be in the range [1, 300]"
+        )
+    if not 0 < timeout <= 60:
+        raise ValueError(
+            "P4E_METRICS_EXPORT_TIMEOUT_SECONDS must be in the range (0, 60]"
+        )
+
+
 class Settings(DoersSettingsSchema):
     def _raw_runtime_value(self, component: str) -> str:
         from app.core.runtime_principal_attestation import load_runtime_binding_contract
@@ -199,6 +213,24 @@ class Settings(DoersSettingsSchema):
                 raise ValueError(
                     "P4C notification provider/webhook/metrics configuration is forbidden for beat profiles"
                 )
+
+        p4e_metrics_endpoint = self.P4E_METRICS_OTLP_ENDPOINT.strip()
+        if profile_name == "maintenance":
+            if not p4e_metrics_endpoint:
+                raise ValueError(
+                    "P4E_METRICS_OTLP_ENDPOINT is required for the production "
+                    "maintenance profile"
+                )
+            _validate_p4e_metrics(
+                p4e_metrics_endpoint,
+                self.P4E_METRICS_EXPORT_INTERVAL_SECONDS,
+                self.P4E_METRICS_EXPORT_TIMEOUT_SECONDS,
+            )
+        elif p4e_metrics_endpoint:
+            raise ValueError(
+                "P4E operational metrics configuration is restricted to the "
+                "maintenance profile"
+            )
 
         search_mode = self.SEARCH_PROVIDER_MODE.strip().lower()
         if search_mode not in {"disabled", "opensearch"}:

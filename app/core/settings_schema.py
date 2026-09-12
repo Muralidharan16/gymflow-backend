@@ -68,6 +68,12 @@ class DoersSettingsSchema(BaseSettings):
     SEARCH_METRICS_EXPORT_INTERVAL_SECONDS: float = 30.0
     SEARCH_METRICS_EXPORT_TIMEOUT_SECONDS: float = 5.0
 
+    # P4E cross-domain aggregate snapshots are exported only by the isolated
+    # maintenance process. This endpoint carries no provider credentials.
+    P4E_METRICS_OTLP_ENDPOINT: str = ""
+    P4E_METRICS_EXPORT_INTERVAL_SECONDS: float = 30.0
+    P4E_METRICS_EXPORT_TIMEOUT_SECONDS: float = 5.0
+
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "info"
 

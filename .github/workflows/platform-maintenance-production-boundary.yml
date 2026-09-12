@@ -257,6 +257,7 @@ jobs:
           AUTH_DATABASE_URL: ''
           WORKER_DATABASE_URL: ''
           MAINTENANCE_DATABASE_URL: postgresql+asyncpg://maintenance_platform_test_runtime:ci-maint-runtime@127.0.0.1:5432/gymflow_platform_maintenance_test
+          P4E_METRICS_OTLP_ENDPOINT: http://127.0.0.1:4318/v1/metrics
         run: |
           set -euo pipefail
           python - <<'PY'

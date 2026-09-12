@@ -1,6 +1,6 @@
 # P4 External Effects Recovery Runbook
 
-Status: P4A baseline runbook. Domain-specific commands are added only when their provider stages are certified.
+Status: P4E operational recovery and observability candidate.
 
 ## Non-negotiable rule
 
@@ -19,6 +19,27 @@ For a stuck or contradictory external effect:
 7. preserve ambiguous outcomes as non-terminal until reconciled;
 8. use controlled replay only after the current lease is absent/expired and replay authorization succeeds;
 9. record the operator action and evidence.
+
+## Aggregate operational snapshots
+
+The isolated maintenance worker exports these P4E metrics every five minutes:
+
+- `doers.external_effect.snapshot.depth`, labelled only by the fixed `domain`
+  and `state` values defined in code;
+- `doers.external_effect.snapshot.oldest_age`, labelled only by the fixed
+  `domain` value.
+
+Search depth covers pending, processing, dead-lettered and reconciliation-
+candidate work. Refund depth covers pending, processing, retry-pending,
+provider-accepted, reconciliation-pending and dead-lettered work. These metrics
+contain no tenant, branch, refund, payment, provider-reference or correlation
+identifiers.
+
+The production maintenance process must fail startup when the dedicated P4E
+OTLP endpoint is absent or invalid. API, authentication, ordinary worker, beat
+and Flower processes must not receive that endpoint. An alert must be treated
+as evidence of a stuck or contradictory obligation; it never authorizes an
+operator to mark local state successful or to create a replacement refund.
 
 ## Search drift
 

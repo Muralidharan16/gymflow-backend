@@ -1,4 +1,4 @@
-name: P4E Operational Snapshots PG16
+name: P4E Operational Recovery PG16
 
 on:
   push:
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   operational-snapshots:
-    name: Aggregate observability authority and lifecycle on PostgreSQL 16
+    name: Aggregate observability export authority and lifecycle on PostgreSQL 16
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
@@ -25,8 +25,17 @@ jobs:
       WORKER_RUNTIME_PASSWORD: ci-worker-runtime
       MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p4e_test
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_p4e_test
       TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_p4e_test
       TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p4e_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p4e-operational-recovery-not-production
+      AWS_ACCESS_KEY_ID: ci-p4e-operational-recovery
+      AWS_SECRET_ACCESS_KEY: ci-p4e-operational-recovery
+      S3_BUCKET_NAME: gymflow-p4e-test
+      ENVIRONMENT: test
       PYTHONDONTWRITEBYTECODE: '1'
 
     steps:
@@ -87,10 +96,19 @@ jobs:
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'zf07d8e9f0a40'
           python -m py_compile \
             alembic/versions/zf07d8e9f0a40_p4e_operational_snapshots.py \
+            app/observability/external_effect_metrics.py \
+            app/tasks/external_effect_observability.py \
+            tests/test_p4e_operational_metrics_export.py \
             tests/test_p4e_operational_snapshots_static_contracts.py \
             tests/test_p4e_operational_snapshots_runtime.py
           python -m pytest --noconftest -q --maxfail=1 \
             tests/test_p4e_operational_snapshots_static_contracts.py \
+            tests/test_p3e_async_identity_static_contracts.py \
+            tests/test_celery_single_app_boundary.py \
+            tests/test_process_database_profile_boundary.py \
+            tests/test_process_profile_deployment_contract.py \
+            tests/test_p4b_search_deployment_contract.py \
+            tests/test_p4c_notification_deployment_contract.py \
             tests/test_migration_app_secure_owner_context_boundary.py \
             tests/test_p4d_refund_authority_static_contracts.py \
             tests/test_p4c_inherited_contracts.py \
@@ -246,10 +264,11 @@ jobs:
           $$;
           SQL
 
-      - name: Run P4E PostgreSQL runtime semantics
+      - name: Run P4E PostgreSQL and OTLP runtime semantics
         run: |
           set -euo pipefail
           python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4e_operational_metrics_export.py \
             tests/test_p4e_operational_snapshots_runtime.py
 
       - name: Prove zf07 downgrade and re-upgrade reversibility
@@ -352,4 +371,4 @@ jobs:
           python -s -m alembic -c alembic.ini current --check-heads
           git diff --exit-code
           git diff --cached --exit-code
-          echo "P4E_SLICE1A_PG16_CERTIFICATION=PASS"
+          echo "P4E_SLICE1B_PG16_CERTIFICATION=PASS"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 
@@ -649,3 +650,40 @@ def test_refund_snapshot_is_exact_beyond_500_and_matches_parent_eligibility() ->
 
     unresolved_delta = sum(after[index] - before[index] for index in range(6))
     assert unresolved_delta == 505
+
+
+def test_maintenance_task_reads_exact_certified_aggregate_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.tasks import external_effect_observability as task_module
+
+    monkeypatch.setattr(task_module.settings, "P4E_METRICS_OTLP_ENDPOINT", "")
+    expected_search = dict(
+        zip(
+            _SEARCH_COLUMNS,
+            _snapshot(
+                _MAINTENANCE_LOGIN,
+                "MAINTENANCE_RUNTIME_PASSWORD",
+                _SEARCH_SNAPSHOT,
+            )[1],
+            strict=True,
+        )
+    )
+    expected_refund = dict(
+        zip(
+            _REFUND_COLUMNS,
+            _snapshot(
+                _MAINTENANCE_LOGIN,
+                "MAINTENANCE_RUNTIME_PASSWORD",
+                _REFUND_SNAPSHOT,
+            )[1],
+            strict=True,
+        )
+    )
+
+    actual = asyncio.run(task_module._run_external_effect_operational_snapshot())
+
+    for key in _SEARCH_COLUMNS:
+        assert actual["search"][key] == expected_search[key]
+    for key in _REFUND_COLUMNS:
+        assert actual["refund"][key] == expected_refund[key]
