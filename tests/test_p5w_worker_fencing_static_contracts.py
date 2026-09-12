@@ -48,7 +48,18 @@ def test_p5w_migration_refuses_claim_evidence_loss_on_downgrade() -> None:
 
     assert "WHERE lease_fence <> 0" in downgrade
     assert "downgrade refuses loss of durable P5 claim-generation evidence" in downgrade
-    assert downgrade.index("WHERE lease_fence <> 0") < downgrade.index("DROP COLUMN lease_fence")
+    assert "inherited FORCE RLS state drift before downgrade" in downgrade
+    assert "failed to restore FORCE RLS before downgrade decision" in downgrade
+    unforce = downgrade.index(
+        'op.execute(f"ALTER TABLE {relation} NO FORCE ROW LEVEL SECURITY")'
+    )
+    evidence = downgrade.index("WHERE lease_fence <> 0")
+    reforce = downgrade.index(
+        'op.execute(f"ALTER TABLE {relation} FORCE ROW LEVEL SECURITY")'
+    )
+    decision = downgrade.index("if claimed:")
+    destructive = downgrade.index("DROP COLUMN lease_fence")
+    assert unforce < evidence < reforce < decision < destructive
     assert "REVOKE UPDATE (lease_fence)" in downgrade
     assert "GRANT INSERT ON TABLE public.branch_outbox_events TO app_runtime" in downgrade
 
@@ -145,6 +156,7 @@ def test_p5w_runtime_gate_uses_real_postgres_reduced_identity_and_same_head() ->
         "git rev-parse HEAD",
         "P5W_WORKER_FENCING_PG16=PASS",
         "claim-fence INSERT leaked",
+        "zg07 downgrade refuses loss of durable P5 claim-generation evidence",
     ):
         assert phrase in source
 
@@ -197,10 +209,14 @@ def test_p5w_slice_claims_only_its_bounded_evidence() -> None:
         "92c6e452613a67f2382f4b6545d6291df5643ad5",
         "34698402315",
         "34698402312",
+        "1615eb278402875710c21e02869852661445a447",
+        "34698910320",
+        "34698910327",
         "does not weaken that production policy",
         "failed candidate is not p5-w1 certified",
         "missing the required `lease_fence` bind",
         "forced-rls observer",
+        "policy-hidden rows",
     ):
         assert repair_evidence in source
     for limitation in (

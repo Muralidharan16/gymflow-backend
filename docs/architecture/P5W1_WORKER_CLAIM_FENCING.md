@@ -117,6 +117,23 @@ an unscoped migration-owner observer. Candidate
 `92c6e452613a67f2382f4b6545d6291df5643ad5` is not P5-W1 certified; the
 replacement immutable SHA requires every same-head gate to pass again.
 
+Third-repair candidate `1615eb278402875710c21e02869852661445a447`
+passed governance run `34698910320`. PostgreSQL 16 run `34698910327` then
+passed the corrected ABA/final-attempt runtime proof and all inherited worker
+and P4 regressions. Its final downgrade-refusal stage found that the migration
+itself was also counting claim evidence as an unscoped `migration_owner` on
+the two forced-RLS queues. Policy-hidden rows were misclassified as absent, so
+the destructive downgrade incorrectly succeeded.
+
+The fourth repair makes that data-loss guard RLS-complete without granting a
+bypass role. It first verifies inherited ENABLE+FORCE state, transactionally
+removes FORCE only for the table owner while retaining RLS for non-owners,
+counts non-zero fences, restores FORCE before making the downgrade decision,
+and refuses the downgrade when evidence exists. Any error rolls the migration
+transaction back to its original forced state. Candidate
+`1615eb278402875710c21e02869852661445a447` is not P5-W1 certified; the
+replacement immutable SHA requires a complete same-head run.
+
 ## Explicit limitations
 
 P5-W1 does not complete P5-W or P5. It does not yet claim:

@@ -191,10 +191,17 @@ jobs:
       - name: Prove downgrade refuses durable claim-generation evidence loss
         run: |
           set -euo pipefail
-          if python -s -m alembic -c alembic.ini downgrade zf07d8e9f0a40; then
+          downgrade_log="$(mktemp /tmp/p5w-downgrade-refusal.XXXXXX.log)"
+          if python -s -m alembic -c alembic.ini downgrade zf07d8e9f0a40 \
+              >"${downgrade_log}" 2>&1; then
+            cat "${downgrade_log}"
             echo 'P5-W downgrade destroyed durable claim-generation evidence' >&2
             exit 1
           fi
+          cat "${downgrade_log}"
+          grep -Fq \
+            'zg07 downgrade refuses loss of durable P5 claim-generation evidence' \
+            "${downgrade_log}"
           python -s -m alembic -c alembic.ini current --check-heads
 
       - name: Emit same-head P5-W1 marker

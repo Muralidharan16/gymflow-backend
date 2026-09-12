@@ -141,6 +141,20 @@ def _constraint_exists(bind, schema_name: str, table_name: str, constraint_name:
     )
 
 
+def _rls_state(bind, relation: str) -> tuple[bool, bool]:
+    row = bind.execute(
+        sa.text(
+            """
+            SELECT relrowsecurity,relforcerowsecurity
+            FROM pg_catalog.pg_class
+            WHERE oid=CAST(:relation AS regclass)
+            """
+        ),
+        {"relation": relation},
+    ).one()
+    return bool(row[0]), bool(row[1])
+
+
 def _has_table_update(bind, role_name: str, relation: str) -> bool:
     return bool(
         bind.execute(
@@ -275,16 +289,42 @@ def downgrade() -> None:
     _require_identity(bind)
     _assert_installed(bind)
 
-    claimed = {}
-    for schema_name, table_name, _constraint_name in _TABLES:
-        relation = f"{schema_name}.{table_name}"
-        count = int(
-            bind.execute(
-                sa.text(f"SELECT count(*) FROM {relation} WHERE lease_fence <> 0")
-            ).scalar_one()
-        )
-        if count:
-            claimed[relation] = count
+    relations = [
+        f"{schema_name}.{table_name}"
+        for schema_name, table_name, _constraint_name in _TABLES
+    ]
+    for relation in relations:
+        if _rls_state(bind, relation) != (True, True):
+            raise RuntimeError(
+                f"zg07 inherited FORCE RLS state drift before downgrade: {relation}"
+            )
+
+    # migration_owner owns both tables but is deliberately subject to FORCE
+    # RLS and is not a worker role. Temporarily remove only owner enforcement
+    # inside this transactional migration so the destructive-downgrade guard
+    # cannot mistake policy-hidden rows for an empty table. RLS remains enabled
+    # for every non-owner, and FORCE is restored before the guard decision.
+    for relation in relations:
+        op.execute(f"ALTER TABLE {relation} NO FORCE ROW LEVEL SECURITY")
+    try:
+        claimed = {}
+        for relation in relations:
+            count = int(
+                bind.execute(
+                    sa.text(f"SELECT count(*) FROM {relation} WHERE lease_fence <> 0")
+                ).scalar_one()
+            )
+            if count:
+                claimed[relation] = count
+    finally:
+        for relation in relations:
+            op.execute(f"ALTER TABLE {relation} FORCE ROW LEVEL SECURITY")
+
+    for relation in relations:
+        if _rls_state(bind, relation) != (True, True):
+            raise RuntimeError(
+                f"zg07 failed to restore FORCE RLS before downgrade decision: {relation}"
+            )
     if claimed:
         raise RuntimeError(
             "zg07 downgrade refuses loss of durable P5 claim-generation evidence: "
