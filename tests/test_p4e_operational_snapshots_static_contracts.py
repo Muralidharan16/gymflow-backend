@@ -82,6 +82,13 @@ def test_search_fixture_uses_certified_p3a_auth_bootstrap_boundary() -> None:
     ) in workflow
 
 
+def test_workflow_normalizes_pg_proc_volatility_in_lifecycle_fingerprints() -> None:
+    workflow = WORKFLOW.read_text()
+
+    assert workflow.count("p.provolatile::text") == 2
+    assert "|| p.provolatile ||" not in workflow
+
+
 def test_snapshots_are_no_argument_aggregate_only_security_definer() -> None:
     source = _source()
     search = _function_block(

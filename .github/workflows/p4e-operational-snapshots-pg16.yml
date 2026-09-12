@@ -257,7 +257,7 @@ jobs:
           set -euo pipefail
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -At \
             -h 127.0.0.1 -U migration_owner -d gymflow_p4e_test <<'SQL' > /tmp/p4e_functions_before.txt
-          SELECT n.nspname || '.' || p.proname || '()|' || r.rolname || '|' || p.prosecdef || '|' || p.provolatile || '|' || coalesce(p.proconfig::text,'NULL') || '|' || coalesce(p.proacl::text,'NULL')
+          SELECT n.nspname || '.' || p.proname || '()|' || r.rolname || '|' || p.prosecdef || '|' || p.provolatile::text || '|' || coalesce(p.proconfig::text,'NULL') || '|' || coalesce(p.proacl::text,'NULL')
           FROM pg_catalog.pg_proc AS p
           JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
           JOIN pg_catalog.pg_roles AS r ON r.oid=p.proowner
@@ -329,7 +329,7 @@ jobs:
           python -s -m alembic -c alembic.ini current --check-heads
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -At \
             -h 127.0.0.1 -U migration_owner -d gymflow_p4e_test <<'SQL' > /tmp/p4e_functions_after.txt
-          SELECT n.nspname || '.' || p.proname || '()|' || r.rolname || '|' || p.prosecdef || '|' || p.provolatile || '|' || coalesce(p.proconfig::text,'NULL') || '|' || coalesce(p.proacl::text,'NULL')
+          SELECT n.nspname || '.' || p.proname || '()|' || r.rolname || '|' || p.prosecdef || '|' || p.provolatile::text || '|' || coalesce(p.proconfig::text,'NULL') || '|' || coalesce(p.proacl::text,'NULL')
           FROM pg_catalog.pg_proc AS p
           JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
           JOIN pg_catalog.pg_roles AS r ON r.oid=p.proowner
