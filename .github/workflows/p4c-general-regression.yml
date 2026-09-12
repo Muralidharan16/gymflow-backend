@@ -5,6 +5,11 @@ on:
     branches:
       - hardening/p4c-durable-notifications
     types: [opened, synchronize, reopened]
+  workflow_call:
+    inputs:
+      certification_head:
+        required: false
+        type: string
   workflow_dispatch:
 
 permissions:
@@ -112,10 +117,16 @@ jobs:
             bash scripts/ci/provision_infrastructure_extensions.sh "$database"
           done
       - name: Fresh Alembic lineage on migration and test databases
+        env:
+          CERTIFICATION_HEAD: ${{ inputs.certification_head }}
         run: |
           set -euo pipefail
           python -s scripts/verify_alembic_graph.py
-          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'ze07d8e9f0a3f'
+          if [[ -n "${CERTIFICATION_HEAD}" ]]; then
+            test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${CERTIFICATION_HEAD}"
+          else
+            test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'ze07d8e9f0a3f'
+          fi
           python -s -m alembic -c alembic.ini upgrade head
           DATABASE_URL=postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test \
             python -s -m alembic -c alembic.ini upgrade head

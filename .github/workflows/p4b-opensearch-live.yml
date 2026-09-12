@@ -5,6 +5,7 @@ on:
     branches:
       - hardening/p4a-external-effects-contract
     types: [opened, synchronize, reopened]
+  workflow_call:
   workflow_dispatch:
 
 permissions:

@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "phase": "P4F",
+  "name": "Final P4 same-head regression and certification",
+  "base": {
+    "phase": "P4E",
+    "commit": "373199c418e7451b20f05e14e17010aa5167d672",
+    "tree": "fa097b644c5622259370319d147fbc52b8eb7f50",
+    "required_markers": [
+      "P4E_FINAL_EXTERNAL_EFFECT_CERTIFICATION=PASS",
+      "P4E_SLICE1B_PG16_CERTIFICATION=PASS"
+    ]
+  },
+  "candidate": {
+    "branch": "hardening/p4f-final-certification",
+    "identity": "github.sha",
+    "required_head_migration": "zf07d8e9f0a40",
+    "immutability_rule": "any_candidate_change_invalidates_all_prior_decisive_results"
+  },
+  "required_reusable_workflows": [
+    {
+      "id": "architecture",
+      "workflow": ".github/workflows/architecture-hardening-contracts.yml",
+      "required_jobs": ["architecture-contracts"],
+      "scope": "P1/P2 architecture and runtime-boundary contracts"
+    },
+    {
+      "id": "migration_hardening",
+      "workflow": ".github/workflows/hardening-ci.yml",
+      "required_jobs": ["static-hardening-contracts", "fresh-lineage-and-regressions", "platform-billing-regressions"],
+      "scope": "fresh lineage, general regression, and isolated Platform Billing"
+    },
+    {
+      "id": "finance",
+      "workflow": ".github/workflows/finance-hardening-ci.yml",
+      "required_jobs": ["finance-core-regressions"],
+      "scope": "isolated Finance Core regression"
+    },
+    {
+      "id": "migration_lifecycle",
+      "workflow": ".github/workflows/migration-lifecycle-ci.yml",
+      "required_jobs": ["full-lifecycle"],
+      "scope": "full current-head downgrade and deterministic re-upgrade"
+    },
+    {
+      "id": "migration_preservation",
+      "workflow": ".github/workflows/migration-data-preservation-ci.yml",
+      "required_jobs": ["legacy-address-to-branch"],
+      "scope": "populated predecessor data and security preservation"
+    },
+    {
+      "id": "migration_adversarial",
+      "workflow": ".github/workflows/migration-adversarial-safety-ci.yml",
+      "required_jobs": ["adversarial-00f"],
+      "scope": "adversarial rollback and predecessor-reference recovery"
+    },
+    {
+      "id": "migration_contracts",
+      "workflow": ".github/workflows/migration-lifecycle-contracts.yml",
+      "required_jobs": ["lifecycle-contracts"],
+      "scope": "migration lifecycle source contracts"
+    },
+    {
+      "id": "migration_semantics",
+      "workflow": ".github/workflows/migration-semantics-inventory.yml",
+      "required_jobs": ["inventory"],
+      "scope": "complete migration risk and semantics inventory"
+    },
+    {
+      "id": "p3",
+      "workflow": ".github/workflows/p3e-certification.yml",
+      "required_jobs": ["tenant-context-pool-isolation", "inherited-p3abc", "inherited-p3d", "migration-lifecycle", "general-regressions"],
+      "scope": "inherited P1/P2/P3 same-head certification"
+    },
+    {
+      "id": "p4b_opensearch",
+      "workflow": ".github/workflows/p4b-opensearch-live.yml",
+      "required_jobs": ["live-opensearch"],
+      "scope": "real local OpenSearch external-version behavior"
+    },
+    {
+      "id": "p4b_evidence",
+      "workflow": ".github/workflows/p4b-search-evidence-pg16.yml",
+      "required_jobs": ["search-evidence"],
+      "scope": "search provider evidence, fencing, and reconciliation"
+    },
+    {
+      "id": "p4b_drift",
+      "workflow": ".github/workflows/p4b-search-drift-pg16.yml",
+      "required_jobs": ["drift-repair"],
+      "scope": "search drift repair and provider-clock fencing"
+    },
+    {
+      "id": "p4c_general",
+      "workflow": ".github/workflows/p4c-general-regression.yml",
+      "required_jobs": ["general-regressions"],
+      "scope": "broad non-billing regression including isolated refund runtime"
+    },
+    {
+      "id": "p4c_notification",
+      "workflow": ".github/workflows/p4c-notification-storage-pg16.yml",
+      "required_jobs": ["notification-storage"],
+      "scope": "notification delivery evidence, ambiguity, replay, and reconciliation"
+    },
+    {
+      "id": "p4d_refund",
+      "workflow": ".github/workflows/p4d-refund-authority-pg16.yml",
+      "required_jobs": ["refund-authority"],
+      "scope": "refund-obligation authority and recovery without provider execution"
+    },
+    {
+      "id": "p4e_contract",
+      "workflow": ".github/workflows/p4e-final-external-effects-certification.yml",
+      "required_jobs": ["final-external-effects"],
+      "scope": "P4 external-effect contract closure"
+    },
+    {
+      "id": "p4e_operational",
+      "workflow": ".github/workflows/p4e-operational-snapshots-pg16.yml",
+      "required_jobs": ["operational-snapshots"],
+      "scope": "maintenance-only observability and migration lifecycle"
+    }
+  ],
+  "terminal_gate": {
+    "workflow": ".github/workflows/p4f-final-same-head-certification.yml",
+    "contract_job": "contract",
+    "job": "certify",
+    "marker": "P4F_FINAL_SAME_HEAD_CERTIFICATION=PASS",
+    "requires_every_result": "success"
+  },
+  "deferred_boundaries": {
+    "refund_provider_execution": "deferred_fail_closed",
+    "live_money_movement": false
+  },
+  "forbidden_actions": [
+    "merge",
+    "retarget",
+    "tag",
+    "release",
+    "deploy"
+  ],
+  "post_pass_state": "separate_exact_candidate_merge_authorization_required"
+}

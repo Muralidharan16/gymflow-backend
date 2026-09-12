@@ -5,6 +5,11 @@ on:
     branches:
       - hardening/p4a-external-effects-contract
     types: [opened, synchronize, reopened]
+  workflow_call:
+    inputs:
+      certification_head:
+        required: false
+        type: string
   workflow_dispatch:
 
 permissions:
@@ -83,10 +88,16 @@ jobs:
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_drift_test
 
       - name: Upgrade fresh database to exact P4B head
+        env:
+          CERTIFICATION_HEAD: ${{ inputs.certification_head }}
         run: |
           set -euo pipefail
           python -s scripts/verify_alembic_graph.py
-          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'v07d8e9f0a36'
+          if [[ -n "${CERTIFICATION_HEAD}" ]]; then
+            test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${CERTIFICATION_HEAD}"
+          else
+            test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'v07d8e9f0a36'
+          fi
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
 

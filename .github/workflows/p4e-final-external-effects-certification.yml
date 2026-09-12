@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - hardening/p4e-operational-recovery-observability
+  workflow_call:
   workflow_dispatch:
 
 permissions:

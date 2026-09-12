@@ -5,6 +5,7 @@ on:
     branches:
       - hardening/p3d-branch-role-lifecycle-matrix
     types: [opened, synchronize, reopened]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
