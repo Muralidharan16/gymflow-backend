@@ -17,7 +17,36 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("CREATE EXTENSION IF NOT EXISTS btree_gist;")
+    # btree_gist is infrastructure-owned. Alembic validates the exact
+    # prerequisite instead of creating or adopting an extension.
+    op.execute("""
+        DO $btree_gist_infrastructure$
+        DECLARE
+            owner_name TEXT;
+            schema_name TEXT;
+        BEGIN
+            SELECT
+                pg_catalog.pg_get_userbyid(extension_data.extowner),
+                namespace_data.nspname::text
+            INTO owner_name, schema_name
+            FROM pg_catalog.pg_extension AS extension_data
+            JOIN pg_catalog.pg_namespace AS namespace_data
+              ON namespace_data.oid = extension_data.extnamespace
+            WHERE extension_data.extname = 'btree_gist';
+
+            IF NOT FOUND THEN
+                RAISE EXCEPTION
+                    'c3a4b5c6d7e8 requires infrastructure-provisioned btree_gist; Alembic must not create extensions';
+            END IF;
+            IF owner_name IS DISTINCT FROM 'postgres'
+               OR schema_name IS DISTINCT FROM 'public' THEN
+                RAISE EXCEPTION
+                    'c3a4b5c6d7e8 requires btree_gist owned by postgres in public; owner=%, schema=%',
+                    owner_name, schema_name;
+            END IF;
+        END
+        $btree_gist_infrastructure$;
+    """)
 
     op.execute("CREATE TYPE subscription_series_status AS ENUM ('open', 'closed', 'archived');")
     op.execute(

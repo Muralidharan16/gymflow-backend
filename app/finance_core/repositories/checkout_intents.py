@@ -4,9 +4,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.finance_core.domain.invoice_engine import canonical_hash
 from app.finance_core.domain.provider_boundary import FinanceCheckoutIntentConflictError
@@ -31,41 +31,66 @@ class FinanceCheckoutIntentRepository:
         request_hash: str,
     ) -> tuple[FinanceIdempotencyKey, bool]:
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-        statement = (
-            insert(FinanceIdempotencyKey)
-            .values(
-                organization_id=organization_id,
-                scope=scope,
-                idempotency_key=idempotency_key,
-                request_hash_sha256=request_hash,
-                status="processing",
-                expires_at=expires_at,
+        try:
+            result = await self._session.execute(
+                text(
+                    """
+                    SELECT id, organization_id, scope, idempotency_key, request_hash_sha256,
+                           status, response_ref, created_at, expires_at, inserted
+                    FROM app_secure.reserve_finance_idempotency(
+                        :scope, :idempotency_key, :request_hash, :organization_id, :expires_at
+                    )
+                    """
+                ),
+                {
+                    "scope": scope,
+                    "idempotency_key": idempotency_key,
+                    "request_hash": request_hash,
+                    "organization_id": organization_id,
+                    "expires_at": expires_at,
+                },
             )
-            .on_conflict_do_nothing(constraint="uq_finance_idempotency_keys_scope_key")
-            .returning(FinanceIdempotencyKey)
-        )
-        inserted = await self._session.execute(statement)
-        row = inserted.scalar_one_or_none()
-        if row is not None:
-            return row, True
-
-        existing_result = await self._session.execute(
-            select(FinanceIdempotencyKey)
-            .where(
-                FinanceIdempotencyKey.scope == scope,
-                FinanceIdempotencyKey.idempotency_key == idempotency_key,
+        except IntegrityError as exc:
+            sqlstate = (
+                getattr(exc.orig, "sqlstate", None)
+                or getattr(exc.orig, "pgcode", None)
             )
-            .with_for_update()
+            if (
+                sqlstate != "23505"
+                or "P4D finance idempotency request conflict" not in str(exc)
+            ):
+                raise
+            raise FinanceCheckoutIntentConflictError(
+                "Checkout intent conflicts with the existing idempotency key"
+            ) from exc
+        row = result.mappings().one()
+        key = FinanceIdempotencyKey(
+            id=row["id"],
+            organization_id=row["organization_id"],
+            scope=row["scope"],
+            idempotency_key=row["idempotency_key"],
+            request_hash_sha256=row["request_hash_sha256"],
+            status=row["status"],
+            response_ref=row["response_ref"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
         )
-        existing = existing_result.scalar_one()
-        if existing.request_hash_sha256 != request_hash:
-            raise FinanceCheckoutIntentConflictError("Idempotency key already exists for a different checkout intent")
-        return existing, False
+        return key, bool(row["inserted"])
 
     async def complete_idempotency_key(self, key: FinanceIdempotencyKey, *, response_ref: str) -> None:
-        key.status = "succeeded"
-        key.response_ref = response_ref
-        await self._session.flush()
+        result = await self._session.execute(
+            text(
+                """
+                SELECT id, organization_id, scope, idempotency_key, request_hash_sha256,
+                       status, response_ref, created_at, expires_at
+                FROM app_secure.complete_finance_idempotency(:idempotency_id, :response_ref)
+                """
+            ),
+            {"idempotency_id": key.id, "response_ref": response_ref},
+        )
+        row = result.mappings().one()
+        key.status = row["status"]
+        key.response_ref = row["response_ref"]
 
     async def get_invoice(self, invoice_id: uuid.UUID, *, for_update: bool = False) -> FinanceInvoice | None:
         statement = select(FinanceInvoice).where(FinanceInvoice.id == invoice_id)

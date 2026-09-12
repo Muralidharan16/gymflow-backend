@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import AsyncSessionLocal, get_db
+from app.core.database import get_db
 from app.core.security import create_access_token
 from app.finance_core.api.guards import FinanceCheckoutRoutePosture, get_finance_checkout_route_posture
 from app.finance_core.api.payment_boundary import get_checkout_orchestration_service
@@ -17,15 +17,23 @@ from app.finance_core.api.schemas import FinanceCheckoutCreateRequest
 from app.finance_core.services.checkout_orchestration import FinanceCheckoutOrchestrationService
 from app.finance_core.services.razorpay_sandbox import RazorpaySandboxAdapter
 from app.main import app
+from tests.finance_core.admin_database import finance_admin_session
 from tests.finance_core.test_phase5c_invoice_engine import BILLING_PARTY_ID, ORG_ID, fetch_one, fetch_scalar, seed_master_data
 from tests.finance_core.test_phase6b_razorpay_sandbox_adapter import sandbox_config
 from tests.finance_core.test_phase6c_checkout_orchestration import FakePlanResolver, FakeRazorpayClient
 from tests.finance_core.test_phase6h_disabled_payment_api_routes import assert_disabled, finance_counts
 
 
-
 async def seed_route_organization() -> None:
-    async with AsyncSessionLocal() as session:
+    """Seed tenant-root fixture state through the guarded test-admin identity.
+
+    The checkout route itself continues to execute through the reduced Finance
+    runtime connection.  Tenant-root construction is privileged fixture work
+    and must never be used as evidence that Finance runtime needs INSERT/UPDATE
+    on ``organizations``.
+    """
+
+    async with finance_admin_session() as session:
         await session.execute(
             text(
                 """

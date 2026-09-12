@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import Numeric, func, or_, select, text
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.finance_core.domain.invoice_engine import canonical_hash
 from app.finance_core.domain.payment_ledger import (
@@ -43,47 +43,216 @@ class FinancePaymentRepository:
         request_hash: str,
     ) -> tuple[FinanceIdempotencyKey, bool]:
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-        statement = (
-            insert(FinanceIdempotencyKey)
-            .values(
-                organization_id=organization_id,
-                scope=scope,
-                idempotency_key=idempotency_key,
-                request_hash_sha256=request_hash,
-                status="processing",
-                expires_at=expires_at,
+        try:
+            result = await self._session.execute(
+                text(
+                    """
+                    SELECT id, organization_id, scope, idempotency_key, request_hash_sha256,
+                           status, response_ref, created_at, expires_at, inserted
+                    FROM app_secure.reserve_finance_idempotency(
+                        :scope, :idempotency_key, :request_hash, :organization_id, :expires_at
+                    )
+                    """
+                ),
+                {
+                    "scope": scope,
+                    "idempotency_key": idempotency_key,
+                    "request_hash": request_hash,
+                    "organization_id": organization_id,
+                    "expires_at": expires_at,
+                },
             )
-            .on_conflict_do_nothing(constraint="uq_finance_idempotency_keys_scope_key")
-            .returning(FinanceIdempotencyKey)
-        )
-        inserted = await self._session.execute(statement)
-        row = inserted.scalar_one_or_none()
-        if row is not None:
-            return row, True
-
-        existing_result = await self._session.execute(
-            select(FinanceIdempotencyKey)
-            .where(
-                FinanceIdempotencyKey.scope == scope,
-                FinanceIdempotencyKey.idempotency_key == idempotency_key,
+        except IntegrityError as exc:
+            sqlstate = (
+                getattr(exc.orig, "sqlstate", None)
+                or getattr(exc.orig, "pgcode", None)
             )
-            .with_for_update()
+            if (
+                sqlstate != "23505"
+                or "P4D finance idempotency request conflict" not in str(exc)
+            ):
+                raise
+            raise FinancePaymentConflictError(
+                "Finance request conflicts with the existing idempotency key"
+            ) from exc
+        row = result.mappings().one()
+        key = FinanceIdempotencyKey(
+            id=row["id"],
+            organization_id=row["organization_id"],
+            scope=row["scope"],
+            idempotency_key=row["idempotency_key"],
+            request_hash_sha256=row["request_hash_sha256"],
+            status=row["status"],
+            response_ref=row["response_ref"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
         )
-        existing = existing_result.scalar_one()
-        if existing.request_hash_sha256 != request_hash:
-            raise FinancePaymentConflictError("Idempotency key already exists for a different finance request")
-        return existing, False
+        return key, bool(row["inserted"])
 
     async def complete_idempotency_key(self, key: FinanceIdempotencyKey, *, response_ref: str) -> None:
-        key.status = "succeeded"
-        key.response_ref = response_ref
-        await self._session.flush()
+        result = await self._session.execute(
+            text(
+                """
+                SELECT id, organization_id, scope, idempotency_key, request_hash_sha256,
+                       status, response_ref, created_at, expires_at
+                FROM app_secure.complete_finance_idempotency(:idempotency_id, :response_ref)
+                """
+            ),
+            {"idempotency_id": key.id, "response_ref": response_ref},
+        )
+        row = result.mappings().one()
+        key.status = row["status"]
+        key.response_ref = row["response_ref"]
+
+    async def record_verified_checkout_callback(
+        self,
+        *,
+        provider_code: str,
+        provider_order_ref: str,
+        provider_payment_ref: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> dict[str, object]:
+        result = await self._session.execute(
+            text(
+                """
+                SELECT
+                    payment_id,
+                    organization_id,
+                    provider_order_ref,
+                    provider_payment_ref,
+                    previous_status,
+                    payment_status,
+                    event_recorded,
+                    replayed
+                FROM app_secure.record_finance_checkout_callback(
+                    :provider_code,
+                    :provider_order_ref,
+                    :provider_payment_ref,
+                    :idempotency_key,
+                    :request_hash
+                )
+                """
+            ),
+            {
+                "provider_code": provider_code,
+                "provider_order_ref": provider_order_ref,
+                "provider_payment_ref": provider_payment_ref,
+                "idempotency_key": idempotency_key,
+                "request_hash": request_hash,
+            },
+        )
+        return dict(result.mappings().one())
 
     async def acquire_provider_event_lock(self, *, provider_code: str, provider_event_id: str) -> None:
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
             {"lock_key": f"{provider_code}:{provider_event_id}"},
         )
+
+    async def apply_confirmed_payment_capability(
+        self,
+        *,
+        payment_id: uuid.UUID,
+        invoice_id: uuid.UUID,
+        amount: Decimal,
+        currency_code: str,
+        idempotency_key: str,
+        request_hash: str,
+    ):
+        result = await self._session.execute(
+            text(
+                """
+                SELECT
+                    allocation_id,
+                    payment_id,
+                    invoice_id,
+                    invoice_status,
+                    allocated_amount,
+                    replayed
+                FROM app_secure.apply_finance_confirmed_payment(
+                    :payment_id,
+                    :invoice_id,
+                    :amount,
+                    :currency_code,
+                    :idempotency_key,
+                    :request_hash
+                )
+                """
+            ),
+            {
+                "payment_id": payment_id,
+                "invoice_id": invoice_id,
+                "amount": amount,
+                "currency_code": currency_code,
+                "idempotency_key": idempotency_key,
+                "request_hash": request_hash,
+            },
+        )
+        return result.mappings().one()
+
+    async def confirm_provider_evidence_capability(
+        self,
+        *,
+        provider_code: str,
+        provider_event_id: str,
+        event_type: str,
+        provider_order_ref: str,
+        provider_payment_ref: str,
+        provider_amount_subunits: int,
+        provider_currency: str,
+        provider_payment_status: str,
+        idempotency_key: str,
+        request_hash: str,
+    ):
+        result = await self._session.execute(
+            text(
+                """
+                SELECT
+                    payment_event_id,
+                    payment_id,
+                    organization_id,
+                    provider_code,
+                    provider_event_id,
+                    event_type,
+                    previous_payment_status,
+                    payment_status,
+                    event_recorded,
+                    state_changed,
+                    state_ignored,
+                    replayed
+                FROM app_secure.confirm_finance_provider_evidence(
+                    :provider_code,
+                    :provider_event_id,
+                    :event_type,
+                    :provider_order_ref,
+                    :provider_payment_ref,
+                    :provider_amount_subunits,
+                    :provider_currency,
+                    :provider_payment_status,
+                    :idempotency_key,
+                    :request_hash
+                )
+                """
+            ),
+            {
+                "provider_code": provider_code,
+                "provider_event_id": provider_event_id,
+                "event_type": event_type,
+                "provider_order_ref": provider_order_ref,
+                "provider_payment_ref": provider_payment_ref,
+                "provider_amount_subunits": (
+                    provider_amount_subunits
+                ),
+                "provider_currency": provider_currency,
+                "provider_payment_status": (
+                    provider_payment_status
+                ),
+                "idempotency_key": idempotency_key,
+                "request_hash": request_hash,
+            },
+        )
+        return result.mappings().one()
 
     async def get_payment(self, payment_id: uuid.UUID, *, for_update: bool = False) -> FinancePayment | None:
         statement = select(FinancePayment).where(FinancePayment.id == payment_id)
@@ -437,6 +606,7 @@ class FinancePaymentRepository:
             division_id=payment.division_id,
             brand_id=payment.brand_id,
             amount=amount,
+            currency_code=payment.currency_code,
             status="requested",
             reason_code=refund_ref,
         )

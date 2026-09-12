@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFoundError, ValidationError
 from app.models.gym import Gym, BranchTaxSettings
 from app.repositories.gym_repo import GymRepository
+from app.repositories.organization_registrations import current_organization_has_registration
 from app.schemas.gym import GymCreate, GymUpdate, TaxConfigCreate
 from app.models.organization import Organization
 from app.models.enums import TIER_LIMITS
@@ -32,14 +33,14 @@ class GymService:
     async def get_branch(self, gym_id: UUID, org_id: UUID) -> Gym:
         """
         Get a specific branch by ID, scoped to organization.
-        
+
         Args:
             gym_id: Branch UUID
             org_id: Organization UUID
-            
+
         Returns:
             Gym object
-            
+
         Raises:
             NotFoundError: If branch not found or doesn't belong to org
         """
@@ -51,15 +52,15 @@ class GymService:
     async def create_branch(self, org_id: UUID, data: GymCreate, created_by: UUID) -> Gym:
         """
         Create a new gym branch under an organization.
-        
+
         Args:
             org_id: Organization UUID
             data: Gym creation data
             created_by: Staff UUID who created this branch
-            
+
         Returns:
             Created Gym
-            
+
         Raises:
             ValidationError: If branch limit exceeded
         """
@@ -81,18 +82,17 @@ class GymService:
                 f"Your {org.tier.value} plan allows {limit} branches. Upgrade to add more.",
                 error_code="BRANCH_LIMIT_EXCEEDED"
             )
-        
-        # ENFORCEMENT: 2nd branch or more requires a registration number
+
+        # ENFORCEMENT: 2nd branch or more requires a registration number.
+        # P3B deliberately asks the database for a boolean capability rather
+        # than loading encrypted registration rows into the branch service.
         if current_branches >= 1:
-            from app.models.organization import OrganizationRegistration
-            reg_check_q = select(OrganizationRegistration).where(OrganizationRegistration.org_id == org_id)
-            reg_check_res = await self.session.execute(reg_check_q)
-            if not reg_check_res.scalar_one_or_none():
+            if not await current_organization_has_registration(self.session):
                 raise ValidationError(
                     "A Business Registration Number (PAN, VAT, or local Business ID) is required to add more than one branch. Please update your profile.",
                     error_code="REGISTRATION_REQUIRED"
                 )
-        
+
         gym = Gym(
             org_id=org_id,
             name=data.name,
@@ -113,22 +113,21 @@ class GymService:
     ) -> Gym:
         """
         Update an existing branch.
-        
+
         Args:
             gym_id: Branch UUID
             org_id: Organization UUID (for scoping)
-            data: Update data (partial)
+            data: Gym update data
             updated_by: Staff UUID performing update
-            
+
         Returns:
             Updated Gym
-            
+
         Raises:
             NotFoundError: If branch not found
         """
         gym = await self.get_branch(gym_id, org_id)
-        
-        # Update only provided fields
+
         if data.name is not None:
             gym.name = data.name
         if data.address is not None:
@@ -137,17 +136,17 @@ class GymService:
             gym.city = data.city
         if data.phone is not None:
             gym.phone = data.phone
-        
+
         return await self.gym_repo.update(gym)
 
     async def delete_branch(self, gym_id: UUID, org_id: UUID) -> None:
         """
         Soft delete a branch (set is_active=False).
-        
+
         Args:
             gym_id: Branch UUID
             org_id: Organization UUID (for scoping)
-            
+
         Raises:
             NotFoundError: If branch not found or already inactive
         """
@@ -170,24 +169,21 @@ class GymService:
         """
         Create or update tax configuration for a gym.
         Deactivates previous active config and creates a new one.
-        
+
         Args:
             gym_id: Branch UUID
             data: Tax configuration data
             created_by: Staff UUID
-            
+
         Returns:
             Created/updated BranchTaxSettings
         """
-        # Deactivate current active config
         await self.gym_repo.deactivate_tax_config(gym_id)
-        
-        # Encrypt and Mask
+
         from app.utils.encryption import encrypt_data, mask_id_number
         encrypted_id = encrypt_data(data.tax_id)
         masked_id = mask_id_number(data.tax_id)
 
-        # Create new config
         config = BranchTaxSettings(
             gym_id=gym_id,
             tax_type=data.tax_type,
@@ -204,10 +200,10 @@ class GymService:
     async def delete_tax_config(self, gym_id: UUID) -> None:
         """
         Deactivate the active tax configuration for a gym.
-        
+
         Args:
             gym_id: Branch UUID
-            
+
         Raises:
             NotFoundError: If no active config exists
         """

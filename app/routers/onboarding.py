@@ -6,6 +6,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.auth_database import get_auth_db
 from app.core.redis import redis_client
 from app.core.security import decode_token
 from app.repositories.geo_repository import GeoRepository
@@ -45,12 +46,6 @@ async def pincode_lookup(
     country: str = Query(default="IN", min_length=2, max_length=2),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Look up city and state by pincode using the self-hosted geo database.
-    No external API calls. Supports multiple countries via ?country= param.
-    Default country: IN (India).
-    Returns 404 if pincode not found — caller should allow manual city/state entry.
-    """
     repo = GeoRepository(db)
     service = GeoService(repo, redis_client)
     results = await service.lookup_postal_code(country.upper(), pincode)
@@ -73,12 +68,10 @@ async def pincode_lookup(
 async def complete_onboarding(
     request: Request,
     data: OnboardingCompleteRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
     owner_id: str = Depends(get_current_owner_id),
 ):
-    """
-    Submit onboarding details to activate the account and start the free trial.
-    """
+    """Activate an owner/tenant through the dedicated bootstrap DB identity."""
     service = OnboardingService(db)
     ip_address = request.client.host if request.client else "127.0.0.1"
     user_agent = request.headers.get("user-agent", "")
@@ -95,8 +88,5 @@ async def get_onboarding_status(
     db: AsyncSession = Depends(get_db),
     owner_id: str = Depends(get_current_owner_id),
 ):
-    """
-    Retrieve current onboarding and trial status.
-    """
     service = OnboardingService(db)
     return await service.get_status(owner_id)

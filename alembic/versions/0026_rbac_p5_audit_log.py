@@ -37,14 +37,269 @@ Create Date: 2026-05-23
 """
 
 from alembic import op
+import sqlalchemy as sa
 
 revision = "0026_rbac_p5_audit_log"
 down_revision = "0025_rbac_p4_bsr_expand"
 branch_labels = None
 depends_on = None
 
+# RB1M2N_0026_APP_PRIVATE_OWNER_TRANSFER_SCHEMA_ACL_HELPERS
+
+_RB1M2N_PRIVATE_SCHEMA = "app_private"
+_RB1M2N_TARGET_OWNER = "app_security_owner"
+_RB1M2N_FUNCTION_OWNER_CONTRACT = (
+    ("append_audit_event", 14),
+    ("ensure_future_partition", 2),
+    ("org_advisory_lock_key", 1),
+    ("raise_immutable_audit_violation", 0),
+)
+
+
+def _rb1m2n_identity(bind):
+    return bind.execute(
+        sa.text(
+            """
+            SELECT
+                session_user::text AS session_user_name,
+                current_user::text AS current_user_name
+            """
+        )
+    ).mappings().one()
+
+
+def _rb1m2n_require_migration_owner(bind):
+    identity = _rb1m2n_identity(bind)
+    if identity["session_user_name"] != "migration_owner":
+        raise RuntimeError(
+            "Revision 0026 requires session_user migration_owner; observed "
+            f"{identity['session_user_name']!r}."
+        )
+    if identity["current_user_name"] != "migration_owner":
+        raise RuntimeError(
+            "Revision 0026 requires current_user migration_owner; observed "
+            f"{identity['current_user_name']!r}."
+        )
+
+
+def _rb1m2n_direct_private_create_acl(bind):
+    rows = bind.execute(
+        sa.text(
+            """
+            SELECT
+                grantor_role.rolname::text AS grantor_name,
+                grantee_role.rolname::text AS grantee_name,
+                schema_acl.privilege_type::text AS privilege_type,
+                schema_acl.is_grantable AS is_grantable
+            FROM pg_catalog.pg_namespace AS namespace_data
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                    namespace_data.nspacl,
+                    pg_catalog.acldefault('n', namespace_data.nspowner)
+                )
+            ) AS schema_acl
+            JOIN pg_catalog.pg_roles AS grantor_role
+              ON grantor_role.oid = schema_acl.grantor
+            JOIN pg_catalog.pg_roles AS grantee_role
+              ON grantee_role.oid = schema_acl.grantee
+            WHERE namespace_data.nspname = 'app_private'
+              AND grantee_role.rolname = 'app_security_owner'
+              AND schema_acl.privilege_type = 'CREATE'
+            ORDER BY
+                grantor_name,
+                grantee_name,
+                privilege_type,
+                is_grantable
+            """
+        )
+    ).all()
+    return tuple((row[0], row[1], row[2], bool(row[3])) for row in rows)
+
+
+def _rb1m2n_preflight_private_owner_transfer(bind):
+    _rb1m2n_require_migration_owner(bind)
+    schema_row = bind.execute(
+        sa.text(
+            """
+            SELECT owner_role.rolname::text AS owner_name
+            FROM pg_catalog.pg_namespace AS namespace_data
+            JOIN pg_catalog.pg_roles AS owner_role
+              ON owner_role.oid = namespace_data.nspowner
+            WHERE namespace_data.nspname = 'app_private'
+            """
+        )
+    ).mappings().one_or_none()
+    if schema_row is None:
+        raise RuntimeError("Required schema app_private is absent.")
+    if schema_row["owner_name"] != "migration_owner":
+        raise RuntimeError(
+            "app_private must remain owned by migration_owner; observed "
+            f"{schema_row['owner_name']!r}."
+        )
+    target_exists = bind.execute(
+        sa.text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_roles
+                WHERE rolname = 'app_security_owner'
+            )
+            """
+        )
+    ).scalar_one()
+    if target_exists is not True:
+        raise RuntimeError("Required role app_security_owner is absent.")
+    can_set_role = bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.pg_has_role(
+                session_user,
+                'app_security_owner',
+                'SET'
+            )
+            """
+        )
+    ).scalar_one()
+    if can_set_role is not True:
+        raise RuntimeError("migration_owner cannot SET ROLE app_security_owner.")
+    has_usage = bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.has_schema_privilege(
+                'app_security_owner',
+                'app_private',
+                'USAGE'
+            )
+            """
+        )
+    ).scalar_one()
+    if has_usage is not True:
+        raise RuntimeError(
+            "app_security_owner lacks required USAGE on app_private."
+        )
+
+
+def _rb1m2n_prepare_private_create_acl(bind):
+    _rb1m2n_preflight_private_owner_transfer(bind)
+    before = _rb1m2n_direct_private_create_acl(bind)
+    has_create = bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.has_schema_privilege(
+                'app_security_owner',
+                'app_private',
+                'CREATE'
+            )
+            """
+        )
+    ).scalar_one()
+    added = has_create is not True
+    if added:
+        bind.execute(
+            sa.text(
+                "GRANT CREATE ON SCHEMA app_private "
+                "TO app_security_owner"
+            )
+        )
+    effective_after = bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.has_schema_privilege(
+                'app_security_owner',
+                'app_private',
+                'CREATE'
+            )
+            """
+        )
+    ).scalar_one()
+    if effective_after is not True:
+        raise RuntimeError(
+            "app_security_owner did not acquire effective CREATE on app_private."
+        )
+    return before, added
+
+
+def _rb1m2n_restore_private_create_acl(bind, before, added):
+    _rb1m2n_require_migration_owner(bind)
+    if added:
+        bind.execute(
+            sa.text(
+                "REVOKE CREATE ON SCHEMA app_private "
+                "FROM app_security_owner"
+            )
+        )
+    observed = _rb1m2n_direct_private_create_acl(bind)
+    if observed != before:
+        raise RuntimeError(
+            "app_private CREATE ACL restoration drift: "
+            f"observed={observed!r}, expected={before!r}."
+        )
+
+
+def _rb1m2n_verify_function_owner_contract(bind):
+    _rb1m2n_require_migration_owner(bind)
+    rows = bind.execute(
+        sa.text(
+            """
+            SELECT
+                procedure_data.proname::text AS function_name,
+                procedure_data.pronargs::int AS argument_count,
+                owner_role.rolname::text AS owner_name,
+                COUNT(*) FILTER (
+                    WHERE function_acl.grantee = 0
+                      AND function_acl.privilege_type = 'EXECUTE'
+                )::int AS public_execute_count
+            FROM pg_catalog.pg_proc AS procedure_data
+            JOIN pg_catalog.pg_namespace AS namespace_data
+              ON namespace_data.oid = procedure_data.pronamespace
+            JOIN pg_catalog.pg_roles AS owner_role
+              ON owner_role.oid = procedure_data.proowner
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                    procedure_data.proacl,
+                    pg_catalog.acldefault('f', procedure_data.proowner)
+                )
+            ) AS function_acl
+            WHERE namespace_data.nspname = 'app_private'
+              AND (
+                    (procedure_data.proname = 'append_audit_event'
+                     AND procedure_data.pronargs = 14)
+                 OR (procedure_data.proname = 'ensure_future_partition'
+                     AND procedure_data.pronargs = 2)
+                 OR (procedure_data.proname = 'org_advisory_lock_key'
+                     AND procedure_data.pronargs = 1)
+                 OR (procedure_data.proname = 'raise_immutable_audit_violation'
+                     AND procedure_data.pronargs = 0)
+              )
+            GROUP BY
+                procedure_data.proname,
+                procedure_data.pronargs,
+                owner_role.rolname
+            ORDER BY function_name, argument_count
+            """
+        )
+    ).all()
+    observed = tuple(
+        (row[0], int(row[1]), row[2], int(row[3]))
+        for row in rows
+    )
+    expected = tuple(
+        (name, count, _RB1M2N_TARGET_OWNER, 0)
+        for name, count in _RB1M2N_FUNCTION_OWNER_CONTRACT
+    )
+    if observed != expected:
+        raise RuntimeError(
+            "Revision-0026 function owner contract drift: "
+            f"observed={observed!r}, expected={expected!r}."
+        )
+
+
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    private_create_acl_before, private_create_added = (
+        _rb1m2n_prepare_private_create_acl(bind)
+    )
 
     # ── 1. Expand branch_audit_log columns ────────────────────────────────
 
@@ -209,7 +464,6 @@ def upgrade() -> None:
         $$;
     """)
 
-    op.execute("ALTER FUNCTION app_private.raise_immutable_audit_violation() OWNER TO app_security_owner;")
     op.execute("REVOKE ALL ON FUNCTION app_private.raise_immutable_audit_violation() FROM PUBLIC;")
 
     op.execute("""
@@ -240,9 +494,9 @@ def upgrade() -> None:
         $$;
     """)
 
-    op.execute("ALTER FUNCTION app_private.org_advisory_lock_key(UUID) OWNER TO app_security_owner;")
     op.execute("REVOKE ALL ON FUNCTION app_private.org_advisory_lock_key(UUID) FROM PUBLIC;")
     op.execute("GRANT EXECUTE ON FUNCTION app_private.org_advisory_lock_key(UUID) TO audit_writer;")
+    op.execute("ALTER FUNCTION app_private.org_advisory_lock_key(UUID) OWNER TO app_security_owner;")
 
     # ── 8. append_audit_event() — serialized hash chain writer ───────────
     # CONTRACT:
@@ -356,9 +610,9 @@ def upgrade() -> None:
         $$;
     """)
 
-    op.execute("ALTER FUNCTION app_private.append_audit_event(UUID,UUID,UUID,VARCHAR,VARCHAR,TEXT,JSONB,UUID,JSONB,JSONB,TEXT,VARCHAR,VARCHAR,UUID) OWNER TO app_security_owner;")
     op.execute("REVOKE ALL ON FUNCTION app_private.append_audit_event(UUID,UUID,UUID,VARCHAR,VARCHAR,TEXT,JSONB,UUID,JSONB,JSONB,TEXT,VARCHAR,VARCHAR,UUID) FROM PUBLIC;")
     op.execute("GRANT EXECUTE ON FUNCTION app_private.append_audit_event(UUID,UUID,UUID,VARCHAR,VARCHAR,TEXT,JSONB,UUID,JSONB,JSONB,TEXT,VARCHAR,VARCHAR,UUID) TO audit_writer;")
+    op.execute("ALTER FUNCTION app_private.append_audit_event(UUID,UUID,UUID,VARCHAR,VARCHAR,TEXT,JSONB,UUID,JSONB,JSONB,TEXT,VARCHAR,VARCHAR,UUID) OWNER TO app_security_owner;")
 
     # ── 9. Partition lifecycle manager ────────────────────────────────────
     # Called by a scheduler (pg_cron / Celery beat) to pre-create monthly partitions.
@@ -418,10 +672,8 @@ def upgrade() -> None:
         $$;
     """)
 
-    op.execute("ALTER FUNCTION app_private.ensure_future_partition(TEXT, INT) OWNER TO app_security_owner;")
     op.execute("REVOKE ALL ON FUNCTION app_private.ensure_future_partition(TEXT, INT) FROM PUBLIC;")
-    # Grant EXECUTE to postgres (migration runner) so we can call it during the upgrade step
-    op.execute("GRANT EXECUTE ON FUNCTION app_private.ensure_future_partition(TEXT, INT) TO postgres;")
+    op.execute("ALTER FUNCTION app_private.ensure_future_partition(TEXT, INT) OWNER TO app_security_owner;")
 
     # ── 10. Pre-create next 3 monthly partitions ──────────────────────────
     # Ensures no insert failures at month boundary (current + next 2 months).
@@ -444,6 +696,16 @@ def upgrade() -> None:
             FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
     """)
 
+    # Keep migration_owner as the trigger-function owner until all seed
+    # partitions exist. PostgreSQL clones the parent trigger onto each new
+    # partition, and the creating role must retain authority on the trigger
+    # function throughout that operation.
+    op.execute("ALTER FUNCTION app_private.raise_immutable_audit_violation() OWNER TO app_security_owner;")
+    _rb1m2n_restore_private_create_acl(
+        bind, private_create_acl_before, private_create_added
+    )
+    _rb1m2n_verify_function_owner_contract(bind)
+
     # ── 11. RLS on audit log ─────────────────────────────────────────────
     op.execute("ALTER TABLE public.branch_audit_log ENABLE ROW LEVEL SECURITY;")
     op.execute("ALTER TABLE public.branch_audit_log FORCE ROW LEVEL SECURITY;")
@@ -465,14 +727,43 @@ def downgrade() -> None:
     # RLS
     op.execute("DROP POLICY IF EXISTS tenant_isolation_audit_log ON public.branch_audit_log;")
 
+    # Revision 0025 already enabled RLS but did not force it. Restore only
+    # the force-state changed by revision 0026; never disable tenant RLS.
+    op.execute(
+        "ALTER TABLE public.branch_audit_log "
+        "NO FORCE ROW LEVEL SECURITY;"
+    )
+
+    # Reverse exactly the table privileges introduced by this revision.
+    op.execute(
+        "REVOKE INSERT, SELECT ON public.branch_audit_log "
+        "FROM audit_writer;"
+    )
+    op.execute(
+        "REVOKE SELECT ON public.branch_audit_log "
+        "FROM app_runtime, readonly_analytics;"
+    )
+
     # Triggers
     op.execute("DROP TRIGGER IF EXISTS trg_deny_audit_mutation ON public.branch_audit_log;")
 
-    # Functions
+    # Seeded partitions introduced by this revision. RESTRICT is
+    # intentional: downgrade must fail closed if a later object depends on
+    # one of these partitions.
+    op.execute("DROP TABLE IF EXISTS public.branch_audit_log_y2026_m06 RESTRICT;")
+    op.execute("DROP TABLE IF EXISTS public.branch_audit_log_y2026_m07 RESTRICT;")
+    op.execute("DROP TABLE IF EXISTS public.branch_audit_log_y2026_m08 RESTRICT;")
+
+    # The functions are owned by app_security_owner at revision 0026. SET
+    # LOCAL ROLE is transaction-scoped. RESET ROLE runs only on the success
+    # path; if a protected drop fails, rollback restores the role and the
+    # original PostgreSQL exception remains unmasked.
+    op.execute("SET LOCAL ROLE app_security_owner;")
     op.execute("DROP FUNCTION IF EXISTS app_private.ensure_future_partition(TEXT, INT);")
     op.execute("DROP FUNCTION IF EXISTS app_private.append_audit_event(UUID,UUID,UUID,VARCHAR,VARCHAR,TEXT,JSONB,UUID,JSONB,JSONB,TEXT,VARCHAR,VARCHAR,UUID);")
     op.execute("DROP FUNCTION IF EXISTS app_private.org_advisory_lock_key(UUID);")
     op.execute("DROP FUNCTION IF EXISTS app_private.raise_immutable_audit_violation();")
+    op.execute("RESET ROLE;")
 
     # Indexes
     op.execute("DROP INDEX IF EXISTS ix_audit_org_category;")

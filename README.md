@@ -1,244 +1,123 @@
-# GymFlow Backend API
+# DOERS / GymFlow Backend
 
-Production-ready FastAPI backend for multi-tenant Gym Management SaaS.
+FastAPI/PostgreSQL backend for the DOERS multi-tenant fitness and studio platform.
 
-## Tech Stack
-- Python 3.11+ with FastAPI
-- PostgreSQL (async via SQLAlchemy + asyncpg)
-- Redis (optional, gracefully degrades if unavailable)
-- JWT authentication (access + refresh tokens)
+The repository is hardened around PostgreSQL 16, forced row-level security, explicit database identities, Alembic-only schema evolution, bounded worker/maintenance processes, and fail-closed production startup validation.
 
-## Setup
+## Supported stack
 
-### 1. Clone and create venv
+- Python 3.12
+- FastAPI + SQLAlchemy 2
+- PostgreSQL 16 with Alembic migrations
+- asyncpg for asynchronous PostgreSQL access
+- Psycopg 3 for synchronous PostgreSQL access
+- Redis + Celery
+- PostgreSQL RLS for governed tenant data
+
+The P2E certification workflow records the exact Python, PostgreSQL, and extension versions used by the hardened candidate. `requirements-test.lock` is the exact Python test environment used by that certification lane.
+
+## Local development
+
+Create a virtual environment and install the development/test dependency set:
+
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements-test.txt
 ```
 
-### 2. Configure environment
+For an environment matching the P2E certified dependency set exactly:
+
+```bash
+python -m pip install 'pip==26.2.1'
+python -m pip install -r requirements-test.lock
+python -m pip check
+```
+
+Copy the development example and configure local credentials:
+
 ```bash
 cp .env.example .env
-# Edit .env with your credentials
 ```
 
-### 3. Run locally (dev)
+`.env.example` is intentionally a **development-only** example. It is not a production secret bundle. Authentication/bootstrap uses a separate PostgreSQL login from ordinary API traffic, even in a production-shaped local setup.
+
+Apply the repository migration lineage before starting the application:
+
+```bash
+python -m alembic -c alembic.ini upgrade head
+python -m alembic -c alembic.ini current --check-heads
+```
+
+Then run the API:
+
 ```bash
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Access API docs at: `http://localhost:8000/docs`
+## Database and tenant security
 
-## Project Structure
+RLS is part of the database security boundary; it is not optional production hardening. Governed tenant tables remain RLS-enabled/forced, and application code installs transaction-local principal and tenant context before database work.
 
-```
-app/
-├── main.py                 # FastAPI app, startup/shutdown events
-├── config.py               # Environment settings
-├── database.py             # Async SQLAlchemy setup
-├── redis_client.py         # Redis connection with graceful degradation
-├── models/
-│   └── models.py           # SQLAlchemy ORM models (Gym, Member, Subscription, etc.)
-├── schemas/
-│   ├── auth.py             # LoginRequest, TokenResponse
-│   ├── member.py           # MemberCreate, MemberRead, MemberUpdate
-│   ├── subscription.py     # SubscriptionCreate, ExpiringMember
-│   ├── attendance.py       # AccessVerifyRequest, AccessVerifyResponse
-│   ├── device.py           # DeviceRegisterRequest, DeviceRegisterResponse
-│   ├── payment.py          # PaymentCreate, PaymentRead
-│   └── dashboard.py        # Dashboard data schemas
-├── routers/
-│   ├── auth.py             # POST /auth/login, /auth/refresh
-│   ├── members.py          # GET/POST/PUT/DELETE /members, POST /enroll-fingerprint
-│   ├── subscriptions.py    # GET /subscriptions/expiring, POST /subscriptions, PUT /renew
-│   ├── access.py           # POST /access/verify (main bridge endpoint)
-│   ├── devices.py          # POST /devices/connect, GET /status, POST /sync-members
-│   ├── dashboard.py        # GET /dashboard/today, /attendance, /revenue
-│   └── payments.py         # GET/POST /payments
-├── services/
-│   ├── access_control.py   # Member access validation, attendance logging
-│   ├── whatsapp_service.py # Twilio WhatsApp integration
-│   └── razorpay_service.py # Razorpay payment integration
-└── middleware/
-    ├── auth_middleware.py  # JWT token validation, get_current_owner()
-    └── tenant_middleware.py # Tenant context (optional)
-```
+DOERS separates PostgreSQL deployment LOGIN roles from NOLOGIN capability roles. Production database identities include:
 
-## Key Features
+- API login → `app_runtime` + `app_user`
+- auth/bootstrap login → `auth_runtime` + `app_runtime` + `app_user`
+- ordinary worker login → `worker_runtime`
+- lifecycle-maintenance login → `lifecycle_maintenance_runtime`
+- migration login → `migration_owner`
 
-### 1. Authentication
-- Gym owner login: `POST /auth/login`
-- JWT tokens with refresh flow
-- Secure password hashing (bcrypt)
+Runtime logins do not receive `SET ROLE`, ADMIN membership, BYPASSRLS, SUPERUSER, CREATEDB, CREATEROLE, or replication privileges.
 
-### 2. Multi-tenant Isolation
-- Every query filters by `gym_id` from JWT token
-- Database Row-Level Security (RLS) optional
-- Tenant context enforced at application layer
+See:
 
-### 3. Door Access Control (Main Feature)
-- Bridge calls: `POST /access/verify` with device token + fingerprint_id
-- Validates member subscription status
-- Publishes unlock command to Redis pub/sub (for real-time door control)
-- Logs all access attempts (granted/denied)
-- Sends WhatsApp alerts for expired subscriptions
+- `docs/operations/database-identities.md`
+- `docs/operations/runtime-processes.md`
+- `docs/operations/migrations.md`
+- `security/cluster_role_bootstrap/`
+- `security/runtime_identity/`
 
-### 4. Real-time Features
-- Redis pub/sub for door commands (`tenant:{gym_id}:door_control`)
-- Rate limiting on access endpoint (graceful if Redis unavailable)
-- Dashboard with today's entries, expiring members, revenue
+## Production process isolation
 
-### 5. Graceful Degradation
-- If Redis unavailable, app still runs (rate limiting and pub/sub skipped)
-- Async operations are non-blocking
-- Proper error handling and logging
+Production has four application process profiles:
 
-## API Examples
+| Process | `DOERS_PROCESS_PROFILE` | Database credentials exposed |
+|---|---|---|
+| FastAPI | `api` | API + auth only |
+| ordinary Celery worker | `worker` | worker only |
+| lifecycle-maintenance worker | `maintenance` | maintenance only |
+| Celery beat / database-free control process | `beat` | none |
 
-### 1. Gym Owner Login
-```bash
-curl -X POST http://localhost:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "gym_id": "550e8400-e29b-41d4-a716-446655440000",
-    "email": "owner@gym.com",
-    "password": "secure_password"
-  }'
+A production process fails startup if it receives a forbidden database variable or its live PostgreSQL principal does not match the runtime identity contract.
 
-# Response:
-# {
-#   "access_token": "eyJhbGc...",
-#   "token_type": "bearer",
-#   "refresh_token": "eyJhbGc...",
-#   "expires_at": "2026-05-02T12:30:00"
-# }
-```
+`docker-compose.yml` is a development convenience. Production must reproduce the credential isolation in `deploy/docker-compose.production-identities.yml` or an equivalent Kubernetes/systemd/orchestrator configuration. Do not distribute every database secret to every container and rely on application code to choose safely.
 
-### 2. Create Member
-```bash
-curl -X POST http://localhost:8000/members \
-  -H "Authorization: Bearer <access_token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Priya Sharma",
-    "phone": "+919876543210",
-    "email": "priya@example.com"
-  }'
-```
+## Migrations
 
-### 3. Verify Access (Bridge → Backend)
-```bash
-curl -X POST http://localhost:8000/access/verify \
-  -H "X-Bridge-Token: <device_auth_token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "device_id": "550e8400-e29b-41d4-a716-446655440001",
-    "fingerprint_id": "fp-member-12345"
-  }'
+Schema changes are applied only through the existing Alembic lineage. Do **not** run `alembic init`, generate a parallel migration tree, or create application tables automatically at startup.
 
-# Response (allowed):
-# {
-#   "allowed": true,
-#   "member_id": "550e8400-e29b-41d4-a716-446655440010",
-#   "member_name": "Priya Sharma",
-#   "subscription_end": "2026-06-01",
-#   "reason": null
-# }
+Before production HEAD, infrastructure must provision the external capability-role contract and infrastructure-owned PostgreSQL extensions. The migration job then runs as the reduced `migration_owner` identity. P2B/P2C identity verification is performed before and after HEAD in the hardening certification path.
 
-# Response (denied):
-# {
-#   "allowed": false,
-#   "member_id": null,
-#   "member_name": null,
-#   "subscription_end": null,
-#   "reason": "no_subscription"
-# }
-```
+Operational procedure and rollback rules are documented in `docs/operations/migrations.md`.
 
-### 4. Get Dashboard (Today)
-```bash
-curl -X GET http://localhost:8000/dashboard/today \
-  -H "Authorization: Bearer <access_token>"
+## Tests and hardening gates
 
-# Response:
-# {
-#   "entries": 42,
-#   "revenue": 15000.50,
-#   "expiring_members": 5
-# }
-```
+The repository contains general, finance, migration-lineage, worker, lifecycle, branch-hours, PostgreSQL identity, and runtime-principal regression suites. Passing an individual test file is not the production-readiness definition; the hardened candidate is accepted only when the complete required workflow matrix is green on one unchanged candidate.
 
-## Database Schema
-
-All tables are created automatically at startup. For production, use Alembic migrations:
+Useful local commands include:
 
 ```bash
-alembic init alembic
-alembic revision --autogenerate -m "Initial schema"
-alembic upgrade head
+python -m pytest -q
+python -s scripts/verify_alembic_graph.py
+python -s scripts/migration_semantics_gate.py
+python -s scripts/verify_runtime_identity_routing.py
+python -s scripts/verify_head_workflow_bootstrap.py
 ```
 
-## Deployment (Railway)
+The dedicated P2E workflow additionally installs `requirements-test.lock`, runs `pip check`, and compares the installed `pip freeze` against the committed lock to detect dependency drift.
 
-1. Create a new Railway project
-2. Connect PostgreSQL and Redis from Railway marketplace
-3. Push code to GitHub
-4. Connect GitHub repo to Railway
-5. Set environment variables from `.env.example`
-6. Deploy
+## Production safety rules
 
-```bash
-# .env for Railway
-DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/gymflow
-REDIS_URL=redis://:password@host:6379/0
-JWT_SECRET=<strong-random-secret>
-RAZORPAY_KEY_ID=rzp_test_xxx
-RAZORPAY_KEY_SECRET=xxx
-TWILIO_ACCOUNT_SID=ACxxx
-TWILIO_AUTH_TOKEN=xxx
-TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
-```
+Do not solve failures by weakening RLS, granting BYPASSRLS, converting capability roles to LOGIN, introducing broad runtime grants, sharing worker/maintenance secrets with API processes, or bypassing migration/identity preflight checks.
 
-## Testing
-
-```bash
-# All endpoints available at /docs (Swagger UI)
-http://localhost:8000/docs
-
-# Or use ReDoc
-http://localhost:8000/redoc
-```
-
-## Error Handling
-
-All endpoints return meaningful HTTP status codes:
-- `200` OK
-- `201` Created
-- `204` No Content
-- `400` Bad Request (validation)
-- `401` Unauthorized (auth)
-- `403` Forbidden (permission)
-- `404` Not Found
-- `429` Too Many Requests (rate limited)
-- `500` Server Error
-
-## Performance Notes
-
-- Async database queries via asyncpg (10x faster than sync)
-- Connection pooling built-in
-- Rate limiting per device (skip if Redis unavailable)
-- Indexes on `gym_id`, `member_id`, `fingerprint_id`, `scan_time`
-- Partial indexes on subscription end_date for expiry queries
-
-## Next Steps
-
-1. Setup PostgreSQL and Redis (via Railway or Docker)
-2. Update `.env` with credentials
-3. Create test gym owner and members
-4. Integrate with ZKTeco bridge script
-5. Deploy to production
-
----
-
-**Built for GymFlow SaaS** — Multi-tenant gym management platform
+A green health endpoint or a successful Alembic command by itself is not sufficient evidence of a safe deployment. Production readiness requires the identity, migration, data-preservation, adversarial, runtime-boundary, and regression gates to remain green together.

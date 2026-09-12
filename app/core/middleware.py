@@ -27,7 +27,7 @@ from fastapi import Request, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
-from app.core.security import decode_token
+from app.core.security import ACCESS_TOKEN_PRINCIPAL_TYPES, decode_token
 from app.core.redis import redis_client
 from app.core.concurrency import adaptive_controller
 
@@ -39,6 +39,7 @@ logger = logging.getLogger("doers.middleware")
 
 EXEMPT_PATHS = {
     "/auth/signup",
+    "/auth/signup-status",
     "/auth/register",
     "/auth/login",
     "/auth/refresh",
@@ -346,6 +347,10 @@ class TenantMiddleware(BaseHTTPMiddleware):
         except Exception:
             return JSONResponse(status_code=401, content={"detail": "Invalid or expired token."})
 
+        principal_type = payload.get("principal_type")
+        if principal_type not in ACCESS_TOKEN_PRINCIPAL_TYPES:
+            return JSONResponse(status_code=401, content={"detail": "Invalid principal type."})
+
         jti       = payload.get("jti")
         family_id = payload.get("f_id")
 
@@ -358,6 +363,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
             pass  # Redis unavailable — proceed (fail-open; blacklist check is defense-in-depth)
 
         request.state.staff_id = payload.get("sub")
+        request.state.principal_type = principal_type
         request.state.org_id   = payload.get("org_id")
         request.state.gym_id   = payload.get("gym_id")
         request.state.role     = payload.get("role")

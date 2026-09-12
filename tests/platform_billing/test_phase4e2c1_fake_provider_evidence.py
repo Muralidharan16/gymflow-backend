@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-import psycopg2
+import psycopg
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy import text
@@ -824,7 +824,7 @@ async def test_transaction_boundary_reservation_visible_and_unlocked_before_evid
             self.record_returned = False
 
         async def record(self, evidence):
-            with psycopg2.connect(_sync_admin_dsn()) as conn:
+            with psycopg.connect(_sync_admin_dsn()) as conn:
                 conn.autocommit = False
                 with conn.cursor() as cur:
                     cur.execute("SELECT pg_catalog.set_config('app.current_org_id', %s, true)", (str(evidence.organization_id),))

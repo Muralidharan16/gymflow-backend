@@ -1,6 +1,6 @@
 import uuid
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 from sqlalchemy import String, Boolean, ForeignKey, Index, text, ForeignKeyConstraint, UniqueConstraint, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -26,7 +26,7 @@ class OrganizationUser(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("TRUE"), nullable=False)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("FALSE"), nullable=False)
     token_version: Mapped[int] = mapped_column(default=1, server_default=text("1"), nullable=False)
-    
+
     deleted_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
 
@@ -49,7 +49,7 @@ class OrganizationMember(Base, TimestampMixin):
     deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     user: Mapped["OrganizationUser"] = relationship("OrganizationUser", foreign_keys=[user_id])
-    
+
     roles: Mapped[List["BranchStaffRole"]] = relationship(
         "BranchStaffRole",
         back_populates="member",
@@ -76,15 +76,30 @@ class BranchStaffRole(Base):
     assignment_source: Mapped[str] = mapped_column(String(32), default='dashboard', server_default=text("'dashboard'"), nullable=False)
 
     assigned_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
-    assigned_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=datetime.utcnow, server_default=text("clock_timestamp()"), nullable=False)
-    effective_from: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=datetime.utcnow, server_default=text("clock_timestamp()"), nullable=False)
+    assigned_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("clock_timestamp()"),
+        nullable=False,
+    )
+    effective_from: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("clock_timestamp()"),
+        nullable=False,
+    )
     effective_to: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
-    
+
     revoked_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     revoked_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
-    
+
     metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=datetime.utcnow, server_default=text("clock_timestamp()"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("clock_timestamp()"),
+        nullable=False,
+    )
     deleted_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
 

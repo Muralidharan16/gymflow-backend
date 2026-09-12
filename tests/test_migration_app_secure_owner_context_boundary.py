@@ -1,0 +1,262 @@
+"""Closed app_secure migration inventory with the original hardening suite preserved.
+
+The pre-P2D static contract is kept byte-for-byte in the non-collected baseline
+module. Later hardening revisions extend only the closed sensitive-migration
+inventory; every other hardening regression is re-exported unchanged.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import pathlib
+import re
+import sys
+
+_BASELINE_PATH = pathlib.Path(__file__).with_name(
+    "migration_app_secure_owner_context_boundary_baseline.py"
+)
+_SPEC = importlib.util.spec_from_file_location(
+    "_doers_app_secure_owner_context_baseline", _BASELINE_PATH
+)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError("Unable to load app_secure owner-context baseline")
+_BASELINE = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = _BASELINE
+_SPEC.loader.exec_module(_BASELINE)
+
+for _name, _value in vars(_BASELINE).items():
+    if not _name.startswith("__"):
+        globals()[_name] = _value
+
+# Preserve the historical detector but extend the collected closed inventory to
+# cover policy DDL introduced by later app_secure migrations.  This deliberately
+# detects the DDL rather than omitting it from the allowlist.
+_BASELINE_APP_SECURE_DDL_CATEGORIES = _app_secure_ddl_categories
+
+
+def _app_secure_ddl_categories(path: pathlib.Path) -> set[str]:
+    categories = set(_BASELINE_APP_SECURE_DDL_CATEGORIES(path))
+    text = re.sub(r"\s+", " ", "\n".join(_string_constants(_tree(path))))
+    if re.search(r"\bCREATE\s+POLICY\b", text, re.IGNORECASE):
+        categories.add("create_policy")
+    if re.search(r"\bDROP\s+POLICY\b", text, re.IGNORECASE):
+        categories.add("drop_policy")
+    return categories
+
+
+_P2D_MIGRATION = "9e4f5a6b7c8d_worker_geocoding_runtime_boundary.py"
+_P2F_REMEDIATION_MIGRATION = "af5b6c7d8e9f_platform_maintenance_control_plane.py"
+_P2F_DEK_MIGRATION = "b06c7d8e9f0a_tenant_dek_lookup_boundary.py"
+_P3A_PROFILE_MIGRATION = "c17d8e9f0a1b_organization_profile_authorization.py"
+_P3A_ONBOARDING_MIGRATION = "c27d8e9f0a1c_organization_onboarding_authorization.py"
+_P3A_PRINCIPAL_BINDING_MIGRATION = "c37d8e9f0a1d_organization_profile_principal_binding.py"
+_P3A_AUTH_DECOUPLING_MIGRATION = "c47d8e9f0a1e_p3a_auth_runtime_decoupling.py"
+_P3B_READ_MIGRATION = "c97d8e9f0a23_p3b_registration_read_boundary.py"
+_P3B_STORAGE_MIGRATION = "d07d8e9f0a24_p3b_registration_envelope_storage.py"
+_P3B_DEK_MIGRATION = "e07d8e9f0a25_p3b_registration_dek_capabilities.py"
+_P3B_CREATE_MIGRATION = "f07d8e9f0a26_p3b_registration_create_capability.py"
+_P3B_REPLACE_MIGRATION = "g07d8e9f0a27_p3b_registration_replace_capability.py"
+_P3B_BACKFILL_MIGRATION = "i07d8e9f0a29_p3b_registration_legacy_backfill_capabilities.py"
+_P3B_REPLACE_CORRECTION_MIGRATION = (
+    "j07d8e9f0a2a_p3b_registration_replace_without_upsert_reads.py"
+)
+_P3B_CONTRACT_MIGRATION = "k07d8e9f0a2b_p3b_registration_contract.py"
+_P3E_SUBSCRIPTION_EXPIRY_MIGRATION = (
+    "l07d8e9f0a2c_p3e_subscription_expiry_maintenance.py"
+)
+_P3E_TRIAL_LIFECYCLE_MIGRATION = (
+    "m07d8e9f0a2d_p3e_trial_lifecycle_maintenance.py"
+)
+_P3E_ASSET_JOBS_MIGRATION = "n07d8e9f0a2e_p3e_fenced_organization_asset_jobs.py"
+_P3E_ASSET_DELETE_MIGRATION = "o07d8e9f0a2f_p3e_asset_delete_capability.py"
+_P3E_ASSET_CLEANUP_MIGRATION = "p07d8e9f0a30_p3e_asset_cleanup_jobs.py"
+_P3E_ASSET_CLAIM_MIGRATION = "q07d8e9f0a31_p3e_asset_claim_ambiguity.py"
+_P3E_ASSET_PROVENANCE_MIGRATION = (
+    "r07d8e9f0a32_p3e_modern_owner_asset_provenance.py"
+)
+_P3E_ASSET_LIVE_OWNER_MIGRATION = (
+    "s07d8e9f0a33_p3e_asset_live_owner_authority.py"
+)
+_P3E_ASSET_ENUM_RECOVERY_MIGRATION = (
+    "t07d8e9f0a34_p3e_asset_status_enum_recovery.py"
+)
+_P4B_SEARCH_EVIDENCE_MIGRATION = "u07d8e9f0a35_p4b_search_external_evidence.py"
+_P4B_SEARCH_DRIFT_MIGRATION = "v07d8e9f0a36_p4b_search_provider_drift_repair.py"
+_P4C_DELIVERY_MIGRATION = "w07d8e9f0a37_p4c_notification_delivery.py"
+_P4C_RECONCILIATION_MIGRATION = "x07d8e9f0a38_p4c_notification_reconciliation.py"
+_P4C_CRASH_RECOVERY_MIGRATION = "y07d8e9f0a39_p4c_notification_crash_recovery.py"
+_P4C_OPERATIONS_MIGRATION = "z07d8e9f0a3a_p4c_notification_operations.py"
+_P4D_REFUND_AUTHORITY_MIGRATION = "zc07d8e9f0a3d_p4d_refund_authority_boundary.py"
+_P4D_REFUND_OBLIGATION_MIGRATION = "zd07d8e9f0a3e_p4d_refund_obligation_resolution.py"
+_P4D_AUDIT_PARTITION_MIGRATION = "ze07d8e9f0a3f_audit_partition_lifecycle.py"
+_P4E_OPERATIONAL_SNAPSHOTS_MIGRATION = "zf07d8e9f0a40_p4e_operational_snapshots.py"
+APP_SECURE_FILES.update(
+    {
+        _P2D_MIGRATION,
+        _P2F_REMEDIATION_MIGRATION,
+        _P2F_DEK_MIGRATION,
+        _P3A_PROFILE_MIGRATION,
+        _P3A_ONBOARDING_MIGRATION,
+        _P3A_PRINCIPAL_BINDING_MIGRATION,
+        _P3A_AUTH_DECOUPLING_MIGRATION,
+        _P3B_READ_MIGRATION,
+        _P3B_STORAGE_MIGRATION,
+        _P3B_DEK_MIGRATION,
+        _P3B_CREATE_MIGRATION,
+        _P3B_REPLACE_MIGRATION,
+        _P3B_BACKFILL_MIGRATION,
+        _P3B_REPLACE_CORRECTION_MIGRATION,
+        _P3B_CONTRACT_MIGRATION,
+        _P3E_SUBSCRIPTION_EXPIRY_MIGRATION,
+        _P3E_TRIAL_LIFECYCLE_MIGRATION,
+        _P3E_ASSET_JOBS_MIGRATION,
+        _P3E_ASSET_DELETE_MIGRATION,
+        _P3E_ASSET_CLEANUP_MIGRATION,
+        _P3E_ASSET_CLAIM_MIGRATION,
+        _P3E_ASSET_PROVENANCE_MIGRATION,
+        _P3E_ASSET_LIVE_OWNER_MIGRATION,
+        _P3E_ASSET_ENUM_RECOVERY_MIGRATION,
+        _P4B_SEARCH_EVIDENCE_MIGRATION,
+        _P4B_SEARCH_DRIFT_MIGRATION,
+        _P4C_DELIVERY_MIGRATION,
+        _P4C_RECONCILIATION_MIGRATION,
+        _P4C_CRASH_RECOVERY_MIGRATION,
+        _P4C_OPERATIONS_MIGRATION,
+        _P4D_REFUND_AUTHORITY_MIGRATION,
+        _P4D_REFUND_OBLIGATION_MIGRATION,
+        _P4D_AUDIT_PARTITION_MIGRATION,
+        _P4E_OPERATIONAL_SNAPSHOTS_MIGRATION,
+    }
+)
+
+
+def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
+    view_contract = {
+        "create_view",
+        "drop_view",
+        "revoke_view",
+        "grant_view",
+        "comment_view",
+    }
+    view_and_policy_contract = view_contract | {
+        "create_policy",
+        "drop_policy",
+    }
+    function_install_contract = {
+        "grant_schema",
+        "revoke_schema",
+    }
+    function_install_with_policy_contract = function_install_contract | {
+        "create_policy",
+        "drop_policy",
+    }
+    function_install_with_create_policy_contract = function_install_contract | {
+        "create_policy",
+    }
+    expected = {
+        "0022_rbac_phase1_roles_extensions.py": {
+            "create_schema",
+            "revoke_schema",
+            "grant_schema",
+            "default_privileges",
+            "comment_schema",
+            "drop_schema",
+        },
+        "0025_rbac_p4_bsr_expand.py": view_and_policy_contract,
+        "0027_rbac_p6_perm_snapshots.py": view_and_policy_contract,
+        "0029_rbac_p8_contract.py": view_and_policy_contract,
+        "6f708192a3b4_address_runtime_privilege_boundary.py": {
+            "create_policy",
+            "drop_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
+        _P2D_MIGRATION: {
+            "grant_schema",
+            "revoke_schema",
+        },
+        _P2F_REMEDIATION_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
+        # Function-level DDL is covered by the dedicated DEK owner/ACL/runtime
+        # contract.  This historical category detector intentionally remains
+        # schema/view/policy scoped rather than reclassifying old migrations.
+        _P2F_DEK_MIGRATION: set(),
+        # P3A's dedicated profile migrations are function/ACL contracts.  C27
+        # additionally exposes app_secure schema USAGE to auth_runtime for the
+        # bounded onboarding function, and removes it on downgrade.
+        _P3A_PROFILE_MIGRATION: set(),
+        _P3A_ONBOARDING_MIGRATION: {
+            "grant_schema",
+            "revoke_schema",
+        },
+        _P3A_PRINCIPAL_BINDING_MIGRATION: set(),
+        _P3A_AUTH_DECOUPLING_MIGRATION: set(),
+        # P3B function owners receive schema CREATE only inside installation
+        # windows, then lose it immediately. C97 explicitly drops/recreates its
+        # policy during downgrade; D07 creates the payload policy and removes it
+        # by dropping the payload table, so there is no standalone DROP POLICY DDL.
+        _P3B_READ_MIGRATION: function_install_with_policy_contract,
+        _P3B_STORAGE_MIGRATION: function_install_with_create_policy_contract,
+        _P3B_DEK_MIGRATION: function_install_contract,
+        _P3B_CREATE_MIGRATION: function_install_contract,
+        _P3B_REPLACE_MIGRATION: function_install_contract,
+        _P3B_BACKFILL_MIGRATION: function_install_contract,
+        _P3B_REPLACE_CORRECTION_MIGRATION: function_install_contract,
+        _P3B_CONTRACT_MIGRATION: function_install_contract,
+        # P3E capabilities are function/table-column contracts. Only P07 needs
+        # temporary schema USAGE for migration_owner to install reduced-owner
+        # trigger functions; that USAGE is revoked before the migration exits.
+        _P3E_SUBSCRIPTION_EXPIRY_MIGRATION: set(),
+        _P3E_TRIAL_LIFECYCLE_MIGRATION: set(),
+        _P3E_ASSET_JOBS_MIGRATION: set(),
+        _P3E_ASSET_DELETE_MIGRATION: set(),
+        _P3E_ASSET_CLEANUP_MIGRATION: function_install_contract,
+        _P3E_ASSET_CLAIM_MIGRATION: set(),
+        _P3E_ASSET_PROVENANCE_MIGRATION: set(),
+        _P3E_ASSET_LIVE_OWNER_MIGRATION: set(),
+        _P3E_ASSET_ENUM_RECOVERY_MIGRATION: set(),
+        # P4B's external-evidence migration installs/removes schema exposure and
+        # its bounded owner policy. Drift repair remains a function/table-column
+        # contract without schema/view/policy DDL recognized here.
+        _P4B_SEARCH_EVIDENCE_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
+        _P4B_SEARCH_DRIFT_MIGRATION: set(),
+        # The closed inventory follows the literal app_secure migration token,
+        # not the phase name. ZA/ZB contain app_security_owner boundary DDL but
+        # no app_secure object reference, so their dedicated tests cover them
+        # and they are intentionally absent here.
+        _P4C_DELIVERY_MIGRATION: {"create_policy"},
+        _P4C_RECONCILIATION_MIGRATION: {"create_policy", "drop_policy"},
+        _P4C_CRASH_RECOVERY_MIGRATION: set(),
+        _P4C_OPERATIONS_MIGRATION: set(),
+        _P4D_REFUND_AUTHORITY_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+        },
+        _P4D_REFUND_OBLIGATION_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
+        _P4D_AUDIT_PARTITION_MIGRATION: set(),
+        # P4E installs aggregate-only app_secure functions and function ACLs.
+        # This historical classifier intentionally recognizes only
+        # schema/view/policy DDL, so zf07 is present in the closed inventory
+        # with no category expansion.
+        _P4E_OPERATIONAL_SNAPSHOTS_MIGRATION: set(),
+        A1.name: view_contract,
+    }
+    actual = {
+        name: _app_secure_ddl_categories(VERSIONS / name)
+        for name in APP_SECURE_FILES
+    }
+    assert actual == expected

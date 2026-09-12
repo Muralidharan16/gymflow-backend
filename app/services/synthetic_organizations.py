@@ -116,7 +116,7 @@ class SyntheticOrganizationCreationService:
                 "SYNTHETIC_ORG_IDEMPOTENCY_CONFLICT",
                 "Synthetic organization idempotency key was used with a different request.",
             )
-        organization = await self._repo.get_organization_by_id(evidence.organization_id, for_update=True)
+        organization = await self._repo.get_replay_organization_by_id(evidence.organization_id)
         if organization is None or not organization.is_active:
             raise SyntheticOrganizationError(
                 "SYNTHETIC_ORG_REPLAY_INTEGRITY_CONFLICT",

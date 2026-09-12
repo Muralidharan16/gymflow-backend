@@ -1,0 +1,111 @@
+name: P3C Combined Mutation Runtime
+
+on:
+  pull_request:
+    branches:
+      - hardening/p3b-organization-registrations
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p3c-combined-runtime-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p3c-combined-mutation-runtime:
+    name: Atomic profile and registration mutation on reduced runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3c_atomic_test
+      MIGRATION_PASSWORD: ci-migration-owner
+      P3B_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3c_atomic_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p3c-runtime-not-production
+      AWS_ACCESS_KEY_ID: ci-p3c
+      AWS_SECRET_ACCESS_KEY: ci-p3c
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-p3c-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install locked test environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+
+      - name: Install PostgreSQL 16
+        run: bash scripts/ci/install_pg16_test_stack.sh
+
+      - name: Bootstrap canonical reduced runtime identity
+        run: |
+          set -euo pipefail
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE app_p3c_runtime LOGIN PASSWORD 'ci-p3c-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE app_p3c_runtime SET row_security='on';
+          ALTER ROLE app_p3c_runtime SET statement_timeout='5s';
+          ALTER ROLE app_p3c_runtime SET lock_timeout='2s';
+          ALTER ROLE app_p3c_runtime SET idle_in_transaction_session_timeout='15s';
+          GRANT app_runtime TO app_p3c_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_p3c_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_p3c_atomic_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p3c_atomic_test TO app_p3c_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p3c_atomic_test
+
+      - name: Prove P3C adds no migration and establish certified P3B HEAD
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/migration_semantics_gate.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'k07d8e9f0a2b'
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect final
+
+      - name: Prove combined atomicity, rollback, cancellation and concurrency
+        env:
+          P3C_MIGRATION_DSN: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p3c_atomic_test
+          P3C_API_ASYNC_DSN: postgresql+asyncpg://app_p3c_runtime:ci-p3c-runtime@127.0.0.1:5432/gymflow_p3c_atomic_test
+          PYTHONPATH: .
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/ci/verify_p3c_combined_mutation_runtime.py
+          python -s scripts/ci/verify_p3c_combined_mutation_runtime.py
+
+      - name: Reprove final P3B database contract
+        run: |
+          set -euo pipefail
+          python -s scripts/ci/verify_p3b_registration_contract_boundary.py --expect final
+
+      - name: Reprove cluster identity graph
+        env:
+          DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:ci-migration-owner@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py

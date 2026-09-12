@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator, model_validator, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, HttpUrl
 import uuid
 import re
 from typing import Optional, List
@@ -50,12 +50,17 @@ class OrganizationProfileResponse(BaseModel):
     cover_desktop_url: Optional[str] = None
 
 class OrganizationUpdate(BaseModel):
+    # A protected/control-plane field must never be silently ignored.  Returning
+    # 422 for unknown input keeps the HTTP contract aligned with the database
+    # capability, which independently rejects unknown JSON keys.
+    model_config = ConfigDict(extra="forbid")
+
     name: Optional[str] = Field(None, min_length=2, max_length=100)
     business_type: Optional[str] = Field(None, max_length=50)
     tagline: Optional[str] = Field(None, max_length=150)
     description: Optional[str] = None
     year_established: Optional[int] = Field(None, ge=1800)
-    website_url: Optional[str] = None
+    website_url: Optional[str] = Field(None, max_length=255)
     social_links: Optional[dict] = None
     business_id: Optional[str] = None
     gst_number: Optional[str] = None
@@ -69,6 +74,14 @@ class OrganizationUpdate(BaseModel):
             if v > current_year:
                 raise ValueError(f"Year established cannot be in the future (max {current_year})")
         return v
+
+    @model_validator(mode="after")
+    def validate_non_nullable_profile_fields(self) -> "OrganizationUpdate":
+        if "name" in self.model_fields_set and self.name is None:
+            raise ValueError("Organization name cannot be null")
+        if "social_links" in self.model_fields_set and self.social_links is None:
+            raise ValueError("Social links cannot be null")
+        return self
 
 class LogoUploadUrlResponse(BaseModel):
     upload_url: str
@@ -100,4 +113,3 @@ class AssetUploadUrlResponse(BaseModel):
     fields: dict
     upload_id: str
     expires_in: int
-

@@ -79,6 +79,7 @@ class Member(Base, TimestampMixin):
         Index("ix_members_org_status", "org_id", "status"),
         Index("ix_members_org_branch_status", "org_id", "home_branch_id", "status"),
         Index("ix_members_org_phone", "org_id", "phone"),
+        UniqueConstraint("id", "org_id", name="uq_members_id_org"),
         UniqueConstraint("org_id", "member_number", name="uq_members_org_member_number"),
         Index("ix_members_gym_id", "gym_id"),
         Index("ix_members_gym_member_uid", "gym_id", "member_uid", unique=True),

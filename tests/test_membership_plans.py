@@ -4,120 +4,140 @@ import uuid
 from httpx import AsyncClient, ASGITransport
 import asyncio
 from datetime import datetime, timezone, timedelta
-from sqlalchemy import text
 
 from app.main import app
-from app.core.database import AsyncSessionLocal
+from app.core.database import update_session_context
 from app.core.security import create_access_token
 from app.models.organization import Organization
 from app.models.auth import Owner
 from app.models.org_branch import OrgBranch
-from conftest import cleanup_test_database_tables
 
-async def clear_membership_plan_test_data():
-    await cleanup_test_database_tables([
-        "membership_plans",
-        "organization_counters",
-        "org_branch_state",
-        "org_branches",
-        "owners",
-        "organizations",
-    ])
 
-@pytest_asyncio.fixture(autouse=True)
-async def cleanup_database():
-    await clear_membership_plan_test_data()
-    yield
-    await clear_membership_plan_test_data()
+async def _set_owner_context(session, *, owner_id, org_id, request_suffix: str) -> None:
+    await update_session_context(
+        session,
+        principal_id=str(owner_id),
+        principal_type="owner",
+        org_id=str(org_id),
+        role="owner",
+        ip_address="127.0.0.1",
+        user_agent="pytest-membership-plans",
+        request_id=f"membership-plans-{request_suffix}-{uuid.uuid4()}",
+    )
+
 
 @pytest_asyncio.fixture
 async def client():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
 
+
 @pytest_asyncio.fixture
-async def test_data():
-    async with AsyncSessionLocal() as session:
-        await session.execute(text("RESET ROLE"))
+async def test_data(auth_db_session):
+    """Create isolated membership-plan tenants without global teardown."""
+    suffix = uuid.uuid4().hex[:10]
 
-    async with AsyncSessionLocal() as session:
-        # Create Organization 1
-        org1_id = uuid.uuid4()
-        org1 = Organization(id=org1_id, name="Test Org 1", slug="TEST-ORG-1", max_branches=5, default_currency_code="INR")
-        session.add(org1)
+    org1_id = uuid.uuid4()
+    org2_id = uuid.uuid4()
+    org3_id = uuid.uuid4()
+    owner1_id = uuid.uuid4()
+    owner2_id = uuid.uuid4()
+    owner3_id = uuid.uuid4()
 
-        # Create Organization 2
-        org2_id = uuid.uuid4()
-        org2 = Organization(id=org2_id, name="Test Org 2", slug="TEST-ORG-2", max_branches=5, default_currency_code="USD")
-        session.add(org2)
+    owner1_email = f"owner1+{suffix}@test.com"
+    owner2_email = f"owner2+{suffix}@test.com"
+    owner3_email = f"owner3+{suffix}@test.com"
 
-        # Create Organization 3 without an explicit currency to verify model/server fallback.
-        org3_id = uuid.uuid4()
-        org3 = Organization(id=org3_id, name="Fallback Currency Org", slug="FALLBACK-CURRENCY", max_branches=5)
-        session.add(org3)
-        await session.flush()
+    auth_db_session.add_all(
+        [
+            Organization(
+                id=org1_id,
+                name=f"Test Org 1 {suffix}",
+                slug=f"TEST-ORG-1-{suffix}",
+                max_branches=5,
+                default_currency_code="INR",
+            ),
+            Organization(
+                id=org2_id,
+                name=f"Test Org 2 {suffix}",
+                slug=f"TEST-ORG-2-{suffix}",
+                max_branches=5,
+                default_currency_code="USD",
+            ),
+            Organization(
+                id=org3_id,
+                name=f"Fallback Currency Org {suffix}",
+                slug=f"FALLBACK-CURRENCY-{suffix}",
+                max_branches=5,
+            ),
+        ]
+    )
+    # Organization/Owner ORM mappings do not encode their insert dependency.
+    # Keep PostgreSQL's FK as the authority while ordering this unit of work.
+    await auth_db_session.flush()
 
-        # Create Owner for Org 1
-        owner1_id = uuid.uuid4()
-        owner1 = Owner(
-            id=owner1_id,
-            org_id=org1_id,
-            owner_name="Org Owner 1",
-            email="owner1@test.com",
-            hashed_password="hash",
-            email_verified=True
-        )
-        session.add(owner1)
+    auth_db_session.add_all(
+        [
+            Owner(
+                id=owner1_id,
+                org_id=org1_id,
+                owner_name="Org Owner 1",
+                email=owner1_email,
+                hashed_password="hash",
+                email_verified=True,
+            ),
+            Owner(
+                id=owner2_id,
+                org_id=org2_id,
+                owner_name="Org Owner 2",
+                email=owner2_email,
+                hashed_password="hash",
+                email_verified=True,
+            ),
+            Owner(
+                id=owner3_id,
+                org_id=org3_id,
+                owner_name="Fallback Owner",
+                email=owner3_email,
+                hashed_password="hash",
+                email_verified=True,
+            ),
+        ]
+    )
+    await auth_db_session.commit()
 
-        # Create Owner for Org 2
-        owner2_id = uuid.uuid4()
-        owner2 = Owner(
-            id=owner2_id,
-            org_id=org2_id,
-            owner_name="Org Owner 2",
-            email="owner2@test.com",
-            hashed_password="hash",
-            email_verified=True
-        )
-        session.add(owner2)
-        
-        # Create Owner for Org 3
-        owner3_id = uuid.uuid4()
-        owner3 = Owner(
-            id=owner3_id,
-            org_id=org3_id,
-            owner_name="Fallback Owner",
-            email="owner3@test.com",
-            hashed_password="hash",
-            email_verified=True
-        )
-        session.add(owner3)
-        await session.flush()
-
-        # Create a Branch for Org 1
-        branch1_id = uuid.uuid4()
-        branch1 = OrgBranch(
+    branch1_id = uuid.uuid4()
+    await _set_owner_context(
+        auth_db_session,
+        owner_id=owner1_id,
+        org_id=org1_id,
+        request_suffix=suffix,
+    )
+    auth_db_session.add(
+        OrgBranch(
             id=branch1_id,
             org_id=org1_id,
             branch_name="Branch 1",
             branch_code="BR1",
-            internal_slug="branch-1",
-            created_by=owner1_id
+            internal_slug=f"branch-1-{suffix}",
+            created_by=owner1_id,
         )
-        session.add(branch1)
-        await session.flush()
+    )
+    await auth_db_session.commit()
 
-        await session.commit()
+    return {
+        "org1_id": org1_id,
+        "owner1_id": owner1_id,
+        "owner1_email": owner1_email,
+        "branch1_id": branch1_id,
+        "org2_id": org2_id,
+        "owner2_id": owner2_id,
+        "owner2_email": owner2_email,
+        "org3_id": org3_id,
+        "owner3_id": owner3_id,
+        "owner3_email": owner3_email,
+    }
 
-        return {
-            "org1_id": org1_id,
-            "owner1_id": owner1_id,
-            "branch1_id": branch1_id,
-            "org2_id": org2_id,
-            "owner2_id": owner2_id,
-            "org3_id": org3_id,
-            "owner3_id": owner3_id,
-        }
 
 def get_headers(owner_id, org_id, email="owner@test.com"):
     token = create_access_token(str(owner_id), str(org_id), email, role="owner")
@@ -126,6 +146,7 @@ def get_headers(owner_id, org_id, email="owner@test.com"):
         "X-Request-ID": str(uuid.uuid4()),
         "X-Forwarded-For": "127.0.0.1"
     }
+
 
 async def create_plan(client, headers, **overrides):
     payload = {
@@ -138,9 +159,10 @@ async def create_plan(client, headers, **overrides):
     payload.update(overrides)
     return await client.post("/membership-plans", json=payload, headers=headers)
 
+
 @pytest.mark.asyncio
 async def test_create_realistic_plan_styles_and_limited_time_offer(client, test_data):
-    headers1 = get_headers(test_data["owner1_id"], test_data["org1_id"], "owner1@test.com")
+    headers1 = get_headers(test_data["owner1_id"], test_data["org1_id"], test_data["owner1_email"])
 
     monthly = await create_plan(client, headers1)
     assert monthly.status_code == 201
@@ -199,9 +221,10 @@ async def test_create_realistic_plan_styles_and_limited_time_offer(client, test_
     assert limited_plan["valid_from"] is not None
     assert limited_plan["valid_until"] is not None
 
+
 @pytest.mark.asyncio
 async def test_validation_boundaries_and_zero_price_policy(client, test_data):
-    headers1 = get_headers(test_data["owner1_id"], test_data["org1_id"], "owner1@test.com")
+    headers1 = get_headers(test_data["owner1_id"], test_data["org1_id"], test_data["owner1_email"])
 
     bad_dates = await create_plan(
         client,
@@ -226,11 +249,12 @@ async def test_validation_boundaries_and_zero_price_policy(client, test_data):
     bad_max_members = await create_plan(client, headers1, name="Bad Max Members", max_members=0)
     assert bad_max_members.status_code == 422
 
+
 @pytest.mark.asyncio
 async def test_plan_code_and_currency_are_server_managed(client, test_data):
-    headers1 = get_headers(test_data["owner1_id"], test_data["org1_id"], "owner1@test.com")
-    headers2 = get_headers(test_data["owner2_id"], test_data["org2_id"], "owner2@test.com")
-    headers3 = get_headers(test_data["owner3_id"], test_data["org3_id"], "owner3@test.com")
+    headers1 = get_headers(test_data["owner1_id"], test_data["org1_id"], test_data["owner1_email"])
+    headers2 = get_headers(test_data["owner2_id"], test_data["org2_id"], test_data["owner2_email"])
+    headers3 = get_headers(test_data["owner3_id"], test_data["org3_id"], test_data["owner3_email"])
 
     create_res = await create_plan(
         client,
@@ -271,10 +295,11 @@ async def test_plan_code_and_currency_are_server_managed(client, test_data):
     assert fallback_res.status_code == 201
     assert fallback_res.json()["currency"] == "INR"
 
+
 @pytest.mark.asyncio
 async def test_branch_specific_plans_and_org_isolation(client, test_data):
-    headers1 = get_headers(test_data["owner1_id"], test_data["org1_id"], "owner1@test.com")
-    headers2 = get_headers(test_data["owner2_id"], test_data["org2_id"], "owner2@test.com")
+    headers1 = get_headers(test_data["owner1_id"], test_data["org1_id"], test_data["owner1_email"])
+    headers2 = get_headers(test_data["owner2_id"], test_data["org2_id"], test_data["owner2_email"])
     branch1_id = test_data["branch1_id"]
 
     org_wide = await create_plan(client, headers1, name="Org Wide Plan")
@@ -308,9 +333,10 @@ async def test_branch_specific_plans_and_org_isolation(client, test_data):
     isolated = await client.get(f"/membership-plans/{org_wide.json()['id']}", headers=headers2)
     assert isolated.status_code == 404
 
+
 @pytest.mark.asyncio
 async def test_status_lifecycle_listing_and_archived_guards(client, test_data):
-    headers1 = get_headers(test_data["owner1_id"], test_data["org1_id"], "owner1@test.com")
+    headers1 = get_headers(test_data["owner1_id"], test_data["org1_id"], test_data["owner1_email"])
 
     active_res = await create_plan(client, headers1, name="Active Lifecycle Plan")
     inactive_res = await create_plan(client, headers1, name="Inactive Lifecycle Plan")
@@ -374,12 +400,13 @@ async def test_status_lifecycle_listing_and_archived_guards(client, test_data):
     deactivate_archived = await client.post(f"/membership-plans/{archived_id}/deactivate", headers=headers1)
     assert deactivate_archived.status_code == 400
 
+
 @pytest.mark.asyncio
 async def test_concurrent_plan_code_generation_is_unique_and_sequential(client, test_data):
     org1_id = test_data["org1_id"]
     owner1_id = test_data["owner1_id"]
 
-    headers1 = get_headers(owner1_id, org1_id, "owner1@test.com")
+    headers1 = get_headers(owner1_id, org1_id, test_data["owner1_email"])
 
     async def create_plan(i):
         return await client.post("/membership-plans", json={
@@ -391,11 +418,11 @@ async def test_concurrent_plan_code_generation_is_unique_and_sequential(client, 
 
     tasks = [create_plan(i) for i in range(10)]
     responses = await asyncio.gather(*tasks)
-    
+
     codes = set()
     for response in responses:
         assert response.status_code == 201
         codes.add(response.json()["plan_code"])
-        
+
     assert len(codes) == 10
     assert codes == {f"TESTOR-{i:03d}" for i in range(1, 11)}

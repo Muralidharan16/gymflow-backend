@@ -45,8 +45,36 @@ def _enable_rls(table_name: str) -> None:
 
 
 def upgrade() -> None:
-    op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-    op.execute("CREATE EXTENSION IF NOT EXISTS btree_gist;")
+    # btree_gist is infrastructure-owned. Alembic validates the exact
+    # prerequisite instead of creating or adopting an extension.
+    op.execute("""
+        DO $btree_gist_infrastructure$
+        DECLARE
+            owner_name TEXT;
+            schema_name TEXT;
+        BEGIN
+            SELECT
+                pg_catalog.pg_get_userbyid(extension_data.extowner),
+                namespace_data.nspname::text
+            INTO owner_name, schema_name
+            FROM pg_catalog.pg_extension AS extension_data
+            JOIN pg_catalog.pg_namespace AS namespace_data
+              ON namespace_data.oid = extension_data.extnamespace
+            WHERE extension_data.extname = 'btree_gist';
+
+            IF NOT FOUND THEN
+                RAISE EXCEPTION
+                    'f1a2b3c4d5e6 requires infrastructure-provisioned btree_gist; Alembic must not create extensions';
+            END IF;
+            IF owner_name IS DISTINCT FROM 'postgres'
+               OR schema_name IS DISTINCT FROM 'public' THEN
+                RAISE EXCEPTION
+                    'f1a2b3c4d5e6 requires btree_gist owned by postgres in public; owner=%, schema=%',
+                    owner_name, schema_name;
+            END IF;
+        END
+        $btree_gist_infrastructure$;
+    """)
 
     op.execute(
         """
@@ -553,7 +581,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.platform_billing_touch_updated_at()
+        CREATE FUNCTION public.platform_billing_touch_updated_at()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -583,7 +611,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_product_invalid_mutation()
+        CREATE FUNCTION public.prevent_platform_product_invalid_mutation()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -616,7 +644,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_policy_version_immutable_update()
+        CREATE FUNCTION public.prevent_platform_policy_version_immutable_update()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -647,7 +675,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_plan_version_immutable_update()
+        CREATE FUNCTION public.prevent_platform_plan_version_immutable_update()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -692,7 +720,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_price_immutable_update()
+        CREATE FUNCTION public.prevent_platform_price_immutable_update()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -736,7 +764,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.validate_platform_plan_entitlement()
+        CREATE FUNCTION public.validate_platform_plan_entitlement()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -771,7 +799,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_plan_entitlement_immutable_update()
+        CREATE FUNCTION public.prevent_platform_plan_entitlement_immutable_update()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -805,7 +833,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.prevent_platform_append_only_update()
+        CREATE FUNCTION public.prevent_platform_append_only_update()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$

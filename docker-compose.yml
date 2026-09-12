@@ -26,8 +26,22 @@ services:
 
   celery-worker:
     build: .
-    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4
-    env_file: .env
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4 -Q worker
+    env_file: .env.worker
+    environment:
+      CELERY_WORKER_PROFILE: worker
+      AUTH_DATABASE_URL: ""
+      MAINTENANCE_DATABASE_URL: ""
+    depends_on: [postgres, redis]
+
+  celery-maintenance-worker:
+    build: .
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=1 -Q lifecycle-maintenance
+    env_file: .env.maintenance
+    environment:
+      CELERY_WORKER_PROFILE: maintenance
+      AUTH_DATABASE_URL: ""
+      WORKER_DATABASE_URL: ""
     depends_on: [postgres, redis]
 
   celery-beat:

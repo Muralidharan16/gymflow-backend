@@ -77,6 +77,29 @@ class SyntheticOrganizationRepository:
         result = await self._session.execute(statement)
         return result.scalar_one_or_none()
 
+    async def get_replay_organization_by_id(self, organization_id: uuid.UUID):
+        """Read only the canonical fields required to validate an idempotent replay.
+
+        The idempotency advisory lock serializes callers using the same immutable
+        evidence key. Replay does not mutate the organization row, so taking a
+        row-level ``FOR UPDATE`` lock would unnecessarily require database UPDATE
+        privilege for a read-only integrity check.
+        """
+        statement = select(
+            Organization.id,
+            Organization.name,
+            Organization.slug,
+            Organization.tier,
+            Organization.business_type,
+            Organization.is_active,
+            Organization.max_branches,
+            Organization.default_currency_code,
+            Organization.description,
+            Organization.tagline,
+        ).where(Organization.id == organization_id)
+        result = await self._session.execute(statement)
+        return result.one_or_none()
+
     async def insert_organization(
         self,
         *,

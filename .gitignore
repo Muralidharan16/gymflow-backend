@@ -1,4 +1,8 @@
 .env
+.env.*
+!.env.example
+!.env.worker.example
+!.env.maintenance.example
 .venv
 *.db
 __pycache__/

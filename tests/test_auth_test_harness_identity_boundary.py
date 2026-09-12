@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+import ast
+import re
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+AUTH_TEST = ROOT / "tests/test_auth_register.py"
+AUTH_ROUTER = ROOT / "app/routers/auth.py"
+AUTH_DATABASE = ROOT / "app/core/auth_database.py"
+TEST_HARNESS = ROOT / "tests/conftest.py"
+
+
+def _source(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _async_function(module: ast.Module, name: str) -> ast.AsyncFunctionDef:
+    return next(
+        node
+        for node in module.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == name
+    )
+
+
+def test_auth_registration_fixture_cleanup_is_admin_only_row_scoped_and_symmetric():
+    source = _source(AUTH_TEST)
+    assert "from app.core.database import AsyncSessionLocal" not in source
+    assert "from conftest import AdminTestSessionLocal" in source
+    assert "cleanup_test_database_tables" not in source
+    assert "TRUNCATE" not in source.upper()
+    assert "CASCADE" not in source.upper()
+
+    module = ast.parse(source, filename=str(AUTH_TEST))
+    cleanup = _async_function(module, "_clear_auth_test_data")
+    cleanup_source = ast.unparse(cleanup)
+    assert "async with AdminTestSessionLocal() as session" in cleanup_source
+    assert "Owner.email.in_(_AUTH_TEST_EMAILS)" in cleanup_source
+    assert "Organization.name.in_(_AUTH_TEST_ORG_NAMES)" in cleanup_source
+
+    ordered_deletes = (
+        "delete(AuthSession)",
+        "delete(AuthSessionFamily)",
+        "delete(RefreshToken)",
+        "delete(Gym)",
+        "delete(Owner)",
+        "delete(Organization)",
+    )
+    positions = [cleanup_source.index(fragment) for fragment in ordered_deletes]
+    assert positions == sorted(positions)
+    assert cleanup_source.count("await session.commit()") == 1
+
+    fixture = _async_function(module, "cleanup_database_and_redis")
+    fixture_source = ast.unparse(fixture)
+    assert fixture_source.count("await _clear_auth_test_data()") == 2
+    assert "AsyncSessionLocal" not in fixture_source
+
+
+def test_auth_registration_database_evidence_never_uses_general_runtime():
+    source = _source(AUTH_TEST)
+    assert "AsyncSessionLocal" not in source
+
+    # One admin session is the bounded row-scoped cleaner; the other two are
+    # explicit database evidence reads in verification tests.
+    assert source.count("async with AdminTestSessionLocal() as session:") == 3
+    assert "select(Owner)" in source
+    assert "select(Organization)" in source
+
+
+def test_auth_cleanup_identity_set_covers_all_module_test_accounts():
+    source = _source(AUTH_TEST)
+    module = ast.parse(source, filename=str(AUTH_TEST))
+
+    string_values = {
+        node.value
+        for node in ast.walk(module)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    literal_test_emails = {
+        value.lower()
+        for value in string_values
+        if value.count("@") == 1
+        and value.partition("@")[0]
+        and ":" not in value
+        and value.lower().endswith("@example.com")
+    }
+
+    # Only complete literal account identities belong in the cleanup contract.
+    # A helper/suffix constant such as "@example.com" has no local part and is
+    # deliberately excluded; generated rate identities are modeled separately.
+    cleanup_assignment = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_AUTH_TEST_EMAILS"
+            for target in node.targets
+        )
+    )
+    cleanup_source = ast.unparse(cleanup_assignment)
+    assert "f'rate{i}@example.com'" in cleanup_source
+    assert "range(6)" in cleanup_source
+
+    for email in literal_test_emails:
+        rate_match = re.fullmatch(r"rate([0-5])@example\.com", email)
+        if rate_match:
+            # The exact bounded generated family above covers rate0..rate5.
+            continue
+        assert repr(email) in cleanup_source
+
+
+def test_pytest_auth_pool_is_dedicated_nullpool_without_changing_production_pooling():
+    harness = _source(TEST_HARNESS)
+    production = _source(AUTH_DATABASE)
+
+    # The pytest harness mirrors its existing runtime/admin loop-isolation rule
+    # for the dedicated auth login. It must not collapse auth onto TEST_DATABASE_URL.
+    assert "AUTH_TEST_DATABASE_URL = validate_test_auth_database_url" in harness
+    assert "auth_test_async_engine = (" in harness
+    assert "AUTH_TEST_DATABASE_URL," in harness
+    assert "poolclass=NullPool" in harness
+    assert "app_auth_database.auth_async_engine = auth_test_async_engine" in harness
+    assert "app_auth_database.AuthSessionLocal = AuthTestSessionLocal" in harness
+    assert "AUTH_DATABASE_URL must use a distinct bounded auth identity under pytest" in harness
+
+    # Production keeps the bounded long-lived queue pool; NullPool is a pytest
+    # event-loop isolation concern, not an application architecture change.
+    assert "pool_size=5" in production
+    assert "max_overflow=10" in production
+    assert "pool_pre_ping=True" in production
+    assert "NullPool" not in production
+    assert "poolclass=NullPool" not in production
+
+
+def test_auth_routes_keep_dedicated_auth_database_dependency():
+    source = _source(AUTH_ROUTER)
+    assert "from app.core.auth_database import get_auth_db" in source
+    assert '@router.post("/signup")' in source
+    assert '@router.get("/verify")' in source
+    assert source.count("Depends(get_auth_db)") >= 2

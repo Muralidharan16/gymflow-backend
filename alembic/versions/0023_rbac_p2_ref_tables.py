@@ -210,13 +210,96 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS ix_permissions_code;")
-    op.execute("DROP INDEX IF EXISTS ix_membership_statuses_code;")
-    op.execute("DROP INDEX IF EXISTS ix_scope_types_code;")
-    op.execute("DROP INDEX IF EXISTS ix_staff_roles_code;")
+    # The predecessor has no representation for these registries. A rollback is
+    # therefore safe only while every table is still in the exact revision-owned
+    # seed state. Any operationally added/edited role, permission, lifecycle
+    # state, or audit key must block the downgrade instead of being discarded.
+    op.execute("""
+        DO $$
+        BEGIN
+            IF (
+                SELECT array_agg((id, code, hierarchy_level, is_system)::text ORDER BY id)
+                FROM public.staff_roles
+            ) IS DISTINCT FROM ARRAY[
+                '(1,owner,100,t)', '(2,admin,80,t)', '(3,manager,60,t)',
+                '(4,trainer,40,t)', '(5,receptionist,20,t)', '(6,auditor,10,t)'
+            ]::text[] THEN
+                RAISE EXCEPTION
+                    '0023 downgrade blocked: public.staff_roles differs from its pristine seed state';
+            END IF;
 
-    op.execute("DROP TABLE IF EXISTS public.audit_key_registry CASCADE;")
-    op.execute("DROP TABLE IF EXISTS public.permissions CASCADE;")
-    op.execute("DROP TABLE IF EXISTS public.membership_statuses CASCADE;")
-    op.execute("DROP TABLE IF EXISTS public.scope_types CASCADE;")
-    op.execute("DROP TABLE IF EXISTS public.staff_roles CASCADE;")
+            IF (
+                SELECT array_agg((id, code)::text ORDER BY id)
+                FROM public.scope_types
+            ) IS DISTINCT FROM ARRAY[
+                '(1,organization)', '(2,branch)', '(3,region)', '(4,global)'
+            ]::text[] THEN
+                RAISE EXCEPTION
+                    '0023 downgrade blocked: public.scope_types differs from its pristine seed state';
+            END IF;
+
+            IF (
+                SELECT array_agg((id, code)::text ORDER BY id)
+                FROM public.membership_statuses
+            ) IS DISTINCT FROM ARRAY[
+                '(1,pending)', '(2,invited)', '(3,active)', '(4,suspended)',
+                '(5,revoked)', '(6,expired)'
+            ]::text[] THEN
+                RAISE EXCEPTION
+                    '0023 downgrade blocked: public.membership_statuses differs from its pristine seed state';
+            END IF;
+
+            IF (
+                SELECT array_agg((id, code, description)::text ORDER BY id)
+                FROM public.permissions
+            ) IS DISTINCT FROM ARRAY[
+                '(1,staff_roles.read,"View staff role assignments at a branch")',
+                '(2,staff_roles.assign,"Assign a staff role to a member")',
+                '(3,staff_roles.revoke,"Revoke a staff role from a member")',
+                '(4,branch.read,"View branch details")',
+                '(5,branch.update,"Update branch settings")',
+                '(6,branch.suspend,"Suspend a branch")',
+                '(7,branch.delete,"Soft-delete a branch")',
+                '(8,members.read,"View organization member list")',
+                '(9,members.invite,"Invite a new member to the organization")',
+                '(10,members.suspend,"Suspend a member")',
+                '(11,members.revoke,"Revoke membership")',
+                '(12,audit.read,"Read audit logs")',
+                '(13,org.settings.read,"View organization settings")',
+                '(14,org.settings.update,"Update organization settings")'
+            ]::text[] THEN
+                RAISE EXCEPTION
+                    '0023 downgrade blocked: public.permissions differs from its pristine seed state';
+            END IF;
+
+            IF (SELECT count(*) FROM public.audit_key_registry) <> 1
+               OR NOT EXISTS (
+                    SELECT 1
+                    FROM public.audit_key_registry
+                    WHERE key_version = 1
+                      AND kms_key_alias = 'local/audit-signing-key-v1'
+                      AND algorithm = 'aes-256-gcm'
+                      AND digest_algorithm = 'sha-256'
+                      AND signature_algorithm = 'hmac-sha-256'
+                      AND retirement_date IS NULL
+                      AND is_active IS TRUE
+               ) THEN
+                RAISE EXCEPTION
+                    '0023 downgrade blocked: public.audit_key_registry differs from its pristine seed state';
+            END IF;
+        END
+        $$;
+    """)
+
+    # These indexes and tables are revision-owned. RESTRICT is deliberate:
+    # unexpected dependencies are production state and must stop rollback.
+    op.execute("DROP INDEX public.ix_permissions_code RESTRICT;")
+    op.execute("DROP INDEX public.ix_membership_statuses_code RESTRICT;")
+    op.execute("DROP INDEX public.ix_scope_types_code RESTRICT;")
+    op.execute("DROP INDEX public.ix_staff_roles_code RESTRICT;")
+
+    op.execute("DROP TABLE public.audit_key_registry RESTRICT;")
+    op.execute("DROP TABLE public.permissions RESTRICT;")
+    op.execute("DROP TABLE public.membership_statuses RESTRICT;")
+    op.execute("DROP TABLE public.scope_types RESTRICT;")
+    op.execute("DROP TABLE public.staff_roles RESTRICT;")

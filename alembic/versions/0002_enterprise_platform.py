@@ -21,14 +21,129 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB, TIMESTAMP
 revision = "0002_enterprise_platform"
 down_revision = "371b1a44a334"
 branch_labels = None
-depends_on    = None
+depends_on = None
+
+
+_TARGET_RELATIONS = (
+    "active_idempotency_keys",
+    "idx_idempotency_zombie",
+    "idempotency_store",
+    "idempotency_store_y2026_m05_d18",
+    "idx_idempotency_store_created_brin",
+    "key_rotation_progress",
+    "tenant_resource_quotas",
+    "event_outbox",
+    "event_outbox_y2026_m05_d18",
+    "idx_event_outbox_consumer",
+    "event_outbox_delivery_state",
+    "event_outbox_delivery_state_p0",
+    "event_outbox_delivery_state_p1",
+    "event_outbox_delivery_state_p2",
+    "event_outbox_delivery_state_p3",
+    "event_outbox_delivery_state_p4",
+    "event_outbox_delivery_state_p5",
+    "event_outbox_delivery_state_p6",
+    "event_outbox_delivery_state_p7",
+)
+
+_DATA_RELATIONS = (
+    "active_idempotency_keys",
+    "idempotency_store",
+    "key_rotation_progress",
+    "tenant_resource_quotas",
+    "event_outbox",
+    "event_outbox_delivery_state",
+)
+
+
+def _preflight_upgrade() -> None:
+    """Refuse to adopt colliding objects not owned by this revision."""
+    op.execute(
+        """
+        DO $$
+        DECLARE
+            relation_name text;
+        BEGIN
+            FOREACH relation_name IN ARRAY ARRAY[
+                'active_idempotency_keys',
+                'idx_idempotency_zombie',
+                'idempotency_store',
+                'idempotency_store_y2026_m05_d18',
+                'idx_idempotency_store_created_brin',
+                'key_rotation_progress',
+                'tenant_resource_quotas',
+                'event_outbox',
+                'event_outbox_y2026_m05_d18',
+                'idx_event_outbox_consumer',
+                'event_outbox_delivery_state',
+                'event_outbox_delivery_state_p0',
+                'event_outbox_delivery_state_p1',
+                'event_outbox_delivery_state_p2',
+                'event_outbox_delivery_state_p3',
+                'event_outbox_delivery_state_p4',
+                'event_outbox_delivery_state_p5',
+                'event_outbox_delivery_state_p6',
+                'event_outbox_delivery_state_p7'
+            ] LOOP
+                IF to_regclass('public.' || relation_name) IS NOT NULL THEN
+                    RAISE EXCEPTION
+                        '0002 target relation public.% already exists; refusing adoption',
+                        relation_name;
+                END IF;
+            END LOOP;
+        END
+        $$;
+        """
+    )
+
+
+def _preflight_downgrade() -> None:
+    """Fail closed if predecessor 371b1a44a334 cannot represent 0002 data."""
+    op.execute(
+        """
+        DO $$
+        DECLARE
+            relation_name text;
+            has_rows boolean;
+        BEGIN
+            FOREACH relation_name IN ARRAY ARRAY[
+                'active_idempotency_keys',
+                'idempotency_store',
+                'key_rotation_progress',
+                'tenant_resource_quotas',
+                'event_outbox',
+                'event_outbox_delivery_state'
+            ] LOOP
+                IF to_regclass('public.' || relation_name) IS NULL THEN
+                    RAISE EXCEPTION
+                        '0002 downgrade predecessor drift: required relation public.% is missing',
+                        relation_name;
+                END IF;
+
+                EXECUTE format(
+                    'SELECT EXISTS (SELECT 1 FROM public.%I LIMIT 1)',
+                    relation_name
+                ) INTO has_rows;
+
+                IF has_rows THEN
+                    RAISE EXCEPTION
+                        '0002 downgrade would discard populated revision-owned relation public.%',
+                        relation_name;
+                END IF;
+            END LOOP;
+        END
+        $$;
+        """
+    )
 
 
 def upgrade() -> None:
+    _preflight_upgrade()
+
     # ── active_idempotency_keys (uniqueness anchor) ──────────────────────
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.active_idempotency_keys (
+        CREATE TABLE public.active_idempotency_keys (
             tenant_id         UUID         NOT NULL,
             idempotency_key   VARCHAR(255) NOT NULL,
             status            VARCHAR(20)  NOT NULL DEFAULT 'IN_PROGRESS',
@@ -41,7 +156,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_idempotency_zombie
+        CREATE INDEX idx_idempotency_zombie
             ON public.active_idempotency_keys (status, heartbeat_at)
             WHERE status = 'IN_PROGRESS'
     """)
@@ -49,7 +164,7 @@ def upgrade() -> None:
     # ── idempotency_store (RANGE partitioned by created_at) ──────────────
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.idempotency_store (
+        CREATE TABLE public.idempotency_store (
             tenant_id               UUID         NOT NULL,
             idempotency_key         VARCHAR(255) NOT NULL,
             request_hash            CHAR(64)     NOT NULL,
@@ -66,20 +181,20 @@ def upgrade() -> None:
 
     # Create initial partition covering the current week
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.idempotency_store_y2026_m05_d18
+        CREATE TABLE public.idempotency_store_y2026_m05_d18
         PARTITION OF public.idempotency_store
         FOR VALUES FROM ('2026-05-18 00:00:00+00') TO ('2026-05-25 00:00:00+00')
     """)
 
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_idempotency_store_created_brin
+        CREATE INDEX idx_idempotency_store_created_brin
             ON public.idempotency_store USING BRIN (created_at)
     """)
 
     # ── key_rotation_progress ────────────────────────────────────────────
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.key_rotation_progress (
+        CREATE TABLE public.key_rotation_progress (
             tenant_id        UUID         NOT NULL,
             table_name       VARCHAR(100) NOT NULL,
             last_processed_pk UUID        NOT NULL,
@@ -91,7 +206,7 @@ def upgrade() -> None:
     # ── tenant_resource_quotas ───────────────────────────────────────────
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.tenant_resource_quotas (
+        CREATE TABLE public.tenant_resource_quotas (
             tenant_id                   UUID    PRIMARY KEY,
             max_writes_per_minute       INTEGER NOT NULL DEFAULT 600,
             max_outbox_events_per_hour  INTEGER NOT NULL DEFAULT 50000,
@@ -103,7 +218,7 @@ def upgrade() -> None:
     # ── event_outbox ─────────────────────────────────────────────────────
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.event_outbox (
+        CREATE TABLE public.event_outbox (
             event_id       UUID        NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
             event_type     VARCHAR(100) NOT NULL,
             payload        JSONB       NOT NULL,
@@ -116,20 +231,20 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.event_outbox_y2026_m05_d18
+        CREATE TABLE public.event_outbox_y2026_m05_d18
         PARTITION OF public.event_outbox
         FOR VALUES FROM ('2026-05-18 00:00:00+00') TO ('2026-05-25 00:00:00+00')
     """)
 
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_event_outbox_consumer
+        CREATE INDEX idx_event_outbox_consumer
             ON public.event_outbox (tenant_id, created_at)
     """)
 
     # ── event_outbox_delivery_state ──────────────────────────────────────
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.event_outbox_delivery_state (
+        CREATE TABLE public.event_outbox_delivery_state (
             event_id       UUID        NOT NULL,
             tenant_id      UUID        NOT NULL,
             status         VARCHAR(20) NOT NULL DEFAULT 'PENDING',
@@ -145,22 +260,26 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-        CREATE TABLE IF NOT EXISTS public.event_outbox_delivery_state_p0
+        CREATE TABLE public.event_outbox_delivery_state_p0
         PARTITION OF public.event_outbox_delivery_state
         FOR VALUES WITH (MODULUS 8, REMAINDER 0)
     """)
     for i in range(1, 8):
         op.execute(f"""
-            CREATE TABLE IF NOT EXISTS public.event_outbox_delivery_state_p{i}
+            CREATE TABLE public.event_outbox_delivery_state_p{i}
             PARTITION OF public.event_outbox_delivery_state
             FOR VALUES WITH (MODULUS 8, REMAINDER {i})
         """)
 
 
 def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS public.event_outbox_delivery_state CASCADE")
-    op.execute("DROP TABLE IF EXISTS public.event_outbox CASCADE")
-    op.execute("DROP TABLE IF EXISTS public.tenant_resource_quotas CASCADE")
-    op.execute("DROP TABLE IF EXISTS public.key_rotation_progress CASCADE")
-    op.execute("DROP TABLE IF EXISTS public.idempotency_store CASCADE")
-    op.execute("DROP TABLE IF EXISTS public.active_idempotency_keys CASCADE")
+    _preflight_downgrade()
+
+    # RESTRICT is intentional: if an unexpected later/manual dependency still
+    # exists, rollback must fail visibly instead of CASCADE-dropping it.
+    op.execute("DROP TABLE public.event_outbox_delivery_state RESTRICT")
+    op.execute("DROP TABLE public.event_outbox RESTRICT")
+    op.execute("DROP TABLE public.tenant_resource_quotas RESTRICT")
+    op.execute("DROP TABLE public.key_rotation_progress RESTRICT")
+    op.execute("DROP TABLE public.idempotency_store RESTRICT")
+    op.execute("DROP TABLE public.active_idempotency_keys RESTRICT")

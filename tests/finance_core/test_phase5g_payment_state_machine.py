@@ -16,7 +16,7 @@ from app.finance_core.domain.provider_boundary import (
 )
 from app.finance_core.services.checkout_intents import FinanceCheckoutIntentService
 from app.finance_core.services.provider_webhooks import FinanceProviderWebhookIntakeService
-from tests.finance_core.test_phase5c_invoice_engine import fetch_scalar
+from tests.finance_core.test_phase5c_invoice_engine import ORG_ID, fetch_scalar, set_current_org_context
 from tests.finance_core.test_phase5d_payment_ledger import issued_invoice, seed_finance_foundation
 from tests.finance_core.test_phase5f_provider_sandbox_webhook import sandbox_config, signature_for
 
@@ -25,10 +25,11 @@ async def sandbox_checkout_intent(*, idempotency_key: str = "state-intent-key"):
     await seed_finance_foundation()
     invoice = await issued_invoice(idempotency_key=f"{idempotency_key}-invoice")
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceCheckoutIntentService(session)
         result = await service.create_checkout_intent(
             CreateCheckoutIntentCommand(
-                organization_id=None,
+                organization_id=ORG_ID,
                 invoice_id=invoice.invoice_id,
                 provider_code="sandbox_provider",
                 amount=Decimal("1180.00"),
@@ -56,6 +57,7 @@ def state_event(*, payment_id, status: str, event_id: str, idempotency_key: str)
 
 async def apply_event(command: NormalizedProviderEventCommand):
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceProviderWebhookIntakeService(
             session,
             config=sandbox_config(),
@@ -140,6 +142,7 @@ async def test_terminal_or_blocked_status_cannot_become_captured(terminal_status
         await apply_event(state_event(payment_id=intent.intent_id, status=terminal_status, event_id=f"evt_terminal_{terminal_status}", idempotency_key=f"state-terminal-{terminal_status}"))
 
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceProviderWebhookIntakeService(
             session,
             config=sandbox_config(),
@@ -192,6 +195,7 @@ async def test_same_idempotency_key_with_different_payload_conflicts_without_sta
     intent = await sandbox_checkout_intent(idempotency_key="intent-idem-conflict")
     await apply_event(state_event(payment_id=intent.intent_id, status="pending", event_id="evt_idem_one", idempotency_key="state-idem-conflict"))
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceProviderWebhookIntakeService(
             session,
             config=sandbox_config(),
@@ -214,6 +218,7 @@ async def test_same_idempotency_key_with_different_payload_conflicts_without_sta
 async def test_unknown_status_and_unknown_payment_follow_explicit_domain_rules():
     intent = await sandbox_checkout_intent(idempotency_key="intent-unknown")
     async with AsyncSessionLocal() as session:
+        await set_current_org_context(session)
         service = FinanceProviderWebhookIntakeService(
             session,
             config=sandbox_config(),

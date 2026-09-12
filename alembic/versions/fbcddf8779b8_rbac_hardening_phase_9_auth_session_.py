@@ -70,6 +70,29 @@ def upgrade() -> None:
     FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
     """)
 
+
 def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS public.auth_sessions CASCADE")
-    op.execute("DROP TABLE IF EXISTS public.auth_session_families CASCADE")
+    # The predecessor revision has no representation for session-family or
+    # session state. Never silently destroy live authentication/revocation
+    # history during a rollback. Operators must explicitly drain/revoke and
+    # clear this revision-owned state before crossing the boundary.
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM public.auth_sessions LIMIT 1) THEN
+                RAISE EXCEPTION
+                    'fbcddf8779b8 downgrade blocked: public.auth_sessions contains data';
+            END IF;
+
+            IF EXISTS (SELECT 1 FROM public.auth_session_families LIMIT 1) THEN
+                RAISE EXCEPTION
+                    'fbcddf8779b8 downgrade blocked: public.auth_session_families contains data';
+            END IF;
+        END
+        $$;
+    """)
+
+    # RESTRICT is intentional: an unexpected later/external dependency must
+    # block the rollback instead of being removed implicitly.
+    op.execute("DROP TABLE public.auth_sessions RESTRICT")
+    op.execute("DROP TABLE public.auth_session_families RESTRICT")

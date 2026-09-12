@@ -3,7 +3,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, Date, ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
@@ -60,6 +60,13 @@ class MemberSubscriptionV2(Base, TimestampMixin):
     archived_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "org_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_member_subscriptions_v2_branch_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("id", "org_id", name="uq_member_subscriptions_v2_id_org"),
         UniqueConstraint("org_id", "subscription_code", name="uix_org_subscription_code_v2"),
         Index("ix_member_subscriptions_v2_org_status", "org_id", "status"),
         Index("ix_member_subscriptions_v2_org_branch", "org_id", "branch_id"),

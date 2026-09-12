@@ -3,7 +3,7 @@ import uuid
 from datetime import date
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.member import Member
@@ -16,7 +16,6 @@ from app.models.member_subscription_v2 import (
 )
 from app.models.membership_plan import MembershipPlan, PlanStatus
 from app.models.org_branch import OrgBranch
-from app.models.organization import Organization
 from app.repositories.member_subscription_v2_repo import MemberSubscriptionV2Repository
 from app.schemas.member_subscription_v2 import SubscriptionCreate
 from app.utils.subscription_dates import calculate_subscription_end_date
@@ -42,9 +41,18 @@ class MemberSubscriptionV2Service:
     ) -> MemberSubscriptionV2:
         start_date = data.start_date or date.today()
 
-        org = await self.session.get(Organization, org_id)
-        if not org:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
+        # organizations also contains platform/control-plane fields. Ordinary
+        # runtime must not load that ORM row merely to build a subscription code.
+        # The database capability is bound to app.current_org_id and exposes only
+        # the current tenant's slug.
+        org_slug = await self.session.scalar(
+            select(func.public.current_organization_slug())
+        )
+        if org_slug is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Organization not found",
+            )
 
         branch = await self._load_branch(org_id, data.branch_id)
         member = await self._load_member(org_id, data.primary_member_id)
@@ -64,7 +72,7 @@ class MemberSubscriptionV2Service:
 
         end_date = calculate_subscription_end_date(start_date, plan.duration_value, plan.duration_unit)
         seq = await self.repo.next_subscription_sequence(org_id)
-        subscription_code = f"SUB-{_clean_org_prefix(getattr(org, 'slug', None))}-{seq:03d}"
+        subscription_code = f"SUB-{_clean_org_prefix(org_slug)}-{seq:03d}"
 
         subscription = MemberSubscriptionV2(
             org_id=org_id,

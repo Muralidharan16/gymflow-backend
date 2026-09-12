@@ -3,14 +3,16 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_db, update_session_context
 from app.core.deps import get_current_active_staff, require_gym_access
 from app.core.deps import Staff
 from app.models.member import MemberStatus
 from app.schemas.common import Response, PaginatedResponse, MessageResponse
 from app.schemas.member import MemberResponse, MemberCreate, MemberUpdate, MeasurementResponse, MeasurementCreate
+from app.schemas.member_billing_party import MemberBillingPartyResponse, MemberBillingPartyUpsertRequest
 from app.services.member_service import MemberService
 from app.core.exceptions import NotFoundError, ValidationError, MemberLimitExceeded
 from app.core.deps import require_org_admin
@@ -345,6 +347,48 @@ async def update_member_org(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"message": str(e), "error_code": e.error_code}
         )
+
+@modern_router.put("/{member_id}/billing-party", response_model=Response[MemberBillingPartyResponse])
+async def upsert_member_billing_party_org(
+    org_id: UUID,
+    member_id: UUID,
+    data: MemberBillingPartyUpsertRequest,
+    staff: Staff = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if staff.org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    await update_session_context(
+        db,
+        principal_id=str(staff.id),
+        principal_type="owner",
+        org_id=str(org_id),
+        role=getattr(staff, "role", None) or "owner",
+    )
+    try:
+        result = await db.execute(
+            text(
+                """
+                SELECT *
+                FROM app_secure.upsert_member_billing_party(
+                    :member_id, :billing_address, :place_of_supply_state_code
+                )
+                """
+            ),
+            {
+                "member_id": member_id,
+                "billing_address": data.billing_address,
+                "place_of_supply_state_code": data.place_of_supply_state_code,
+            },
+        )
+        row = result.mappings().one()
+        await db.commit()
+        return Response(data=MemberBillingPartyResponse(**dict(row)))
+    except Exception:
+        await db.rollback()
+        raise
+
 
 @modern_router.delete("/{member_id}", response_model=Response[MessageResponse])
 async def delete_member_org(

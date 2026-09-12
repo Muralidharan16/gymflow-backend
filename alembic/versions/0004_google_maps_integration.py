@@ -16,6 +16,118 @@ branch_labels = None
 depends_on = None
 
 
+def _preflight_downgrade() -> None:
+    """Allow rollback only while 0004's durable Maps columns are unused.
+
+    ``google_places_cache`` is intentionally rebuildable cache state and may be
+    discarded by this rollback.  Organization address verification/location
+    state is durable business state, however, and predecessor 0003 cannot
+    represent it.  Any non-default value therefore blocks rollback before the
+    first object is removed.
+    """
+    op.execute(
+        """
+        DO $$
+        DECLARE
+            required_column text;
+            constraint_name text;
+            index_name text;
+        BEGIN
+            IF to_regclass('public.google_places_cache') IS NULL THEN
+                RAISE EXCEPTION
+                    '0004 downgrade drift: public.google_places_cache is missing';
+            END IF;
+
+            FOREACH required_column IN ARRAY ARRAY[
+                'google_place_id',
+                'latitude',
+                'longitude',
+                'maps_embed_allowed',
+                'maps_verification_status',
+                'maps_last_verified_at',
+                'maps_verification_error',
+                'maps_verification_source',
+                'maps_updated_at',
+                'maps_next_retry_at',
+                'maps_retry_count'
+            ] LOOP
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns AS column_data
+                    WHERE column_data.table_schema = 'public'
+                      AND column_data.table_name = 'organization_addresses'
+                      AND column_data.column_name = required_column
+                ) THEN
+                    RAISE EXCEPTION
+                        '0004 downgrade drift: organization_addresses.% is missing',
+                        required_column;
+                END IF;
+            END LOOP;
+
+            FOREACH constraint_name IN ARRAY ARRAY[
+                'chk_latitude',
+                'chk_longitude',
+                'chk_maps_verification_status',
+                'chk_verified_maps_have_coordinates',
+                'chk_maps_retry_count',
+                'chk_maps_verification_error',
+                'chk_maps_verification_source'
+            ] LOOP
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_constraint AS constraint_data
+                    JOIN pg_catalog.pg_class AS relation_data
+                      ON relation_data.oid = constraint_data.conrelid
+                    JOIN pg_catalog.pg_namespace AS namespace_data
+                      ON namespace_data.oid = relation_data.relnamespace
+                    WHERE namespace_data.nspname = 'public'
+                      AND relation_data.relname = 'organization_addresses'
+                      AND constraint_data.conname = constraint_name
+                ) THEN
+                    RAISE EXCEPTION
+                        '0004 downgrade drift: constraint % is missing',
+                        constraint_name;
+                END IF;
+            END LOOP;
+
+            FOREACH index_name IN ARRAY ARRAY[
+                'uq_org_addresses_place_id',
+                'idx_org_addresses_lat_lng',
+                'idx_org_addresses_verification_status',
+                'idx_org_addresses_next_retry',
+                'idx_places_cache_expires'
+            ] LOOP
+                IF to_regclass('public.' || index_name) IS NULL THEN
+                    RAISE EXCEPTION
+                        '0004 downgrade drift: index public.% is missing',
+                        index_name;
+                END IF;
+            END LOOP;
+
+            IF EXISTS (
+                SELECT 1
+                FROM public.organization_addresses AS address_data
+                WHERE address_data.google_place_id IS NOT NULL
+                   OR address_data.latitude IS NOT NULL
+                   OR address_data.longitude IS NOT NULL
+                   OR address_data.maps_embed_allowed IS DISTINCT FROM TRUE
+                   OR address_data.maps_verification_status IS DISTINCT FROM 'pending'
+                   OR address_data.maps_last_verified_at IS NOT NULL
+                   OR address_data.maps_verification_error IS NOT NULL
+                   OR address_data.maps_verification_source IS NOT NULL
+                   OR address_data.maps_updated_at IS NOT NULL
+                   OR address_data.maps_next_retry_at IS NOT NULL
+                   OR address_data.maps_retry_count IS DISTINCT FROM 0
+            ) THEN
+                RAISE EXCEPTION
+                    '0004 downgrade would discard populated durable Google Maps state from organization_addresses';
+            END IF;
+        END
+        $$;
+        """
+    )
+
+
 def upgrade() -> None:
     # ── 11 columns on organization_addresses ────────────────────────────
 
@@ -148,13 +260,17 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS google_places_cache CASCADE")
+    _preflight_downgrade()
+
+    # Cache data is explicitly non-authoritative and rebuildable. RESTRICT is
+    # still mandatory so an unexpected dependent object cannot be destroyed.
+    op.execute("DROP TABLE public.google_places_cache RESTRICT")
 
     with op.get_context().autocommit_block():
-        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_org_addresses_next_retry")
-        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_org_addresses_verification_status")
-        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_org_addresses_lat_lng")
-        op.execute("DROP INDEX CONCURRENTLY IF EXISTS uq_org_addresses_place_id")
+        op.execute("DROP INDEX CONCURRENTLY idx_org_addresses_next_retry")
+        op.execute("DROP INDEX CONCURRENTLY idx_org_addresses_verification_status")
+        op.execute("DROP INDEX CONCURRENTLY idx_org_addresses_lat_lng")
+        op.execute("DROP INDEX CONCURRENTLY uq_org_addresses_place_id")
 
     for name in [
         "chk_maps_verification_source",
@@ -165,7 +281,7 @@ def downgrade() -> None:
         "chk_longitude",
         "chk_latitude",
     ]:
-        op.execute(f"ALTER TABLE organization_addresses DROP CONSTRAINT IF EXISTS {name}")
+        op.execute(f"ALTER TABLE organization_addresses DROP CONSTRAINT {name}")
 
     for col in [
         "maps_retry_count", "maps_next_retry_at", "maps_updated_at",

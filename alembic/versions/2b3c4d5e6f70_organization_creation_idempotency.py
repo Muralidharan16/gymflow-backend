@@ -16,6 +16,24 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+_REPLAY_ORGANIZATION_COLUMNS = (
+    "id",
+    "name",
+    "slug",
+    "tier",
+    "business_type",
+    "is_active",
+    "max_branches",
+    "default_currency_code",
+    "description",
+    "tagline",
+)
+
+
+def _replay_column_list() -> str:
+    return ", ".join(_REPLAY_ORGANIZATION_COLUMNS)
+
+
 def upgrade() -> None:
     op.execute(
         """
@@ -73,11 +91,13 @@ def upgrade() -> None:
     op.execute("REVOKE ALL ON FUNCTION public.prevent_organization_creation_idempotency_mutation() FROM PUBLIC;")
     op.execute("REVOKE ALL ON TABLE public.organization_creation_idempotency FROM PUBLIC;")
     op.execute(
-        """
+        f"""
         DO $$
         BEGIN
             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'test_runner') THEN
                 GRANT SELECT, INSERT ON TABLE public.organization_creation_idempotency TO test_runner;
+                GRANT SELECT ({_replay_column_list()})
+                    ON TABLE public.organizations TO test_runner;
             END IF;
         END $$;
         """
@@ -96,6 +116,18 @@ def downgrade() -> None:
                   AND table_name = 'organization_creation_idempotency'
             ) AND EXISTS (SELECT 1 FROM public.organization_creation_idempotency) THEN
                 RAISE EXCEPTION 'refusing to downgrade with organization creation idempotency evidence present';
+            END IF;
+        END $$;
+        """
+    )
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'test_runner')
+               AND to_regclass('public.organizations') IS NOT NULL THEN
+                REVOKE SELECT ({_replay_column_list()})
+                    ON TABLE public.organizations FROM test_runner;
             END IF;
         END $$;
         """

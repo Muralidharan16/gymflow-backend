@@ -16,29 +16,48 @@ down_revision = '371b1a44a328'
 branch_labels = None
 depends_on = None
 
-def upgrade() -> None:
-    # 1. Determine if PostGIS is available on the system
+
+def _require_infrastructure_postgis() -> None:
+    """Require deterministic, infrastructure-owned PostGIS state."""
     bind = op.get_bind()
-    try:
-        res = bind.execute(sa.text("SELECT COUNT(*) FROM pg_available_extensions WHERE name = 'postgis'")).scalar()
-        has_postgis_extension = (res > 0)
-    except Exception:
-        has_postgis_extension = False
+    row = bind.execute(
+        sa.text(
+            """
+            SELECT
+                owner_role.rolname::text AS owner_name,
+                namespace_data.nspname::text AS schema_name
+            FROM pg_catalog.pg_extension AS extension_data
+            JOIN pg_catalog.pg_roles AS owner_role
+              ON owner_role.oid = extension_data.extowner
+            JOIN pg_catalog.pg_namespace AS namespace_data
+              ON namespace_data.oid = extension_data.extnamespace
+            WHERE extension_data.extname = 'postgis'
+            """
+        )
+    ).mappings().first()
+    if row is None:
+        raise RuntimeError(
+            "371b1a44a329 requires infrastructure-provisioned postgis; "
+            "Alembic must not create extensions"
+        )
+    if row["owner_name"] != "postgres" or row["schema_name"] != "public":
+        raise RuntimeError(
+            "371b1a44a329 requires postgis owned by postgres in public; "
+            f"observed owner={row['owner_name']!r}, schema={row['schema_name']!r}"
+        )
 
-    if has_postgis_extension:
-        try:
-            op.execute("CREATE EXTENSION IF NOT EXISTS postgis")
-            has_postgis = True
-        except Exception:
-            has_postgis = False
-    else:
-        has_postgis = False
 
-    # Determine coordinate column type based on PostGIS availability
-    if has_postgis:
-        coord_col_type = geoalchemy2.types.Geography(geometry_type='POINT', srid=4326, from_text='ST_GeomFromEWKT', name='geography')
-    else:
-        coord_col_type = sa.String(255)
+def upgrade() -> None:
+    # PostGIS is an infrastructure prerequisite, not migration-owned state.
+    # The schema must therefore be deterministic across every environment:
+    # never silently fall back from geography to VARCHAR when PostGIS is absent.
+    _require_infrastructure_postgis()
+    coord_col_type = geoalchemy2.types.Geography(
+        geometry_type='POINT',
+        srid=4326,
+        from_text='ST_GeomFromEWKT',
+        name='geography',
+    )
 
     # Create organization_addresses table
     op.create_table(
@@ -64,7 +83,7 @@ def upgrade() -> None:
         sa.Column('created_at', sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.text('now()')),
         sa.Column('updated_at', sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.text('now()'))
     )
-    
+
     op.create_check_constraint(
         'ck_org_address_type',
         'organization_addresses',
@@ -91,12 +110,13 @@ def upgrade() -> None:
         sa.Column('created_at', sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.text('now()')),
         sa.Column('updated_at', sa.TIMESTAMP(timezone=True), nullable=False, server_default=sa.text('now()'))
     )
-    
+
     op.create_check_constraint(
         'ck_member_address_type',
         'member_addresses',
         sa.text("address_type IN ('registered', 'operational', 'billing')")
     )
+
 
 def downgrade() -> None:
     op.drop_table('member_addresses')

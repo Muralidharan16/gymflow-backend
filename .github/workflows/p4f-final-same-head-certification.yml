@@ -1,0 +1,195 @@
+name: P4F Final Same-Head Certification
+
+on:
+  push:
+    branches:
+      - hardening/p4f-final-certification
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p4f-final-same-head-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Frozen Final P4 scope and gate topology
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_p4f_contract_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p4f-contract-not-production
+      AWS_ACCESS_KEY_ID: ci-p4f-contract
+      AWS_SECRET_ACCESS_KEY: ci-p4f-contract
+      S3_BUCKET_NAME: gymflow-p4f-contract-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+      - name: Validate immutable Final P4 contract
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/p4f_certification_matrix.json >/dev/null
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/migration_semantics_gate.py
+          python -s scripts/verify_head_workflow_bootstrap.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = \
+            'zf07d8e9f0a40'
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4f_final_certification_contracts.py \
+            tests/test_p4e_final_certification_contracts.py
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+  architecture:
+    name: Inherited architecture contracts
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+  migration_hardening:
+    name: General, Platform Billing, and fresh-lineage regression
+    uses: ./.github/workflows/hardening-ci.yml
+  finance:
+    name: Finance Core regression
+    uses: ./.github/workflows/finance-hardening-ci.yml
+  migration_lifecycle:
+    name: Full migration lifecycle
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+  migration_preservation:
+    name: Populated migration data preservation
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+  migration_adversarial:
+    name: Adversarial migration recovery
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+  migration_contracts:
+    name: Migration lifecycle contracts
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+  migration_semantics:
+    name: Migration semantics inventory
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+  p3:
+    name: Inherited P1, P2, and P3 certification
+    uses: ./.github/workflows/p3e-certification.yml
+    with:
+      certification_head: zf07d8e9f0a40
+  p3a_general:
+    name: P3A broad inherited regression
+    uses: ./.github/workflows/p3a-general-regressions.yml
+  lifecycle_maintenance:
+    name: Lifecycle maintenance production boundary
+    uses: ./.github/workflows/lifecycle-maintenance-production-boundary.yml
+  platform_maintenance:
+    name: Platform maintenance production boundary
+    uses: ./.github/workflows/platform-maintenance-production-boundary.yml
+  p4b_opensearch:
+    name: Real local OpenSearch behavior
+    uses: ./.github/workflows/p4b-opensearch-live.yml
+  p4b_evidence:
+    name: P4B provider evidence and reconciliation
+    uses: ./.github/workflows/p4b-search-evidence-pg16.yml
+    with:
+      certification_head: zf07d8e9f0a40
+  p4b_drift:
+    name: P4B search drift repair
+    uses: ./.github/workflows/p4b-search-drift-pg16.yml
+    with:
+      certification_head: zf07d8e9f0a40
+  p4c_general:
+    name: P4C broad inherited regression
+    uses: ./.github/workflows/p4c-general-regression.yml
+    with:
+      certification_head: zf07d8e9f0a40
+  p4c_notification:
+    name: P4C notification delivery and recovery
+    uses: ./.github/workflows/p4c-notification-storage-pg16.yml
+    with:
+      certification_head: zf07d8e9f0a40
+  p4d_refund:
+    name: P4D refund-obligation authority without provider execution
+    uses: ./.github/workflows/p4d-refund-authority-pg16.yml
+    with:
+      certification_head: zf07d8e9f0a40
+  p4e_contract:
+    name: P4E complete external-effect contract
+    uses: ./.github/workflows/p4e-final-external-effects-certification.yml
+  p4e_operational:
+    name: P4E operational observability lifecycle
+    uses: ./.github/workflows/p4e-operational-snapshots-pg16.yml
+
+  certify:
+    name: Terminal immutable Final P4 decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - architecture
+      - migration_hardening
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+      - p3
+      - p3a_general
+      - lifecycle_maintenance
+      - platform_maintenance
+      - p4b_opensearch
+      - p4b_evidence
+      - p4b_drift
+      - p4c_general
+      - p4c_notification
+      - p4d_refund
+      - p4e_contract
+      - p4e_operational
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require every same-head gate
+        env:
+          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+
+          results = json.loads(os.environ["REQUIRED_RESULTS_JSON"])
+          failures = {
+              name: details["result"]
+              for name, details in results.items()
+              if details["result"] != "success"
+          }
+          if failures:
+              raise SystemExit(f"Final P4 same-head gates failed: {failures}")
+          print(f"Final P4 prerequisite gates passed: {len(results)}")
+          PY
+      - name: Reconfirm exact candidate and terminal hard stops
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Emit terminal same-head certification
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD^{tree})" = "$(git write-tree)"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo "P4F_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED"
+          echo "P4F_FINAL_SAME_HEAD_CERTIFICATION=PASS"

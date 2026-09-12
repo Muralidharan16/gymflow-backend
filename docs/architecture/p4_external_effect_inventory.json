@@ -1,0 +1,197 @@
+{
+  "schema_version": 3,
+  "certified_base_sha": "882406537584861da2b2b6d44fd37b016a9f8462",
+  "phase": "P4E operational recovery and observability",
+  "governing_rule": "local_attempt_is_not_external_success",
+  "lifecycle_external_events": [
+    {
+      "event_type": "branch.search_index",
+      "domain": "search",
+      "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
+      "consumer": "app.tasks.branch_outbox_poller._process_search_event",
+      "p4_stage": "P4B",
+      "current_status": "provider_backed_p4b_certified",
+      "terminal_success_requires": "authoritative_search_provider_evidence",
+      "certification_status": "certified"
+    },
+    {
+      "event_type": "branch.search_deindex",
+      "domain": "search",
+      "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
+      "consumer": "app.tasks.branch_outbox_poller._process_search_event",
+      "p4_stage": "P4B",
+      "current_status": "provider_backed_p4b_certified",
+      "terminal_success_requires": "authoritative_search_provider_evidence",
+      "certification_status": "certified"
+    },
+    {
+      "event_type": "branch.member_notification",
+      "domain": "notification",
+      "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
+      "consumer": "app.services.notification_delivery_service.materialize_member_notifications",
+      "p4_stage": "P4C",
+      "current_status": "provider_backed_p4c_certified",
+      "terminal_success_requires": "provider_acceptance_and_channel_terminal_evidence_where_available",
+      "certification_status": "certified"
+    },
+    {
+      "event_type": "branch.refund_required",
+      "domain": "finance_refund",
+      "producer": "app.services.branch_lifecycle_service.BranchLifecycleService",
+      "consumer": "app.tasks.branch_outbox_poller._process_refund_required_event",
+      "p4_stage": "P4D",
+      "current_status": "p4d_finance_obligation_boundary_certified_provider_execution_deferred",
+      "terminal_success_requires": "authoritative_refund_provider_evidence_after separate provider execution and reconciliation phases",
+      "certification_status": "certified_boundary_provider_execution_deferred"
+    }
+  ],
+  "legacy_notification_entrypoints": [
+    {
+      "task": "send_daily_reminders",
+      "source": "app/tasks/reminders.py",
+      "p4_stage": "P4C",
+      "current_status": "fail_closed"
+    },
+    {
+      "task": "send_birthday_wishes",
+      "source": "app/tasks/reminders.py",
+      "p4_stage": "P4C",
+      "current_status": "fail_closed"
+    },
+    {
+      "task": "app.tasks.daily_digest.run",
+      "source": "app/tasks/daily_digest.py",
+      "p4_stage": "P4C",
+      "current_status": "fail_closed"
+    }
+  ],
+  "known_p4_gaps": [
+    {
+      "id": "lifecycle_refund_provider_execution_deferred",
+      "source": "app/tasks/branch_outbox_poller.py",
+      "method": "_process_refund_required_event",
+      "p4_stage": "P4D",
+      "risk": "lifecycle refund obligations now materialize authoritative Finance refund intents and execution commands, but provider refund execution and reconciliation remain intentionally out of scope",
+      "required_resolution": "connect P4D refund execution commands to provider-backed refund submission, durable evidence, webhooks, reconciliation, and no request-submission-as-success shortcut"
+    }
+  ],
+  "finance_foundation": {
+    "refund_model": "app.finance_core.models.foundation.FinanceRefund",
+    "payment_model": "app.finance_core.models.foundation.FinancePayment",
+    "provider_event_model": "app.finance_core.models.foundation.FinancePaymentEvent",
+    "idempotency_model": "app.finance_core.models.foundation.FinanceIdempotencyKey",
+    "outbox_model": "app.finance_core.models.foundation.FinanceOutboxEvent",
+    "refund_terminal_success_state": "succeeded",
+    "p4_stage": "P4D"
+  },
+  "required_semantics": {
+    "command_states": [
+      "pending",
+      "processing",
+      "provider_accepted",
+      "succeeded",
+      "retry_pending",
+      "dead_lettered",
+      "cancelled",
+      "superseded"
+    ],
+    "provider_outcomes": [
+      "definite_success",
+      "provider_accepted_nonterminal",
+      "permanent_rejection",
+      "retryable_failure",
+      "ambiguous_outcome"
+    ],
+    "durable_evidence_fields": [
+      "internal_effect_id",
+      "tenant_or_organization_id",
+      "aggregate_id",
+      "effect_type",
+      "idempotency_key",
+      "desired_state_or_version",
+      "request_hash",
+      "status",
+      "attempt_count",
+      "next_attempt_at",
+      "lease_or_fence",
+      "provider_code",
+      "provider_reference_id",
+      "provider_event_id",
+      "acknowledgement_or_evidence",
+      "attempted_at",
+      "acknowledged_at",
+      "completed_at",
+      "last_error",
+      "correlation_id",
+      "dead_letter_reason"
+    ]
+  },
+  "internal_notification_events": [
+    {
+      "event_type": "notification.delivery",
+      "domain": "notification",
+      "producer": "app_secure.materialize_branch_member_notifications",
+      "consumer": "app.services.notification_delivery_service.process_delivery",
+      "p4_stage": "P4C",
+      "current_status": "provider_backed_p4c_certified",
+      "certification_status": "certified",
+      "terminal_success_requires": "durable_provider_acceptance_then_terminal_delivery_evidence_where_available"
+    },
+    {
+      "event_type": "notification.reconcile",
+      "domain": "notification",
+      "producer": "app_secure.enqueue_notification_reconciliation",
+      "consumer": "app.services.notification_delivery_service.process_reconciliation",
+      "p4_stage": "P4C",
+      "current_status": "provider_backed_p4c_certified",
+      "certification_status": "certified",
+      "terminal_success_requires": "authoritative_notification_provider_reconciliation_evidence"
+    }
+  ],
+  "resolved_p4_gaps": [
+    {
+      "id": "search_marker_only_reconciliation",
+      "source": "app/services/branch_lifecycle_service.py",
+      "method": "run_reconciliation_sweep",
+      "p4_stage": "P4B",
+      "resolution_status": "resolved_by_certified_p4b",
+      "resolution": "maintenance now enqueues provider-backed search reconciliation work through app_secure.enqueue_branch_search_reconciliation; only the leased search worker can persist provider evidence and local sync truth"
+    },
+    {
+      "id": "lifecycle_external_handler_fail_closed_for_search_and_notification",
+      "source": "app/tasks/branch_outbox_poller.py",
+      "method": "_process_event",
+      "p4_stage": "P4B_P4C",
+      "resolution_status": "search_p4b_notification_p4c_and_refund_obligation_p4d_boundaries_certified",
+      "resolution": "search routes to _process_search_event; branch.member_notification routes into durable P4C notification materialization; branch.refund_required routes into P4D-2 Finance refund-obligation resolution without provider execution"
+    }
+  ],
+  "p4e_operational_observability": {
+    "certification_gate": ".github/workflows/p4e-operational-snapshots-pg16.yml",
+    "certification_marker": "P4E_SLICE1B_PG16_CERTIFICATION=PASS",
+    "database_capability": "lifecycle_maintenance_runtime",
+    "snapshot_functions": [
+      "app_secure.search_operational_snapshot()",
+      "app_secure.refund_execution_operational_snapshot()"
+    ],
+    "consumer": "app.tasks.external_effect_observability.run_external_effect_operational_snapshot",
+    "metrics": [
+      "doers.external_effect.snapshot.depth",
+      "doers.external_effect.snapshot.oldest_age"
+    ],
+    "metric_attribute_keys": [
+      "domain",
+      "state"
+    ],
+    "forbidden_metric_attributes": [
+      "tenant_id",
+      "organization_id",
+      "branch_id",
+      "refund_id",
+      "payment_id",
+      "provider_reference_id",
+      "correlation_id"
+    ],
+    "provider_refund_execution": "deferred_fail_closed"
+  }
+}

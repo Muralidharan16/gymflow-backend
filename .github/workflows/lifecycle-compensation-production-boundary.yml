@@ -1,0 +1,168 @@
+name: Lifecycle Compensation Production Boundary
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lifecycle-compensation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle-compensation-boundary:
+    name: PG16 retry exhaustion compensation boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_lifecycle_compensation_boundary
+      DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_lifecycle_compensation_boundary
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_lifecycle_compensation_boundary
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_lifecycle_compensation_boundary
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      AWS_ACCESS_KEY_ID: ci-test
+      AWS_SECRET_ACCESS_KEY: ci-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-ci-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+
+      - name: Install PostgreSQL 16 extension packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision compensation CI login and database overlay
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE ROLE test_runner
+            LOGIN PASSWORD 'ci-test-runner'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime
+            LOGIN PASSWORD 'ci-app-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE auth_test_runtime
+            LOGIN PASSWORD 'ci-auth-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime
+            LOGIN PASSWORD 'ci-worker-test-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE app_test_runtime SET row_security = 'on';
+          ALTER ROLE auth_test_runtime SET row_security = 'on';
+          ALTER ROLE worker_test_runtime SET row_security = 'on';
+
+          GRANT app_runtime TO app_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT auth_runtime TO auth_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_lifecycle_compensation_boundary OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_lifecycle_compensation_boundary
+            TO app_test_runtime, auth_test_runtime, worker_test_runtime;
+          SQL
+
+      - name: Verify canonical external role contract
+        run: bash scripts/ci/verify_cluster_roles.sh
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
+            -d gymflow_lifecycle_compensation_boundary <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Prove compensation identity graph before migration
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner \
+            -d gymflow_lifecycle_compensation_boundary <<'SQL'
+          DO $$
+          DECLARE worker_record record;
+          BEGIN
+            SELECT * INTO worker_record FROM pg_catalog.pg_roles
+            WHERE rolname = 'worker_runtime';
+            IF worker_record.rolcanlogin OR worker_record.rolsuper
+               OR worker_record.rolinherit OR worker_record.rolcreatedb
+               OR worker_record.rolcreaterole OR worker_record.rolreplication
+               OR worker_record.rolbypassrls THEN
+              RAISE EXCEPTION 'worker_runtime attributes are unsafe';
+            END IF;
+            IF pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('migration_owner', 'worker_runtime', 'SET')
+               OR pg_catalog.pg_has_role('app_test_runtime', 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('auth_test_runtime', 'worker_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('worker_test_runtime', 'app_runtime', 'MEMBER')
+               OR pg_catalog.pg_has_role('worker_test_runtime', 'auth_runtime', 'MEMBER') THEN
+              RAISE EXCEPTION 'compensation identity graph leaked privilege groups';
+            END IF;
+          END
+          $$;
+          SQL
+
+      - name: Fresh PG16 lineage to HEAD
+        run: DATABASE_URL="$MIGRATION_DATABASE_URL" python -s -m alembic -c alembic.ini upgrade head
+
+      - name: Prove retry exhaustion compensation on real worker identity
+        run: python -s scripts/verify_lifecycle_retry_exhaustion.py

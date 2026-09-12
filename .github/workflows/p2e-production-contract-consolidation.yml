@@ -1,0 +1,130 @@
+name: P2E Production Contract Consolidation
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2e-consolidation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p2e-consolidation:
+    name: Deterministic process, migration, and CI contract certification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p2e
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p2e-only-not-production
+      AWS_ACCESS_KEY_ID: ci-p2e
+      AWS_SECRET_ACCESS_KEY: ci-p2e
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-p2e-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+      DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:ci-migration-owner@127.0.0.1:5432/postgres
+
+    steps:
+      - name: Checkout exact PR candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install locked test environment and prove exact dependency resolution
+        run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          mkdir -p p2e-evidence
+          python --version | tee p2e-evidence/python-version.txt
+          python -m pip --version | tee p2e-evidence/pip-version.txt
+          python -m pip freeze | LC_ALL=C sort > p2e-evidence/resolved-test-environment.txt
+          diff -u requirements-test.lock p2e-evidence/resolved-test-environment.txt
+
+      - name: Certify repository-level P2E static contracts
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          if grep -R --line-number --fixed-string 'psycopg2' \
+            requirements-test.txt \
+            tests/platform_billing/test_phase4e2_fake_checkout_simulation.py \
+            tests/platform_billing/test_phase4e2c1_fake_provider_evidence.py; then
+            echo 'P2E forbids the legacy Psycopg 2 compatibility dependency/imports.' >&2
+            exit 1
+          fi
+          python -m py_compile \
+            app/core/config.py \
+            app/core/settings_schema.py \
+            scripts/verify_alembic_graph.py \
+            scripts/migration_semantics_inventory.py \
+            scripts/migration_semantics_gate.py \
+            tests/platform_billing/test_phase4e2_fake_checkout_simulation.py \
+            tests/platform_billing/test_phase4e2c1_fake_provider_evidence.py
+          bash -n \
+            scripts/ci/install_pg16_test_stack.sh \
+            scripts/ci/provision_infrastructure_extensions.sh
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/migration_semantics_gate.py
+          python -m pytest --noconftest -q \
+            tests/test_process_database_profile_boundary.py \
+            tests/test_process_profile_deployment_contract.py \
+            tests/test_pytest_db_context_fidelity_boundary.py \
+            tests/test_auth_database_boundary.py \
+            tests/test_lifecycle_maintenance_runtime_boundary.py
+          python -s scripts/verify_runtime_identity_routing.py
+          python -s scripts/verify_head_workflow_bootstrap.py
+
+      - name: Install canonical PostgreSQL 16 test stack
+        run: bash scripts/ci/install_pg16_test_stack.sh
+
+      - name: Bootstrap canonical external PostgreSQL roles
+        run: bash scripts/ci/bootstrap_cluster_roles.sh
+
+      - name: Provision reduced migration login and P2E database
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE DATABASE gymflow_p2e OWNER migration_owner;
+          SQL
+
+      - name: Provision infrastructure-owned extensions through canonical script
+        run: bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p2e
+
+      - name: Reprove P2B and P2C before Alembic
+        run: |
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py
+
+      - name: Fresh Alembic HEAD through reduced migration identity
+        run: |
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Reprove cluster identity contracts after HEAD
+        run: |
+          python -s scripts/verify_cluster_role_bootstrap.py
+          python -s scripts/verify_cluster_identity_graph.py
+          sudo -u postgres psql -X -At -d gymflow_p2e -c 'SHOW server_version;' > p2e-evidence/postgresql-version.txt
+          sudo -u postgres psql -X -At -d gymflow_p2e -c "SELECT extname || '=' || extversion FROM pg_catalog.pg_extension ORDER BY extname;" > p2e-evidence/postgresql-extensions.txt
+
+      - name: Upload P2E reproducibility evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: p2e-consolidation-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: p2e-evidence/
+          if-no-files-found: error
+          retention-days: 14

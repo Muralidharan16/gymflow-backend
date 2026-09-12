@@ -57,7 +57,8 @@ class Organization(Base, TimestampMixin):
     country: Mapped[str] = mapped_column(String(60), server_default=text("'India'"), default="India", nullable=False)
     profile_completed: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), default=False, nullable=False)
 
-    # Logo fields
+    # Logo fields. ``logo_updated_by`` remains the legacy gym_owners domain;
+    # current owner-session provenance is stored separately.
     logo_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     logo_thumb_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     logo_medium_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -68,8 +69,11 @@ class Organization(Base, TimestampMixin):
     )
     logo_updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     logo_updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    logo_updated_by_owner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("owners.id", ondelete="SET NULL"), nullable=True
+    )
 
-    # Cover fields
+    # Cover fields. ``cover_updated_by`` remains the legacy gym_owners domain.
     cover_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     cover_mobile_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     cover_tablet_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -80,6 +84,9 @@ class Organization(Base, TimestampMixin):
     )
     cover_updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     cover_updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    cover_updated_by_owner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("owners.id", ondelete="SET NULL"), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -99,19 +106,52 @@ class OrganizationRegistration(Base, TimestampMixin):
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
     )
-    
-    id_type: Mapped[str] = mapped_column(String(20), nullable=False)        # 'PAN', 'VAT', 'EIN', 'GST'
-    id_number_encrypted: Mapped[str] = mapped_column(Text, nullable=False)   # AES-256 Encrypted
-    id_number_masked: Mapped[str] = mapped_column(String(20), nullable=False)  # 'XXXXXX1234'
-    country_code: Mapped[str] = mapped_column(String(2), nullable=False)     # 'IN', 'US'
-    entity_type: Mapped[Optional[str]] = mapped_column(String(1), nullable=True) # PAN 4th char: 'P', 'C', 'F'
-    
+
+    id_type: Mapped[str] = mapped_column(String(20), nullable=False)  # PAN, VAT, EIN, GST
+    # Legacy Fernet payload retained only for the P3B expand/backfill window.
+    # New crypto_version=1 ciphertext lives in the separate secure payload table
+    # and this field is NULL.
+    id_number_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    id_number_masked: Mapped[str] = mapped_column(String(50), nullable=False)
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    entity_type: Mapped[Optional[str]] = mapped_column(String(1), nullable=True)  # PAN 4th char
+    crypto_version: Mapped[int] = mapped_column(
+        SMALLINT,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     verified_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_org_reg_org_id", "org_id"),
-        UniqueConstraint("country_code", "id_type", "id_number_encrypted", name="uix_org_reg_type_country"),
+        # Retained until the P3B contract migration removes the legacy
+        # randomized-ciphertext uniqueness artifact.
+        UniqueConstraint(
+            "country_code",
+            "id_type",
+            "id_number_encrypted",
+            name="uix_org_reg_type_country",
+        ),
+        UniqueConstraint(
+            "org_id",
+            "country_code",
+            "id_type",
+            name="uq_org_reg_org_country_type",
+        ),
+        UniqueConstraint("id", "org_id", name="uq_org_reg_id_org"),
+        CheckConstraint(
+            "(crypto_version = 0 AND id_number_encrypted IS NOT NULL) OR "
+            "(crypto_version = 1 AND id_number_encrypted IS NULL)",
+            name="ck_org_reg_crypto_material",
+        ),
+        CheckConstraint(
+            "id_type = upper(btrim(id_type)) AND id_type <> '' AND "
+            "country_code = upper(btrim(country_code)) AND length(country_code) = 2",
+            name="ck_org_reg_canonical_identity",
+        ),
     )
 
 class OrganizationAssetAudit(Base, TimestampMixin):
@@ -121,7 +161,12 @@ class OrganizationAssetAudit(Base, TimestampMixin):
         UUID(as_uuid=True), primary_key=True, default=new_uuid
     )
     org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Historical records use changed_by -> gym_owners.id. Modern P3E owner
+    # sessions use the separate owners-domain FK below.
     changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    changed_by_owner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("owners.id", ondelete="SET NULL"), nullable=True
+    )
     asset_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'logo'"), default="logo")
     old_s3_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     new_s3_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
