@@ -31,15 +31,19 @@ async def _claim_ready_events(worker_id: uuid.UUID) -> list[dict[str, Any]]:
             text(
                 """
                 WITH candidates AS (
-                    SELECT id
+                    SELECT id, leased_until IS NOT NULL AS reclaiming
                     FROM public.transactional_outbox
                     WHERE processed_at IS NULL
                       AND dead_lettered_at IS NULL
-                      AND delivery_attempts < :max_attempts
-                      AND available_at <= pg_catalog.clock_timestamp()
                       AND (
-                            leased_until IS NULL
-                            OR leased_until <= pg_catalog.clock_timestamp()
+                            (
+                                leased_until IS NULL
+                                AND delivery_attempts < :max_attempts
+                                AND available_at <= pg_catalog.clock_timestamp()
+                            )
+                            OR (
+                                leased_until <= pg_catalog.clock_timestamp()
+                            )
                       )
                     ORDER BY available_at, created_at, id
                     LIMIT :batch_size
@@ -49,7 +53,11 @@ async def _claim_ready_events(worker_id: uuid.UUID) -> list[dict[str, Any]]:
                 SET leased_by = :worker_id,
                     leased_until = pg_catalog.clock_timestamp()
                         + (:lease_seconds * INTERVAL '1 second'),
-                    delivery_attempts = outbox_data.delivery_attempts + 1,
+                    delivery_attempts = CASE
+                        WHEN candidates.reclaiming THEN outbox_data.delivery_attempts
+                        ELSE outbox_data.delivery_attempts + 1
+                    END,
+                    lease_fence = outbox_data.lease_fence + 1,
                     last_error = NULL
                 FROM candidates
                 WHERE outbox_data.id = candidates.id
@@ -61,6 +69,7 @@ async def _claim_ready_events(worker_id: uuid.UUID) -> list[dict[str, Any]]:
                     outbox_data.payload,
                     outbox_data.correlation_id,
                     outbox_data.delivery_attempts,
+                    outbox_data.lease_fence,
                     outbox_data.parent_event_id
                 """
             ),
@@ -98,6 +107,7 @@ async def _complete_owned_event(
     *,
     event_id: uuid.UUID,
     worker_id: uuid.UUID,
+    lease_fence: int,
 ) -> None:
     result = await session.execute(
         text(
@@ -109,11 +119,17 @@ async def _complete_owned_event(
                 last_error = NULL
             WHERE id = :event_id
               AND leased_by = :worker_id
+              AND lease_fence = :lease_fence
+              AND leased_until > pg_catalog.clock_timestamp()
               AND processed_at IS NULL
               AND dead_lettered_at IS NULL
             """
         ),
-        {"event_id": event_id, "worker_id": worker_id},
+        {
+            "event_id": event_id,
+            "worker_id": worker_id,
+            "lease_fence": lease_fence,
+        },
     )
     if result.rowcount != 1:
         raise RuntimeError(
@@ -241,6 +257,7 @@ async def _process_branch_event(
             session,
             event_id=event["id"],
             worker_id=worker_id,
+            lease_fence=int(event["lease_fence"]),
         )
         return
 
@@ -261,6 +278,7 @@ async def _process_branch_event(
         session,
         event_id=event["id"],
         worker_id=worker_id,
+        lease_fence=int(event["lease_fence"]),
     )
 
 
@@ -315,6 +333,7 @@ async def _process_organization_event(
         session,
         event_id=event["id"],
         worker_id=worker_id,
+        lease_fence=int(event["lease_fence"]),
     )
 
 
@@ -338,6 +357,8 @@ async def _release_failed_event(
                 last_error = :last_error
             WHERE id = :event_id
               AND leased_by = :worker_id
+              AND lease_fence = :lease_fence
+              AND leased_until > pg_catalog.clock_timestamp()
               AND processed_at IS NULL
               AND dead_lettered_at IS NULL
         """
@@ -354,6 +375,8 @@ async def _release_failed_event(
                 last_error = :last_error
             WHERE id = :event_id
               AND leased_by = :worker_id
+              AND lease_fence = :lease_fence
+              AND leased_until > pg_catalog.clock_timestamp()
               AND processed_at IS NULL
               AND dead_lettered_at IS NULL
         """
@@ -363,6 +386,7 @@ async def _release_failed_event(
         params: dict[str, Any] = {
             "event_id": event["id"],
             "worker_id": worker_id,
+            "lease_fence": int(event["lease_fence"]),
             "last_error": error_text,
         }
         if delay_seconds is not None:

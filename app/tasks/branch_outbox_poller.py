@@ -44,24 +44,28 @@ async def _claim_events(worker_id: uuid.UUID) -> list[dict[str, Any]]:
             text(
                 """
                 WITH candidates AS (
-                    SELECT outbox_id
+                    SELECT outbox_id, status = 'processing' AS reclaiming
                     FROM public.branch_outbox_events
-                    WHERE attempt_count < max_attempts
-                      AND process_after <= pg_catalog.clock_timestamp()
-                      AND (
+                    WHERE (
                             status = 'pending'
-                            OR (
-                                status = 'processing'
-                                AND leased_until <= pg_catalog.clock_timestamp()
-                            )
-                      )
+                            AND attempt_count < max_attempts
+                            AND process_after <= pg_catalog.clock_timestamp()
+                          )
+                       OR (
+                            status = 'processing'
+                            AND leased_until <= pg_catalog.clock_timestamp()
+                          )
                     ORDER BY process_after, created_at, outbox_id
                     LIMIT :batch_size
                     FOR UPDATE SKIP LOCKED
                 )
                 UPDATE public.branch_outbox_events AS outbox_data
                 SET status = 'processing',
-                    attempt_count = outbox_data.attempt_count + 1,
+                    attempt_count = CASE
+                        WHEN candidates.reclaiming THEN outbox_data.attempt_count
+                        ELSE outbox_data.attempt_count + 1
+                    END,
+                    lease_fence = outbox_data.lease_fence + 1,
                     last_attempted_at = pg_catalog.clock_timestamp(),
                     last_error = NULL,
                     leased_by = :worker_id,
@@ -77,6 +81,7 @@ async def _claim_events(worker_id: uuid.UUID) -> list[dict[str, Any]]:
                     outbox_data.payload,
                     outbox_data.attempt_count,
                     outbox_data.max_attempts,
+                    outbox_data.lease_fence,
                     outbox_data.correlation_id
                 """
             ),
@@ -112,6 +117,7 @@ async def _mark_delivered(
     *,
     outbox_id: uuid.UUID,
     worker_id: uuid.UUID,
+    lease_fence: int,
 ) -> None:
     result = await session.execute(
         text(
@@ -124,9 +130,15 @@ async def _mark_delivered(
             WHERE outbox_id = :outbox_id
               AND status = 'processing'
               AND leased_by = :worker_id
+              AND lease_fence = :lease_fence
+              AND leased_until > pg_catalog.clock_timestamp()
             """
         ),
-        {"outbox_id": outbox_id, "worker_id": worker_id},
+        {
+            "outbox_id": outbox_id,
+            "worker_id": worker_id,
+            "lease_fence": lease_fence,
+        },
     )
     if result.rowcount != 1:
         raise RuntimeError(
@@ -179,6 +191,7 @@ async def _process_saga_event(
                 session,
                 outbox_id=event["outbox_id"],
                 worker_id=worker_id,
+                lease_fence=int(event["lease_fence"]),
             )
             # Transaction-B DB effects, durable child commands and the parent
             # delivered marker commit together. A crash before commit leaves no
@@ -390,6 +403,7 @@ async def _process_refund_required_event(
                 session,
                 outbox_id=event["outbox_id"],
                 worker_id=worker_id,
+                lease_fence=int(event["lease_fence"]),
             )
             await session.commit()
         logger.info(
@@ -584,11 +598,14 @@ async def _fail_event(
                         WHERE outbox_id = :outbox_id
                           AND status = 'processing'
                           AND leased_by = :worker_id
+                          AND lease_fence = :lease_fence
+                          AND leased_until > pg_catalog.clock_timestamp()
                         """
                     ),
                     {
                         "outbox_id": event["outbox_id"],
                         "worker_id": worker_id,
+                        "lease_fence": int(event["lease_fence"]),
                         "last_error": error_text,
                     },
                 )
@@ -629,6 +646,8 @@ async def _fail_event(
             WHERE outbox_id = :outbox_id
               AND status = 'processing'
               AND leased_by = :worker_id
+              AND lease_fence = :lease_fence
+              AND leased_until > pg_catalog.clock_timestamp()
         """
         outcome = "dead_lettered"
         params: dict[str, Any] = {
@@ -649,11 +668,14 @@ async def _fail_event(
             WHERE outbox_id = :outbox_id
               AND status = 'processing'
               AND leased_by = :worker_id
+              AND lease_fence = :lease_fence
+              AND leased_until > pg_catalog.clock_timestamp()
         """
         outcome = "retry"
         params = {
             "outbox_id": event["outbox_id"],
             "worker_id": worker_id,
+            "lease_fence": int(event["lease_fence"]),
             "last_error": error_text,
             "delay_seconds": delay_seconds,
         }
