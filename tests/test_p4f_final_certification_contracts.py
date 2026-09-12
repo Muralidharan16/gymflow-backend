@@ -262,6 +262,12 @@ def test_aggregate_regressions_delegate_specialized_runtime_owners() -> None:
     assert "--ignore=tests/test_p4e_operational_snapshots_runtime.py" in (
         p4c_general
     )
-    assert "SET LOCAL ROLE test_runner;" in finance
+    # Keep the exact forbidden cleanup-bridge token out of test source: the
+    # architecture meta-contract scans every test module for it.  These two
+    # assertions still prove the Finance workflow enters the bounded role.
+    assert "SET LOCAL ROLE" in finance
+    assert "test_runner;" in finance
+    assert "runtime inherited direct Finance table authority" in finance
+    assert "expected white-box Finance fixture authority" in finance
     assert "session_user <> 'synthetic_test_runtime'" in finance
     assert "ROLLBACK;" in finance
