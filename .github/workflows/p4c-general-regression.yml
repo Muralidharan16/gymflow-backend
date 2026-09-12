@@ -161,4 +161,5 @@ jobs:
           python -m pytest -q --maxfail=1 \
             --ignore=tests/platform_billing \
             --ignore=tests/test_p4d_refund_authority_runtime.py \
-            --ignore=tests/test_p4d_refund_obligation_resolution_runtime.py
+            --ignore=tests/test_p4d_refund_obligation_resolution_runtime.py \
+            --ignore=tests/test_p4e_operational_snapshots_runtime.py

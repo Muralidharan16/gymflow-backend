@@ -89,6 +89,8 @@ jobs:
   p3:
     name: Inherited P1, P2, and P3 certification
     uses: ./.github/workflows/p3e-certification.yml
+    with:
+      certification_head: zf07d8e9f0a40
   p4b_opensearch:
     name: Real local OpenSearch behavior
     uses: ./.github/workflows/p4b-opensearch-live.yml

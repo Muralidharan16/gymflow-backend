@@ -6,10 +6,12 @@ Final P4 is a certification-only phase stacked on the certified P4E commit
 `hardening/p4f-final-certification`, and its required Alembic head is
 `zf07d8e9f0a40`.
 
-No production application behavior, database migration, provider adapter, RLS
-policy or runtime authority is added by this phase. The only source changes are
-the final certification topology, its machine-readable matrix and contract
-tests, plus reusable entry points for already-existing decisive workflows.
+No production application behavior, provider adapter, RLS policy or runtime
+authority is added by this phase. In addition to the final certification
+topology, matrix, contract tests and reusable workflow entry points, Final P4
+repairs a P4D downgrade defect exposed by the fan-in: removing P4D's temporary
+table-wide outbox read now restores exactly the narrower grants owned by its
+P4C/P4B/lifecycle predecessor revisions.
 
 ## Governing decision rule
 

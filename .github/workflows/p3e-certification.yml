@@ -6,6 +6,10 @@ on:
       - hardening/p3d-branch-role-lifecycle-matrix
     types: [opened, synchronize, reopened]
   workflow_call:
+    inputs:
+      certification_head:
+        required: false
+        type: string
   workflow_dispatch:
 
 permissions:
@@ -16,6 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  CERTIFICATION_HEAD: ${{ inputs.certification_head }}
   MIGRATION_PASSWORD: ci-migration-owner
   GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
   AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime

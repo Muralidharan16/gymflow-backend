@@ -158,6 +158,7 @@ def test_aggregate_calls_every_gate_locally_and_terminal_needs_every_result() ->
     for job_id, (workflow_path, _expected_jobs) in EXPECTED_WORKFLOWS.items():
         assert jobs[job_id]["uses"] == f"./{workflow_path}"
     for job_id in {
+        "p3",
         "p4b_evidence",
         "p4b_drift",
         "p4c_general",
@@ -194,6 +195,17 @@ def test_current_phase_runtime_workflows_target_exact_p4e_schema_head() -> None:
         assert 'test "$(python -s -m alembic -c alembic.ini heads' in source
         assert '= "${CERTIFICATION_HEAD}"' in source
 
+    p3_workflow = _workflow(ROOT / ".github/workflows/p3e-certification.yml")
+    assert p3_workflow["on"]["workflow_call"]["inputs"][
+        "certification_head"
+    ] == {"required": "false", "type": "string"}
+    assert 'CERTIFICATION_HEAD: ${{ inputs.certification_head }}' in (
+        ROOT / ".github/workflows/p3e-certification.yml"
+    ).read_text(encoding="utf-8")
+    assert '= "${CERTIFICATION_HEAD}"' in (
+        ROOT / "scripts/ci/prepare_p3e_pg16.sh"
+    ).read_text(encoding="utf-8")
+
     assert "zf07d8e9f0a40" in (
         ROOT / ".github/workflows/p4e-operational-snapshots-pg16.yml"
     ).read_text(encoding="utf-8")
@@ -224,3 +236,32 @@ def test_final_gate_preserves_refund_and_delivery_hard_stops() -> None:
         "separate merge-authorization review",
     ):
         assert phrase in contract
+
+
+def test_aggregate_regressions_delegate_specialized_runtime_owners() -> None:
+    hardening = (
+        ROOT / ".github/workflows/hardening-ci.yml"
+    ).read_text(encoding="utf-8")
+    p4c_general = (
+        ROOT / ".github/workflows/p4c-general-regression.yml"
+    ).read_text(encoding="utf-8")
+    finance = (
+        ROOT / ".github/workflows/finance-hardening-ci.yml"
+    ).read_text(encoding="utf-8")
+
+    for runtime_path in (
+        "tests/test_p3e_subscription_expiry_maintenance_runtime.py",
+        "tests/test_p3e_trial_lifecycle_maintenance_runtime.py",
+        "tests/test_p3e_asset_fencing_runtime.py",
+        "tests/test_p3e_asset_modern_owner_provenance_runtime.py",
+        "tests/test_p4d_refund_authority_runtime.py",
+        "tests/test_p4d_refund_obligation_resolution_runtime.py",
+        "tests/test_p4e_operational_snapshots_runtime.py",
+    ):
+        assert f"--ignore={runtime_path}" in hardening
+    assert "--ignore=tests/test_p4e_operational_snapshots_runtime.py" in (
+        p4c_general
+    )
+    assert "SET LOCAL ROLE test_runner;" in finance
+    assert "session_user <> 'synthetic_test_runtime'" in finance
+    assert "ROLLBACK;" in finance

@@ -210,6 +210,37 @@ def test_p4d_downgrade_refuses_to_destroy_refund_execution_authority() -> None:
     assert "DROP TABLE IF EXISTS finance.refund_execution_commands RESTRICT" in downgrade
 
 
+def test_p4d_downgrade_restores_exact_predecessor_outbox_select_acl() -> None:
+    source = _source(MIGRATION)
+    downgrade = source.split("def downgrade()", 1)[1]
+    predecessor_columns = set(
+        _tuple_assignment(source, "_OUTBOX_PREDECESSOR_SELECT_COLUMNS")
+    )
+
+    assert predecessor_columns == {
+        "outbox_id",
+        "tenant_id",
+        "branch_id",
+        "event_type",
+        "status",
+        "leased_by",
+        "leased_until",
+        "correlation_id",
+        "attempt_count",
+        "payload",
+    }
+    revoke_index = downgrade.index(
+        'REVOKE SELECT ON TABLE public.branch_outbox_events FROM app_security_owner'
+    )
+    restore_index = downgrade.index(
+        '"GRANT SELECT (" + ",".join(_OUTBOX_PREDECESSOR_SELECT_COLUMNS)'
+    )
+    assert revoke_index < restore_index
+    assert "GRANT SELECT ON TABLE public.branch_outbox_events TO app_security_owner" not in (
+        downgrade[revoke_index:]
+    )
+
+
 def test_p4d_pg16_workflow_is_dedicated_locked_and_unactivated() -> None:
     workflow = _source(WORKFLOW)
     runtime = _source(RUNTIME_TEST)

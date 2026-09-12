@@ -315,9 +315,20 @@ jobs:
             IF NOT FOUND OR membership_record.admin_option OR membership_record.inherit_option OR NOT membership_record.set_option THEN RAISE EXCEPTION 'synthetic bootstrap test_runner edge must be SET-only'; END IF;
             IF NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'SELECT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'INSERT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.organizations', 'UPDATE') OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.organizations', 'TRUNCATE') THEN RAISE EXCEPTION 'synthetic bootstrap organizations ACL is not exact'; END IF;
             IF NOT pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'SELECT') OR NOT pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'INSERT') OR pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'UPDATE') OR pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'public.organization_creation_idempotency', 'TRUNCATE') THEN RAISE EXCEPTION 'synthetic bootstrap evidence ACL is not append/read-only'; END IF;
-            IF NOT pg_catalog.has_table_privilege(current_user, 'finance.billing_parties', 'SELECT') OR pg_catalog.has_table_privilege(current_user, 'finance.billing_parties', 'INSERT') OR pg_catalog.has_table_privilege(current_user, 'finance.invoices', 'UPDATE') OR pg_catalog.has_table_privilege(current_user, 'finance.payments', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'finance.payments', 'TRUNCATE') THEN RAISE EXCEPTION 'synthetic bootstrap Finance evidence access is not read-only'; END IF;
           END
           $$;
+          SQL
+          PGPASSWORD="$SYNTHETIC_RUNTIME_PASSWORD" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U synthetic_test_runtime -d gymflow_finance_test_ci <<'SQL'
+          BEGIN;
+          SET LOCAL ROLE test_runner;
+          DO $$
+          BEGIN
+            IF current_user <> 'test_runner' OR session_user <> 'synthetic_test_runtime' THEN RAISE EXCEPTION 'synthetic bootstrap did not enter bounded SET-only test role'; END IF;
+            IF NOT pg_catalog.has_schema_privilege(current_user, 'finance', 'USAGE') OR NOT pg_catalog.has_table_privilege(current_user, 'finance.billing_parties', 'SELECT') OR NOT pg_catalog.has_table_privilege(current_user, 'finance.invoices', 'SELECT') OR NOT pg_catalog.has_table_privilege(current_user, 'finance.payments', 'SELECT') THEN RAISE EXCEPTION 'synthetic bootstrap test role lacks Finance read evidence'; END IF;
+            IF pg_catalog.has_table_privilege(current_user, 'finance.billing_parties', 'INSERT') OR pg_catalog.has_table_privilege(current_user, 'finance.invoices', 'UPDATE') OR pg_catalog.has_table_privilege(current_user, 'finance.payments', 'DELETE') OR pg_catalog.has_table_privilege(current_user, 'finance.payments', 'TRUNCATE') THEN RAISE EXCEPTION 'synthetic bootstrap Finance evidence access is not read-only'; END IF;
+          END
+          $$;
+          ROLLBACK;
           SQL
       - name: Run isolated Finance Core regressions fail-fast
         run: python -m pytest -q --maxfail=1 tests/finance_core

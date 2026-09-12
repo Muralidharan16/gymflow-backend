@@ -32,6 +32,23 @@ _REFUNDS = "finance.refunds"
 _PAYMENTS = "finance.payments"
 _COMMANDS = "finance.refund_execution_commands"
 _COMMAND_POLICY = "p4d_refund_execution_security_owner_all"
+# PostgreSQL does not retain provenance when a table-wide privilege subsumes
+# narrower column grants.  zc07 needs table-wide SELECT while installed, so its
+# downgrade must recreate the exact zb07 predecessor grant set after revoking
+# that wider privilege.  The following zb07/u07/3d4e downgrades then remove
+# their own payload, attempt_count and lifecycle grants in turn.
+_OUTBOX_PREDECESSOR_SELECT_COLUMNS = (
+    "outbox_id",
+    "tenant_id",
+    "branch_id",
+    "event_type",
+    "status",
+    "leased_by",
+    "leased_until",
+    "correlation_id",
+    "attempt_count",
+    "payload",
+)
 _FUNCTIONS = (
     "app_secure.materialize_refund_execution_command(uuid,text,uuid,text)",
     "app_secure.claim_refund_execution_command(uuid,integer)",
@@ -663,6 +680,10 @@ def downgrade() -> None:
     op.execute("DROP POLICY IF EXISTS p4d_refund_execution_security_owner_all ON finance.refund_execution_commands")
     op.execute("DROP TABLE IF EXISTS finance.refund_execution_commands RESTRICT")
     op.execute("REVOKE SELECT ON TABLE public.branch_outbox_events FROM app_security_owner")
+    op.execute(
+        "GRANT SELECT (" + ",".join(_OUTBOX_PREDECESSOR_SELECT_COLUMNS) + ") "
+        "ON TABLE public.branch_outbox_events TO app_security_owner"
+    )
     op.execute("REVOKE SELECT, UPDATE ON TABLE finance.refunds FROM app_security_owner")
     op.execute("REVOKE SELECT, UPDATE ON TABLE finance.payments FROM app_security_owner")
     op.execute("REVOKE USAGE ON SCHEMA finance FROM app_security_owner")
