@@ -245,6 +245,9 @@ def test_aggregate_regressions_delegate_specialized_runtime_owners() -> None:
     p4c_general = (
         ROOT / ".github/workflows/p4c-general-regression.yml"
     ).read_text(encoding="utf-8")
+    p3_general = (
+        ROOT / ".github/workflows/p3e-certification.yml"
+    ).read_text(encoding="utf-8")
     finance = (
         ROOT / ".github/workflows/finance-hardening-ci.yml"
     ).read_text(encoding="utf-8")
@@ -254,11 +257,18 @@ def test_aggregate_regressions_delegate_specialized_runtime_owners() -> None:
         "tests/test_p3e_trial_lifecycle_maintenance_runtime.py",
         "tests/test_p3e_asset_fencing_runtime.py",
         "tests/test_p3e_asset_modern_owner_provenance_runtime.py",
+        "tests/test_p3e_worker_principal_routing_runtime.py",
         "tests/test_p4d_refund_authority_runtime.py",
         "tests/test_p4d_refund_obligation_resolution_runtime.py",
         "tests/test_p4e_operational_snapshots_runtime.py",
     ):
         assert f"--ignore={runtime_path}" in hardening
+    for runtime_path in (
+        "tests/test_p4d_refund_authority_runtime.py",
+        "tests/test_p4d_refund_obligation_resolution_runtime.py",
+        "tests/test_p4e_operational_snapshots_runtime.py",
+    ):
+        assert f"--ignore={runtime_path}" in p3_general
     assert "--ignore=tests/test_p4e_operational_snapshots_runtime.py" in (
         p4c_general
     )

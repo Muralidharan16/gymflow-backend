@@ -342,6 +342,7 @@ jobs:
             --ignore=tests/test_p3e_trial_lifecycle_maintenance_runtime.py \
             --ignore=tests/test_p3e_asset_fencing_runtime.py \
             --ignore=tests/test_p3e_asset_modern_owner_provenance_runtime.py \
+            --ignore=tests/test_p3e_worker_principal_routing_runtime.py \
             --ignore=tests/test_p4d_refund_authority_runtime.py \
             --ignore=tests/test_p4d_refund_obligation_resolution_runtime.py \
             --ignore=tests/test_p4e_operational_snapshots_runtime.py

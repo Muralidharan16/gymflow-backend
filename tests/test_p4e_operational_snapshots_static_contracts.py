@@ -16,6 +16,7 @@ WORKFLOW = ROOT / ".github/workflows/p4e-operational-snapshots-pg16.yml"
 METRICS = ROOT / "app/observability/external_effect_metrics.py"
 TASK = ROOT / "app/tasks/external_effect_observability.py"
 CELERY = ROOT / "app/core/celery_app.py"
+IDENTITY_ROUTING = ROOT / "scripts/verify_runtime_identity_routing.py"
 SETTINGS = ROOT / "app/core/settings_schema.py"
 CONFIG = ROOT / "app/core/config.py"
 PRODUCTION_IDENTITIES = ROOT / "deploy/docker-compose.production-identities.yml"
@@ -99,6 +100,7 @@ def test_workflow_normalizes_pg_proc_volatility_in_lifecycle_fingerprints() -> N
 def test_p4e_export_task_uses_only_certified_maintenance_snapshots() -> None:
     task = TASK.read_text()
     celery = CELERY.read_text()
+    identity_routing = IDENTITY_ROUTING.read_text()
 
     assert "maintenance_async_session_maker" in task
     assert 'internal_maintenance=_MAINTENANCE_CONTEXT' in task
@@ -115,6 +117,7 @@ def test_p4e_export_task_uses_only_certified_maintenance_snapshots() -> None:
     assert "provider_refund_ref" not in task
     assert "provider_evidence_sha256" not in task
     assert 'name="app.tasks.external_effect_observability.snapshot"' in task
+    assert '"external_effect_observability.py"' in identity_routing
 
     assert '"app.tasks.external_effect_observability"' in celery
     assert '"app.tasks.external_effect_observability.snapshot"' in celery
