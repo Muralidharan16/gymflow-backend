@@ -10,6 +10,12 @@ WORKFLOW = ROOT / ".github" / "workflows" / "p5w2-worker-crash-redelivery-pg16.y
 SLICE = ROOT / "docs" / "architecture" / "P5W2_WORKER_CRASH_REDELIVERY.md"
 CELERY = ROOT / "app" / "core" / "celery_app.py"
 PROJECTION = ROOT / "app" / "tasks" / "branch_hours_projection.py"
+MIGRATION = (
+    ROOT
+    / "alembic"
+    / "versions"
+    / "zh07d8e9f0a42_p5w_projection_policy_scope.py"
+)
 
 
 def test_fault_hooks_are_explicitly_test_only_and_kill_prefork_children() -> None:
@@ -118,6 +124,44 @@ def test_fixture_repair_does_not_weaken_active_branch_projection_guard() -> None
         assert phrase in rebuild
 
 
+def test_projection_policy_repair_changes_only_the_legacy_policy_audience() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    scope_change = source.split("def _alter_policy_scope", 1)[1].split(
+        "def upgrade", 1
+    )[0]
+
+    assert 'revision = "zh07d8e9f0a42"' in source
+    assert 'down_revision = "zg07d8e9f0a41"' in source
+    assert "ALTER POLICY {_POLICY} ON {_RELATION} TO {role_name}" in scope_change
+    for forbidden in ("CREATE POLICY", "DROP POLICY", "GRANT ", "REVOKE "):
+        assert forbidden not in scope_change
+    assert "predecessor = _capture_boundary(bind, [0])" in source
+    assert "expected_roles=[_role_oid(bind, _APPLICATION_ROLE)]" in source
+    assert '_alter_policy_scope("PUBLIC")' in source
+    assert "expected_roles=[0]" in source
+    assert "changed a contract other than the policy audience" in source
+
+
+def test_projection_policy_repair_preserves_lease_worker_without_pii_grant() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    normalized = " ".join(source.upper().split())
+
+    for phrase in (
+        "tenant_isolation_projection",
+        "branch_hours_worker_projection_read",
+        "branch_hours_worker_projection_insert",
+        "branch_hours_worker_projection_update",
+        "organization_members SELECT",
+        '("DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")',
+        "rolsuper OR rolbypassrls",
+        "relrowsecurity",
+        "relforcerowsecurity",
+    ):
+        assert phrase in source
+    assert "GRANT SELECT ON PUBLIC.ORGANIZATION_MEMBERS" not in normalized
+    assert "ALTER ROLE WORKER_RUNTIME BYPASSRLS" not in normalized
+
+
 def test_runtime_requires_an_explicit_disposable_topology() -> None:
     source = RUNTIME.read_text(encoding="utf-8")
 
@@ -153,6 +197,9 @@ def test_workflow_is_real_pg16_redis_same_head_and_reproducible() -> None:
         "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
         "tests/test_p5w2_worker_crash_redelivery_runtime.py",
         "tests/test_p5w2_worker_crash_static_contracts.py",
+        "zh07d8e9f0a42_p5w_projection_policy_scope.py",
+        'expected_head="${CERTIFICATION_HEAD:-zh07d8e9f0a42}"',
+        "downgrade zg07d8e9f0a41",
         "tests/test_p5w_worker_fencing_runtime.py",
         "git rev-parse HEAD",
         "P5W2_SEPARATE_PROCESS_CRASH=PASS",
@@ -185,5 +232,9 @@ def test_slice_is_bounded_and_does_not_claim_later_p5_work() -> None:
         "34702421005",
         "is not p5-w2 certified",
         "failed-candidate provenance",
+        "47ab37d7e156739bbe73d05b60f97d9ea9c3b71f",
+        "34703762190",
+        "public to `app_runtime`",
+        "organization_members",
     ):
         assert phrase in source

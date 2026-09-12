@@ -64,12 +64,28 @@ fixture created the branch root but omitted its required
 `public.org_branch_state` row. Redis was healthy, the prefork worker started,
 the task was delivered, and the durable row reached retry disposition.
 
-The repair is confined to the test boundary: it provisions a reduced
+The first repair is confined to the test boundary: it provisions a reduced
 `auth_p5w2_runtime` login and creates the canonical initial branch state through
 the existing auth policy before the application identity enqueues work. It does
 not change the production projection query, RLS policy, worker code, lease
 semantics, provider boundary, or Finance behavior. A new immutable candidate
 must execute the full same-head gate; the failed SHA is not reused.
+
+Candidate `47ab37d7e156739bbe73d05b60f97d9ea9c3b71f` is also not P5-W2
+certified. Governance and the P5-W1 same-head reproof passed, but GitHub Actions
+run `34703762190`, job `103579985787`, reached the production projection upsert
+and PostgreSQL denied the worker access to `public.organization_members`.
+
+This exposed a production policy-audience defect. The legacy
+`tenant_isolation_projection` `FOR ALL` policy still applied to PUBLIC, so its
+application-principal membership predicate could be evaluated for the worker
+alongside the dedicated lease-bound worker policies. The repair changes only
+that legacy policy audience from PUBLIC to `app_runtime`, preserving its exact
+predicate. It neither grants the worker access to `organization_members` nor
+weakens FORCE RLS, lease checks, destructive-privilege restrictions, or tenant
+lineage. The migration is reversible to the exact predecessor audience and is
+exercised through an empty PostgreSQL 16 downgrade/upgrade lifecycle before the
+real worker crash matrix.
 
 ## Acceptance composition
 

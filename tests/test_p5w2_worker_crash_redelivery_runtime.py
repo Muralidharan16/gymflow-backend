@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import psycopg
 import pytest
 import redis
+from psycopg.errors import InsufficientPrivilege
 from sqlalchemy.engine import make_url
 
 
@@ -588,6 +589,47 @@ def _disposable_runtime() -> Iterator[redis.Redis]:
     client.flushdb()
     yield client
     client.flushdb()
+
+
+def test_projection_policy_is_app_scoped_without_worker_pii_access() -> None:
+    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT policy_data.polcmd::text,
+                       policy_data.polpermissive,
+                       policy_data.polroles,
+                       app_role.oid
+                FROM pg_catalog.pg_policy AS policy_data
+                CROSS JOIN pg_catalog.pg_roles AS app_role
+                WHERE policy_data.polrelid=
+                          'public.branch_hours_projection'::regclass
+                  AND policy_data.polname='tenant_isolation_projection'
+                  AND app_role.rolname='app_runtime'
+                """
+            )
+            row = cursor.fetchone()
+            assert row is not None
+            assert row[0] == "*"
+            assert row[1] is True
+            assert list(row[2]) == [row[3]]
+            cursor.execute(
+                """
+                SELECT pg_catalog.has_table_privilege(
+                    'worker_runtime','public.organization_members','SELECT'
+                )
+                """
+            )
+            assert cursor.fetchone() == (False,)
+        connection.commit()
+
+    with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as connection:
+        with connection.cursor() as cursor:
+            with pytest.raises(InsufficientPrivilege):
+                cursor.execute(
+                    "SELECT id FROM public.organization_members LIMIT 1"
+                )
+        connection.rollback()
 
 
 @pytest.mark.parametrize("surface", SURFACES, ids=lambda surface: surface.name)

@@ -79,6 +79,7 @@ jobs:
           python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
           diff -u requirements-test.lock /tmp/resolved.txt
           python -m py_compile \
+            alembic/versions/zh07d8e9f0a42_p5w_projection_policy_scope.py \
             scripts/ci/p5w2_celery_fault_hooks.py \
             tests/test_p5w2_worker_crash_redelivery_runtime.py \
             tests/test_p5w2_worker_crash_static_contracts.py
@@ -130,11 +131,17 @@ jobs:
           CERTIFICATION_HEAD: ${{ inputs.certification_head }}
         run: |
           set -euo pipefail
-          expected_head="${CERTIFICATION_HEAD:-zg07d8e9f0a41}"
+          expected_head="${CERTIFICATION_HEAD:-zh07d8e9f0a42}"
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${expected_head}"
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
+          if [[ "${expected_head}" == 'zh07d8e9f0a42' ]]; then
+            python -s -m alembic -c alembic.ini downgrade zg07d8e9f0a41
+            test "$(python -s -m alembic -c alembic.ini current | awk '{print $1}')" = 'zg07d8e9f0a41'
+            python -s -m alembic -c alembic.ini upgrade head
+            python -s -m alembic -c alembic.ini current --check-heads
+          fi
           PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U worker_test_runtime -d gymflow_p5w2_test \
             -c 'SELECT current_user,pg_catalog.current_setting('\''row_security'\'');'
