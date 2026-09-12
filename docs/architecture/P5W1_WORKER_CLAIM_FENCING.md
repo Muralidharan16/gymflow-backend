@@ -102,6 +102,21 @@ requires all three lifecycle terminal/failure SQL paths to bind the fence.
 Candidate `d02714c34b1f44891b0ec811c09d545cce633814` is therefore also not
 P5-W1 certified, and the next immutable SHA requires a complete same-head run.
 
+Second-repair candidate `92c6e452613a67f2382f4b6545d6291df5643ad5`
+passed governance run `34698402315`. PostgreSQL 16 run `34698402312` passed
+the static, migration-lifecycle and claim-fence ACL stages, then exposed a
+forced-RLS observer error in the runtime proof: its final assertions connected
+as `migration_owner` without queue-visible session context. Both durable rows
+were consequently hidden and the first `fetchone()` returned `None`.
+
+The third repair leaves production code and policies unchanged. Final durable
+state is now inspected through the reduced `worker_test_runtime` identity,
+whose inherited queue policies deliberately permit cross-tenant worker reads
+on both core outboxes. A static contract prevents the proof from returning to
+an unscoped migration-owner observer. Candidate
+`92c6e452613a67f2382f4b6545d6291df5643ad5` is not P5-W1 certified; the
+replacement immutable SHA requires every same-head gate to pass again.
+
 ## Explicit limitations
 
 P5-W1 does not complete P5-W or P5. It does not yet claim:

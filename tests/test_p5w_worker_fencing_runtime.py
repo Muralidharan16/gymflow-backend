@@ -302,7 +302,10 @@ def test_reclaim_rotates_fence_rejects_aba_and_recovers_final_attempts() -> None
     asyncio.run(_exercise_lifecycle_aba(reused_worker_id, lifecycle_id))
     asyncio.run(_exercise_transactional_aba(reused_worker_id, transactional_id))
 
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
+    # Both queue tables retain FORCE ROW LEVEL SECURITY. Observe the terminal
+    # rows through the dedicated worker identity, whose queue SELECT policies
+    # are intentionally cross-tenant, instead of relying on table-owner bypass.
+    with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """

@@ -167,6 +167,18 @@ def test_p5w_runtime_seed_uses_canonical_actor_for_branch_hours_enqueue() -> Non
     assert lifecycle_enqueue < canonical_owner < branch_hours_enqueue
 
 
+def test_p5w_runtime_final_state_uses_worker_queue_visibility() -> None:
+    source = RUNTIME.read_text(encoding="utf-8")
+    proof = _function(
+        source,
+        "def test_reclaim_rotates_fence_rejects_aba_and_recovers_final_attempts",
+        None,
+    )
+
+    assert 'with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD")' in proof
+    assert '_connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD")' not in proof
+
+
 def test_p5w_slice_claims_only_its_bounded_evidence() -> None:
     source = SLICE.read_text(encoding="utf-8").lower()
 
@@ -182,9 +194,13 @@ def test_p5w_slice_claims_only_its_bounded_evidence() -> None:
         "d02714c34b1f44891b0ec811c09d545cce633814",
         "34696668273",
         "34696668292",
+        "92c6e452613a67f2382f4b6545d6291df5643ad5",
+        "34698402315",
+        "34698402312",
         "does not weaken that production policy",
         "failed candidate is not p5-w1 certified",
         "missing the required `lease_fence` bind",
+        "forced-rls observer",
     ):
         assert repair_evidence in source
     for limitation in (
