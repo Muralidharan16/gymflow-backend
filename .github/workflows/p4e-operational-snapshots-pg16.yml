@@ -119,11 +119,33 @@ jobs:
             )
           ORDER BY 1;
           SQL
-          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -At \
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_p4e_test <<'SQL'
-          SELECT to_regprocedure('app_secure.search_operational_snapshot()') IS NULL;
-          SELECT to_regprocedure('app_secure.refund_execution_operational_snapshot()') IS NULL;
-          SELECT to_regprocedure('app_secure.discover_refund_execution_maintenance(integer)') IS NOT NULL;
+          DO $$
+          BEGIN
+            IF EXISTS (
+              SELECT 1 FROM pg_catalog.pg_proc AS p
+              JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
+              WHERE n.nspname='app_secure'
+                AND p.proname IN (
+                  'search_operational_snapshot',
+                  'refund_execution_operational_snapshot'
+                )
+                AND p.pronargs=0
+            ) THEN
+              RAISE EXCEPTION 'P4E snapshot exists before zf07';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_catalog.pg_proc AS p
+              JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
+              WHERE n.nspname='app_secure'
+                AND p.proname='discover_refund_execution_maintenance'
+                AND p.pronargs=1
+            ) THEN
+              RAISE EXCEPTION 'P4D maintenance authority missing at predecessor';
+            END IF;
+          END
+          $$;
           SQL
 
       - name: Upgrade zf07 and prove authority/ACL isolation
@@ -161,38 +183,43 @@ jobs:
             -h 127.0.0.1 -U migration_owner -d gymflow_p4e_test <<'SQL'
           DO $$
           DECLARE
-            signature text;
+            function_name text;
+            function_oid oid;
             owner_name text;
             security_definer boolean;
             volatility "char";
             config text[];
           BEGIN
-            FOREACH signature IN ARRAY ARRAY[
-              'app_secure.search_operational_snapshot()',
-              'app_secure.refund_execution_operational_snapshot()'
+            FOREACH function_name IN ARRAY ARRAY[
+              'search_operational_snapshot',
+              'refund_execution_operational_snapshot'
             ] LOOP
-              SELECT r.rolname,p.prosecdef,p.provolatile,p.proconfig
-                INTO owner_name,security_definer,volatility,config
+              SELECT p.oid,r.rolname,p.prosecdef,p.provolatile,p.proconfig
+                INTO function_oid,owner_name,security_definer,volatility,config
               FROM pg_catalog.pg_proc AS p
+              JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
               JOIN pg_catalog.pg_roles AS r ON r.oid=p.proowner
-              WHERE p.oid=pg_catalog.to_regprocedure(signature);
-              IF owner_name IS DISTINCT FROM 'app_security_owner'
+              WHERE n.nspname='app_secure'
+                AND p.proname=function_name
+                AND p.pronargs=0;
+              IF function_oid IS NULL
+                 OR owner_name IS DISTINCT FROM 'app_security_owner'
                  OR security_definer IS DISTINCT FROM true
                  OR volatility IS DISTINCT FROM 's'
                  OR NOT ('row_security=on'=ANY(config))
                  OR NOT EXISTS (SELECT 1 FROM unnest(config) x WHERE x LIKE 'search_path=%')
               THEN
-                RAISE EXCEPTION 'unsafe P4E function metadata for %', signature;
+                RAISE EXCEPTION 'unsafe P4E function metadata for %', function_name;
               END IF;
-              IF NOT pg_catalog.has_function_privilege('lifecycle_maintenance_runtime',signature,'EXECUTE') THEN
-                RAISE EXCEPTION 'maintenance EXECUTE missing for %', signature;
+              IF NOT pg_catalog.has_function_privilege('lifecycle_maintenance_runtime',function_oid,'EXECUTE') THEN
+                RAISE EXCEPTION 'maintenance EXECUTE missing for %', function_name;
               END IF;
-              IF pg_catalog.has_function_privilege('app_runtime',signature,'EXECUTE')
-                 OR pg_catalog.has_function_privilege('auth_runtime',signature,'EXECUTE')
-                 OR pg_catalog.has_function_privilege('worker_runtime',signature,'EXECUTE')
-                 OR pg_catalog.has_function_privilege('finance_config_runtime',signature,'EXECUTE')
+              IF pg_catalog.has_function_privilege('app_runtime',function_oid,'EXECUTE')
+                 OR pg_catalog.has_function_privilege('auth_runtime',function_oid,'EXECUTE')
+                 OR pg_catalog.has_function_privilege('worker_runtime',function_oid,'EXECUTE')
+                 OR pg_catalog.has_function_privilege('finance_config_runtime',function_oid,'EXECUTE')
               THEN
-                RAISE EXCEPTION 'runtime privilege expansion for %', signature;
+                RAISE EXCEPTION 'runtime privilege expansion for %', function_name;
               END IF;
               IF EXISTS (
                 SELECT 1
@@ -200,11 +227,11 @@ jobs:
                 CROSS JOIN LATERAL pg_catalog.aclexplode(
                   COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))
                 ) AS acl
-                WHERE p.oid=pg_catalog.to_regprocedure(signature)
+                WHERE p.oid=function_oid
                   AND acl.grantee=0
                   AND acl.privilege_type='EXECUTE'
               ) THEN
-                RAISE EXCEPTION 'PUBLIC EXECUTE present for %', signature;
+                RAISE EXCEPTION 'PUBLIC EXECUTE present for %', function_name;
               END IF;
             END LOOP;
           END
@@ -222,13 +249,16 @@ jobs:
           set -euo pipefail
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -At \
             -h 127.0.0.1 -U migration_owner -d gymflow_p4e_test <<'SQL' > /tmp/p4e_functions_before.txt
-          SELECT p.oid::regprocedure::text || '|' || r.rolname || '|' || p.prosecdef || '|' || p.provolatile || '|' || coalesce(p.proconfig::text,'NULL') || '|' || coalesce(p.proacl::text,'NULL')
+          SELECT n.nspname || '.' || p.proname || '()|' || r.rolname || '|' || p.prosecdef || '|' || p.provolatile || '|' || coalesce(p.proconfig::text,'NULL') || '|' || coalesce(p.proacl::text,'NULL')
           FROM pg_catalog.pg_proc AS p
+          JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
           JOIN pg_catalog.pg_roles AS r ON r.oid=p.proowner
-          WHERE p.oid IN (
-            pg_catalog.to_regprocedure('app_secure.search_operational_snapshot()'),
-            pg_catalog.to_regprocedure('app_secure.refund_execution_operational_snapshot()')
-          )
+          WHERE n.nspname='app_secure'
+            AND p.proname IN (
+              'search_operational_snapshot',
+              'refund_execution_operational_snapshot'
+            )
+            AND p.pronargs=0
           ORDER BY 1;
           SQL
           python -s -m alembic -c alembic.ini downgrade ze07d8e9f0a3f
@@ -263,12 +293,25 @@ jobs:
             -h 127.0.0.1 -U migration_owner -d gymflow_p4e_test <<'SQL'
           DO $$
           BEGIN
-            IF pg_catalog.to_regprocedure('app_secure.search_operational_snapshot()') IS NOT NULL
-               OR pg_catalog.to_regprocedure('app_secure.refund_execution_operational_snapshot()') IS NOT NULL
-            THEN
+            IF EXISTS (
+              SELECT 1 FROM pg_catalog.pg_proc AS p
+              JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
+              WHERE n.nspname='app_secure'
+                AND p.proname IN (
+                  'search_operational_snapshot',
+                  'refund_execution_operational_snapshot'
+                )
+                AND p.pronargs=0
+            ) THEN
               RAISE EXCEPTION 'P4E functions survived zf07 downgrade';
             END IF;
-            IF pg_catalog.to_regprocedure('app_secure.discover_refund_execution_maintenance(integer)') IS NULL THEN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_catalog.pg_proc AS p
+              JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
+              WHERE n.nspname='app_secure'
+                AND p.proname='discover_refund_execution_maintenance'
+                AND p.pronargs=1
+            ) THEN
               RAISE EXCEPTION 'P4D maintenance authority was damaged by zf07 downgrade';
             END IF;
           END
@@ -278,13 +321,16 @@ jobs:
           python -s -m alembic -c alembic.ini current --check-heads
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 -At \
             -h 127.0.0.1 -U migration_owner -d gymflow_p4e_test <<'SQL' > /tmp/p4e_functions_after.txt
-          SELECT p.oid::regprocedure::text || '|' || r.rolname || '|' || p.prosecdef || '|' || p.provolatile || '|' || coalesce(p.proconfig::text,'NULL') || '|' || coalesce(p.proacl::text,'NULL')
+          SELECT n.nspname || '.' || p.proname || '()|' || r.rolname || '|' || p.prosecdef || '|' || p.provolatile || '|' || coalesce(p.proconfig::text,'NULL') || '|' || coalesce(p.proacl::text,'NULL')
           FROM pg_catalog.pg_proc AS p
+          JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
           JOIN pg_catalog.pg_roles AS r ON r.oid=p.proowner
-          WHERE p.oid IN (
-            pg_catalog.to_regprocedure('app_secure.search_operational_snapshot()'),
-            pg_catalog.to_regprocedure('app_secure.refund_execution_operational_snapshot()')
-          )
+          WHERE n.nspname='app_secure'
+            AND p.proname IN (
+              'search_operational_snapshot',
+              'refund_execution_operational_snapshot'
+            )
+            AND p.pronargs=0
           ORDER BY 1;
           SQL
           diff -u /tmp/p4e_functions_before.txt /tmp/p4e_functions_after.txt
