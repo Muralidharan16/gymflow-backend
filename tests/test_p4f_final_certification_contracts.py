@@ -58,6 +58,18 @@ EXPECTED_WORKFLOWS = {
             "general-regressions",
         },
     ),
+    "p3a_general": (
+        ".github/workflows/p3a-general-regressions.yml",
+        {"general-regressions"},
+    ),
+    "lifecycle_maintenance": (
+        ".github/workflows/lifecycle-maintenance-production-boundary.yml",
+        {"maintenance-boundary"},
+    ),
+    "platform_maintenance": (
+        ".github/workflows/platform-maintenance-production-boundary.yml",
+        {"platform-maintenance-boundary"},
+    ),
     "p4b_opensearch": (
         ".github/workflows/p4b-opensearch-live.yml",
         {"live-opensearch"},
@@ -248,6 +260,9 @@ def test_aggregate_regressions_delegate_specialized_runtime_owners() -> None:
     p3_general = (
         ROOT / ".github/workflows/p3e-certification.yml"
     ).read_text(encoding="utf-8")
+    p3a_general = (
+        ROOT / ".github/workflows/p3a-general-regressions.yml"
+    ).read_text(encoding="utf-8")
     finance = (
         ROOT / ".github/workflows/finance-hardening-ci.yml"
     ).read_text(encoding="utf-8")
@@ -263,6 +278,7 @@ def test_aggregate_regressions_delegate_specialized_runtime_owners() -> None:
         "tests/test_p4e_operational_snapshots_runtime.py",
     ):
         assert f"--ignore={runtime_path}" in hardening
+        assert f"--ignore={runtime_path}" in p3a_general
     for runtime_path in (
         "tests/test_p4d_refund_authority_runtime.py",
         "tests/test_p4d_refund_obligation_resolution_runtime.py",
@@ -281,3 +297,31 @@ def test_aggregate_regressions_delegate_specialized_runtime_owners() -> None:
     assert "expected white-box Finance fixture authority" in finance
     assert "session_user <> 'synthetic_test_runtime'" in finance
     assert "ROLLBACK;" in finance
+
+
+def test_pr_gate_repairs_are_fail_closed_and_in_same_head_topology() -> None:
+    lifecycle = (
+        ROOT / ".github/workflows/lifecycle-maintenance-production-boundary.yml"
+    ).read_text(encoding="utf-8")
+    platform = (
+        ROOT / ".github/workflows/platform-maintenance-production-boundary.yml"
+    ).read_text(encoding="utf-8")
+
+    seed_start = lifecycle.index(
+        "- name: Seed disposable lifecycle state through test harness superuser"
+    )
+    seed_end = lifecycle.index(
+        "- name: Execute production-shaped maintenance boundary", seed_start
+    )
+    seed = lifecycle[seed_start:seed_end]
+    assert "BEGIN;" in seed
+    assert "'app.current_org_id'" in seed
+    assert "true" in seed
+    assert "INSERT INTO public.org_branches" in seed
+    assert seed.index("'app.current_org_id'") < seed.index(
+        "INSERT INTO public.org_branches"
+    )
+    assert "COMMIT;" in seed
+
+    assert "GRANT auth_runtime TO auth_platform_test_runtime" in platform
+    assert "GRANT app_runtime TO auth_platform_test_runtime" not in platform

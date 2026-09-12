@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -108,8 +109,6 @@ jobs:
           GRANT app_user TO app_platform_test_runtime
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT auth_runtime TO auth_platform_test_runtime
-            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_runtime TO auth_platform_test_runtime
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO auth_platform_test_runtime
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;

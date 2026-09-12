@@ -5,6 +5,7 @@ on:
     branches:
       - main
     types: [opened, synchronize, reopened]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -183,6 +184,13 @@ jobs:
       - name: Seed disposable lifecycle state through test harness superuser
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_maintenance_test <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config(
+            'app.current_org_id',
+            '10000000-0000-0000-0000-000000000091',
+            true
+          );
+
           INSERT INTO public.organizations (
             id, name, tier, is_active, max_branches
           ) VALUES (
@@ -218,6 +226,7 @@ jobs:
             '01AN4V07BY79KA1307SR1XF31A',
             1
           );
+          COMMIT;
           SQL
 
       - name: Execute production-shaped maintenance boundary

@@ -32,6 +32,7 @@ into an explicit failure rather than disappearing as a skipped job.
 | Group | Decisive evidence |
 |---|---|
 | P1/P2 architecture and identity | Architecture hardening, canonical cluster roles, runtime non-escalation and inherited P3 certification |
+| Inherited PR runtime gates | P3A broad regression plus lifecycle and platform maintenance boundaries, using current tenant context and exact runtime-role separation |
 | Migration safety | Current graph/semantics, fresh lineage, full downgrade/re-upgrade, populated preservation and adversarial predecessor recovery |
 | General product regression | Broad application regression plus isolated Platform Billing and Finance Core suites |
 | P4B search | Real local OpenSearch, provider evidence, external-version fencing, reconciliation and drift repair on PostgreSQL 16 |
@@ -41,6 +42,11 @@ into an explicit failure rather than disappearing as a skipped job.
 
 The exact reusable workflow list and job topology are frozen in
 `docs/architecture/p4f_certification_matrix.json`.
+
+The final fan-in also calls the inherited PR gates that the merge dry run
+exposed as previously uncovered. Specialized P3E/P4D/P4E runtime tests remain
+owned by their dedicated same-head workflows rather than being re-run inside a
+broad harness without their exact database identities and fixtures.
 
 ## Hard stops and limitations
 

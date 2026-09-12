@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main, hardening/complete-migration-lineage]
     types: [opened, synchronize, reopened]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -290,7 +291,19 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
-          python -m pytest -q --maxfail=1 --ignore=tests/platform_billing 2>&1 \
+          # Dedicated same-head workflows own these runtime identities and
+          # relational fixtures. This broad suite proves everything else.
+          python -m pytest -q --maxfail=1 \
+            --ignore=tests/platform_billing \
+            --ignore=tests/test_p3e_subscription_expiry_maintenance_runtime.py \
+            --ignore=tests/test_p3e_trial_lifecycle_maintenance_runtime.py \
+            --ignore=tests/test_p3e_asset_fencing_runtime.py \
+            --ignore=tests/test_p3e_asset_modern_owner_provenance_runtime.py \
+            --ignore=tests/test_p3e_worker_principal_routing_runtime.py \
+            --ignore=tests/test_p4d_refund_authority_runtime.py \
+            --ignore=tests/test_p4d_refund_obligation_resolution_runtime.py \
+            --ignore=tests/test_p4e_operational_snapshots_runtime.py \
+            2>&1 \
             | tee /tmp/p3a-general-pytest.log
           exit ${PIPESTATUS[0]}
 

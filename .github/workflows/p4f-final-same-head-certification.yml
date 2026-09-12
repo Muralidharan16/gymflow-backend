@@ -91,6 +91,15 @@ jobs:
     uses: ./.github/workflows/p3e-certification.yml
     with:
       certification_head: zf07d8e9f0a40
+  p3a_general:
+    name: P3A broad inherited regression
+    uses: ./.github/workflows/p3a-general-regressions.yml
+  lifecycle_maintenance:
+    name: Lifecycle maintenance production boundary
+    uses: ./.github/workflows/lifecycle-maintenance-production-boundary.yml
+  platform_maintenance:
+    name: Platform maintenance production boundary
+    uses: ./.github/workflows/platform-maintenance-production-boundary.yml
   p4b_opensearch:
     name: Real local OpenSearch behavior
     uses: ./.github/workflows/p4b-opensearch-live.yml
@@ -140,6 +149,9 @@ jobs:
       - migration_contracts
       - migration_semantics
       - p3
+      - p3a_general
+      - lifecycle_maintenance
+      - platform_maintenance
       - p4b_opensearch
       - p4b_evidence
       - p4b_drift

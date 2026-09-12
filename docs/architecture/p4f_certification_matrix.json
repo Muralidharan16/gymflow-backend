@@ -73,6 +73,24 @@
       "scope": "inherited P1/P2/P3 same-head certification"
     },
     {
+      "id": "p3a_general",
+      "workflow": ".github/workflows/p3a-general-regressions.yml",
+      "required_jobs": ["general-regressions"],
+      "scope": "P3A fresh-lineage broad regression with specialized runtime fixtures delegated"
+    },
+    {
+      "id": "lifecycle_maintenance",
+      "workflow": ".github/workflows/lifecycle-maintenance-production-boundary.yml",
+      "required_jobs": ["maintenance-boundary"],
+      "scope": "tenant-bound lifecycle maintenance identity and reversible runtime authority"
+    },
+    {
+      "id": "platform_maintenance",
+      "workflow": ".github/workflows/platform-maintenance-production-boundary.yml",
+      "required_jobs": ["platform-maintenance-boundary"],
+      "scope": "API-clean startup and bounded platform maintenance execution"
+    },
+    {
       "id": "p4b_opensearch",
       "workflow": ".github/workflows/p4b-opensearch-live.yml",
       "required_jobs": ["live-opensearch"],
