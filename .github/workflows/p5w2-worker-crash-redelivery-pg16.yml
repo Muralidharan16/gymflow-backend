@@ -39,6 +39,7 @@ jobs:
           --health-retries 20
     env:
       MIGRATION_PASSWORD: ci-p5w2-migration-owner
+      AUTH_RUNTIME_PASSWORD: ci-p5w2-auth-runtime
       APP_RUNTIME_PASSWORD: ci-p5w2-app-runtime
       WORKER_RUNTIME_PASSWORD: ci-p5w2-worker-runtime
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p5w2-migration-owner@127.0.0.1:5432/gymflow_p5w2_test
@@ -94,13 +95,21 @@ jobs:
           bash scripts/ci/bootstrap_cluster_roles.sh
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
           ALTER ROLE migration_owner PASSWORD 'ci-p5w2-migration-owner';
+          CREATE ROLE auth_p5w2_runtime LOGIN PASSWORD 'ci-p5w2-auth-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-p5w2-app-runtime'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-p5w2-worker-runtime'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT auth_runtime TO auth_p5w2_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_p5w2_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE auth_p5w2_runtime SET row_security='on';
+          ALTER ROLE auth_p5w2_runtime SET statement_timeout='5s';
+          ALTER ROLE auth_p5w2_runtime SET lock_timeout='2s';
+          ALTER ROLE auth_p5w2_runtime SET idle_in_transaction_session_timeout='15s';
           ALTER ROLE app_test_runtime SET row_security='on';
           ALTER ROLE app_test_runtime SET statement_timeout='10s';
           ALTER ROLE app_test_runtime SET lock_timeout='3s';
@@ -111,7 +120,7 @@ jobs:
           ALTER ROLE worker_test_runtime SET idle_in_transaction_session_timeout='30s';
           CREATE DATABASE gymflow_p5w2_test OWNER migration_owner;
           REVOKE ALL ON DATABASE gymflow_p5w2_test FROM PUBLIC;
-          GRANT CONNECT ON DATABASE gymflow_p5w2_test TO migration_owner,app_test_runtime,worker_test_runtime;
+          GRANT CONNECT ON DATABASE gymflow_p5w2_test TO migration_owner,auth_p5w2_runtime,app_test_runtime,worker_test_runtime;
           SQL
           bash scripts/ci/verify_cluster_roles.sh
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p5w2_test

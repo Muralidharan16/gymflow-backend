@@ -9,6 +9,7 @@ RUNTIME = ROOT / "tests" / "test_p5w2_worker_crash_redelivery_runtime.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "p5w2-worker-crash-redelivery-pg16.yml"
 SLICE = ROOT / "docs" / "architecture" / "P5W2_WORKER_CRASH_REDELIVERY.md"
 CELERY = ROOT / "app" / "core" / "celery_app.py"
+PROJECTION = ROOT / "app" / "tasks" / "branch_hours_projection.py"
 
 
 def test_fault_hooks_are_explicitly_test_only_and_kill_prefork_children() -> None:
@@ -76,6 +77,47 @@ def test_runtime_uses_real_celery_redis_processes_and_both_outboxes() -> None:
     assert '"TEST_ADMIN_DATABASE_URL"' in worker_environment
 
 
+def test_runtime_seed_uses_canonical_auth_branch_state_bootstrap() -> None:
+    source = RUNTIME.read_text(encoding="utf-8")
+    helper = source.split(
+        "def _insert_canonical_initial_branch_state", 1
+    )[1].split("def _seed", 1)[0]
+    seed = source.split("def _seed", 1)[1].split("def _telemetry", 1)[0]
+
+    for phrase in (
+        '_AUTH_LOGIN = "auth_p5w2_runtime"',
+        'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD")',
+        "INSERT INTO public.org_branch_state",
+        "pg_catalog.set_config('app.current_role','owner',true)",
+        "pg_catalog.set_config('app.current_org_id',%s,true)",
+        "pg_catalog.set_config('app.current_user_id',%s,true)",
+        "pg_catalog.set_config('app.current_principal_type','owner',true)",
+        "'active',true,true,true,'active',true",
+        "RETURNING status_changed_at,updated_at",
+    ):
+        assert phrase in source
+
+    assert "_ADMIN_LOGIN" not in helper
+    assert seed.index("connection.commit()") < seed.index(
+        "_insert_canonical_initial_branch_state("
+    ) < seed.index('with _connect(_APP_LOGIN, "APP_RUNTIME_PASSWORD")')
+
+
+def test_fixture_repair_does_not_weaken_active_branch_projection_guard() -> None:
+    source = PROJECTION.read_text(encoding="utf-8")
+    rebuild = source.split("async def rebuild_branch_hours_projection", 1)[1]
+
+    for phrase in (
+        ".join(\n            OrgBranchState,",
+        "OrgBranchState.branch_id == OrgBranch.id",
+        "OrgBranchState.org_id == OrgBranch.org_id",
+        "OrgBranchState.deleted_at.is_(None)",
+        "OrgBranchState.is_active.is_(True)",
+        'raise LookupError(\n            f"Active branch',
+    ):
+        assert phrase in rebuild
+
+
 def test_runtime_requires_an_explicit_disposable_topology() -> None:
     source = RUNTIME.read_text(encoding="utf-8")
 
@@ -105,6 +147,9 @@ def test_workflow_is_real_pg16_redis_same_head_and_reproducible() -> None:
         "diff -u requirements-test.lock /tmp/resolved.txt",
         "worker_test_runtime",
         "app_test_runtime",
+        "auth_p5w2_runtime",
+        "AUTH_RUNTIME_PASSWORD",
+        "GRANT auth_runtime TO auth_p5w2_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE",
         "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
         "tests/test_p5w2_worker_crash_redelivery_runtime.py",
         "tests/test_p5w2_worker_crash_static_contracts.py",
@@ -136,5 +181,9 @@ def test_slice_is_bounded_and_does_not_claim_later_p5_work() -> None:
         "deadlock and finance/lifecycle races remain p5-r",
         "compensation crash/replay remains p5-c",
         "refund-provider execution remains deferred and fail-closed",
+        "bf0a9119e70fb3abd7415ff1601a3a64c861e67d",
+        "34702421005",
+        "is not p5-w2 certified",
+        "failed-candidate provenance",
     ):
         assert phrase in source

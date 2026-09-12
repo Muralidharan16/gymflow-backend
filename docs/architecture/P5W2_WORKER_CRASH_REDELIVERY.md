@@ -43,13 +43,33 @@ sole authority for claims, terminal state, projection cardinality and lease
 generation. Redis queue/unacknowledged state must drain after recovery.
 
 The runtime gate connects with separate non-superuser, non-BYPASSRLS
-`app_test_runtime` and `worker_test_runtime` identities. It refuses any host
-other than loopback, any database other than `gymflow_p5w2_test`, or a broker
-other than loopback Redis database 1. Destructive test enablement requires
-three explicit disposable-resource acknowledgements. The pytest controller
-holds the fixture identities; every spawned Celery subprocess runs the
-production `worker` process profile, receives only `WORKER_DATABASE_URL`, and
-must pass the production live-principal bootstep before consuming a task.
+`auth_p5w2_runtime`, `app_test_runtime`, and `worker_test_runtime` identities.
+The auth identity creates the canonical initial active/primary branch-state row
+through the certified P3A bootstrap policy; the application identity enqueues
+the event. The gate refuses any host other than loopback, any database other
+than `gymflow_p5w2_test`, or a broker other than loopback Redis database 1.
+Destructive test enablement requires three explicit disposable-resource
+acknowledgements. The pytest controller holds the fixture identities; every
+spawned Celery subprocess runs the production `worker` process profile,
+receives only `WORKER_DATABASE_URL`, and must pass the production live-principal
+bootstep before consuming a task.
+
+## Failed-candidate provenance
+
+Candidate `bf0a9119e70fb3abd7415ff1601a3a64c861e67d` is not P5-W2 certified.
+GitHub Actions run `34702421005`, job `103576425030`, failed the first real
+transactional recovery case after the replacement worker reclaimed the event.
+The production projection correctly raised `LookupError` because the disposable
+fixture created the branch root but omitted its required
+`public.org_branch_state` row. Redis was healthy, the prefork worker started,
+the task was delivered, and the durable row reached retry disposition.
+
+The repair is confined to the test boundary: it provisions a reduced
+`auth_p5w2_runtime` login and creates the canonical initial branch state through
+the existing auth policy before the application identity enqueues work. It does
+not change the production projection query, RLS policy, worker code, lease
+semantics, provider boundary, or Finance behavior. A new immutable candidate
+must execute the full same-head gate; the failed SHA is not reused.
 
 ## Acceptance composition
 

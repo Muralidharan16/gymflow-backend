@@ -21,6 +21,7 @@ from sqlalchemy.engine import make_url
 
 ROOT = Path(__file__).resolve().parents[1]
 _ADMIN_LOGIN = "migration_owner"
+_AUTH_LOGIN = "auth_p5w2_runtime"
 _APP_LOGIN = "app_test_runtime"
 _WORKER_LOGIN = "worker_test_runtime"
 _DATABASE = "gymflow_p5w2_test"
@@ -129,6 +130,57 @@ def _connect(login: str, password_environment: str):
     )
 
 
+def _insert_canonical_initial_branch_state(
+    *, org_id: uuid.UUID, owner_id: uuid.UUID, branch_id: uuid.UUID
+) -> None:
+    """Create state through the certified P3A auth bootstrap boundary."""
+    with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    pg_catalog.set_config('app.current_role','owner',true),
+                    pg_catalog.set_config('app.current_org_id',%s,true),
+                    pg_catalog.set_config('app.current_user_id',%s,true),
+                    pg_catalog.set_config('app.current_principal_type','owner',true),
+                    pg_catalog.set_config('app.current_gym_id','',true)
+                """,
+                (str(org_id), str(owner_id)),
+            )
+            cursor.execute(
+                """
+                INSERT INTO public.org_branch_state(
+                    branch_id,org_id,branch_status,is_primary,is_active,
+                    is_public,status,is_operational,status_changed_by,
+                    status_reason,transition_source,scheduled_transition_at,
+                    scheduled_transition_to,lifecycle_transition_in_progress,
+                    saga_last_checkpoint,saga_compensation_strategy,
+                    watchdog_recovered_at,watchdog_recovery_count,
+                    search_visibility_version,search_last_synced_at,
+                    search_sync_failed_at,reconciliation_claimed_by,
+                    reconciliation_claimed_at,worm_archive_uri,
+                    worm_archive_checksum,worm_archive_verified_at,
+                    worm_archive_status,version,search_logical_clock,
+                    search_epoch_ulid,deleted_at,archived_at,purged_at
+                ) VALUES (
+                    %s,%s,'active',true,true,true,'active',true,NULL,NULL,
+                    'api',NULL,NULL,false,NULL,NULL,NULL,0,1,NULL,NULL,NULL,
+                    NULL,NULL,NULL,NULL,NULL,1,0,%s,NULL,NULL,NULL
+                )
+                RETURNING status_changed_at,updated_at
+                """,
+                (
+                    branch_id,
+                    org_id,
+                    uuid.uuid4().hex[:26].upper(),
+                ),
+            )
+            returned = cursor.fetchone()
+            assert returned is not None
+            assert all(value is not None for value in returned)
+        connection.commit()
+
+
 def _seed(surface: _Surface) -> _Seed:
     org_id = uuid.uuid4()
     owner_id = uuid.uuid4()
@@ -184,6 +236,12 @@ def _seed(surface: _Surface) -> _Seed:
                 ),
             )
         connection.commit()
+
+    _insert_canonical_initial_branch_state(
+        org_id=org_id,
+        owner_id=owner_id,
+        branch_id=branch_id,
+    )
 
     with _connect(_APP_LOGIN, "APP_RUNTIME_PASSWORD") as connection:
         with connection.cursor() as cursor:
