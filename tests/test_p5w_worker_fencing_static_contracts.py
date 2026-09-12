@@ -100,7 +100,7 @@ def test_lifecycle_terminal_and_failure_writes_require_live_exact_fence() -> Non
         assert "leased_until > pg_catalog.clock_timestamp()" in body
     assert failure.count("lease_fence = :lease_fence") == 3
     assert failure.count("leased_until > pg_catalog.clock_timestamp()") == 3
-    assert 'int(event["lease_fence"])' in failure
+    assert failure.count('"lease_fence": int(event["lease_fence"])') == 3
 
 
 def test_transactional_claim_rotates_fence_and_reclaims_expired_final_attempt() -> None:
@@ -179,8 +179,12 @@ def test_p5w_slice_claims_only_its_bounded_evidence() -> None:
         "80b470b5ea9f80cdbbaa05781abbb6a8bb5f2696",
         "34695691925",
         "34695691928",
+        "d02714c34b1f44891b0ec811c09d545cce633814",
+        "34696668273",
+        "34696668292",
         "does not weaken that production policy",
         "failed candidate is not p5-w1 certified",
+        "missing the required `lease_fence` bind",
     ):
         assert repair_evidence in source
     for limitation in (

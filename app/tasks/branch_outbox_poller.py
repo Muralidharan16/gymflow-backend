@@ -653,6 +653,7 @@ async def _fail_event(
         params: dict[str, Any] = {
             "outbox_id": event["outbox_id"],
             "worker_id": worker_id,
+            "lease_fence": int(event["lease_fence"]),
             "last_error": error_text,
         }
     else:

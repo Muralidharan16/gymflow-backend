@@ -87,6 +87,21 @@ calling the branch-hours enqueue capability. A static contract fixes this
 ordering. The failed candidate is not P5-W1 certified; every gate must pass
 again on the replacement immutable SHA.
 
+Replacement candidate `d02714c34b1f44891b0ec811c09d545cce633814`
+passed governance run `34696668273`. PostgreSQL 16 run `34696668292` then
+reached the stale terminal-failure write and found an implementation defect:
+the exhausted/dead-letter SQL required `lease_fence`, but that branch's
+parameter map was missing the required `lease_fence` bind. The retry branch and
+compensated branch already supplied it.
+
+The second repair supplies the exact claim fence in the exhausted parameter
+map and makes the W1 test use the permanent terminal-failure path. This keeps
+the W1 proof focused on generic stale-write rejection; compensation execution
+and replay remain assigned to P5-C. A strengthened static assertion now
+requires all three lifecycle terminal/failure SQL paths to bind the fence.
+Candidate `d02714c34b1f44891b0ec811c09d545cce633814` is therefore also not
+P5-W1 certified, and the next immutable SHA requires a complete same-head run.
+
 ## Explicit limitations
 
 P5-W1 does not complete P5-W or P5. It does not yet claim:

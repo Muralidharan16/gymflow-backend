@@ -234,8 +234,8 @@ async def _exercise_lifecycle_aba(worker_id: uuid.UUID, event_id: uuid.UUID) -> 
     stale_failure = await _fail_event(
         first,
         worker_id,
-        RuntimeError("stale P5-W failure replay"),
-        permanent=False,
+        RuntimeError("stale permanent P5-W failure replay"),
+        permanent=True,
     )
     assert stale_failure == "lease_lost"
 
