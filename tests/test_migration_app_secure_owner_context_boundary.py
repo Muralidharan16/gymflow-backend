@@ -89,6 +89,7 @@ _P4C_OPERATIONS_MIGRATION = "z07d8e9f0a3a_p4c_notification_operations.py"
 _P4D_REFUND_AUTHORITY_MIGRATION = "zc07d8e9f0a3d_p4d_refund_authority_boundary.py"
 _P4D_REFUND_OBLIGATION_MIGRATION = "zd07d8e9f0a3e_p4d_refund_obligation_resolution.py"
 _P4D_AUDIT_PARTITION_MIGRATION = "ze07d8e9f0a3f_audit_partition_lifecycle.py"
+_P4E_OPERATIONAL_SNAPSHOTS_MIGRATION = "zf07d8e9f0a40_p4e_operational_snapshots.py"
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -124,6 +125,7 @@ APP_SECURE_FILES.update(
         _P4D_REFUND_AUTHORITY_MIGRATION,
         _P4D_REFUND_OBLIGATION_MIGRATION,
         _P4D_AUDIT_PARTITION_MIGRATION,
+        _P4E_OPERATIONAL_SNAPSHOTS_MIGRATION,
     }
 )
 
@@ -246,6 +248,11 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "revoke_schema",
         },
         _P4D_AUDIT_PARTITION_MIGRATION: set(),
+        # P4E installs aggregate-only app_secure functions and function ACLs.
+        # This historical classifier intentionally recognizes only
+        # schema/view/policy DDL, so zf07 is present in the closed inventory
+        # with no category expansion.
+        _P4E_OPERATIONAL_SNAPSHOTS_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {
