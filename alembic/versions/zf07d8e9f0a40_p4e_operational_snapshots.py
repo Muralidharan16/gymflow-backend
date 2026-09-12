@@ -1,0 +1,374 @@
+"""Expose aggregate-only P4E search/refund operational snapshots.
+
+Revision ID: zf07d8e9f0a40
+Revises: ze07d8e9f0a3f
+Create Date: 2026-09-12
+
+P4E adds observation only.  The two no-argument SECURITY DEFINER functions
+return bounded-cardinality numeric aggregates to the existing isolated
+lifecycle maintenance capability.  They expose no tenant/entity identifiers,
+perform no mutation, and grant no new table authority to runtime identities.
+"""
+
+from __future__ import annotations
+
+from alembic import op
+import sqlalchemy as sa
+
+revision = "zf07d8e9f0a40"
+down_revision = "ze07d8e9f0a3f"
+branch_labels = None
+depends_on = None
+
+_MIGRATION_OWNER = "migration_owner"
+_SECURITY_OWNER = "app_security_owner"
+_MAINTENANCE = "lifecycle_maintenance_runtime"
+
+_SEARCH_SNAPSHOT = "app_secure.search_operational_snapshot()"
+_REFUND_SNAPSHOT = "app_secure.refund_execution_operational_snapshot()"
+_SEARCH_OUTBOX = "public.branch_outbox_events"
+
+
+def _require_identity(bind) -> None:
+    row = bind.execute(
+        sa.text("SELECT session_user::text,current_user::text")
+    ).one()
+    if tuple(row) != (_MIGRATION_OWNER, _MIGRATION_OWNER):
+        raise RuntimeError("zf07 P4E migration requires migration_owner")
+
+
+def _regprocedure_exists(bind, signature: str) -> bool:
+    return bool(
+        bind.execute(
+            sa.text("SELECT pg_catalog.to_regprocedure(:signature) IS NOT NULL"),
+            {"signature": signature},
+        ).scalar_one()
+    )
+
+
+def _has_column_select(bind, role: str, relation: str, column: str) -> bool:
+    return bool(
+        bind.execute(
+            sa.text(
+                """
+                SELECT pg_catalog.has_column_privilege(
+                    :role, :relation, :column, 'SELECT'
+                )
+                """
+            ),
+            {"role": role, "relation": relation, "column": column},
+        ).scalar_one()
+    )
+
+
+def _require_upgrade_preconditions(bind) -> None:
+    for signature in (_SEARCH_SNAPSHOT, _REFUND_SNAPSHOT):
+        if _regprocedure_exists(bind, signature):
+            raise RuntimeError(
+                f"zf07 P4E snapshot unexpectedly already exists: {signature}"
+            )
+
+    # u07 deliberately granted app_security_owner only the search outbox
+    # columns needed for execution/reconciliation, not created_at.  P4E owns
+    # this one new column-level SELECT solely to compute aggregate backlog age.
+    if _has_column_select(
+        bind, _SECURITY_OWNER, _SEARCH_OUTBOX, "created_at"
+    ):
+        raise RuntimeError(
+            "zf07 predecessor unexpectedly grants app_security_owner "
+            "branch_outbox_events.created_at SELECT"
+        )
+
+
+def _install_snapshots() -> None:
+    op.execute(
+        "GRANT SELECT (created_at) ON TABLE public.branch_outbox_events "
+        "TO app_security_owner"
+    )
+    op.execute("SET LOCAL ROLE app_security_owner")
+
+    op.execute(
+        r"""
+        CREATE FUNCTION app_secure.search_operational_snapshot()
+        RETURNS TABLE(
+            pending_count bigint,
+            processing_count bigint,
+            dead_letter_count bigint,
+            reconciliation_candidate_count bigint,
+            oldest_actionable_age_seconds double precision
+        )
+        LANGUAGE sql STABLE SECURITY DEFINER
+        SET search_path=pg_catalog,public
+        SET row_security=on
+        AS $function$
+            WITH search_events AS (
+                SELECT o.status, o.created_at
+                FROM public.branch_outbox_events AS o
+                WHERE o.event_type IN (
+                    'branch.search_index',
+                    'branch.search_deindex'
+                )
+            ),
+            durable_work AS (
+                SELECT
+                    count(*) FILTER (WHERE status='pending') AS pending_count,
+                    count(*) FILTER (WHERE status='processing') AS processing_count,
+                    count(*) FILTER (WHERE status='dead_lettered') AS dead_letter_count,
+                    min(created_at) FILTER (
+                        WHERE status IN (
+                            'pending',
+                            'processing',
+                            'dead_lettered'
+                        )
+                    ) AS oldest_created_at
+                FROM search_events
+            ),
+            reconciliation AS (
+                SELECT count(*)::bigint AS candidate_count
+                FROM public.org_branch_state AS s
+                WHERE (
+                    s.search_provider_ack_version
+                        IS DISTINCT FROM s.search_visibility_version
+                    OR s.search_provider_reconciled_at IS NULL
+                    OR s.search_provider_reconciled_at
+                        < pg_catalog.clock_timestamp() - INTERVAL '24 hours'
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM public.branch_outbox_events AS existing
+                    WHERE existing.branch_id = s.branch_id
+                      AND existing.tenant_id = s.org_id
+                      AND existing.event_type IN (
+                          'branch.search_index',
+                          'branch.search_deindex'
+                      )
+                      AND existing.status IN ('pending','processing')
+                )
+            )
+            SELECT
+                d.pending_count,
+                d.processing_count,
+                d.dead_letter_count,
+                r.candidate_count,
+                CASE
+                    WHEN d.oldest_created_at IS NULL THEN 0::double precision
+                    ELSE greatest(
+                        0::double precision,
+                        EXTRACT(
+                            EPOCH FROM (
+                                pg_catalog.clock_timestamp()
+                                - d.oldest_created_at
+                            )
+                        )::double precision
+                    )
+                END
+            FROM durable_work AS d
+            CROSS JOIN reconciliation AS r
+        $function$
+        """
+    )
+
+    op.execute(
+        r"""
+        CREATE FUNCTION app_secure.refund_execution_operational_snapshot()
+        RETURNS TABLE(
+            pending_count bigint,
+            processing_count bigint,
+            retry_pending_count bigint,
+            provider_accepted_count bigint,
+            reconciliation_pending_count bigint,
+            dead_letter_count bigint,
+            oldest_unresolved_age_seconds double precision
+        )
+        LANGUAGE sql STABLE SECURITY DEFINER
+        SET search_path=pg_catalog,public,finance
+        SET row_security=on
+        AS $function$
+            SELECT
+                count(*) FILTER (WHERE c.status='pending'),
+                count(*) FILTER (WHERE c.status='processing'),
+                count(*) FILTER (WHERE c.status='retry_pending'),
+                count(*) FILTER (WHERE c.status='provider_accepted'),
+                count(*) FILTER (WHERE c.status='reconciliation_pending'),
+                count(*) FILTER (WHERE c.status='dead_lettered'),
+                COALESCE(
+                    EXTRACT(
+                        EPOCH FROM (
+                            pg_catalog.clock_timestamp()
+                            - min(c.materialized_at) FILTER (
+                                WHERE c.status IN (
+                                    'pending',
+                                    'processing',
+                                    'retry_pending',
+                                    'provider_accepted',
+                                    'reconciliation_pending',
+                                    'dead_lettered'
+                                )
+                            )
+                        )
+                    ),
+                    0
+                )::double precision
+            FROM finance.refund_execution_commands AS c
+        $function$
+        """
+    )
+
+    for signature in (_SEARCH_SNAPSHOT, _REFUND_SNAPSHOT):
+        op.execute(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC")
+        op.execute(
+            f"GRANT EXECUTE ON FUNCTION {signature} TO {_MAINTENANCE}"
+        )
+
+    op.execute("RESET ROLE")
+
+
+def _post_install_proof(bind) -> None:
+    if not _has_column_select(
+        bind, _SECURITY_OWNER, _SEARCH_OUTBOX, "created_at"
+    ):
+        raise RuntimeError(
+            "zf07 P4E search snapshot owner lacks created_at SELECT"
+        )
+
+    for signature in (_SEARCH_SNAPSHOT, _REFUND_SNAPSHOT):
+        row = bind.execute(
+            sa.text(
+                """
+                SELECT owner.rolname, p.prosecdef, p.provolatile, p.proconfig
+                FROM pg_catalog.pg_proc AS p
+                JOIN pg_catalog.pg_roles AS owner
+                  ON owner.oid = p.proowner
+                WHERE p.oid = pg_catalog.to_regprocedure(:signature)
+                """
+            ),
+            {"signature": signature},
+        ).one_or_none()
+        if row is None:
+            raise RuntimeError(
+                f"zf07 P4E snapshot missing after install: {signature}"
+            )
+        owner, security_definer, volatility, config = row
+        if owner != _SECURITY_OWNER or not security_definer:
+            raise RuntimeError(
+                f"zf07 P4E snapshot owner/security drift: {signature}"
+            )
+        if volatility != "s":
+            raise RuntimeError(
+                f"zf07 P4E snapshot must remain STABLE: {signature}"
+            )
+        config_values = set(config or ())
+        if "row_security=on" not in config_values:
+            raise RuntimeError(
+                f"zf07 P4E snapshot lost row_security=on: {signature}"
+            )
+        if not any(
+            value.startswith("search_path=") for value in config_values
+        ):
+            raise RuntimeError(
+                f"zf07 P4E snapshot lost explicit search_path: {signature}"
+            )
+
+        if not bool(
+            bind.execute(
+                sa.text(
+                    """
+                    SELECT pg_catalog.has_function_privilege(
+                        :role, :signature, 'EXECUTE'
+                    )
+                    """
+                ),
+                {"role": _MAINTENANCE, "signature": signature},
+            ).scalar_one()
+        ):
+            raise RuntimeError(
+                f"zf07 maintenance EXECUTE missing: {signature}"
+            )
+
+        public_execute = bool(
+            bind.execute(
+                sa.text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_catalog.pg_proc AS p
+                        CROSS JOIN LATERAL pg_catalog.aclexplode(
+                            COALESCE(
+                                p.proacl,
+                                pg_catalog.acldefault('f', p.proowner)
+                            )
+                        ) AS acl
+                        WHERE p.oid = pg_catalog.to_regprocedure(:signature)
+                          AND acl.grantee = 0
+                          AND acl.privilege_type = 'EXECUTE'
+                    )
+                    """
+                ),
+                {"signature": signature},
+            ).scalar_one()
+        )
+        if public_execute:
+            raise RuntimeError(
+                f"zf07 unexpected PUBLIC EXECUTE: {signature}"
+            )
+
+        for blocked_role in (
+            "app_runtime",
+            "auth_runtime",
+            "worker_runtime",
+            "finance_config_runtime",
+        ):
+            if bool(
+                bind.execute(
+                    sa.text(
+                        """
+                        SELECT pg_catalog.has_function_privilege(
+                            :role, :signature, 'EXECUTE'
+                        )
+                        """
+                    ),
+                    {"role": blocked_role, "signature": signature},
+                ).scalar_one()
+            ):
+                raise RuntimeError(
+                    "zf07 unexpected snapshot EXECUTE for "
+                    f"{blocked_role}: {signature}"
+                )
+
+
+def upgrade() -> None:
+    bind = op.get_bind()
+    _require_identity(bind)
+    _require_upgrade_preconditions(bind)
+    _install_snapshots()
+    _post_install_proof(bind)
+
+
+def downgrade() -> None:
+    bind = op.get_bind()
+    _require_identity(bind)
+
+    for signature in (_SEARCH_SNAPSHOT, _REFUND_SNAPSHOT):
+        if not _regprocedure_exists(bind, signature):
+            raise RuntimeError(
+                f"zf07 downgrade refuses missing owned snapshot: {signature}"
+            )
+
+    op.execute("SET LOCAL ROLE app_security_owner")
+    op.execute(
+        "DROP FUNCTION app_secure.refund_execution_operational_snapshot()"
+    )
+    op.execute("DROP FUNCTION app_secure.search_operational_snapshot()")
+    op.execute("RESET ROLE")
+
+    op.execute(
+        "REVOKE SELECT (created_at) ON TABLE public.branch_outbox_events "
+        "FROM app_security_owner"
+    )
+
+    if _has_column_select(
+        bind, _SECURITY_OWNER, _SEARCH_OUTBOX, "created_at"
+    ):
+        raise RuntimeError(
+            "zf07 downgrade failed to restore predecessor created_at ACL"
+        )
