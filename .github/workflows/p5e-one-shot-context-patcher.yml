@@ -45,29 +45,32 @@ jobs:
               raise SystemExit("expected static insertion anchor exactly once")
           if "test_aba_fence_fixture_uses_canonical_outbox_lease_columns" in static:
               raise SystemExit("ABA lease-column regression already exists")
-          regression = '''
-
-def test_aba_fence_fixture_uses_canonical_outbox_lease_columns() -> None:
-    runtime = RUNTIME.read_text(encoding="utf-8")
-    test = runtime[
-        runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :
-    ]
-    update = test[
-        test.index("UPDATE public.branch_outbox_events") :
-        test.index("WHERE outbox_id=ANY(%s::uuid[])")
-    ]
-    for phrase in (
-        "status='processing'",
-        "attempt_count=1",
-        "lease_fence=2",
-        "leased_by=%s",
-        "leased_until=pg_catalog.clock_timestamp()+INTERVAL '5 minutes'",
-        "processed_at=NULL",
-        "last_error=NULL",
-    ):
-        assert phrase in update
-    assert "claimed_at" not in update
-'''
+          regression = "\n".join(
+              [
+                  "",
+                  "def test_aba_fence_fixture_uses_canonical_outbox_lease_columns() -> None:",
+                  '    runtime = RUNTIME.read_text(encoding="utf-8")',
+                  "    test = runtime[",
+                  '        runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :',
+                  "    ]",
+                  "    update = test[",
+                  '        test.index("UPDATE public.branch_outbox_events") :',
+                  '        test.index("WHERE outbox_id=ANY(%s::uuid[])")',
+                  "    ]",
+                  "    for phrase in (",
+                  '        "status=\'processing\'",',
+                  '        "attempt_count=1",',
+                  '        "lease_fence=2",',
+                  '        "leased_by=%s",',
+                  '        "leased_until=pg_catalog.clock_timestamp()+INTERVAL \'5 minutes\'",',
+                  '        "processed_at=NULL",',
+                  '        "last_error=NULL",',
+                  "    ):",
+                  "        assert phrase in update",
+                  '    assert "claimed_at" not in update',
+                  "",
+              ]
+          )
           static = static.replace(anchor, regression + anchor, 1)
           static_path.write_text(static, encoding="utf-8")
           PY
