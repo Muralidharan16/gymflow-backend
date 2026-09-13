@@ -990,7 +990,7 @@ def test_provider_capabilities_reject_same_worker_aba_fence(tmp_path: Path) -> N
                 SET status='processing',attempt_count=1,lease_fence=2,
                     leased_by=%s,
                     leased_until=pg_catalog.clock_timestamp()+INTERVAL '5 minutes',
-                    processed_at=NULL,last_error=NULL
+                    last_error=NULL
                 WHERE outbox_id=ANY(%s::uuid[])
                 """,
                 (

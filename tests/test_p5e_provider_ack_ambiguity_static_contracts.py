@@ -278,11 +278,11 @@ def test_aba_fence_fixture_uses_canonical_outbox_lease_columns() -> None:
         "lease_fence=2",
         "leased_by=%s",
         "leased_until=pg_catalog.clock_timestamp()+INTERVAL '5 minutes'",
-        "processed_at=NULL",
         "last_error=NULL",
     ):
         assert phrase in update
     assert "claimed_at" not in update
+    assert "processed_at" not in update
 
 def test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
