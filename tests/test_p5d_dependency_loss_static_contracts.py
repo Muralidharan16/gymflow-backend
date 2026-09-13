@@ -88,6 +88,22 @@ def test_malformed_lifecycle_fixture_binds_fault_label_as_text() -> None:
     assert "jsonb_build_object('p5d_fault',%s),3,%s" not in source
 
 
+def test_state_assertions_use_ci_infrastructure_without_runtime_acl_expansion() -> None:
+    source = RUNTIME.read_text(encoding="utf-8")
+    start = source.index("def _search_state(seed: _BaseSeed)")
+    end = source.index("\n\ndef ", start + 1)
+    block = source[start:end]
+    for phrase in (
+        "Read-only CI infrastructure observation.",
+        "output = _admin_psql(",
+        "tuples_only=True",
+        "FROM public.org_branch_state",
+    ):
+        assert phrase in block
+    assert "_connect(_AUTH_LOGIN" not in block
+    assert "GRANT SELECT" not in source
+
+
 def test_provider_network_fault_uses_production_adapter_and_persistent_effect_store() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
     provider = PROVIDER.read_text(encoding="utf-8")
