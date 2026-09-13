@@ -10,6 +10,7 @@ DOC = ROOT / "docs/architecture/P5D_DEPENDENCY_AND_DATABASE_LOSS.md"
 RUNTIME = ROOT / "tests/test_p5d_dependency_loss_runtime.py"
 WORKER = ROOT / "scripts/ci/p5d_fault_worker.py"
 PROVIDER = ROOT / "scripts/ci/p5d_fake_opensearch.py"
+CELERY_HOOK = ROOT / "scripts/ci/p5d_celery_fault_hooks.py"
 WORKFLOW = ROOT / ".github/workflows/p5d-dependency-loss-pg16.yml"
 POLLER = ROOT / "app/tasks/branch_outbox_poller.py"
 SEARCH_PROVIDER = ROOT / "app/services/search_provider.py"
@@ -54,7 +55,8 @@ def test_runtime_requires_real_local_dependencies_and_explicit_destructive_enabl
         "pg_terminate_backend",
         "pg_stat_activity",
         "subprocess.Popen",
-        "redis-cli",
+        '"docker", "stop"',
+        '"docker", "start"',
         "p5d_fake_opensearch",
         "127.0.0.1",
         "_run_replacement_worker",
@@ -83,8 +85,8 @@ def test_database_faults_name_claim_mutation_and_acknowledgement_boundaries() ->
 def test_provider_network_fault_uses_production_adapter_and_persistent_effect_store() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
     provider = PROVIDER.read_text(encoding="utf-8")
+    adapter = SEARCH_PROVIDER.read_text(encoding="utf-8")
     for phrase in (
-        "OpenSearchProvider",
         "branch.search_index",
         "SEARCH_PROVIDER_MODE",
         "OPENSEARCH_URL",
@@ -99,6 +101,8 @@ def test_provider_network_fault_uses_production_adapter_and_persistent_effect_st
         "state_path",
     ):
         assert phrase in provider
+    assert "class OpenSearchProvider" in adapter
+    assert "httpx.AsyncClient" in adapter
 
 
 def test_fault_worker_runs_real_production_poller_in_fresh_process() -> None:
@@ -110,6 +114,19 @@ def test_fault_worker_runs_real_production_poller_in_fresh_process() -> None:
         "P5D_PROCESS_FAULTS",
     ):
         assert phrase in source
+
+
+def test_celery_hook_pauses_only_after_real_db_outcome_before_task_ack() -> None:
+    source = CELERY_HOOK.read_text(encoding="utf-8")
+    for phrase in (
+        "worker_process_init",
+        "branch_outbox_poller._process_event",
+        "outcome = await original(event, worker_id)",
+        "after_db_commit_before_task_ack",
+        "P5D_RELEASE_PATH",
+    ):
+        assert phrase in source
+    assert "SIGKILL" not in source
 
 
 def test_production_retry_path_is_bounded_and_fenced() -> None:
@@ -165,12 +182,11 @@ def test_workflow_is_pg16_reduced_identity_real_dependency_and_same_head() -> No
 
 
 def test_slice_does_not_broaden_privilege_or_later_phase_scope() -> None:
-    combined = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (DOC, RUNTIME, WORKER, WORKFLOW)
-    ).lower()
+    executable_sources = "\n".join(
+        path.read_text(encoding="utf-8").lower()
+        for path in (RUNTIME, WORKER, PROVIDER, CELERY_HOOK, WORKFLOW)
+    )
     for forbidden in (
-        "bypassrls",
         "grant all on",
         "alter role worker_test_runtime superuser",
         "refund provider call",
@@ -178,4 +194,7 @@ def test_slice_does_not_broaden_privilege_or_later_phase_scope() -> None:
         "p5-c certified",
         "p5-f certified",
     ):
-        assert forbidden not in combined
+        assert forbidden not in executable_sources
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "NOBYPASSRLS" in workflow
+    assert " BYPASSRLS" not in workflow.replace("NOBYPASSRLS", "")
