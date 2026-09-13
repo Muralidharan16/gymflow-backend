@@ -100,9 +100,26 @@ def test_fault_harness_splits_schema_and_table_ddl_authority() -> None:
         source.index("def _set_fault_trigger(") :
         source.index("def _run_worker(")
     ]
-    assert install.index("_as_security_owner(cursor)") < install.index(
-        'cursor.execute("RESET ROLE")'
-    ) < install.index("CREATE TRIGGER p5e_reject_search_ack")
+    grant_usage = install.index(
+        "GRANT USAGE ON SCHEMA app_secure TO migration_owner"
+    )
+    grant_execute = install.index(
+        "GRANT EXECUTE ON FUNCTION"
+    )
+    first_reset = install.index('cursor.execute("RESET ROLE")')
+    create_trigger = install.index("CREATE TRIGGER p5e_reject_search_ack")
+    revoke_execute = install.index(
+        "REVOKE EXECUTE ON FUNCTION", create_trigger
+    )
+    revoke_usage = install.index(
+        "REVOKE USAGE ON SCHEMA app_secure FROM migration_owner"
+    )
+    assert install.index("_as_security_owner(cursor)") < grant_usage
+    assert grant_usage < grant_execute < first_reset < create_trigger
+    assert create_trigger < revoke_execute < revoke_usage
+    assert install.count('cursor.execute("RESET ROLE")') == 2
+    assert "REVOKE ALL ON FUNCTION" in install
+    assert "FROM PUBLIC" in install
     assert drop.index("DROP TRIGGER IF EXISTS p5e_reject_search_ack") < drop.index(
         "_as_security_owner(cursor)"
     ) < drop.index("DROP FUNCTION IF EXISTS app_secure.p5e_reject_search_ack()")
