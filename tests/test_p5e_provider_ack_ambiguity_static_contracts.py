@@ -148,6 +148,36 @@ def test_replacement_processes_reuse_the_persisted_provider_store() -> None:
     assert source.count("_run_worker(store)") >= 4
 
 
+def test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    job = workflow["jobs"]["provider-ack-ambiguity"]
+    assert "services" not in job
+    runtime_step = next(
+        step
+        for step in job["steps"]
+        if step.get("name")
+        == "Prove provider success and real acknowledgement transaction failure"
+    )
+    expected = {
+        "REDIS_URL": "redis://p5e-cache.invalid:6379/0",
+        "CELERY_BROKER_URL": "redis://p5e-broker.invalid:6379/1",
+        "CELERY_RESULT_BACKEND": "redis://p5e-result.invalid:6379/2",
+    }
+    assert runtime_step.get("env") == expected
+    for step in job["steps"]:
+        if step is runtime_step:
+            continue
+        step_env = step.get("env") or {}
+        assert not set(expected) & set(step_env)
+    runtime_source = RUNTIME.read_text(encoding="utf-8")
+    assert "environment = os.environ.copy()" in runtime_source
+    assert "env=environment" in runtime_source
+    for value in expected.values():
+        assert ".invalid:" in value
+        assert "localhost" not in value
+        assert "127.0.0.1" not in value
+
+
 def test_durable_provider_double_enforces_search_version_and_notification_key() -> None:
     source = RUNNER.read_text(encoding="utf-8")
     for phrase in (

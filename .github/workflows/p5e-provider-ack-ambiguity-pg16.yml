@@ -126,6 +126,10 @@ jobs:
             -c 'SELECT current_user,pg_catalog.current_setting('\''row_security'\'');'
 
       - name: Prove provider success and real acknowledgement transaction failure
+        env:
+          REDIS_URL: redis://p5e-cache.invalid:6379/0
+          CELERY_BROKER_URL: redis://p5e-broker.invalid:6379/1
+          CELERY_RESULT_BACKEND: redis://p5e-result.invalid:6379/2
         run: |
           set -euo pipefail
           python -m pytest --noconftest -q -s --maxfail=1 \
