@@ -356,7 +356,6 @@ def _seed_search(operation: str, store: Path) -> _SearchSeed:
 
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
         with connection.cursor() as cursor:
-            _as_security_owner(cursor)
             if operation == "delete":
                 cursor.execute(
                     """
@@ -368,6 +367,7 @@ def _seed_search(operation: str, store: Path) -> _SearchSeed:
                     (base.branch_id, base.org_id),
                 )
                 assert cursor.fetchone() == (False, 2, 1, None)
+            _as_security_owner(cursor)
             cursor.execute(
                 """
                 INSERT INTO public.branch_outbox_events(
