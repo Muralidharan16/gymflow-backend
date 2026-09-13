@@ -465,6 +465,16 @@ def _install_fault_triggers() -> None:
                         USING ERRCODE='08006';
                 END;
                 $function$;
+
+                REVOKE ALL ON FUNCTION
+                    app_secure.p5e_reject_search_ack(),
+                    app_secure.p5e_reject_notification_ack()
+                FROM PUBLIC;
+                GRANT USAGE ON SCHEMA app_secure TO migration_owner;
+                GRANT EXECUTE ON FUNCTION
+                    app_secure.p5e_reject_search_ack(),
+                    app_secure.p5e_reject_notification_ack()
+                TO migration_owner;
                 """
             )
             cursor.execute("RESET ROLE")
@@ -499,6 +509,17 @@ def _install_fault_triggers() -> None:
                     DISABLE TRIGGER p5e_reject_notification_ack;
                 """
             )
+            _as_security_owner(cursor)
+            cursor.execute(
+                """
+                REVOKE EXECUTE ON FUNCTION
+                    app_secure.p5e_reject_search_ack(),
+                    app_secure.p5e_reject_notification_ack()
+                FROM migration_owner;
+                REVOKE USAGE ON SCHEMA app_secure FROM migration_owner;
+                """
+            )
+            cursor.execute("RESET ROLE")
         connection.commit()
 
 
