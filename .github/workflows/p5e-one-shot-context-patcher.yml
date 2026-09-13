@@ -18,56 +18,58 @@ jobs:
           ref: hardening/p5e-verification-authority-temp
           fetch-depth: 1
 
-      - name: Guard exact runtime repair and harden its static contract
+      - name: Make lifecycle static guard formatting-insensitive
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "6145a3e2936a6c17d8aa5d55e354f2e5c0a4c6b4"
+          test "$(git rev-parse HEAD)" = "948e8ed2b28930f4fd9f93956b791997bf9ffc47"
           python - <<'PY'
           from pathlib import Path
 
           path = Path("tests/test_p5e_provider_ack_ambiguity_static_contracts.py")
           source = path.read_text(encoding="utf-8")
 
-          old_state = 'state_assertion = seed.index("assert cursor.fetchone() == (False, 2, 1, None)")'
-          new_state = 'state_assertion = seed.index(\'assert fixture_state == "false|2|1|NULL"\')'
-          if source.count(old_state) != 1:
-              raise SystemExit(f"expected one old state guard, found {source.count(old_state)}")
-          source = source.replace(old_state, new_state)
+          old_call = '''    infrastructure_change = seed.index(
+              "_set_branch_publicity_with_ci_infrastructure(base, is_public=False)"
+          )
+          '''
+          new_call = '''    infrastructure_change = seed.index(
+              "_set_branch_publicity_with_ci_infrastructure("
+          )
+              publicity_argument = seed.index("is_public=False", infrastructure_change)
+          '''
+          if source.count(old_call) != 1:
+              raise SystemExit(
+                  f"expected brittle helper guard once, found {source.count(old_call)}"
+              )
+          source = source.replace(old_call, new_call)
 
-          old_tuple = '''        '"UPDATE 1"',
-              ):
+          old_assert = (
+              "    assert provider_seed < infrastructure_change < state_assertion < outbox_insert\n"
+          )
+          new_assert = '''    assert (
+              provider_seed
+              < infrastructure_change
+              < publicity_argument
+              < state_assertion
+              < outbox_insert
+          )
           '''
-          new_tuple = '''        '"UPDATE 1"',
-                  '"-A"',
-                  '"-t"',
-                  '"-F"',
-                  "search_visibility_version::text",
-                  "search_provider_ack_version::text",
-                  "search_last_synced_at::text",
-                  "return verified.stdout.strip()",
-              ):
-          '''
-          if source.count(old_tuple) != 1:
-              raise SystemExit(f"expected one infrastructure tuple anchor, found {source.count(old_tuple)}")
-          source = source.replace(old_tuple, new_tuple)
-
-          old_guard = '''    assert "SET search_visibility_version=2" not in security_seed
-          '''
-          new_guard = '''    assert "SET search_visibility_version=2" not in security_seed
-              assert "app.current_role','owner" not in seed
-          '''
-          if source.count(old_guard) != 1:
-              raise SystemExit(f"expected one reduced-role guard anchor, found {source.count(old_guard)}")
-          source = source.replace(old_guard, new_guard)
+          if source.count(old_assert) != 1:
+              raise SystemExit(
+                  f"expected brittle ordering guard once, found {source.count(old_assert)}"
+              )
+          source = source.replace(old_assert, new_assert)
           path.write_text(source, encoding="utf-8")
           PY
           git diff --check
           python -m py_compile tests/test_p5e_provider_ack_ambiguity_static_contracts.py
+          python -m pytest --noconftest -q \
+            tests/test_p5e_provider_ack_ambiguity_static_contracts.py::test_delete_seed_separates_lifecycle_fixture_from_security_owner_evidence
           test "$(git status --short | wc -l)" = "1"
           git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
 
-      - name: Commit only static regression guard to temp branch
+      - name: Commit only formatting-insensitive static guard
         shell: bash
         run: |
           set -euo pipefail
@@ -76,5 +78,5 @@ jobs:
           git add -- tests/test_p5e_provider_ack_ambiguity_static_contracts.py
           git diff --cached --check
           test "$(git diff --cached --name-only)" = 'tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
-          git commit -m 'P5E guard infrastructure-owned lifecycle verification'
+          git commit -m 'P5E make lifecycle static guard formatting-insensitive'
           git push origin HEAD:hardening/p5e-verification-authority-temp
