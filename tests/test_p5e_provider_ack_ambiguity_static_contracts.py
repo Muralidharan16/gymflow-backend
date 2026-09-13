@@ -237,52 +237,51 @@ def test_notification_fixture_preserves_canonical_rls_role_domains() -> None:
         "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;"
     ) in workflow
 
-def test_aba_reconciliation_fixture_preserves_rls_role_domains() -> None:
+def test_aba_fixture_uses_canonical_worker_claim_and_reclaim_authority() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
     test = runtime[
         runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :
     ]
-    auth_literal = 'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:'
-    admin_literal = 'with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:'
-    auth_connection = test.index(auth_literal)
-    tenant_context = test.index("pg_catalog.set_config('app.current_org_id',%s,true)")
-    saga_role = test.index(
-        "pg_catalog.set_config('app.current_role','saga_orchestrator',true)"
+    auth_insert = test.index("'notification.reconcile','{}'::jsonb")
+    worker_url = test.index(
+        'os.environ["WORKER_DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]'
     )
-    reconciliation_insert = test.index("'notification.reconcile','{}'::jsonb")
-    admin_connection = test.index(admin_literal, reconciliation_insert)
-    security_owner = test.index("_as_security_owner(cursor)", admin_connection)
-    fence_update = test.index("UPDATE public.branch_outbox_events", security_owner)
-    assert (
-        auth_connection
-        < tenant_context
-        < saga_role
-        < reconciliation_insert
-        < admin_connection
-        < security_owner
-        < fence_update
+    claim_import = test.index(
+        "from app.tasks.branch_outbox_poller import _claim_events"
     )
+    first_claim = test.index("asyncio.run(_claim_events(worker_id))", claim_import)
+    expiry = test.index(
+        "SET leased_until=pg_catalog.clock_timestamp()-INTERVAL '1 second'",
+        first_claim,
+    )
+    second_claim = test.index(
+        "asyncio.run(_claim_events(worker_id))",
+        first_claim + 1,
+    )
+    assert auth_insert < worker_url < claim_import < first_claim < expiry < second_claim
+    assert test.count("asyncio.run(_claim_events(worker_id))") == 2
+    assert 'with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:' not in test
+    assert "_as_security_owner(cursor)" not in test
+    assert "SET status='processing',attempt_count=1,lease_fence=2" not in test
 
-def test_aba_fence_fixture_uses_canonical_outbox_lease_columns() -> None:
+
+def test_aba_reclaim_preserves_attempt_and_rotates_monotonic_fence() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
     test = runtime[
         runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :
-    ]
-    update = test[
-        test.index("UPDATE public.branch_outbox_events") :
-        test.index("WHERE outbox_id=ANY(%s::uuid[])")
     ]
     for phrase in (
-        "status='processing'",
-        "attempt_count=1",
-        "lease_fence=2",
-        "leased_by=%s",
-        "leased_until=pg_catalog.clock_timestamp()+INTERVAL '5 minutes'",
-        "last_error=NULL",
+        'assert int(first_claims[event_id]["attempt_count"]) == 1',
+        'assert int(first_claims[event_id]["lease_fence"]) == 1',
+        "AND status='processing'",
+        "AND leased_by=%s",
+        "AND lease_fence=1",
+        'assert int(second_claims[event_id]["attempt_count"]) == 1',
+        'assert int(second_claims[event_id]["lease_fence"]) == 2',
     ):
-        assert phrase in update
-    assert "claimed_at" not in update
-    assert "processed_at" not in update
+        assert phrase in test
+    assert "claimed_at" not in test
+    assert "processed_at" not in test
 
 def test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -981,30 +982,51 @@ def test_provider_capabilities_reject_same_worker_aba_fence(tmp_path: Path) -> N
             )
         connection.commit()
 
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
+    aba_event_ids = (
+        search.event_id,
+        notification.parent_id,
+        notification.command_id,
+        reconciliation_id,
+    )
+    os.environ["WORKER_DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
+    from app.tasks.branch_outbox_poller import _claim_events
+
+    first_claims = {
+        event["outbox_id"]: event
+        for event in asyncio.run(_claim_events(worker_id))
+        if event["outbox_id"] in aba_event_ids
+    }
+    assert set(first_claims) == set(aba_event_ids)
+    for event_id in aba_event_ids:
+        assert int(first_claims[event_id]["attempt_count"]) == 1
+        assert int(first_claims[event_id]["lease_fence"]) == 1
+
+    with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as connection:
         with connection.cursor() as cursor:
-            _as_security_owner(cursor)
             cursor.execute(
                 """
                 UPDATE public.branch_outbox_events
-                SET status='processing',attempt_count=1,lease_fence=2,
-                    leased_by=%s,
-                    leased_until=pg_catalog.clock_timestamp()+INTERVAL '5 minutes',
-                    last_error=NULL
+                SET leased_until=pg_catalog.clock_timestamp()-INTERVAL '1 second'
                 WHERE outbox_id=ANY(%s::uuid[])
+                  AND status='processing'
+                  AND leased_by=%s
+                  AND lease_fence=1
+                  AND leased_until>pg_catalog.clock_timestamp()
                 """,
-                (
-                    worker_id,
-                    [
-                        search.event_id,
-                        notification.parent_id,
-                        notification.command_id,
-                        reconciliation_id,
-                    ],
-                ),
+                (list(aba_event_ids), worker_id),
             )
             assert cursor.rowcount == 4
         connection.commit()
+
+    second_claims = {
+        event["outbox_id"]: event
+        for event in asyncio.run(_claim_events(worker_id))
+        if event["outbox_id"] in aba_event_ids
+    }
+    assert set(second_claims) == set(aba_event_ids)
+    for event_id in aba_event_ids:
+        assert int(second_claims[event_id]["attempt_count"]) == 1
+        assert int(second_claims[event_id]["lease_fence"]) == 2
 
     with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as connection:
         with connection.cursor() as cursor:
