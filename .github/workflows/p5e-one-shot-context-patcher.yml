@@ -18,13 +18,11 @@ jobs:
           ref: hardening/p5e-verification-authority-temp
           fetch-depth: 1
 
-      - name: Align P5-E reconciliation fixture with app runtime RLS
+      - name: Remove nonexistent claimed_at from P5-E ABA fixture
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "7afcb717b4a5eaef3c8849205269023f3fd3d4eb"
-          grep -Fq 'GRANT app_runtime TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;' \
-            .github/workflows/p5e-provider-ack-ambiguity-pg16.yml
+          test "$(git rev-parse HEAD)" = "46eac4cfe9b0e184acca23fe8b1f1b7f3cba9309"
           python - <<'PY'
           from pathlib import Path
 
@@ -33,99 +31,43 @@ jobs:
           fn_start = runtime.index(
               "def test_provider_capabilities_reject_same_worker_aba_fence(tmp_path: Path) -> None:"
           )
-          admin_start = runtime.index(
-              '    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:\n',
-              fn_start,
-          )
-          update_start = runtime.index(
-              '            cursor.execute(\n'
-              '                """\n'
-              '                UPDATE public.branch_outbox_events\n',
-              admin_start,
-          )
-          prefix = runtime[admin_start:update_start]
-          if prefix.count("'notification.reconcile'") != 1:
-              raise SystemExit("expected exactly one reconciliation fixture insert")
-          if prefix.count("_as_security_owner(cursor)") != 1:
-              raise SystemExit("expected reconciliation fixture to start in security-owner context")
-
-          replacement = "\n".join(
-              [
-                  '    with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:',
-                  '        with connection.cursor() as cursor:',
-                  '            cursor.execute(',
-                  '                """',
-                  '                SELECT',
-                  "                    pg_catalog.set_config('app.current_org_id',%s,true),",
-                  "                    pg_catalog.set_config('app.current_role','saga_orchestrator',true)",
-                  '                """,',
-                  '                (str(notification.base.org_id),),',
-                  '            )',
-                  '            cursor.execute(',
-                  '                """',
-                  '                INSERT INTO public.branch_outbox_events(',
-                  '                    outbox_id,tenant_id,branch_id,event_type,payload,',
-                  '                    max_attempts,correlation_id',
-                  '                ) VALUES (',
-                  "                    %s,%s,%s,'notification.reconcile','{}'::jsonb,5,%s",
-                  '                )',
-                  '                """,',
-                  '                (',
-                  '                    reconciliation_id,',
-                  '                    notification.base.org_id,',
-                  '                    notification.base.branch_id,',
-                  '                    uuid.uuid4(),',
-                  '                ),',
-                  '            )',
-                  '        connection.commit()',
-                  '',
-                  '    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:',
-                  '        with connection.cursor() as cursor:',
-                  '            _as_security_owner(cursor)',
-                  '',
-              ]
-          )
-          runtime = runtime[:admin_start] + replacement + runtime[update_start:]
+          aba = runtime[fn_start:]
+          claimed = "                    claimed_at=pg_catalog.clock_timestamp(),\n"
+          if aba.count(claimed) != 1:
+              raise SystemExit("expected exactly one ABA claimed_at fixture assignment")
+          runtime = runtime[:fn_start] + aba.replace(claimed, "", 1)
           runtime_path.write_text(runtime, encoding="utf-8")
 
           static_path = Path("tests/test_p5e_provider_ack_ambiguity_static_contracts.py")
           static = static_path.read_text(encoding="utf-8")
           anchor = "\ndef test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:\n"
-          regression = "\n".join(
-              [
-                  '',
-                  'def test_aba_reconciliation_fixture_preserves_rls_role_domains() -> None:',
-                  '    runtime = RUNTIME.read_text(encoding="utf-8")',
-                  '    test = runtime[',
-                  '        runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :',
-                  '    ]',
-                  '    auth_literal = \'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:\'',
-                  '    admin_literal = \'with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:\'',
-                  '    auth_connection = test.index(auth_literal)',
-                  '    tenant_context = test.index("pg_catalog.set_config(\'app.current_org_id\',%s,true)")',
-                  '    saga_role = test.index(',
-                  '        "pg_catalog.set_config(\'app.current_role\',\'saga_orchestrator\',true)"',
-                  '    )',
-                  '    reconciliation_insert = test.index("\'notification.reconcile\',\'{}\'::jsonb")',
-                  '    admin_connection = test.index(admin_literal, reconciliation_insert)',
-                  '    security_owner = test.index("_as_security_owner(cursor)", admin_connection)',
-                  '    fence_update = test.index("UPDATE public.branch_outbox_events", security_owner)',
-                  '    assert (',
-                  '        auth_connection',
-                  '        < tenant_context',
-                  '        < saga_role',
-                  '        < reconciliation_insert',
-                  '        < admin_connection',
-                  '        < security_owner',
-                  '        < fence_update',
-                  '    )',
-                  '',
-              ]
-          )
           if static.count(anchor) != 1:
               raise SystemExit("expected static insertion anchor exactly once")
-          if "test_aba_reconciliation_fixture_preserves_rls_role_domains" in static:
-              raise SystemExit("ABA reconciliation RLS regression already exists")
+          if "test_aba_fence_fixture_uses_canonical_outbox_lease_columns" in static:
+              raise SystemExit("ABA lease-column regression already exists")
+          regression = '''
+
+def test_aba_fence_fixture_uses_canonical_outbox_lease_columns() -> None:
+    runtime = RUNTIME.read_text(encoding="utf-8")
+    test = runtime[
+        runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :
+    ]
+    update = test[
+        test.index("UPDATE public.branch_outbox_events") :
+        test.index("WHERE outbox_id=ANY(%s::uuid[])")
+    ]
+    for phrase in (
+        "status='processing'",
+        "attempt_count=1",
+        "lease_fence=2",
+        "leased_by=%s",
+        "leased_until=pg_catalog.clock_timestamp()+INTERVAL '5 minutes'",
+        "processed_at=NULL",
+        "last_error=NULL",
+    ):
+        assert phrase in update
+    assert "claimed_at" not in update
+'''
           static = static.replace(anchor, regression + anchor, 1)
           static_path.write_text(static, encoding="utf-8")
           PY
@@ -138,7 +80,7 @@ jobs:
           git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_runtime.py'
           git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
 
-      - name: Commit only P5-E reconciliation RLS fixture repair
+      - name: Commit only P5-E ABA lease fixture repair
         shell: bash
         run: |
           set -euo pipefail
@@ -150,5 +92,5 @@ jobs:
           git diff --cached --check
           expected=$'tests/test_p5e_provider_ack_ambiguity_runtime.py\ntests/test_p5e_provider_ack_ambiguity_static_contracts.py'
           test "$(git diff --cached --name-only)" = "$expected"
-          git commit -m 'P5E align reconciliation fixture RLS role'
+          git commit -m 'P5E align ABA fixture with canonical outbox lease columns'
           git push origin HEAD:hardening/p5e-verification-authority-temp
