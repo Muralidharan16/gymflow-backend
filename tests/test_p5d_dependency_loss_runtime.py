@@ -270,7 +270,7 @@ def _insert_malformed_lifecycle(seed: _BaseSeed, fault_label: str) -> uuid.UUID:
                     max_attempts,correlation_id
                 ) VALUES (
                     %s,%s,%s,'branch.lifecycle_saga',
-                    jsonb_build_object('p5d_fault',%s),3,%s
+                    jsonb_build_object('p5d_fault',CAST(%s AS text)),3,%s
                 )
                 """,
                 (event_id, seed.org_id, seed.branch_id, fault_label, uuid.uuid4()),
