@@ -625,6 +625,11 @@ def test_projection_policy_is_app_scoped_without_worker_pii_access() -> None:
 
     with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as connection:
         with connection.cursor() as cursor:
+            probe_org_id = uuid.uuid4()
+            cursor.execute(
+                "SELECT pg_catalog.set_config('app.current_org_id',%s,true)",
+                (str(probe_org_id),),
+            )
             with pytest.raises(InsufficientPrivilege):
                 cursor.execute(
                     "SELECT id FROM public.organization_members LIMIT 1"

@@ -87,6 +87,21 @@ lineage. The migration is reversible to the exact predecessor audience and is
 exercised through an empty PostgreSQL 16 downgrade/upgrade lifecycle before the
 real worker crash matrix.
 
+Candidate `2853b8ff18207c834945c5681ec6c0cc5cce66b1` is also not P5-W2
+certified. Governance and P5-W1 passed, and GitHub Actions run `34732854711`,
+job `103658769506`, completed the exact PostgreSQL 16 migration
+upgrade/downgrade/upgrade lifecycle. The gate then stopped in its initial
+negative-access assertion, before any crash case ran: the worker probe queried
+`organization_members` without first establishing the required fail-closed
+`app.current_org_id` context for that table, so PostgreSQL raised the expected
+missing-context error before reaching the asserted table-privilege denial.
+
+This is a test-boundary repair only. The negative-access probe now sets a random
+transaction-local organization context before asserting that the reduced worker
+login still receives `InsufficientPrivilege`. It does not change the migration,
+production policy, worker grants, worker code, lease semantics, provider
+boundary, or Finance behavior. The failed SHA is not reused.
+
 ## Acceptance composition
 
 P5-W2 evidence is valid only when the same candidate also passes:

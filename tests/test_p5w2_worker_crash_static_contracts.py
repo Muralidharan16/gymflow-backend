@@ -162,6 +162,24 @@ def test_projection_policy_repair_preserves_lease_worker_without_pii_grant() -> 
     assert "ALTER ROLE WORKER_RUNTIME BYPASSRLS" not in normalized
 
 
+def test_worker_pii_denial_probe_sets_the_fail_closed_org_context_first() -> None:
+    source = RUNTIME.read_text(encoding="utf-8")
+    probe = source.split(
+        "def test_projection_policy_is_app_scoped_without_worker_pii_access", 1
+    )[1].split("@pytest.mark.parametrize", 1)[0]
+
+    for phrase in (
+        "probe_org_id = uuid.uuid4()",
+        "pg_catalog.set_config('app.current_org_id',%s,true)",
+        "with pytest.raises(InsufficientPrivilege)",
+        "SELECT id FROM public.organization_members LIMIT 1",
+    ):
+        assert phrase in probe
+    assert probe.index("pg_catalog.set_config") < probe.index(
+        "with pytest.raises(InsufficientPrivilege)"
+    )
+
+
 def test_runtime_requires_an_explicit_disposable_topology() -> None:
     source = RUNTIME.read_text(encoding="utf-8")
 
@@ -236,5 +254,9 @@ def test_slice_is_bounded_and_does_not_claim_later_p5_work() -> None:
         "34703762190",
         "public to `app_runtime`",
         "organization_members",
+        "2853b8ff18207c834945c5681ec6c0cc5cce66b1",
+        "34732854711",
+        "required fail-closed",
+        "`app.current_org_id` context",
     ):
         assert phrase in source
