@@ -129,6 +129,43 @@ def test_fault_harness_splits_schema_and_table_ddl_authority() -> None:
     assert "'PUBLIC',%s,'EXECUTE'" not in source
 
 
+def test_delete_seed_separates_lifecycle_fixture_from_security_owner_evidence() -> None:
+    source = RUNTIME.read_text(encoding="utf-8")
+    infrastructure = source[
+        source.index("def _set_branch_publicity_with_ci_infrastructure(") :
+        source.index("def _as_security_owner(")
+    ]
+    seed = source[
+        source.index("def _seed_search(") :
+        source.index("def _seed_notification(")
+    ]
+    assert infrastructure.index("_safe_database_topology()") < infrastructure.index(
+        "subprocess.run("
+    )
+    for phrase in (
+        '"sudo"',
+        '"-u"',
+        '"postgres"',
+        '"psql"',
+        '"ON_ERROR_STOP=1"',
+        '"-d"',
+        "_DATABASE",
+        '"UPDATE 1"',
+    ):
+        assert phrase in infrastructure
+    assert "app_security_owner" not in infrastructure
+    provider_seed = seed.index("SET search_provider_ack_version=1")
+    infrastructure_change = seed.index(
+        "_set_branch_publicity_with_ci_infrastructure(base, is_public=False)"
+    )
+    state_assertion = seed.index("assert cursor.fetchone() == (False, 2, 1, None)")
+    outbox_insert = seed.index("INSERT INTO public.branch_outbox_events")
+    assert provider_seed < infrastructure_change < state_assertion < outbox_insert
+    security_seed = seed[provider_seed:infrastructure_change]
+    assert "is_public=false" not in security_seed
+    assert "SET search_visibility_version=2" not in security_seed
+
+
 def test_replacement_processes_reuse_the_persisted_provider_store() -> None:
     source = RUNTIME.read_text(encoding="utf-8")
     for phrase in (

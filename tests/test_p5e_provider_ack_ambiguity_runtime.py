@@ -138,6 +138,47 @@ def _connect(login: str, password_environment: str):
     )
 
 
+def _set_branch_publicity_with_ci_infrastructure(
+    seed: _BaseSeed,
+    *,
+    is_public: bool,
+) -> None:
+    _safe_database_topology()
+    value = "true" if is_public else "false"
+    statement = (
+        "UPDATE public.org_branch_state "
+        f"SET is_public={value} "
+        f"WHERE branch_id='{seed.branch_id}'::uuid "
+        f"AND org_id='{seed.org_id}'::uuid;"
+    )
+    completed = subprocess.run(
+        [
+            "sudo",
+            "-u",
+            "postgres",
+            "psql",
+            "-X",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-d",
+            _DATABASE,
+            "-c",
+            statement,
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0 or "UPDATE 1" not in completed.stdout.splitlines():
+        raise AssertionError(
+            "P5-E CI infrastructure branch publicity fixture failed:\n"
+            f"{completed.stdout}"
+        )
+
+
 def _as_security_owner(cursor) -> None:
     cursor.execute("SET LOCAL ROLE app_security_owner")
 
@@ -288,16 +329,14 @@ def _seed_search(operation: str, store: Path) -> _SearchSeed:
     desired_version = 1 if operation == "index" else 2
     event_type = "branch.search_index" if operation == "index" else "branch.search_deindex"
 
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
-        with connection.cursor() as cursor:
-            _as_security_owner(cursor)
-            if operation == "delete":
+    if operation == "delete":
+        with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
+            with connection.cursor() as cursor:
+                _as_security_owner(cursor)
                 cursor.execute(
                     """
                     UPDATE public.org_branch_state
-                    SET is_public=false,
-                        search_visibility_version=2,
-                        search_provider_ack_version=1,
+                    SET search_provider_ack_version=1,
                         search_provider_document_hash=repeat('1',64),
                         search_provider_evidence_sha256=repeat('2',64),
                         search_provider_code='opensearch',
@@ -307,10 +346,28 @@ def _seed_search(operation: str, store: Path) -> _SearchSeed:
                         search_provider_reconciled_at=pg_catalog.clock_timestamp(),
                         search_last_synced_at=pg_catalog.clock_timestamp()
                     WHERE branch_id=%s AND org_id=%s
+                      AND search_visibility_version=1
                     """,
                     (str(base.branch_id), base.branch_id, base.org_id),
                 )
                 assert cursor.rowcount == 1
+            connection.commit()
+        _set_branch_publicity_with_ci_infrastructure(base, is_public=False)
+
+    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
+        with connection.cursor() as cursor:
+            _as_security_owner(cursor)
+            if operation == "delete":
+                cursor.execute(
+                    """
+                    SELECT is_public,search_visibility_version,
+                           search_provider_ack_version,search_last_synced_at
+                    FROM public.org_branch_state
+                    WHERE branch_id=%s AND org_id=%s
+                    """,
+                    (base.branch_id, base.org_id),
+                )
+                assert cursor.fetchone() == (False, 2, 1, None)
             cursor.execute(
                 """
                 INSERT INTO public.branch_outbox_events(
