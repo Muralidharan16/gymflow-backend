@@ -237,6 +237,32 @@ def test_notification_fixture_preserves_canonical_rls_role_domains() -> None:
         "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;"
     ) in workflow
 
+def test_aba_reconciliation_fixture_preserves_rls_role_domains() -> None:
+    runtime = RUNTIME.read_text(encoding="utf-8")
+    test = runtime[
+        runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :
+    ]
+    auth_literal = 'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:'
+    admin_literal = 'with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:'
+    auth_connection = test.index(auth_literal)
+    tenant_context = test.index("pg_catalog.set_config('app.current_org_id',%s,true)")
+    saga_role = test.index(
+        "pg_catalog.set_config('app.current_role','saga_orchestrator',true)"
+    )
+    reconciliation_insert = test.index("'notification.reconcile','{}'::jsonb")
+    admin_connection = test.index(admin_literal, reconciliation_insert)
+    security_owner = test.index("_as_security_owner(cursor)", admin_connection)
+    fence_update = test.index("UPDATE public.branch_outbox_events", security_owner)
+    assert (
+        auth_connection
+        < tenant_context
+        < saga_role
+        < reconciliation_insert
+        < admin_connection
+        < security_owner
+        < fence_update
+    )
+
 def test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     job = workflow["jobs"]["provider-ack-ambiguity"]

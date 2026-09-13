@@ -953,9 +953,16 @@ def test_provider_capabilities_reject_same_worker_aba_fence(tmp_path: Path) -> N
     notification = _seed_notification()
     reconciliation_id = uuid.uuid4()
 
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
+    with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:
         with connection.cursor() as cursor:
-            _as_security_owner(cursor)
+            cursor.execute(
+                """
+                SELECT
+                    pg_catalog.set_config('app.current_org_id',%s,true),
+                    pg_catalog.set_config('app.current_role','saga_orchestrator',true)
+                """,
+                (str(notification.base.org_id),),
+            )
             cursor.execute(
                 """
                 INSERT INTO public.branch_outbox_events(
@@ -972,6 +979,11 @@ def test_provider_capabilities_reject_same_worker_aba_fence(tmp_path: Path) -> N
                     uuid.uuid4(),
                 ),
             )
+        connection.commit()
+
+    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
+        with connection.cursor() as cursor:
+            _as_security_owner(cursor)
             cursor.execute(
                 """
                 UPDATE public.branch_outbox_events
