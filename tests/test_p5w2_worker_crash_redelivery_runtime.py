@@ -43,6 +43,7 @@ class _Seed:
     surface: _Surface
     org_id: uuid.UUID
     owner_id: uuid.UUID
+    reader_user_id: uuid.UUID
     branch_id: uuid.UUID
     event_id: uuid.UUID
 
@@ -185,6 +186,8 @@ def _insert_canonical_initial_branch_state(
 def _seed(surface: _Surface) -> _Seed:
     org_id = uuid.uuid4()
     owner_id = uuid.uuid4()
+    reader_user_id = uuid.uuid4()
+    reader_member_id = uuid.uuid4()
     branch_id = uuid.uuid4()
     event_id = uuid.uuid4()
     correlation_id = uuid.uuid4()
@@ -218,6 +221,29 @@ def _seed(surface: _Surface) -> _Seed:
                 )
                 """,
                 (owner_id, org_id, f"p5w2-{owner_id.hex}@example.test"),
+            )
+            cursor.execute(
+                """
+                INSERT INTO public.organization_users(
+                    id,org_id,name,email,password_hash,is_active,is_verified
+                ) VALUES (
+                    %s,%s,'P5-W2 Projection Reader',%s,
+                    'fixture-not-a-real-password-hash',true,true
+                )
+                """,
+                (
+                    reader_user_id,
+                    org_id,
+                    f"p5w2-reader-{reader_user_id.hex}@example.test",
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO public.organization_members(
+                    id,org_id,user_id,membership_status_id,permission_version
+                ) VALUES (%s,%s,%s,3,1)
+                """,
+                (reader_member_id, org_id, reader_user_id),
             )
             cursor.execute(
                 """
@@ -289,7 +315,14 @@ def _seed(surface: _Surface) -> _Seed:
                 )
         connection.commit()
 
-    return _Seed(surface, org_id, owner_id, branch_id, event_id)
+    return _Seed(
+        surface=surface,
+        org_id=org_id,
+        owner_id=owner_id,
+        reader_user_id=reader_user_id,
+        branch_id=branch_id,
+        event_id=event_id,
+    )
 
 
 def _telemetry(path: Path) -> list[dict[str, Any]]:
@@ -539,11 +572,13 @@ def _projection(seed: _Seed) -> tuple[int, int | None]:
                 """
                 SELECT
                     pg_catalog.set_config('app.current_org_id',%s,true),
-                    pg_catalog.set_config('app.current_role','owner',true),
+                    pg_catalog.set_config('app.current_role','admin',true),
                     pg_catalog.set_config('app.current_user_id',%s,true),
-                    pg_catalog.set_config('app.current_principal_type','owner',true)
+                    pg_catalog.set_config(
+                        'app.current_principal_type','organization_user',true
+                    )
                 """,
-                (str(seed.org_id), str(seed.owner_id)),
+                (str(seed.org_id), str(seed.reader_user_id)),
             )
             cursor.execute(
                 """

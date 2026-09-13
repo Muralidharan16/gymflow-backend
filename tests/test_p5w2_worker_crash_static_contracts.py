@@ -124,6 +124,34 @@ def test_fixture_repair_does_not_weaken_active_branch_projection_guard() -> None
         assert phrase in rebuild
 
 
+def test_projection_assertion_uses_real_active_member_visibility() -> None:
+    source = RUNTIME.read_text(encoding="utf-8")
+    seed = source.split("def _seed", 1)[1].split("def _telemetry", 1)[0]
+    projection = source.split("def _projection", 1)[1].split(
+        "def _assert_claimed_not_committed", 1
+    )[0]
+
+    for phrase in (
+        "reader_user_id = uuid.uuid4()",
+        "reader_member_id = uuid.uuid4()",
+        "INSERT INTO public.organization_users",
+        "INSERT INTO public.organization_members",
+        "membership_status_id,permission_version",
+        "VALUES (%s,%s,%s,3,1)",
+        "reader_user_id=reader_user_id",
+    ):
+        assert phrase in seed
+    for phrase in (
+        "str(seed.reader_user_id)",
+        "pg_catalog.set_config('app.current_role','admin',true)",
+        "'app.current_principal_type','organization_user',true",
+        "FROM public.branch_hours_projection",
+    ):
+        assert phrase in projection
+    assert "str(seed.owner_id)" not in projection
+    assert "_ADMIN_LOGIN" not in projection
+
+
 def test_projection_policy_repair_changes_only_the_legacy_policy_audience() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     scope_change = source.split("def _alter_policy_scope", 1)[1].split(
@@ -258,5 +286,9 @@ def test_slice_is_bounded_and_does_not_claim_later_p5_work() -> None:
         "34732854711",
         "required fail-closed",
         "`app.current_org_id` context",
+        "9ee7f1b613e305933d734a0fb56cfa37cfb68449",
+        "34734559190",
+        "active organization-user membership",
+        "reported `processed: 1`",
     ):
         assert phrase in source

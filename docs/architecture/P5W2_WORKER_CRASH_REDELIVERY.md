@@ -102,6 +102,23 @@ login still receives `InsufficientPrivilege`. It does not change the migration,
 production policy, worker grants, worker code, lease semantics, provider
 boundary, or Finance behavior. The failed SHA is not reused.
 
+Candidate `9ee7f1b613e305933d734a0fb56cfa37cfb68449` is also not P5-W2
+certified. Governance and P5-W1 passed, and GitHub Actions run `34734559190`,
+job `103663502822`, reached the first real pre-commit crash/reclaim case. The
+replacement worker reclaimed the expired event and reported `processed: 1`,
+but the test's projection assertion observed no visible row. The projection
+read policy is intentionally membership-backed; the fixture queried through an
+owner context without creating the active organization-user membership required
+by that policy. The durable worker result was therefore hidden from the test
+reader rather than lost.
+
+This repair remains confined to the test boundary. The fixture now creates an
+active organization user and membership, and the projection assertion uses that
+reduced application identity with canonical `organization_user` context. It
+does not change the migration, production policy, worker grants, worker code,
+lease semantics, provider boundary, or Finance behavior. The failed SHA is not
+reused.
+
 ## Acceptance composition
 
 P5-W2 evidence is valid only when the same candidate also passes:
