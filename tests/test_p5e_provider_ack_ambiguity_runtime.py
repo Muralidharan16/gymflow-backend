@@ -142,7 +142,7 @@ def _set_branch_publicity_with_ci_infrastructure(
     seed: _BaseSeed,
     *,
     is_public: bool,
-) -> None:
+) -> str:
     _safe_database_topology()
     value = "true" if is_public else "false"
     statement = (
@@ -152,25 +152,10 @@ def _set_branch_publicity_with_ci_infrastructure(
         f"AND org_id='{seed.org_id}'::uuid;"
     )
     completed = subprocess.run(
-        [
-            "sudo",
-            "-u",
-            "postgres",
-            "psql",
-            "-X",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-d",
-            _DATABASE,
-            "-c",
-            statement,
-        ],
-        cwd=ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=30,
-        check=False,
+        ["sudo", "-u", "postgres", "psql", "-X", "-v", "ON_ERROR_STOP=1",
+         "-d", _DATABASE, "-c", statement],
+        cwd=ROOT, text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, timeout=30, check=False,
     )
     if completed.returncode != 0 or "UPDATE 1" not in completed.stdout.splitlines():
         raise AssertionError(
@@ -178,6 +163,27 @@ def _set_branch_publicity_with_ci_infrastructure(
             f"{completed.stdout}"
         )
 
+    verification_statement = (
+        "SELECT CASE WHEN is_public THEN 'true' ELSE 'false' END,"
+        "search_visibility_version::text,"
+        "COALESCE(search_provider_ack_version::text,'NULL'),"
+        "COALESCE(search_last_synced_at::text,'NULL') "
+        "FROM public.org_branch_state "
+        f"WHERE branch_id='{seed.branch_id}'::uuid "
+        f"AND org_id='{seed.org_id}'::uuid;"
+    )
+    verified = subprocess.run(
+        ["sudo", "-u", "postgres", "psql", "-X", "-A", "-t", "-F", "|",
+         "-v", "ON_ERROR_STOP=1", "-d", _DATABASE, "-c", verification_statement],
+        cwd=ROOT, text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, timeout=30, check=False,
+    )
+    if verified.returncode != 0:
+        raise AssertionError(
+            "P5-E CI infrastructure branch publicity verification failed:\n"
+            f"{verified.stdout}"
+        )
+    return verified.stdout.strip()
 
 def _as_security_owner(cursor) -> None:
     cursor.execute("SET LOCAL ROLE app_security_owner")
@@ -352,29 +358,13 @@ def _seed_search(operation: str, store: Path) -> _SearchSeed:
                 )
                 assert cursor.rowcount == 1
             connection.commit()
-        _set_branch_publicity_with_ci_infrastructure(base, is_public=False)
+        fixture_state = _set_branch_publicity_with_ci_infrastructure(
+            base, is_public=False
+        )
+        assert fixture_state == "false|2|1|NULL"
 
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
         with connection.cursor() as cursor:
-            if operation == "delete":
-                cursor.execute(
-                    """
-                    SELECT
-                        pg_catalog.set_config('app.current_org_id',%s,true),
-                        pg_catalog.set_config('app.current_role','owner',true)
-                    """,
-                    (str(base.org_id),),
-                )
-                cursor.execute(
-                    """
-                    SELECT is_public,search_visibility_version,
-                           search_provider_ack_version,search_last_synced_at
-                    FROM public.org_branch_state
-                    WHERE branch_id=%s AND org_id=%s
-                    """,
-                    (base.branch_id, base.org_id),
-                )
-                assert cursor.fetchone() == (False, 2, 1, None)
             _as_security_owner(cursor)
             cursor.execute(
                 """
