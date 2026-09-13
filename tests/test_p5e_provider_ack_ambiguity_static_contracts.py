@@ -200,31 +200,42 @@ def test_replacement_processes_reuse_the_persisted_provider_store() -> None:
     assert source.count("_run_worker(store)") >= 4
 
 
-def test_notification_member_fixture_uses_canonical_auth_app_runtime_identity() -> None:
+def test_notification_fixture_preserves_canonical_rls_role_domains() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
     seed = runtime[
         runtime.index("def _seed_notification()") :
         runtime.index("def _install_fault_triggers()")
     ]
-    auth_connection = seed.index(
-        'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:'
-    )
+    auth_literal = 'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:'
+    admin_literal = 'with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:'
+    first_auth = seed.index(auth_literal)
     member_insert = seed.index("INSERT INTO public.members(")
-    admin_connection = seed.index(
-        'with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:',
-        member_insert,
-    )
+    parent_outbox = seed.index("'branch.member_notification','{}'::jsonb")
+    admin_connection = seed.index(admin_literal, parent_outbox)
     security_owner = seed.index("_as_security_owner(cursor)", admin_connection)
-    assert auth_connection < member_insert < admin_connection < security_owner
+    command_insert = seed.index("INSERT INTO public.notification_commands(")
+    second_auth = seed.index(auth_literal, admin_connection)
+    delivery_outbox = seed.index("'notification.delivery',", second_auth)
+    assert (
+        first_auth
+        < member_insert
+        < parent_outbox
+        < admin_connection
+        < security_owner
+        < command_insert
+        < second_auth
+        < delivery_outbox
+    )
+    assert seed.count(auth_literal) == 2
+    assert seed.count(admin_literal) == 1
     assert seed.count(
-        'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:'
-    ) == 1
+        "pg_catalog.set_config('app.current_role','saga_orchestrator',true)"
+    ) == 2
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert (
         "GRANT app_runtime TO auth_p5e_runtime "
         "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;"
     ) in workflow
-
 
 def test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))

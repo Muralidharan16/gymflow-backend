@@ -408,7 +408,11 @@ def _seed_notification() -> _NotificationSeed:
     with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT pg_catalog.set_config('app.current_org_id',%s,true)",
+                """
+                SELECT
+                    pg_catalog.set_config('app.current_org_id',%s,true),
+                    pg_catalog.set_config('app.current_role','saga_orchestrator',true)
+                """,
                 (str(base.org_id),),
             )
             cursor.execute(
@@ -429,11 +433,6 @@ def _seed_notification() -> _NotificationSeed:
                     f"P5E{member_id.hex[:17].upper()}",
                 ),
             )
-        connection.commit()
-
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
-        with connection.cursor() as cursor:
-            _as_security_owner(cursor)
             cursor.execute(
                 """
                 INSERT INTO public.branch_outbox_events(
@@ -446,6 +445,11 @@ def _seed_notification() -> _NotificationSeed:
                 """,
                 (parent_id, base.org_id, base.branch_id, correlation_id),
             )
+        connection.commit()
+
+    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
+        with connection.cursor() as cursor:
+            _as_security_owner(cursor)
             cursor.execute(
                 """
                 INSERT INTO public.notification_commands(
@@ -470,6 +474,18 @@ def _seed_notification() -> _NotificationSeed:
                     idempotency_key,
                     correlation_id,
                 ),
+            )
+        connection.commit()
+
+    with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    pg_catalog.set_config('app.current_org_id',%s,true),
+                    pg_catalog.set_config('app.current_role','saga_orchestrator',true)
+                """,
+                (str(base.org_id),),
             )
             cursor.execute(
                 """
@@ -497,7 +513,6 @@ def _seed_notification() -> _NotificationSeed:
         member_id,
         idempotency_key,
     )
-
 
 def _install_fault_triggers() -> None:
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
