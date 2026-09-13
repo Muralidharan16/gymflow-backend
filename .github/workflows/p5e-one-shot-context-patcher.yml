@@ -15,37 +15,182 @@ jobs:
         with:
           ref: hardening/p5e-verification-authority-temp
           fetch-depth: 1
-      - name: Patch exact P5-E ABA fixture
+
+      - name: Patch ABA fixture to canonical worker claim and reclaim path
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "5e5ebc5cc61997e6e9657e9b9054ed0cbdcc7d8d"
+          test "$(git rev-parse HEAD)" = "4851717a73cb5a473259155fb6975e6f12894936"
           python - <<'PY'
           from pathlib import Path
-          p = Path('tests/test_p5e_provider_ack_ambiguity_runtime.py')
-          s = p.read_text()
-          old = "                    processed_at=NULL,last_error=NULL\n"
-          assert s.count(old) == 1
-          p.write_text(s.replace(old, "                    last_error=NULL\n", 1))
-          p = Path('tests/test_p5e_provider_ack_ambiguity_static_contracts.py')
-          s = p.read_text()
-          assert s.count('        "processed_at=NULL",\n') == 1
-          s = s.replace('        "processed_at=NULL",\n', '', 1)
-          old = '    assert "claimed_at" not in update\n'
-          assert s.count(old) == 1
-          s = s.replace(old, old + '    assert "processed_at" not in update\n', 1)
-          p.write_text(s)
+
+          runtime_path = Path('tests/test_p5e_provider_ack_ambiguity_runtime.py')
+          runtime = runtime_path.read_text(encoding='utf-8')
+          import_anchor = 'from __future__ import annotations\n\nimport json\n'
+          if runtime.count(import_anchor) != 1:
+              raise SystemExit('unexpected asyncio import anchor')
+          runtime = runtime.replace(
+              import_anchor,
+              'from __future__ import annotations\n\nimport asyncio\nimport json\n',
+              1,
+          )
+
+          test_start = runtime.index(
+              'def test_provider_capabilities_reject_same_worker_aba_fence(tmp_path: Path) -> None:'
+          )
+          direct_start = runtime.index(
+              '    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:\n',
+              test_start,
+          )
+          worker_checks = runtime.index(
+              '    with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as connection:\n',
+              direct_start,
+          )
+          direct_block = runtime[direct_start:worker_checks]
+          for forbidden_or_expected in (
+              '_as_security_owner(cursor)',
+              "SET status='processing',attempt_count=1,lease_fence=2,",
+              'WHERE outbox_id=ANY(%s::uuid[])',
+          ):
+              if forbidden_or_expected not in direct_block:
+                  raise SystemExit(
+                      f'unexpected ABA direct-lease fixture shape: {forbidden_or_expected}'
+                  )
+
+          canonical = '''    aba_event_ids = (
+        search.event_id,
+        notification.parent_id,
+        notification.command_id,
+        reconciliation_id,
+    )
+    os.environ["WORKER_DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
+    from app.tasks.branch_outbox_poller import _claim_events
+
+    first_claims = {
+        event["outbox_id"]: event
+        for event in asyncio.run(_claim_events(worker_id))
+        if event["outbox_id"] in aba_event_ids
+    }
+    assert set(first_claims) == set(aba_event_ids)
+    for event_id in aba_event_ids:
+        assert int(first_claims[event_id]["attempt_count"]) == 1
+        assert int(first_claims[event_id]["lease_fence"]) == 1
+
+    with _connect(_WORKER_LOGIN, "WORKER_RUNTIME_PASSWORD") as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE public.branch_outbox_events
+                SET leased_until=pg_catalog.clock_timestamp()-INTERVAL '1 second'
+                WHERE outbox_id=ANY(%s::uuid[])
+                  AND status='processing'
+                  AND leased_by=%s
+                  AND lease_fence=1
+                  AND leased_until>pg_catalog.clock_timestamp()
+                """,
+                (list(aba_event_ids), worker_id),
+            )
+            assert cursor.rowcount == 4
+        connection.commit()
+
+    second_claims = {
+        event["outbox_id"]: event
+        for event in asyncio.run(_claim_events(worker_id))
+        if event["outbox_id"] in aba_event_ids
+    }
+    assert set(second_claims) == set(aba_event_ids)
+    for event_id in aba_event_ids:
+        assert int(second_claims[event_id]["attempt_count"]) == 1
+        assert int(second_claims[event_id]["lease_fence"]) == 2
+
+'''
+          runtime = runtime[:direct_start] + canonical + runtime[worker_checks:]
+          runtime_path.write_text(runtime, encoding='utf-8')
+
+          static_path = Path('tests/test_p5e_provider_ack_ambiguity_static_contracts.py')
+          static = static_path.read_text(encoding='utf-8')
+          static_start = static.index(
+              'def test_aba_reconciliation_fixture_preserves_rls_role_domains() -> None:\n'
+          )
+          static_end = static.index(
+              'def test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:\n',
+              static_start,
+          )
+          replacement = '''def test_aba_fixture_uses_canonical_worker_claim_and_reclaim_authority() -> None:
+    runtime = RUNTIME.read_text(encoding="utf-8")
+    test = runtime[
+        runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :
+    ]
+    auth_insert = test.index("'notification.reconcile','{}'::jsonb")
+    worker_url = test.index(
+        'os.environ["WORKER_DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]'
+    )
+    claim_import = test.index(
+        "from app.tasks.branch_outbox_poller import _claim_events"
+    )
+    first_claim = test.index("asyncio.run(_claim_events(worker_id))", claim_import)
+    expiry = test.index(
+        "SET leased_until=pg_catalog.clock_timestamp()-INTERVAL '1 second'",
+        first_claim,
+    )
+    second_claim = test.index(
+        "asyncio.run(_claim_events(worker_id))",
+        first_claim + 1,
+    )
+    assert auth_insert < worker_url < claim_import < first_claim < expiry < second_claim
+    assert test.count("asyncio.run(_claim_events(worker_id))") == 2
+    assert 'with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:' not in test
+    assert "_as_security_owner(cursor)" not in test
+    assert "SET status='processing',attempt_count=1,lease_fence=2" not in test
+
+
+def test_aba_reclaim_preserves_attempt_and_rotates_monotonic_fence() -> None:
+    runtime = RUNTIME.read_text(encoding="utf-8")
+    test = runtime[
+        runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :
+    ]
+    for phrase in (
+        'assert int(first_claims[event_id]["attempt_count"]) == 1',
+        'assert int(first_claims[event_id]["lease_fence"]) == 1',
+        "AND status='processing'",
+        "AND leased_by=%s",
+        "AND lease_fence=1",
+        'assert int(second_claims[event_id]["attempt_count"]) == 1',
+        'assert int(second_claims[event_id]["lease_fence"]) == 2',
+    ):
+        assert phrase in test
+    assert "claimed_at" not in test
+    assert "processed_at" not in test
+
+
+'''
+          static = static[:static_start] + replacement + static[static_end:]
+          static_path.write_text(static, encoding='utf-8')
           PY
+
           git diff --check
-          python -m py_compile tests/test_p5e_provider_ack_ambiguity_runtime.py tests/test_p5e_provider_ack_ambiguity_static_contracts.py
+          python -m py_compile \
+            tests/test_p5e_provider_ack_ambiguity_runtime.py \
+            tests/test_p5e_provider_ack_ambiguity_static_contracts.py
           test "$(git diff --name-only | wc -l)" = "2"
           git diff --name-only | grep -Fx 'tests/test_p5e_provider_ack_ambiguity_runtime.py'
           git diff --name-only | grep -Fx 'tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
-      - name: Commit exact two-file repair
+          grep -Fq 'asyncio.run(_claim_events(worker_id))' tests/test_p5e_provider_ack_ambiguity_runtime.py
+          ! grep -A60 -F 'def test_provider_capabilities_reject_same_worker_aba_fence' \
+            tests/test_p5e_provider_ack_ambiguity_runtime.py \
+            | grep -Fq "SET status='processing',attempt_count=1,lease_fence=2"
+
+      - name: Commit exact two-file worker-authority repair
         shell: bash
         run: |
           set -euo pipefail
-          git add tests/test_p5e_provider_ack_ambiguity_runtime.py tests/test_p5e_provider_ack_ambiguity_static_contracts.py
+          git add -- \
+            tests/test_p5e_provider_ack_ambiguity_runtime.py \
+            tests/test_p5e_provider_ack_ambiguity_static_contracts.py
           git diff --cached --check
-          git -c user.name='Muralidharan16' -c user.email='145135907+Muralidharan16@users.noreply.github.com' commit -m 'P5E remove nonexistent processed_at from ABA fixture'
+          expected=$'tests/test_p5e_provider_ack_ambiguity_runtime.py\ntests/test_p5e_provider_ack_ambiguity_static_contracts.py'
+          test "$(git diff --cached --name-only)" = "$expected"
+          git -c user.name='Muralidharan16' \
+            -c user.email='145135907+Muralidharan16@users.noreply.github.com' \
+            commit -m 'P5E use canonical worker claim path for ABA fixture'
           git push origin HEAD:hardening/p5e-verification-authority-temp
