@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - hardening/p5-concurrency-crash-fault-tolerance
+      - hardening/p5d-dependency-loss-temp
   workflow_call:
     inputs:
       certification_head:
