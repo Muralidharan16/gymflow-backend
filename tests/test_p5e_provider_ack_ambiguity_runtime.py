@@ -359,6 +359,14 @@ def _seed_search(operation: str, store: Path) -> _SearchSeed:
             if operation == "delete":
                 cursor.execute(
                     """
+                    SELECT
+                        pg_catalog.set_config('app.current_org_id',%s,true),
+                        pg_catalog.set_config('app.current_role','owner',true)
+                    """,
+                    (str(base.org_id),),
+                )
+                cursor.execute(
+                    """
                     SELECT is_public,search_visibility_version,
                            search_provider_ack_version,search_last_synced_at
                     FROM public.org_branch_state
