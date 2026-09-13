@@ -86,6 +86,32 @@ def test_real_postgresql_acknowledgement_transactions_are_forced_to_fail() -> No
     assert "_ack_delivery =" not in source
 
 
+def test_fault_harness_splits_schema_and_table_ddl_authority() -> None:
+    source = RUNTIME.read_text(encoding="utf-8")
+    install = source[
+        source.index("def _install_fault_triggers()") :
+        source.index("def _drop_fault_triggers()")
+    ]
+    drop = source[
+        source.index("def _drop_fault_triggers()") :
+        source.index("def _set_fault_trigger(")
+    ]
+    toggle = source[
+        source.index("def _set_fault_trigger(") :
+        source.index("def _run_worker(")
+    ]
+    assert install.index("_as_security_owner(cursor)") < install.index(
+        'cursor.execute("RESET ROLE")'
+    ) < install.index("CREATE TRIGGER p5e_reject_search_ack")
+    assert drop.index("DROP TRIGGER IF EXISTS p5e_reject_search_ack") < drop.index(
+        "_as_security_owner(cursor)"
+    ) < drop.index("DROP FUNCTION IF EXISTS app_secure.p5e_reject_search_ack()")
+    assert "_as_security_owner(cursor)" not in toggle
+    assert "pg_catalog.aclexplode(" in source
+    assert "acl_data.grantee = 0" in source
+    assert "'PUBLIC',%s,'EXECUTE'" not in source
+
+
 def test_replacement_processes_reuse_the_persisted_provider_store() -> None:
     source = RUNTIME.read_text(encoding="utf-8")
     for phrase in (
