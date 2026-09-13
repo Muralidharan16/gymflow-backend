@@ -693,10 +693,11 @@ def test_search_provider_success_ack_failure_replays_same_version_once(
         (seed.event_id, seed.base.branch_id, seed.base.org_id),
     )
     expected_previous = None if operation == "index" else 1
+    expected_deleted = 0 if operation == "index" else 1
     assert interim_state == (expected_previous, 0)
     provider_after_failure = _provider_search_row(store, seed.base.branch_id)
     assert provider_after_failure[0] == seed.desired_version
-    assert provider_after_failure[2:] == (1, 1, 1)
+    assert provider_after_failure[2:] == (expected_deleted, 1, 1)
 
     _set_fault_trigger("search", enabled=False)
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
@@ -753,7 +754,7 @@ def test_search_provider_success_ack_failure_replays_same_version_once(
     )
     provider_final = _provider_search_row(store, seed.base.branch_id)
     assert provider_final[0] == seed.desired_version
-    assert provider_final[2:] == (1, 1, 2)
+    assert provider_final[2:] == (expected_deleted, 1, 2)
     if operation == "index":
         assert json.loads(str(provider_final[1])) == _visible_document(seed.base)
     else:

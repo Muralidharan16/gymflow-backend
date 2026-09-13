@@ -217,8 +217,9 @@ def test_runner_exercises_real_production_adapters_and_worker_dispatch() -> None
 def test_postconditions_count_one_effect_and_keep_acceptance_nonterminal() -> None:
     source = RUNTIME.read_text(encoding="utf-8")
     for phrase in (
-        "provider_after_failure[2:] == (1, 1, 1)",
-        "provider_final[2:] == (1, 1, 2)",
+        'expected_deleted = 0 if operation == "index" else 1',
+        "provider_after_failure[2:] == (expected_deleted, 1, 1)",
+        "provider_final[2:] == (expected_deleted, 1, 2)",
         "provider_after_failure[2:] == (1, 1)",
         "provider_final[2:] == (1, 2)",
         '["ambiguous_outcome", "provider_accepted_nonterminal"]',
@@ -226,6 +227,8 @@ def test_postconditions_count_one_effect_and_keep_acceptance_nonterminal() -> No
         '"provider_accepted",',
     ):
         assert phrase in source
+    assert "provider_after_failure[2:] == (1, 1, 1)" not in source
+    assert "provider_final[2:] == (1, 1, 2)" not in source
 
 
 def test_workflow_uses_pg16_reduced_worker_and_same_head_markers() -> None:
