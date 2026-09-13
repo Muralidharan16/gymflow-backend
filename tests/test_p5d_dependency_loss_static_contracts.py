@@ -135,6 +135,21 @@ def test_celery_hook_pauses_only_after_real_db_outcome_before_task_ack() -> None
     assert "SIGKILL" not in source
 
 
+def test_broker_restart_uses_fresh_controller_connections_but_real_worker_app() -> None:
+    source = RUNTIME.read_text(encoding="utf-8")
+    for phrase in (
+        "def _fresh_celery_client():",
+        '"p5d-runtime-controller"',
+        'broker=os.environ["CELERY_BROKER_URL"]',
+        'backend=os.environ["CELERY_RESULT_BACKEND"]',
+        "except (redis.RedisError, OperationalError, OSError):",
+        "client.close()",
+        '"app.core.celery_app:celery_app"',
+    ):
+        assert phrase in source
+    assert "from app.core.celery_app import celery_app" not in source
+
+
 def test_production_retry_path_is_bounded_and_fenced() -> None:
     poller = POLLER.read_text(encoding="utf-8")
     for phrase in (
