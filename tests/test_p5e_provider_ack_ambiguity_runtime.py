@@ -456,6 +456,20 @@ def _install_fault_triggers() -> None:
                 END;
                 $function$;
 
+                CREATE OR REPLACE FUNCTION app_secure.p5e_reject_notification_ack()
+                RETURNS trigger
+                LANGUAGE plpgsql
+                AS $function$
+                BEGIN
+                    RAISE EXCEPTION 'P5-E injected notification acknowledgement failure'
+                        USING ERRCODE='08006';
+                END;
+                $function$;
+                """
+            )
+            cursor.execute("RESET ROLE")
+            cursor.execute(
+                """
                 DROP TRIGGER IF EXISTS p5e_reject_search_ack
                     ON public.org_branch_state;
                 CREATE TRIGGER p5e_reject_search_ack
@@ -469,16 +483,6 @@ def _install_fault_triggers() -> None:
                     EXECUTE FUNCTION app_secure.p5e_reject_search_ack();
                 ALTER TABLE public.org_branch_state
                     DISABLE TRIGGER p5e_reject_search_ack;
-
-                CREATE OR REPLACE FUNCTION app_secure.p5e_reject_notification_ack()
-                RETURNS trigger
-                LANGUAGE plpgsql
-                AS $function$
-                BEGIN
-                    RAISE EXCEPTION 'P5-E injected notification acknowledgement failure'
-                        USING ERRCODE='08006';
-                END;
-                $function$;
 
                 DROP TRIGGER IF EXISTS p5e_reject_notification_ack
                     ON public.notification_commands;
@@ -501,13 +505,17 @@ def _install_fault_triggers() -> None:
 def _drop_fault_triggers() -> None:
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
         with connection.cursor() as cursor:
-            _as_security_owner(cursor)
             cursor.execute(
                 """
                 DROP TRIGGER IF EXISTS p5e_reject_search_ack
                     ON public.org_branch_state;
                 DROP TRIGGER IF EXISTS p5e_reject_notification_ack
                     ON public.notification_commands;
+                """
+            )
+            _as_security_owner(cursor)
+            cursor.execute(
+                """
                 DROP FUNCTION IF EXISTS app_secure.p5e_reject_search_ack();
                 DROP FUNCTION IF EXISTS app_secure.p5e_reject_notification_ack();
                 """
@@ -527,7 +535,6 @@ def _set_fault_trigger(surface: str, *, enabled: bool) -> None:
     action = "ENABLE" if enabled else "DISABLE"
     with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
         with connection.cursor() as cursor:
-            _as_security_owner(cursor)
             cursor.execute(f"ALTER TABLE {relation} {action} TRIGGER {trigger}")
         connection.commit()
 
@@ -904,9 +911,23 @@ def test_provider_capabilities_reject_same_worker_aba_fence(tmp_path: Path) -> N
                         pg_catalog.has_function_privilege(
                             current_user,%s,'EXECUTE'
                         ),
-                        pg_catalog.has_function_privilege(
-                            'PUBLIC',%s,'EXECUTE'
-                        )
+                        COALESCE((
+                            SELECT pg_catalog.bool_or(
+                                acl_data.grantee = 0
+                                AND acl_data.privilege_type = 'EXECUTE'
+                            )
+                            FROM pg_catalog.pg_proc AS proc_data
+                            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                                COALESCE(
+                                    proc_data.proacl,
+                                    pg_catalog.acldefault(
+                                        'f', proc_data.proowner
+                                    )
+                                )
+                            ) AS acl_data
+                            WHERE proc_data.oid =
+                                pg_catalog.to_regprocedure(%s)
+                        ), FALSE)
                     """,
                     (old_signature, new_signature, new_signature),
                 )
