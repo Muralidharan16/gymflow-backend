@@ -18,101 +18,63 @@ jobs:
           ref: hardening/p5e-verification-authority-temp
           fetch-depth: 1
 
-      - name: Guard exact parent and move lifecycle verification to CI infrastructure
+      - name: Guard exact runtime repair and harden its static contract
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "15be01cb6b96c916276d753bb523346092f9a438"
+          test "$(git rev-parse HEAD)" = "6145a3e2936a6c17d8aa5d55e354f2e5c0a4c6b4"
           python - <<'PY'
           from pathlib import Path
 
-          path = Path("tests/test_p5e_provider_ack_ambiguity_runtime.py")
+          path = Path("tests/test_p5e_provider_ack_ambiguity_static_contracts.py")
           source = path.read_text(encoding="utf-8")
 
-          start = source.index("def _set_branch_publicity_with_ci_infrastructure(")
-          end = source.index("\ndef _as_security_owner(", start)
-          helper = '''def _set_branch_publicity_with_ci_infrastructure(
-              seed: _BaseSeed,
-              *,
-              is_public: bool,
-          ) -> str:
-              _safe_database_topology()
-              value = "true" if is_public else "false"
-              statement = (
-                  "UPDATE public.org_branch_state "
-                  f"SET is_public={value} "
-                  f"WHERE branch_id='{seed.branch_id}'::uuid "
-                  f"AND org_id='{seed.org_id}'::uuid;"
-              )
-              completed = subprocess.run(
-                  ["sudo", "-u", "postgres", "psql", "-X", "-v", "ON_ERROR_STOP=1",
-                   "-d", _DATABASE, "-c", statement],
-                  cwd=ROOT, text=True, stdout=subprocess.PIPE,
-                  stderr=subprocess.STDOUT, timeout=30, check=False,
-              )
-              if completed.returncode != 0 or "UPDATE 1" not in completed.stdout.splitlines():
-                  raise AssertionError(
-                      "P5-E CI infrastructure branch publicity fixture failed:\\n"
-                      f"{completed.stdout}"
-                  )
+          old_state = 'state_assertion = seed.index("assert cursor.fetchone() == (False, 2, 1, None)")'
+          new_state = 'state_assertion = seed.index(\'assert fixture_state == "false|2|1|NULL"\')'
+          if source.count(old_state) != 1:
+              raise SystemExit(f"expected one old state guard, found {source.count(old_state)}")
+          source = source.replace(old_state, new_state)
 
-              verification_statement = (
-                  "SELECT CASE WHEN is_public THEN 'true' ELSE 'false' END,"
-                  "search_visibility_version::text,"
-                  "COALESCE(search_provider_ack_version::text,'NULL'),"
-                  "COALESCE(search_last_synced_at::text,'NULL') "
-                  "FROM public.org_branch_state "
-                  f"WHERE branch_id='{seed.branch_id}'::uuid "
-                  f"AND org_id='{seed.org_id}'::uuid;"
-              )
-              verified = subprocess.run(
-                  ["sudo", "-u", "postgres", "psql", "-X", "-A", "-t", "-F", "|",
-                   "-v", "ON_ERROR_STOP=1", "-d", _DATABASE, "-c", verification_statement],
-                  cwd=ROOT, text=True, stdout=subprocess.PIPE,
-                  stderr=subprocess.STDOUT, timeout=30, check=False,
-              )
-              if verified.returncode != 0:
-                  raise AssertionError(
-                      "P5-E CI infrastructure branch publicity verification failed:\\n"
-                      f"{verified.stdout}"
-                  )
-              return verified.stdout.strip()
-
+          old_tuple = '''        '"UPDATE 1"',
+              ):
           '''
-          source = source[:start] + helper + source[end + 1:]
-
-          start = source.index(
-              "        _set_branch_publicity_with_ci_infrastructure(base, is_public=False)"
-          )
-          end = source.index(
-              '            cursor.execute(\n                """\n                INSERT INTO public.branch_outbox_events(',
-              start,
-          )
-          replacement = '''        fixture_state = _set_branch_publicity_with_ci_infrastructure(
-                      base, is_public=False
-                  )
-                  assert fixture_state == "false|2|1|NULL"
-
-              with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
-                  with connection.cursor() as cursor:
-                      _as_security_owner(cursor)
+          new_tuple = '''        '"UPDATE 1"',
+                  '"-A"',
+                  '"-t"',
+                  '"-F"',
+                  "search_visibility_version::text",
+                  "search_provider_ack_version::text",
+                  "search_last_synced_at::text",
+                  "return verified.stdout.strip()",
+              ):
           '''
-          source = source[:start] + replacement + source[end:]
+          if source.count(old_tuple) != 1:
+              raise SystemExit(f"expected one infrastructure tuple anchor, found {source.count(old_tuple)}")
+          source = source.replace(old_tuple, new_tuple)
+
+          old_guard = '''    assert "SET search_visibility_version=2" not in security_seed
+          '''
+          new_guard = '''    assert "SET search_visibility_version=2" not in security_seed
+              assert "app.current_role','owner" not in seed
+          '''
+          if source.count(old_guard) != 1:
+              raise SystemExit(f"expected one reduced-role guard anchor, found {source.count(old_guard)}")
+          source = source.replace(old_guard, new_guard)
           path.write_text(source, encoding="utf-8")
           PY
           git diff --check
-          python -m py_compile tests/test_p5e_provider_ack_ambiguity_runtime.py
+          python -m py_compile tests/test_p5e_provider_ack_ambiguity_static_contracts.py
           test "$(git status --short | wc -l)" = "1"
-          git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_runtime.py'
+          git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
 
-      - name: Commit repaired runtime harness to temp branch
+      - name: Commit only static regression guard to temp branch
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'Muralidharan16'
           git config user.email '145135907+Muralidharan16@users.noreply.github.com'
-          git add -- tests/test_p5e_provider_ack_ambiguity_runtime.py
+          git add -- tests/test_p5e_provider_ack_ambiguity_static_contracts.py
           git diff --cached --check
-          test "$(git diff --cached --name-only)" = 'tests/test_p5e_provider_ack_ambiguity_runtime.py'
-          git commit -m 'P5E verify lifecycle fixture through CI infrastructure'
+          test "$(git diff --cached --name-only)" = 'tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
+          git commit -m 'P5E guard infrastructure-owned lifecycle verification'
           git push origin HEAD:hardening/p5e-verification-authority-temp
