@@ -23,63 +23,38 @@ jobs:
           test "$(git rev-parse HEAD)" = "7524b41c6bb75e350bddbb7b9056f8a7b193366c"
           python - <<'PY'
           from pathlib import Path
-
-          path = Path('tests/test_p5d_dependency_loss_runtime.py')
-          source = path.read_text(encoding='utf-8')
-          anchor = '''            cursor.execute(
-                """
-                INSERT INTO public.owners(
-                    id,org_id,owner_name,email,hashed_password,
-                    email_verified,onboarding_completed
-                ) VALUES (
-                    %s,%s,'P5-D Runtime Owner',%s,
-                    'fixture-not-a-real-password-hash',true,true
-                )
-                """,
-                (seed.owner_id, seed.org_id, f"p5d-{seed.owner_id.hex}@example.test"),
-            )
-            branch_rows = [(seed.branch_id, "Primary")]
-'''
-          replacement = '''            owner_email = f"p5d-{seed.owner_id.hex}@example.test"
-            cursor.execute(
-                """
-                INSERT INTO public.owners(
-                    id,org_id,owner_name,email,hashed_password,
-                    email_verified,onboarding_completed
-                ) VALUES (
-                    %s,%s,'P5-D Runtime Owner',%s,
-                    'fixture-not-a-real-password-hash',true,true
-                )
-                """,
-                (seed.owner_id, seed.org_id, owner_email),
-            )
-            # Canonical lifecycle actor bridge: the production lifecycle schema
-            # records status/history actor IDs against organization_users even
-            # when the authenticated product actor is an owner. Existing
-            # lifecycle fixtures seed the same owner UUID into both identities.
-            cursor.execute(
-                """
-                INSERT INTO public.organization_users(
-                    id,org_id,name,email,password_hash,is_active,is_verified
-                ) VALUES (
-                    %s,%s,'P5-D Runtime Owner User',%s,
-                    'fixture-not-a-real-password-hash',true,true
-                )
-                """,
-                (seed.owner_id, seed.org_id, owner_email),
-            )
-            branch_rows = [(seed.branch_id, "Primary")]
-'''
+          path = Path("tests/test_p5d_dependency_loss_runtime.py")
+          source = path.read_text(encoding="utf-8")
+          anchor = '            branch_rows = [(seed.branch_id, "Primary")]\n'
+          replacement = (
+              '            # Canonical lifecycle actor bridge: lifecycle audit FKs\n'
+              '            # target organization_users even for an owner-authenticated actor.\n'
+              '            cursor.execute(\n'
+              '                """\n'
+              '                INSERT INTO public.organization_users(\n'
+              '                    id,org_id,name,email,password_hash,is_active,is_verified\n'
+              '                ) VALUES (\n'
+              "                    %s,%s,'P5-D Runtime Owner User',%s,\n"
+              "                    'fixture-not-a-real-password-hash',true,true\n"
+              '                )\n'
+              '                """,\n'
+              '                (\n'
+              '                    seed.owner_id,\n'
+              '                    seed.org_id,\n'
+              '                    f"p5d-{seed.owner_id.hex}@example.test",\n'
+              '                ),\n'
+              '            )\n'
+              '            branch_rows = [(seed.branch_id, "Primary")]\n'
+          )
           if source.count(anchor) != 1:
-              raise SystemExit('unexpected P5D owner fixture seed shape')
-          path.write_text(source.replace(anchor, replacement, 1), encoding='utf-8')
+              raise SystemExit("unexpected P5D branch_rows anchor count")
+          path.write_text(source.replace(anchor, replacement, 1), encoding="utf-8")
           PY
           git diff --check
           python -m py_compile tests/test_p5d_dependency_loss_runtime.py
           test "$(git diff --name-only)" = "tests/test_p5d_dependency_loss_runtime.py"
           grep -Fq 'INSERT INTO public.organization_users(' tests/test_p5d_dependency_loss_runtime.py
-          grep -Fq '(seed.owner_id, seed.org_id, owner_email)' tests/test_p5d_dependency_loss_runtime.py
-          grep -Fq 'Canonical lifecycle actor bridge' tests/test_p5d_dependency_loss_runtime.py
+          grep -Fq 'P5-D Runtime Owner User' tests/test_p5d_dependency_loss_runtime.py
 
       - name: Commit exact canonical lifecycle-actor seed repair
         shell: bash
