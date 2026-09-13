@@ -2,8 +2,7 @@ name: P5E One-Shot Context Patcher
 
 on:
   push:
-    branches:
-      - automation/p5e-context-patcher-20260913
+    branches: [automation/p5e-context-patcher-20260913]
 
 permissions:
   contents: write
@@ -12,88 +11,41 @@ jobs:
   patch-temp-candidate:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout exact temp candidate
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: hardening/p5e-verification-authority-temp
           fetch-depth: 1
-
-      - name: Remove nonexistent claimed_at from P5-E ABA fixture
+      - name: Patch exact P5-E ABA fixture
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "46eac4cfe9b0e184acca23fe8b1f1b7f3cba9309"
+          test "$(git rev-parse HEAD)" = "5e5ebc5cc61997e6e9657e9b9054ed0cbdcc7d8d"
           python - <<'PY'
           from pathlib import Path
-
-          runtime_path = Path("tests/test_p5e_provider_ack_ambiguity_runtime.py")
-          runtime = runtime_path.read_text(encoding="utf-8")
-          fn_start = runtime.index(
-              "def test_provider_capabilities_reject_same_worker_aba_fence(tmp_path: Path) -> None:"
-          )
-          aba = runtime[fn_start:]
-          claimed = "                    claimed_at=pg_catalog.clock_timestamp(),\n"
-          if aba.count(claimed) != 1:
-              raise SystemExit("expected exactly one ABA claimed_at fixture assignment")
-          runtime = runtime[:fn_start] + aba.replace(claimed, "", 1)
-          runtime_path.write_text(runtime, encoding="utf-8")
-
-          static_path = Path("tests/test_p5e_provider_ack_ambiguity_static_contracts.py")
-          static = static_path.read_text(encoding="utf-8")
-          anchor = "\ndef test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:\n"
-          if static.count(anchor) != 1:
-              raise SystemExit("expected static insertion anchor exactly once")
-          if "test_aba_fence_fixture_uses_canonical_outbox_lease_columns" in static:
-              raise SystemExit("ABA lease-column regression already exists")
-          regression = "\n".join(
-              [
-                  "",
-                  "def test_aba_fence_fixture_uses_canonical_outbox_lease_columns() -> None:",
-                  '    runtime = RUNTIME.read_text(encoding="utf-8")',
-                  "    test = runtime[",
-                  '        runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :',
-                  "    ]",
-                  "    update = test[",
-                  '        test.index("UPDATE public.branch_outbox_events") :',
-                  '        test.index("WHERE outbox_id=ANY(%s::uuid[])")',
-                  "    ]",
-                  "    for phrase in (",
-                  '        "status=\'processing\'",',
-                  '        "attempt_count=1",',
-                  '        "lease_fence=2",',
-                  '        "leased_by=%s",',
-                  '        "leased_until=pg_catalog.clock_timestamp()+INTERVAL \'5 minutes\'",',
-                  '        "processed_at=NULL",',
-                  '        "last_error=NULL",',
-                  "    ):",
-                  "        assert phrase in update",
-                  '    assert "claimed_at" not in update',
-                  "",
-              ]
-          )
-          static = static.replace(anchor, regression + anchor, 1)
-          static_path.write_text(static, encoding="utf-8")
+          p = Path('tests/test_p5e_provider_ack_ambiguity_runtime.py')
+          s = p.read_text()
+          old = "                    processed_at=NULL,last_error=NULL\n"
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, "                    last_error=NULL\n", 1))
+          p = Path('tests/test_p5e_provider_ack_ambiguity_static_contracts.py')
+          s = p.read_text()
+          assert s.count('        "processed_at=NULL",\n') == 1
+          s = s.replace('        "processed_at=NULL",\n', '', 1)
+          old = '    assert "claimed_at" not in update\n'
+          assert s.count(old) == 1
+          s = s.replace(old, old + '    assert "processed_at" not in update\n', 1)
+          p.write_text(s)
           PY
-
           git diff --check
-          python -m py_compile \
-            tests/test_p5e_provider_ack_ambiguity_runtime.py \
-            tests/test_p5e_provider_ack_ambiguity_static_contracts.py
-          test "$(git status --short | wc -l)" = "2"
-          git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_runtime.py'
-          git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
-
-      - name: Commit only P5-E ABA lease fixture repair
+          python -m py_compile tests/test_p5e_provider_ack_ambiguity_runtime.py tests/test_p5e_provider_ack_ambiguity_static_contracts.py
+          test "$(git diff --name-only | wc -l)" = "2"
+          git diff --name-only | grep -Fx 'tests/test_p5e_provider_ack_ambiguity_runtime.py'
+          git diff --name-only | grep -Fx 'tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
+      - name: Commit exact two-file repair
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name 'Muralidharan16'
-          git config user.email '145135907+Muralidharan16@users.noreply.github.com'
-          git add -- \
-            tests/test_p5e_provider_ack_ambiguity_runtime.py \
-            tests/test_p5e_provider_ack_ambiguity_static_contracts.py
+          git add tests/test_p5e_provider_ack_ambiguity_runtime.py tests/test_p5e_provider_ack_ambiguity_static_contracts.py
           git diff --cached --check
-          expected=$'tests/test_p5e_provider_ack_ambiguity_runtime.py\ntests/test_p5e_provider_ack_ambiguity_static_contracts.py'
-          test "$(git diff --cached --name-only)" = "$expected"
-          git commit -m 'P5E align ABA fixture with canonical outbox lease columns'
+          git -c user.name='Muralidharan16' -c user.email='145135907+Muralidharan16@users.noreply.github.com' commit -m 'P5E remove nonexistent processed_at from ABA fixture'
           git push origin HEAD:hardening/p5e-verification-authority-temp
