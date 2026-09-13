@@ -82,6 +82,12 @@ def test_database_faults_name_claim_mutation_and_acknowledgement_boundaries() ->
         assert phrase in source
 
 
+def test_malformed_lifecycle_fixture_binds_fault_label_as_text() -> None:
+    source = RUNTIME.read_text(encoding="utf-8")
+    assert "jsonb_build_object('p5d_fault',CAST(%s AS text)),3,%s" in source
+    assert "jsonb_build_object('p5d_fault',%s),3,%s" not in source
+
+
 def test_provider_network_fault_uses_production_adapter_and_persistent_effect_store() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
     provider = PROVIDER.read_text(encoding="utf-8")
