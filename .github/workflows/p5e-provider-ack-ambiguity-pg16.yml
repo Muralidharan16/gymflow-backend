@@ -87,6 +87,7 @@ jobs:
           CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-p5e-worker-runtime'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           GRANT auth_runtime TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           ALTER ROLE auth_p5e_runtime SET row_security='on';
