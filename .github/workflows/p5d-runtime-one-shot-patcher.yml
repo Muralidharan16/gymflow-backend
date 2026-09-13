@@ -1,0 +1,50 @@
+name: P5D Runtime One-Shot Patcher
+
+on:
+  push:
+    branches: [automation/p5d-runtime-patcher-20260913]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-p5d-temp:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: hardening/p5d-dependency-loss-temp
+          fetch-depth: 1
+
+      - name: Patch exact P5D fixture typing defect
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "f5daabcbb3494cb8a316a65dd6733ada4ab90233"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tests/test_p5d_dependency_loss_runtime.py')
+          source = path.read_text(encoding='utf-8')
+          old = "jsonb_build_object('p5d_fault',%s),3,%s"
+          new = "jsonb_build_object('p5d_fault',CAST(%s AS text)),3,%s"
+          if source.count(old) != 1:
+              raise SystemExit('unexpected P5D malformed-lifecycle fixture shape')
+          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          PY
+          git diff --check
+          python -m py_compile tests/test_p5d_dependency_loss_runtime.py
+          test "$(git diff --name-only)" = "tests/test_p5d_dependency_loss_runtime.py"
+          grep -Fq "jsonb_build_object('p5d_fault',CAST(%s AS text)),3,%s" \
+            tests/test_p5d_dependency_loss_runtime.py
+
+      - name: Commit exact fixture typing repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -- tests/test_p5d_dependency_loss_runtime.py
+          git diff --cached --check
+          test "$(git diff --cached --name-only)" = "tests/test_p5d_dependency_loss_runtime.py"
+          git -c user.name='Muralidharan16' \
+            -c user.email='145135907+Muralidharan16@users.noreply.github.com' \
+            commit -m 'P5D type malformed lifecycle fixture payload'
+          git push origin HEAD:hardening/p5d-dependency-loss-temp
