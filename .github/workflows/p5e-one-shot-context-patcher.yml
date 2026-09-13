@@ -151,11 +151,6 @@ jobs:
                   idempotency_key,
               )
           '''
-          # Normalize the replacement's deliberate YAML indentation back to Python column zero.
-          replacement = "\n".join(
-              line[12:] if line.startswith("            ") else line
-              for line in replacement.splitlines()
-          ) + "\n"
           runtime = runtime[:start] + replacement + runtime[end:]
           runtime_path.write_text(runtime, encoding="utf-8")
 
@@ -205,10 +200,6 @@ jobs:
                   "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;"
               ) in workflow
           '''
-          regression = "\n".join(
-              line[12:] if line.startswith("            ") else line
-              for line in regression.splitlines()
-          ) + "\n"
           static = static[:test_start] + regression + static[test_end:]
           static_path.write_text(static, encoding="utf-8")
           PY
