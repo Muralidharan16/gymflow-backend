@@ -18,44 +18,101 @@ jobs:
           ref: hardening/p5e-verification-authority-temp
           fetch-depth: 1
 
-      - name: Bound notification fixture member UID to schema contract
+      - name: Align notification fixture with canonical auth runtime identity
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "7005bc5676842e908947d4e0d373b4fd23453f07"
+          test "$(git rev-parse HEAD)" = "2a225d7a0bd95a7fadd68e3b8f3e4250b02b1350"
           python - <<'PY'
           from pathlib import Path
-          import uuid
 
-          path = Path("tests/test_p5e_provider_ack_ambiguity_runtime.py")
-          source = path.read_text(encoding="utf-8")
-          old = 'f"P5E{member_id.hex[:20].upper()}"'
-          new = 'f"P5E{member_id.hex[:17].upper()}"'
-          if source.count(old) != 1:
-              raise SystemExit(f"expected overlength P5-E member UID fixture once, found {source.count(old)}")
-          source = source.replace(old, new)
-          if old in source or source.count(new) != 1:
-              raise SystemExit("P5-E member UID fixture replacement did not converge exactly")
-          path.write_text(source, encoding="utf-8")
+          workflow_path = Path(".github/workflows/p5e-provider-ack-ambiguity-pg16.yml")
+          workflow = workflow_path.read_text(encoding="utf-8")
+          old_grants = (
+              "          GRANT auth_runtime TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;\n"
+              "          GRANT app_user TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;\n"
+          )
+          new_grants = (
+              "          GRANT auth_runtime TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;\n"
+              "          GRANT app_runtime TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;\n"
+              "          GRANT app_user TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;\n"
+          )
+          if workflow.count(old_grants) != 1:
+              raise SystemExit(f"expected P5-E auth grant pair once, found {workflow.count(old_grants)}")
+          workflow = workflow.replace(old_grants, new_grants)
+          if workflow.count("GRANT app_runtime TO auth_p5e_runtime") != 1:
+              raise SystemExit("canonical app_runtime grant did not converge exactly")
+          workflow_path.write_text(workflow, encoding="utf-8")
 
-          sample_id = uuid.UUID("01234567-89ab-cdef-0123-456789abcdef")
-          sample_uid = f"P5E{sample_id.hex[:17].upper()}"
-          if len(sample_uid) != 20:
-              raise SystemExit(f"bounded fixture UID length is {len(sample_uid)}, expected 20")
+          runtime_path = Path("tests/test_p5e_provider_ack_ambiguity_runtime.py")
+          runtime = runtime_path.read_text(encoding="utf-8")
+          seed_start = runtime.index("def _seed_notification()")
+          seed_end = runtime.index("def _install_fault_triggers()", seed_start)
+          seed = runtime[seed_start:seed_end]
+
+          admin_open = '    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:\n'
+          auth_open = '    with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:\n'
+          if seed.count(admin_open) != 1 or seed.count(auth_open) != 0:
+              raise SystemExit("unexpected P5-E notification seed connection inventory")
+          seed = seed.replace(admin_open, auth_open, 1)
+
+          security_marker = "            _as_security_owner(cursor)\n"
+          if seed.count(security_marker) != 1:
+              raise SystemExit("expected security-owner handoff exactly once in notification seed")
+          split_marker = (
+              "        connection.commit()\n\n"
+              "    with _connect(_ADMIN_LOGIN, \"MIGRATION_PASSWORD\") as connection:\n"
+              "        with connection.cursor() as cursor:\n"
+              "            _as_security_owner(cursor)\n"
+          )
+          seed = seed.replace(security_marker, split_marker, 1)
+          runtime = runtime[:seed_start] + seed + runtime[seed_end:]
+          runtime_path.write_text(runtime, encoding="utf-8")
+
+          static_path = Path("tests/test_p5e_provider_ack_ambiguity_static_contracts.py")
+          static = static_path.read_text(encoding="utf-8")
+          anchor = '        "GRANT worker_runtime TO worker_test_runtime",\n'
+          replacement = (
+              '        "GRANT app_runtime TO auth_p5e_runtime",\n'
+              + anchor
+          )
+          if static.count(anchor) != 1:
+              raise SystemExit(f"expected worker grant static anchor once, found {static.count(anchor)}")
+          static = static.replace(anchor, replacement, 1)
+
+          insertion_anchor = "\ndef test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:\n"
+          regression = '''\ndef test_notification_member_fixture_uses_canonical_auth_app_runtime_identity() -> None:\n    runtime = RUNTIME.read_text(encoding="utf-8")\n    seed = runtime[\n        runtime.index("def _seed_notification()") :\n        runtime.index("def _install_fault_triggers()")\n    ]\n    auth_connection = seed.index(\n        'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:'\n    )\n    member_insert = seed.index("INSERT INTO public.members(")\n    admin_connection = seed.index(\n        'with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:',\n        member_insert,\n    )\n    security_owner = seed.index("_as_security_owner(cursor)", admin_connection)\n    assert auth_connection < member_insert < admin_connection < security_owner\n    assert seed.count(\n        'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:'\n    ) == 1\n    workflow = WORKFLOW.read_text(encoding="utf-8")\n    assert (\n        "GRANT app_runtime TO auth_p5e_runtime "\n        "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;"\n    ) in workflow\n\n'''
+          if static.count(insertion_anchor) != 1:
+              raise SystemExit("expected runtime-step test insertion anchor exactly once")
+          if "test_notification_member_fixture_uses_canonical_auth_app_runtime_identity" in static:
+              raise SystemExit("canonical auth fixture regression test already exists")
+          static = static.replace(insertion_anchor, regression + insertion_anchor, 1)
+          static_path.write_text(static, encoding="utf-8")
           PY
-          git diff --check
-          python -m py_compile tests/test_p5e_provider_ack_ambiguity_runtime.py
-          test "$(git status --short | wc -l)" = "1"
-          git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_runtime.py'
 
-      - name: Commit only bounded notification fixture
+          git diff --check
+          python -m py_compile \
+            tests/test_p5e_provider_ack_ambiguity_runtime.py \
+            tests/test_p5e_provider_ack_ambiguity_static_contracts.py
+          grep -Fq 'GRANT app_runtime TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;' \
+            .github/workflows/p5e-provider-ack-ambiguity-pg16.yml
+          test "$(git status --short | wc -l)" = "3"
+          git status --short | grep -Fx ' M .github/workflows/p5e-provider-ack-ambiguity-pg16.yml'
+          git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_runtime.py'
+          git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
+
+      - name: Commit only canonical notification fixture identity repair
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'Muralidharan16'
           git config user.email '145135907+Muralidharan16@users.noreply.github.com'
-          git add -- tests/test_p5e_provider_ack_ambiguity_runtime.py
+          git add -- \
+            .github/workflows/p5e-provider-ack-ambiguity-pg16.yml \
+            tests/test_p5e_provider_ack_ambiguity_runtime.py \
+            tests/test_p5e_provider_ack_ambiguity_static_contracts.py
           git diff --cached --check
-          test "$(git diff --cached --name-only)" = 'tests/test_p5e_provider_ack_ambiguity_runtime.py'
-          git commit -m 'P5E bound notification fixture member UID'
+          expected=$'.github/workflows/p5e-provider-ack-ambiguity-pg16.yml\ntests/test_p5e_provider_ack_ambiguity_runtime.py\ntests/test_p5e_provider_ack_ambiguity_static_contracts.py'
+          test "$(git diff --cached --name-only)" = "$expected"
+          git commit -m 'P5E align notification fixture runtime identity'
           git push origin HEAD:hardening/p5e-verification-authority-temp
