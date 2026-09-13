@@ -325,31 +325,34 @@ def _outbox_state(event_id: uuid.UUID) -> tuple[Any, ...]:
 
 
 def _search_state(seed: _BaseSeed) -> tuple[Any, ...]:
-    with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    pg_catalog.set_config('app.current_role','owner',true),
-                    pg_catalog.set_config('app.current_org_id',%s,true),
-                    pg_catalog.set_config('app.current_user_id',%s,true),
-                    pg_catalog.set_config('app.current_principal_type','owner',true)
-                """,
-                (str(seed.org_id), str(seed.owner_id)),
-            )
-            cursor.execute(
-                """
-                SELECT search_visibility_version,search_provider_ack_version,
-                       search_last_synced_at,search_sync_failed_at,
-                       lifecycle_transition_in_progress,saga_last_checkpoint,status
-                FROM public.org_branch_state
-                WHERE branch_id=%s AND org_id=%s
-                """,
-                (seed.branch_id, seed.org_id),
-            )
-            row = cursor.fetchone()
-            assert row is not None
-            return row
+    # Read-only CI infrastructure observation. The faulting and replacement
+    # application workers remain worker_test_runtime/NOBYPASSRLS; do not
+    # widen runtime table ACL merely to inspect post-fault evidence.
+    output = _admin_psql(
+        "SELECT search_visibility_version::text,"
+        "COALESCE(search_provider_ack_version::text,'NULL'),"
+        "CASE WHEN search_last_synced_at IS NULL THEN 'NULL' ELSE 'SET' END,"
+        "CASE WHEN search_sync_failed_at IS NULL THEN 'NULL' ELSE 'SET' END,"
+        "lifecycle_transition_in_progress::text,"
+        "COALESCE(saga_last_checkpoint,'NULL'),status "
+        "FROM public.org_branch_state "
+        f"WHERE branch_id='{seed.branch_id}'::uuid "
+        f"AND org_id='{seed.org_id}'::uuid;",
+        tuples_only=True,
+    )
+    rows = [line.strip() for line in output.splitlines() if line.strip()]
+    assert len(rows) == 1
+    values = rows[0].split("|")
+    assert len(values) == 7
+    return (
+        int(values[0]),
+        None if values[1] == "NULL" else int(values[1]),
+        None if values[2] == "NULL" else values[2],
+        None if values[3] == "NULL" else values[3],
+        values[4] == "true",
+        None if values[5] == "NULL" else values[5],
+        values[6],
+    )
 
 
 def _accelerate(event_id: uuid.UUID) -> None:
