@@ -16,28 +16,128 @@ jobs:
           ref: hardening/p5d-dependency-loss-temp
           fetch-depth: 1
 
-      - name: Patch exact P5D fixture typing defect
+      - name: Patch exact P5D broker-controller connection reuse
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "f5daabcbb3494cb8a316a65dd6733ada4ab90233"
+          test "$(git rev-parse HEAD)" = "c6a5084ce91a296c8c7156366bd681bf10fa51aa"
           python - <<'PY'
           from pathlib import Path
+
           path = Path('tests/test_p5d_dependency_loss_runtime.py')
           source = path.read_text(encoding='utf-8')
-          old = "jsonb_build_object('p5d_fault',%s),3,%s"
-          new = "jsonb_build_object('p5d_fault',CAST(%s AS text)),3,%s"
-          if source.count(old) != 1:
-              raise SystemExit('unexpected P5D malformed-lifecycle fixture shape')
-          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+          anchor = '''def _telemetry(path: Path) -> list[dict[str, Any]]:
+              if not path.exists():
+                  return []
+              records: list[dict[str, Any]] = []
+              for line in path.read_text(encoding="utf-8").splitlines():
+                  try:
+                      value = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if isinstance(value, dict):
+                      records.append(value)
+              return records
+
+
+          @contextmanager
+          def _running_celery_worker(
+          '''
+          replacement = '''def _telemetry(path: Path) -> list[dict[str, Any]]:
+              if not path.exists():
+                  return []
+              records: list[dict[str, Any]] = []
+              for line in path.read_text(encoding="utf-8").splitlines():
+                  try:
+                      value = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if isinstance(value, dict):
+                      records.append(value)
+              return records
+
+
+          def _fresh_celery_client():
+              from celery import Celery
+
+              return Celery(
+                  "p5d-runtime-controller",
+                  broker=os.environ["CELERY_BROKER_URL"],
+                  backend=os.environ["CELERY_RESULT_BACKEND"],
+              )
+
+
+          @contextmanager
+          def _running_celery_worker(
+          '''
+          if source.count(anchor) != 1:
+              raise SystemExit('unexpected P5D telemetry/worker anchor shape')
+          source = source.replace(anchor, replacement, 1)
+
+          old_ready = '''    try:
+                  from app.core.celery_app import celery_app
+
+                  def ready() -> bool:
+                      if process.poll() is not None:
+                          raise AssertionError(f"P5-D Celery worker exited:\\n{log.read_text(encoding='utf-8')}")
+                      replies = celery_app.control.ping(destination=[hostname], timeout=1.0)
+                      return any(reply.get(hostname, {}).get("ok") == "pong" for reply in replies)
+
+                  _wait_for(ready, description="P5-D Celery worker readiness", timeout=30)
+                  yield worker
+          '''
+          new_ready = '''    try:
+                  from kombu.exceptions import OperationalError
+
+                  def ready() -> bool:
+                      if process.poll() is not None:
+                          raise AssertionError(f"P5-D Celery worker exited:\\n{log.read_text(encoding='utf-8')}")
+                      client = _fresh_celery_client()
+                      try:
+                          replies = client.control.ping(destination=[hostname], timeout=1.0)
+                          return any(
+                              reply.get(hostname, {}).get("ok") == "pong"
+                              for reply in replies
+                          )
+                      except (redis.RedisError, OperationalError, OSError):
+                          return False
+                      finally:
+                          client.close()
+
+                  _wait_for(ready, description="P5-D Celery worker readiness", timeout=30)
+                  yield worker
+          '''
+          if source.count(old_ready) != 1:
+              raise SystemExit('unexpected P5D Celery readiness shape')
+          source = source.replace(old_ready, new_ready, 1)
+
+          old_send = '''def _send_poller_task(queue: str) -> None:
+              from app.core.celery_app import celery_app
+
+              celery_app.send_task("app.tasks.branch_outbox_poller.run", queue=queue)
+          '''
+          new_send = '''def _send_poller_task(queue: str) -> None:
+              client = _fresh_celery_client()
+              try:
+                  client.send_task("app.tasks.branch_outbox_poller.run", queue=queue)
+              finally:
+                  client.close()
+          '''
+          if source.count(old_send) != 1:
+              raise SystemExit('unexpected P5D Celery send shape')
+          source = source.replace(old_send, new_send, 1)
+
+          path.write_text(source, encoding='utf-8')
           PY
           git diff --check
           python -m py_compile tests/test_p5d_dependency_loss_runtime.py
           test "$(git diff --name-only)" = "tests/test_p5d_dependency_loss_runtime.py"
-          grep -Fq "jsonb_build_object('p5d_fault',CAST(%s AS text)),3,%s" \
-            tests/test_p5d_dependency_loss_runtime.py
+          grep -Fq 'def _fresh_celery_client():' tests/test_p5d_dependency_loss_runtime.py
+          grep -Fq 'client.close()' tests/test_p5d_dependency_loss_runtime.py
+          grep -Fq 'except (redis.RedisError, OperationalError, OSError):' tests/test_p5d_dependency_loss_runtime.py
 
-      - name: Commit exact fixture typing repair
+      - name: Commit exact fresh broker-controller repair
         shell: bash
         run: |
           set -euo pipefail
@@ -46,5 +146,5 @@ jobs:
           test "$(git diff --cached --name-only)" = "tests/test_p5d_dependency_loss_runtime.py"
           git -c user.name='Muralidharan16' \
             -c user.email='145135907+Muralidharan16@users.noreply.github.com' \
-            commit -m 'P5D type malformed lifecycle fixture payload'
+            commit -m 'P5D rebind broker controller after Redis restart'
           git push origin HEAD:hardening/p5d-dependency-loss-temp
