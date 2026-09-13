@@ -58,11 +58,11 @@ jobs:
               # application workers remain worker_test_runtime/NOBYPASSRLS; do not
               # widen runtime table ACL merely to inspect post-fault evidence.
               output = _admin_psql(
-                  "SELECT search_visibility_version::text," 
-                  "COALESCE(search_provider_ack_version::text,'NULL')," 
-                  "CASE WHEN search_last_synced_at IS NULL THEN 'NULL' ELSE 'SET' END," 
-                  "CASE WHEN search_sync_failed_at IS NULL THEN 'NULL' ELSE 'SET' END," 
-                  "lifecycle_transition_in_progress::text," 
+                  "SELECT search_visibility_version::text,"
+                  "COALESCE(search_provider_ack_version::text,'NULL'),"
+                  "CASE WHEN search_last_synced_at IS NULL THEN 'NULL' ELSE 'SET' END,"
+                  "CASE WHEN search_sync_failed_at IS NULL THEN 'NULL' ELSE 'SET' END,"
+                  "lifecycle_transition_in_progress::text,"
                   "COALESCE(saga_last_checkpoint,'NULL'),status "
                   "FROM public.org_branch_state "
                   f"WHERE branch_id='{seed.branch_id}'::uuid "
