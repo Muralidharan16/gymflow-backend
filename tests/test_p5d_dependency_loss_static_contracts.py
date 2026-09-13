@@ -119,14 +119,16 @@ def test_lifecycle_fixture_seeds_canonical_owner_actor_identity() -> None:
     end = source.index("\n\ndef ", start + 1)
     block = source[start:end]
     for phrase in (
-        'owner_email = f"p5d-{seed.owner_id.hex}@example.test"',
-        "Canonical lifecycle actor bridge",
+        "Canonical lifecycle actor bridge: lifecycle audit FKs",
         "INSERT INTO public.organization_users(",
         "id,org_id,name,email,password_hash,is_active,is_verified",
-        "(seed.owner_id, seed.org_id, owner_email)",
+        "seed.owner_id,",
+        "seed.org_id,",
+        'f"p5d-{seed.owner_id.hex}@example.test"',
     ):
         assert phrase in block
     assert block.count("INSERT INTO public.organization_users(") == 1
+    assert block.count('f"p5d-{seed.owner_id.hex}@example.test"') == 2
     assert "ALTER TABLE public.organization_users" not in block
     assert "DISABLE ROW LEVEL SECURITY" not in block
 
