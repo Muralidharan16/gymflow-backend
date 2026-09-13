@@ -67,6 +67,7 @@ jobs:
           python -m py_compile \
             alembic/versions/zg07d8e9f0a41_p5w_worker_claim_fences.py \
             alembic/versions/zh07d8e9f0a42_p5w_projection_policy_scope.py \
+            alembic/versions/zi07d8e9f0a43_p5e_provider_capability_fences.py \
             app/models/branch_lifecycle.py \
             app/models/outbox.py \
             app/tasks/branch_outbox_poller.py \
@@ -104,12 +105,12 @@ jobs:
           bash scripts/ci/verify_cluster_roles.sh
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p5w_test
 
-      - name: Prove empty migration lifecycle at exact P5-W head
+      - name: Prove migration lifecycle at exact candidate head
         env:
           CERTIFICATION_HEAD: ${{ inputs.certification_head }}
         run: |
           set -euo pipefail
-          expected_head="${CERTIFICATION_HEAD:-zh07d8e9f0a42}"
+          expected_head="${CERTIFICATION_HEAD:-zi07d8e9f0a43}"
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${expected_head}"
           python -s -m alembic -c alembic.ini upgrade head

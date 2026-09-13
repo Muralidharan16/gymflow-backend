@@ -157,8 +157,9 @@ def test_p5w_runtime_gate_uses_real_postgres_reduced_identity_and_same_head() ->
         "P5W_WORKER_FENCING_PG16=PASS",
         "claim-fence INSERT leaked",
         "zg07 downgrade refuses loss of durable P5 claim-generation evidence",
-        'expected_head="${CERTIFICATION_HEAD:-zh07d8e9f0a42}"',
+        'expected_head="${CERTIFICATION_HEAD:-zi07d8e9f0a43}"',
         "zh07d8e9f0a42_p5w_projection_policy_scope.py",
+        "zi07d8e9f0a43_p5e_provider_capability_fences.py",
     ):
         assert phrase in source
 

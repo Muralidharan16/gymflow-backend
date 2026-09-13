@@ -80,6 +80,7 @@ jobs:
           diff -u requirements-test.lock /tmp/resolved.txt
           python -m py_compile \
             alembic/versions/zh07d8e9f0a42_p5w_projection_policy_scope.py \
+            alembic/versions/zi07d8e9f0a43_p5e_provider_capability_fences.py \
             scripts/ci/p5w2_celery_fault_hooks.py \
             tests/test_p5w2_worker_crash_redelivery_runtime.py \
             tests/test_p5w2_worker_crash_static_contracts.py
@@ -131,12 +132,12 @@ jobs:
           CERTIFICATION_HEAD: ${{ inputs.certification_head }}
         run: |
           set -euo pipefail
-          expected_head="${CERTIFICATION_HEAD:-zh07d8e9f0a42}"
+          expected_head="${CERTIFICATION_HEAD:-zi07d8e9f0a43}"
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${expected_head}"
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
-          if [[ "${expected_head}" == 'zh07d8e9f0a42' ]]; then
+          if [[ "${expected_head}" == 'zi07d8e9f0a43' ]]; then
             python -s -m alembic -c alembic.ini downgrade zg07d8e9f0a41
             test "$(python -s -m alembic -c alembic.ini current | awk '{print $1}')" = 'zg07d8e9f0a41'
             python -s -m alembic -c alembic.ini upgrade head

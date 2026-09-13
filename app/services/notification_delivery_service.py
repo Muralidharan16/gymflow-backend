@@ -34,11 +34,16 @@ async def materialize_member_notifications(event: dict[str, Any], worker_id: uui
             text(
                 """
                 SELECT app_secure.materialize_branch_member_notifications(
-                    CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid)
+                    CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid),
+                    CAST(:lease_fence AS bigint)
                 )
                 """
             ),
-            {"outbox_id": event["outbox_id"], "worker_id": worker_id},
+            {
+                "outbox_id": event["outbox_id"],
+                "worker_id": worker_id,
+                "lease_fence": event["lease_fence"],
+            },
         )
         await session.commit()
     logger.info(
@@ -57,11 +62,16 @@ async def _claim_delivery(event: dict[str, Any], worker_id: uuid.UUID) -> dict[s
                 SELECT eligible,command_id,tenant_id,branch_id,member_id,channel,destination,
                        member_name,template_key,template_data,idempotency_key,attempt_number,provider_code
                 FROM app_secure.claim_notification_delivery_v2(
-                    CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid)
+                    CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid),
+                    CAST(:lease_fence AS bigint)
                 )
                 """
             ),
-            {"outbox_id": event["outbox_id"], "worker_id": worker_id},
+            {
+                "outbox_id": event["outbox_id"],
+                "worker_id": worker_id,
+                "lease_fence": event["lease_fence"],
+            },
         )
         projection = dict(result.mappings().one())
         # Provider I/O is always outside the database transaction.
@@ -77,6 +87,7 @@ async def _ack_delivery(event: dict[str, Any], worker_id: uuid.UUID, evidence) -
                 """
                 SELECT app_secure.acknowledge_notification_provider_acceptance(
                     CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid),
+                    CAST(:lease_fence AS bigint),
                     CAST(:provider_reference_id AS text),CAST(:request_sha256 AS text),
                     CAST(:evidence_sha256 AS text)
                 )
@@ -85,6 +96,7 @@ async def _ack_delivery(event: dict[str, Any], worker_id: uuid.UUID, evidence) -
             {
                 "outbox_id": event["outbox_id"],
                 "worker_id": worker_id,
+                "lease_fence": event["lease_fence"],
                 "provider_reference_id": evidence.provider_reference_id,
                 "request_sha256": evidence.request_sha256,
                 "evidence_sha256": evidence.provider_evidence_sha256,
@@ -104,7 +116,8 @@ async def _record_delivery_failure(
             text(
                 """
                 SELECT app_secure.record_notification_delivery_failure(
-                    CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid),CAST(:outcome AS text),
+                    CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid),
+                    CAST(:lease_fence AS bigint),CAST(:outcome AS text),
                     CAST(:request_sha256 AS text),CAST(:error_code AS text)
                 )
                 """
@@ -112,6 +125,7 @@ async def _record_delivery_failure(
             {
                 "outbox_id": event["outbox_id"],
                 "worker_id": worker_id,
+                "lease_fence": event["lease_fence"],
                 "outcome": error.outcome,
                 "request_sha256": error.request_sha256,
                 "error_code": error.error_code,
@@ -207,11 +221,16 @@ async def _claim_reconciliation(event: dict[str, Any], worker_id: uuid.UUID) -> 
                 """
                 SELECT command_id,tenant_id,provider_reference_id
                 FROM app_secure.claim_notification_reconciliation(
-                    CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid)
+                    CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid),
+                    CAST(:lease_fence AS bigint)
                 )
                 """
             ),
-            {"outbox_id": event["outbox_id"], "worker_id": worker_id},
+            {
+                "outbox_id": event["outbox_id"],
+                "worker_id": worker_id,
+                "lease_fence": event["lease_fence"],
+            },
         )
         projection = dict(result.mappings().one())
         await session.commit()
@@ -226,6 +245,7 @@ async def _complete_reconciliation(event: dict[str, Any], worker_id: uuid.UUID, 
                 """
                 SELECT app_secure.complete_notification_reconciliation(
                     CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid),
+                    CAST(:lease_fence AS bigint),
                     CAST(:last_event AS text),CAST(:evidence_sha256 AS text)
                 )
                 """
@@ -233,6 +253,7 @@ async def _complete_reconciliation(event: dict[str, Any], worker_id: uuid.UUID, 
             {
                 "outbox_id": event["outbox_id"],
                 "worker_id": worker_id,
+                "lease_fence": event["lease_fence"],
                 "last_event": evidence.last_event,
                 "evidence_sha256": evidence.provider_evidence_sha256,
             },
@@ -259,7 +280,8 @@ async def _record_reconciliation_failure(
             text(
                 """
                 SELECT app_secure.record_notification_reconciliation_failure(
-                    CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid),CAST(:error_code AS text),
+                    CAST(:outbox_id AS uuid),CAST(:worker_id AS uuid),
+                    CAST(:lease_fence AS bigint),CAST(:error_code AS text),
                     CAST(:permanent AS boolean)
                 )
                 """
@@ -267,6 +289,7 @@ async def _record_reconciliation_failure(
             {
                 "outbox_id": event["outbox_id"],
                 "worker_id": worker_id,
+                "lease_fence": event["lease_fence"],
                 "error_code": error.error_code,
                 "permanent": error.outcome == "permanent_rejection",
             },

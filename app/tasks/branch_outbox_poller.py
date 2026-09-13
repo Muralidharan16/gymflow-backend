@@ -216,11 +216,16 @@ async def _claim_search_projection(
                 SELECT tenant_id, branch_id, operation, desired_version,
                        document, previous_ack_version
                 FROM app_secure.claim_branch_search_projection(
-                    CAST(:outbox_id AS uuid), CAST(:worker_id AS uuid)
+                    CAST(:outbox_id AS uuid), CAST(:worker_id AS uuid),
+                    CAST(:lease_fence AS bigint)
                 )
                 """
             ),
-            {"outbox_id": event["outbox_id"], "worker_id": worker_id},
+            {
+                "outbox_id": event["outbox_id"],
+                "worker_id": worker_id,
+                "lease_fence": event["lease_fence"],
+            },
         )
         projection = dict(result.mappings().one())
         # Do not hold a database transaction open across provider I/O.
@@ -243,6 +248,7 @@ async def _acknowledge_search_effect(
                 SELECT app_secure.acknowledge_branch_search_effect(
                     CAST(:outbox_id AS uuid),
                     CAST(:worker_id AS uuid),
+                    CAST(:lease_fence AS bigint),
                     CAST(:desired_version AS bigint),
                     CAST(:operation AS text),
                     CAST(:provider_code AS text),
@@ -258,6 +264,7 @@ async def _acknowledge_search_effect(
             {
                 "outbox_id": event["outbox_id"],
                 "worker_id": worker_id,
+                "lease_fence": event["lease_fence"],
                 "desired_version": projection["desired_version"],
                 "operation": projection["operation"],
                 "provider_code": evidence.provider_code,
@@ -288,6 +295,7 @@ async def _record_search_failure(
                 SELECT app_secure.record_branch_search_failure(
                     CAST(:outbox_id AS uuid),
                     CAST(:worker_id AS uuid),
+                    CAST(:lease_fence AS bigint),
                     CAST(:desired_version AS bigint),
                     CAST(:operation AS text),
                     CAST(:outcome AS text),
@@ -300,6 +308,7 @@ async def _record_search_failure(
             {
                 "outbox_id": event["outbox_id"],
                 "worker_id": worker_id,
+                "lease_fence": event["lease_fence"],
                 "desired_version": projection["desired_version"],
                 "operation": projection["operation"],
                 "outcome": error.outcome,
@@ -332,6 +341,7 @@ async def _repair_search_drift(
                 SELECT app_secure.repair_branch_search_provider_drift(
                     CAST(:outbox_id AS uuid),
                     CAST(:worker_id AS uuid),
+                    CAST(:lease_fence AS bigint),
                     CAST(:desired_version AS bigint),
                     CAST(:operation AS text),
                     CAST(:provider_code AS text),
@@ -348,6 +358,7 @@ async def _repair_search_drift(
             {
                 "outbox_id": event["outbox_id"],
                 "worker_id": worker_id,
+                "lease_fence": event["lease_fence"],
                 "desired_version": projection["desired_version"],
                 "operation": projection["operation"],
                 "provider_code": "opensearch",
