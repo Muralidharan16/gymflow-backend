@@ -30,10 +30,12 @@ jobs:
     env:
       MIGRATION_PASSWORD: ci-p5e-migration-owner
       AUTH_RUNTIME_PASSWORD: ci-p5e-auth-runtime
+      APP_RUNTIME_PASSWORD: ci-p5e-app-runtime
       WORKER_RUNTIME_PASSWORD: ci-p5e-worker-runtime
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p5e-migration-owner@127.0.0.1:5432/gymflow_p5e_test
       TEST_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-p5e-worker-runtime@127.0.0.1:5432/gymflow_p5e_test
       TEST_ADMIN_DATABASE_URL: postgresql+psycopg://migration_owner:ci-p5e-migration-owner@127.0.0.1:5432/gymflow_p5e_test
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-p5e-worker-runtime@127.0.0.1:5432/gymflow_p5e_test
       SECRET_KEY: ci-p5e-not-production
       AWS_ACCESS_KEY_ID: ci-p5e-not-production
       AWS_SECRET_ACCESS_KEY: ci-p5e-not-production
@@ -84,16 +86,21 @@ jobs:
           ALTER ROLE migration_owner PASSWORD 'ci-p5e-migration-owner';
           CREATE ROLE auth_p5e_runtime LOGIN PASSWORD 'ci-p5e-auth-runtime'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-p5e-app-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-p5e-worker-runtime'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           GRANT auth_runtime TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_runtime TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           ALTER ROLE auth_p5e_runtime SET row_security='on';
           ALTER ROLE auth_p5e_runtime SET statement_timeout='5s';
           ALTER ROLE auth_p5e_runtime SET lock_timeout='2s';
           ALTER ROLE auth_p5e_runtime SET idle_in_transaction_session_timeout='15s';
+          ALTER ROLE app_test_runtime SET row_security='on';
           ALTER ROLE worker_test_runtime SET row_security='on';
           ALTER ROLE worker_test_runtime SET statement_timeout='15s';
           ALTER ROLE worker_test_runtime SET lock_timeout='2s';
@@ -101,7 +108,7 @@ jobs:
           CREATE DATABASE gymflow_p5e_test OWNER migration_owner;
           REVOKE ALL ON DATABASE gymflow_p5e_test FROM PUBLIC;
           GRANT CONNECT ON DATABASE gymflow_p5e_test
-            TO migration_owner,auth_p5e_runtime,worker_test_runtime;
+            TO migration_owner,auth_p5e_runtime,app_test_runtime,worker_test_runtime;
           SQL
           bash scripts/ci/verify_cluster_roles.sh
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p5e_test
@@ -137,6 +144,10 @@ jobs:
             tests/test_p5e_provider_ack_ambiguity_runtime.py
 
       - name: Reprove inherited search notification and worker boundaries
+        env:
+          REDIS_URL: redis://p5e-cache.invalid:6379/0
+          CELERY_BROKER_URL: redis://p5e-broker.invalid:6379/1
+          CELERY_RESULT_BACKEND: redis://p5e-result.invalid:6379/2
         run: |
           set -euo pipefail
           python -m pytest --noconftest -q --maxfail=1 \
