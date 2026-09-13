@@ -151,6 +151,13 @@ def test_delete_seed_separates_lifecycle_fixture_from_security_owner_evidence() 
         '"-d"',
         "_DATABASE",
         '"UPDATE 1"',
+        '"-A"',
+        '"-t"',
+        '"-F"',
+        "search_visibility_version::text",
+        "search_provider_ack_version::text",
+        "search_last_synced_at::text",
+        "return verified.stdout.strip()",
     ):
         assert phrase in infrastructure
     assert "app_security_owner" not in infrastructure
@@ -158,12 +165,13 @@ def test_delete_seed_separates_lifecycle_fixture_from_security_owner_evidence() 
     infrastructure_change = seed.index(
         "_set_branch_publicity_with_ci_infrastructure(base, is_public=False)"
     )
-    state_assertion = seed.index("assert cursor.fetchone() == (False, 2, 1, None)")
+    state_assertion = seed.index('assert fixture_state == "false|2|1|NULL"')
     outbox_insert = seed.index("INSERT INTO public.branch_outbox_events")
     assert provider_seed < infrastructure_change < state_assertion < outbox_insert
     security_seed = seed[provider_seed:infrastructure_change]
     assert "is_public=false" not in security_seed
     assert "SET search_visibility_version=2" not in security_seed
+    assert "app.current_role','owner" not in seed
 
 
 def test_replacement_processes_reuse_the_persisted_provider_store() -> None:
