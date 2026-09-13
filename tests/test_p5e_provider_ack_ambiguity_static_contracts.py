@@ -163,11 +163,18 @@ def test_delete_seed_separates_lifecycle_fixture_from_security_owner_evidence() 
     assert "app_security_owner" not in infrastructure
     provider_seed = seed.index("SET search_provider_ack_version=1")
     infrastructure_change = seed.index(
-        "_set_branch_publicity_with_ci_infrastructure(base, is_public=False)"
+        "_set_branch_publicity_with_ci_infrastructure("
     )
+    publicity_argument = seed.index("is_public=False", infrastructure_change)
     state_assertion = seed.index('assert fixture_state == "false|2|1|NULL"')
     outbox_insert = seed.index("INSERT INTO public.branch_outbox_events")
-    assert provider_seed < infrastructure_change < state_assertion < outbox_insert
+    assert (
+        provider_seed
+        < infrastructure_change
+        < publicity_argument
+        < state_assertion
+        < outbox_insert
+    )
     security_seed = seed[provider_seed:infrastructure_change]
     assert "is_public=false" not in security_seed
     assert "SET search_visibility_version=2" not in security_seed
