@@ -819,7 +819,7 @@ async def _initiate_temporary_close(seed: _BaseSeed) -> uuid.UUID:
                 to_status="temporarily_closed",
                 actor_id=seed.owner_id,
                 actor_role="owner",
-                transition_source="p5d_runtime",
+                transition_source="api",
             )
     finally:
         await engine.dispose()
