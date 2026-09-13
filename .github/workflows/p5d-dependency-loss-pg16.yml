@@ -143,6 +143,26 @@ jobs:
           PGPASSWORD="${WORKER_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U worker_test_runtime -d gymflow_p5d_test \
             -c 'SELECT current_user,pg_catalog.current_setting('\''row_security'\'');'
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_p5d_test <<'SQL'
+          SELECT
+            pg_catalog.has_table_privilege(
+              'app_runtime','public.branch_outbox_events','INSERT'
+            ) AS app_runtime_insert,
+            pg_catalog.has_table_privilege(
+              'app_test_runtime','public.branch_outbox_events','INSERT'
+            ) AS app_test_runtime_insert;
+          SELECT rolname,rolinherit
+          FROM pg_catalog.pg_roles
+          WHERE rolname IN ('app_runtime','app_test_runtime')
+          ORDER BY rolname;
+          SELECT
+            pg_catalog.pg_get_userbyid(roleid) AS role_name,
+            pg_catalog.pg_get_userbyid(member) AS member_name,
+            admin_option,inherit_option,set_option
+          FROM pg_catalog.pg_auth_members
+          WHERE pg_catalog.pg_get_userbyid(roleid)='app_runtime'
+            AND pg_catalog.pg_get_userbyid(member)='app_test_runtime';
+          SQL
 
       - name: Prove real Redis provider-network and database disconnect recovery
         run: |
