@@ -18,58 +18,94 @@ jobs:
           ref: hardening/p5e-verification-authority-temp
           fetch-depth: 1
 
-      - name: Guard exact parent and apply one context-only replacement
+      - name: Guard exact parent and move lifecycle verification to CI infrastructure
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "7b5c421bb09c76833a46ebf48cc409f57080fc7b"
+          test "$(git rev-parse HEAD)" = "15be01cb6b96c916276d753bb523346092f9a438"
           python - <<'PY'
           from pathlib import Path
 
           path = Path("tests/test_p5e_provider_ack_ambiguity_runtime.py")
           source = path.read_text(encoding="utf-8")
-          old = '''            if operation == "delete":
-                          cursor.execute(
-                              """
-                              SELECT is_public,search_visibility_version,
-                                     search_provider_ack_version,search_last_synced_at
-                              FROM public.org_branch_state
-                              WHERE branch_id=%s AND org_id=%s
-                              """,
-                              (base.branch_id, base.org_id),
-                          )
-                          assert cursor.fetchone() == (False, 2, 1, None)
+
+          start = source.index("def _set_branch_publicity_with_ci_infrastructure(")
+          end = source.index("\ndef _as_security_owner(", start)
+          helper = '''def _set_branch_publicity_with_ci_infrastructure(
+              seed: _BaseSeed,
+              *,
+              is_public: bool,
+          ) -> str:
+              _safe_database_topology()
+              value = "true" if is_public else "false"
+              statement = (
+                  "UPDATE public.org_branch_state "
+                  f"SET is_public={value} "
+                  f"WHERE branch_id='{seed.branch_id}'::uuid "
+                  f"AND org_id='{seed.org_id}'::uuid;"
+              )
+              completed = subprocess.run(
+                  ["sudo", "-u", "postgres", "psql", "-X", "-v", "ON_ERROR_STOP=1",
+                   "-d", _DATABASE, "-c", statement],
+                  cwd=ROOT, text=True, stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT, timeout=30, check=False,
+              )
+              if completed.returncode != 0 or "UPDATE 1" not in completed.stdout.splitlines():
+                  raise AssertionError(
+                      "P5-E CI infrastructure branch publicity fixture failed:\\n"
+                      f"{completed.stdout}"
+                  )
+
+              verification_statement = (
+                  "SELECT CASE WHEN is_public THEN 'true' ELSE 'false' END,"
+                  "search_visibility_version::text,"
+                  "COALESCE(search_provider_ack_version::text,'NULL'),"
+                  "COALESCE(search_last_synced_at::text,'NULL') "
+                  "FROM public.org_branch_state "
+                  f"WHERE branch_id='{seed.branch_id}'::uuid "
+                  f"AND org_id='{seed.org_id}'::uuid;"
+              )
+              verified = subprocess.run(
+                  ["sudo", "-u", "postgres", "psql", "-X", "-A", "-t", "-F", "|",
+                   "-v", "ON_ERROR_STOP=1", "-d", _DATABASE, "-c", verification_statement],
+                  cwd=ROOT, text=True, stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT, timeout=30, check=False,
+              )
+              if verified.returncode != 0:
+                  raise AssertionError(
+                      "P5-E CI infrastructure branch publicity verification failed:\\n"
+                      f"{verified.stdout}"
+                  )
+              return verified.stdout.strip()
+
           '''
-          new = '''            if operation == "delete":
-                          cursor.execute(
-                              """
-                              SELECT
-                                  pg_catalog.set_config('app.current_org_id',%s,true),
-                                  pg_catalog.set_config('app.current_role','owner',true)
-                              """,
-                              (str(base.org_id),),
-                          )
-                          cursor.execute(
-                              """
-                              SELECT is_public,search_visibility_version,
-                                     search_provider_ack_version,search_last_synced_at
-                              FROM public.org_branch_state
-                              WHERE branch_id=%s AND org_id=%s
-                              """,
-                              (base.branch_id, base.org_id),
-                          )
-                          assert cursor.fetchone() == (False, 2, 1, None)
+          source = source[:start] + helper + source[end + 1:]
+
+          start = source.index(
+              "        _set_branch_publicity_with_ci_infrastructure(base, is_public=False)"
+          )
+          end = source.index(
+              '            cursor.execute(\n                """\n                INSERT INTO public.branch_outbox_events(',
+              start,
+          )
+          replacement = '''        fixture_state = _set_branch_publicity_with_ci_infrastructure(
+                      base, is_public=False
+                  )
+                  assert fixture_state == "false|2|1|NULL"
+
+              with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
+                  with connection.cursor() as cursor:
+                      _as_security_owner(cursor)
           '''
-          if source.count(old) != 1:
-              raise SystemExit(f"expected exactly one guarded replacement, found {source.count(old)}")
-          path.write_text(source.replace(old, new), encoding="utf-8")
+          source = source[:start] + replacement + source[end:]
+          path.write_text(source, encoding="utf-8")
           PY
           git diff --check
           python -m py_compile tests/test_p5e_provider_ack_ambiguity_runtime.py
           test "$(git status --short | wc -l)" = "1"
           git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_runtime.py'
 
-      - name: Commit only the repaired runtime harness to temp branch
+      - name: Commit repaired runtime harness to temp branch
         shell: bash
         run: |
           set -euo pipefail
@@ -78,5 +114,5 @@ jobs:
           git add -- tests/test_p5e_provider_ack_ambiguity_runtime.py
           git diff --cached --check
           test "$(git diff --cached --name-only)" = 'tests/test_p5e_provider_ack_ambiguity_runtime.py'
-          git commit -m 'P5E bind lifecycle verification to tenant RLS context'
+          git commit -m 'P5E verify lifecycle fixture through CI infrastructure'
           git push origin HEAD:hardening/p5e-verification-authority-temp
