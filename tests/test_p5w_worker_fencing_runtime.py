@@ -13,6 +13,7 @@ _DATABASE_ENV = "TEST_DATABASE_URL"
 _ADMIN_DATABASE_ENV = "TEST_ADMIN_DATABASE_URL"
 _ADMIN_LOGIN = "migration_owner"
 _APP_LOGIN = "app_test_runtime"
+_P5E_APP_LOGIN = "auth_p5e_runtime"
 _WORKER_LOGIN = "worker_test_runtime"
 
 
@@ -61,6 +62,24 @@ def _connect(login: str, password_env: str):
         user=login,
         password=os.environ[password_env],
     )
+
+
+def _app_runtime_identity() -> tuple[str, str]:
+    if os.environ.get("APP_RUNTIME_PASSWORD"):
+        return _APP_LOGIN, "APP_RUNTIME_PASSWORD"
+    if os.environ.get("AUTH_RUNTIME_PASSWORD"):
+        return _P5E_APP_LOGIN, "AUTH_RUNTIME_PASSWORD"
+    raise RuntimeError(
+        "P5-W runtime requires APP_RUNTIME_PASSWORD or AUTH_RUNTIME_PASSWORD"
+    )
+
+
+def _prepare_worker_settings() -> None:
+    if not os.environ.get("WORKER_DATABASE_URL"):
+        os.environ["WORKER_DATABASE_URL"] = os.environ[_DATABASE_ENV]
+    os.environ.setdefault("REDIS_URL", "redis://p5w-inherited.invalid:6379/0")
+    os.environ.setdefault("CELERY_BROKER_URL", "redis://p5w-inherited.invalid:6379/1")
+    os.environ.setdefault("CELERY_RESULT_BACKEND", "redis://p5w-inherited.invalid:6379/2")
 
 
 def _seed_two_final_attempt_jobs() -> tuple[uuid.UUID, uuid.UUID]:
@@ -124,7 +143,8 @@ def _seed_two_final_attempt_jobs() -> tuple[uuid.UUID, uuid.UUID]:
             )
         connection.commit()
 
-    with _connect(_APP_LOGIN, "APP_RUNTIME_PASSWORD") as connection:
+    app_login, app_password_env = _app_runtime_identity()
+    with _connect(app_login, app_password_env) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -295,6 +315,7 @@ async def _exercise_transactional_aba(worker_id: uuid.UUID, event_id: uuid.UUID)
 
 
 def test_reclaim_rotates_fence_rejects_aba_and_recovers_final_attempts() -> None:
+    _prepare_worker_settings()
     _safe_topology()
     lifecycle_id, transactional_id = _seed_two_final_attempt_jobs()
     reused_worker_id = uuid.uuid4()
