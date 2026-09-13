@@ -234,6 +234,21 @@ def test_migration_removes_unfenced_worker_authority_and_is_reversible() -> None
         assert phrase in source
 
 
+def test_migration_treats_public_as_acl_pseudorole_not_database_role() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    for phrase in (
+        "pg_catalog.aclexplode(",
+        "pg_catalog.acldefault('f', proc_data.proowner)",
+        "acl_data.grantee = 0",
+        "_public_execute(bind, old_signature)",
+        "_public_execute(bind, _HELPER)",
+        "_public_execute(bind, new_signature)",
+    ):
+        assert phrase in source
+    assert '_has_execute(bind, "PUBLIC"' not in source
+    assert "_has_execute(bind, 'PUBLIC'" not in source
+
+
 def test_migration_resolves_private_schema_only_after_security_role_switch() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     upgrade = source[source.index("def upgrade()") : source.index("def downgrade()")]
