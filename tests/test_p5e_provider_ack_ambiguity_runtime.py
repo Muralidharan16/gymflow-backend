@@ -426,7 +426,7 @@ def _seed_notification() -> _NotificationSeed:
                     member_id,
                     base.org_id,
                     base.branch_id,
-                    f"P5E{member_id.hex[:20].upper()}",
+                    f"P5E{member_id.hex[:17].upper()}",
                 ),
             )
             _as_security_owner(cursor)
