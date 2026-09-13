@@ -169,6 +169,23 @@ def _seed_base(*, companion_operational_branch: bool = False) -> _BaseSeed:
                 """,
                 (seed.owner_id, seed.org_id, f"p5d-{seed.owner_id.hex}@example.test"),
             )
+            # Canonical lifecycle actor bridge: lifecycle audit FKs
+            # target organization_users even for an owner-authenticated actor.
+            cursor.execute(
+                """
+                INSERT INTO public.organization_users(
+                    id,org_id,name,email,password_hash,is_active,is_verified
+                ) VALUES (
+                    %s,%s,'P5-D Runtime Owner User',%s,
+                    'fixture-not-a-real-password-hash',true,true
+                )
+                """,
+                (
+                    seed.owner_id,
+                    seed.org_id,
+                    f"p5d-{seed.owner_id.hex}@example.test",
+                ),
+            )
             branch_rows = [(seed.branch_id, "Primary")]
             if companion_id is not None:
                 branch_rows.append((companion_id, "Companion"))
