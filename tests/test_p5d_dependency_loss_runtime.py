@@ -661,6 +661,16 @@ def _telemetry(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _fresh_celery_client():
+    from celery import Celery
+
+    return Celery(
+        "p5d-runtime-controller",
+        broker=os.environ["CELERY_BROKER_URL"],
+        backend=os.environ["CELERY_RESULT_BACKEND"],
+    )
+
+
 @contextmanager
 def _running_celery_worker(
     tmp_path: Path,
@@ -739,13 +749,22 @@ def _running_celery_worker(
     )
     worker = _CeleryWorker(process, hostname, queue, telemetry, release, log)
     try:
-        from app.core.celery_app import celery_app
+        from kombu.exceptions import OperationalError
 
         def ready() -> bool:
             if process.poll() is not None:
                 raise AssertionError(f"P5-D Celery worker exited:\n{log.read_text(encoding='utf-8')}")
-            replies = celery_app.control.ping(destination=[hostname], timeout=1.0)
-            return any(reply.get(hostname, {}).get("ok") == "pong" for reply in replies)
+            client = _fresh_celery_client()
+            try:
+                replies = client.control.ping(destination=[hostname], timeout=1.0)
+                return any(
+                    reply.get(hostname, {}).get("ok") == "pong"
+                    for reply in replies
+                )
+            except (redis.RedisError, OperationalError, OSError):
+                return False
+            finally:
+                client.close()
 
         _wait_for(ready, description="P5-D Celery worker readiness", timeout=30)
         yield worker
@@ -761,9 +780,11 @@ def _running_celery_worker(
 
 
 def _send_poller_task(queue: str) -> None:
-    from app.core.celery_app import celery_app
-
-    celery_app.send_task("app.tasks.branch_outbox_poller.run", queue=queue)
+    client = _fresh_celery_client()
+    try:
+        client.send_task("app.tasks.branch_outbox_poller.run", queue=queue)
+    finally:
+        client.close()
 
 
 def _provider_url(port: int) -> str:
