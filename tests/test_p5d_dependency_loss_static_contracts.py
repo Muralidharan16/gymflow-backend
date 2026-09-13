@@ -113,6 +113,24 @@ def test_lifecycle_fixture_uses_legal_production_transition_source() -> None:
     assert 'transition_source="p5d_runtime"' not in source
 
 
+def test_lifecycle_fixture_seeds_canonical_owner_actor_identity() -> None:
+    source = RUNTIME.read_text(encoding="utf-8")
+    start = source.index("def _seed_base")
+    end = source.index("\n\ndef ", start + 1)
+    block = source[start:end]
+    for phrase in (
+        'owner_email = f"p5d-{seed.owner_id.hex}@example.test"',
+        "Canonical lifecycle actor bridge",
+        "INSERT INTO public.organization_users(",
+        "id,org_id,name,email,password_hash,is_active,is_verified",
+        "(seed.owner_id, seed.org_id, owner_email)",
+    ):
+        assert phrase in block
+    assert block.count("INSERT INTO public.organization_users(") == 1
+    assert "ALTER TABLE public.organization_users" not in block
+    assert "DISABLE ROW LEVEL SECURITY" not in block
+
+
 def test_provider_network_fault_uses_production_adapter_and_persistent_effect_store() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
     provider = PROVIDER.read_text(encoding="utf-8")
