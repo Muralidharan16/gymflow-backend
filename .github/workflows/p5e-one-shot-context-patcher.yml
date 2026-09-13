@@ -37,50 +37,59 @@ jobs:
               raise SystemExit('unexpected reconciliation-id fixture shape')
           test = test.replace(old, new, 1)
 
-          commit_anchor = '''            )
-        connection.commit()
-
-    aba_event_ids = (
-'''
+          anchor_lines = [
+              '            )',
+              '        connection.commit()',
+              '',
+              '    aba_event_ids = (',
+          ]
+          commit_anchor = '\n'.join(anchor_lines) + '\n'
           if test.count(commit_anchor) != 1:
               raise SystemExit('unexpected ABA auth insert anchor')
-          materialization_insert = '''            )
-            cursor.execute(
-                """
-                INSERT INTO public.branch_outbox_events(
-                    outbox_id,tenant_id,branch_id,event_type,payload,
-                    max_attempts,correlation_id
-                ) VALUES (
-                    %s,%s,%s,'branch.member_notification','{}'::jsonb,5,%s
-                )
-                """,
-                (
-                    materialization_id,
-                    notification.base.org_id,
-                    notification.base.branch_id,
-                    uuid.uuid4(),
-                ),
-            )
-        connection.commit()
 
-    aba_event_ids = (
-'''
+          insertion_lines = [
+              '            )',
+              '            cursor.execute(',
+              '                """',
+              '                INSERT INTO public.branch_outbox_events(',
+              '                    outbox_id,tenant_id,branch_id,event_type,payload,',
+              '                    max_attempts,correlation_id',
+              '                ) VALUES (',
+              "                    %s,%s,%s,'branch.member_notification','{}'::jsonb,5,%s",
+              '                )',
+              '                """,',
+              '                (',
+              '                    materialization_id,',
+              '                    notification.base.org_id,',
+              '                    notification.base.branch_id,',
+              '                    uuid.uuid4(),',
+              '                ),',
+              '            )',
+              '        connection.commit()',
+              '',
+              '    aba_event_ids = (',
+          ]
+          materialization_insert = '\n'.join(insertion_lines) + '\n'
           test = test.replace(commit_anchor, materialization_insert, 1)
 
-          old_ids = '''    aba_event_ids = (
-        search.event_id,
-        notification.parent_id,
-        notification.command_id,
-        reconciliation_id,
-    )
-'''
-          new_ids = '''    aba_event_ids = (
-        search.event_id,
-        materialization_id,
-        notification.command_id,
-        reconciliation_id,
-    )
-'''
+          old_ids = '\n'.join([
+              '    aba_event_ids = (',
+              '        search.event_id,',
+              '        notification.parent_id,',
+              '        notification.command_id,',
+              '        reconciliation_id,',
+              '    )',
+              '',
+          ])
+          new_ids = '\n'.join([
+              '    aba_event_ids = (',
+              '        search.event_id,',
+              '        materialization_id,',
+              '        notification.command_id,',
+              '        reconciliation_id,',
+              '    )',
+              '',
+          ])
           if test.count(old_ids) != 1:
               raise SystemExit('unexpected ABA event-id tuple')
           test = test.replace(old_ids, new_ids, 1)
@@ -90,32 +99,35 @@ jobs:
           if test.count(old_stale) != 1:
               raise SystemExit('unexpected materialization stale-call target')
           test = test.replace(old_stale, new_stale, 1)
-
           runtime_path.write_text(prefix + test, encoding='utf-8')
 
           static_path = Path('tests/test_p5e_provider_ack_ambiguity_static_contracts.py')
           static = static_path.read_text(encoding='utf-8')
-          old_static = '''    auth_insert = test.index("'notification.reconcile','{}'::jsonb")
-    worker_url = test.index(
-'''
-          new_static = '''    materialization_insert = test.index("'branch.member_notification','{}'::jsonb")
-    reconciliation_insert = test.index("'notification.reconcile','{}'::jsonb")
-    worker_url = test.index(
-'''
+          old_static = (
+              '    auth_insert = test.index("\'notification.reconcile\',\'{}\'::jsonb")\n'
+              '    worker_url = test.index(\n'
+          )
+          new_static = (
+              '    materialization_insert = test.index("\'branch.member_notification\',\'{}\'::jsonb")\n'
+              '    reconciliation_insert = test.index("\'notification.reconcile\',\'{}\'::jsonb")\n'
+              '    worker_url = test.index(\n'
+          )
           if static.count(old_static) != 1:
               raise SystemExit('unexpected static auth-insert guard')
           static = static.replace(old_static, new_static, 1)
 
-          old_order = '''    assert auth_insert < worker_url < claim_import < first_claim < expiry < second_claim
-    assert test.count("asyncio.run(_claim_events(worker_id))") == 2
-'''
-          new_order = '''    assert materialization_insert < worker_url
-    assert reconciliation_insert < worker_url < claim_import < first_claim < expiry < second_claim
-    assert test.count("asyncio.run(_claim_events(worker_id))") == 2
-    assert "materialization_id" in test
-    assert "(notification.parent_id, worker_id, 1)" not in test
-    assert "(materialization_id, worker_id, 1)" in test
-'''
+          old_order = (
+              '    assert auth_insert < worker_url < claim_import < first_claim < expiry < second_claim\n'
+              '    assert test.count("asyncio.run(_claim_events(worker_id))") == 2\n'
+          )
+          new_order = (
+              '    assert materialization_insert < worker_url\n'
+              '    assert reconciliation_insert < worker_url < claim_import < first_claim < expiry < second_claim\n'
+              '    assert test.count("asyncio.run(_claim_events(worker_id))") == 2\n'
+              '    assert "materialization_id" in test\n'
+              '    assert "(notification.parent_id, worker_id, 1)" not in test\n'
+              '    assert "(materialization_id, worker_id, 1)" in test\n'
+          )
           if static.count(old_order) != 1:
               raise SystemExit('unexpected static ABA ordering guard')
           static = static.replace(old_order, new_order, 1)
@@ -129,10 +141,8 @@ jobs:
           test "$(git diff --name-only | wc -l)" = "2"
           git diff --name-only | grep -Fx 'tests/test_p5e_provider_ack_ambiguity_runtime.py'
           git diff --name-only | grep -Fx 'tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
-          grep -Fq "'branch.member_notification','{}'::jsonb" \
-            tests/test_p5e_provider_ack_ambiguity_runtime.py
-          grep -Fq '(materialization_id, worker_id, 1)' \
-            tests/test_p5e_provider_ack_ambiguity_runtime.py
+          grep -Fq "'branch.member_notification','{}'::jsonb" tests/test_p5e_provider_ack_ambiguity_runtime.py
+          grep -Fq '(materialization_id, worker_id, 1)' tests/test_p5e_provider_ack_ambiguity_runtime.py
 
       - name: Commit exact two-file materialization ABA repair
         shell: bash
