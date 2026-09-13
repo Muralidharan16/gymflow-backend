@@ -263,6 +263,27 @@ def test_aba_reconciliation_fixture_preserves_rls_role_domains() -> None:
         < fence_update
     )
 
+def test_aba_fence_fixture_uses_canonical_outbox_lease_columns() -> None:
+    runtime = RUNTIME.read_text(encoding="utf-8")
+    test = runtime[
+        runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :
+    ]
+    update = test[
+        test.index("UPDATE public.branch_outbox_events") :
+        test.index("WHERE outbox_id=ANY(%s::uuid[])")
+    ]
+    for phrase in (
+        "status='processing'",
+        "attempt_count=1",
+        "lease_fence=2",
+        "leased_by=%s",
+        "leased_until=pg_catalog.clock_timestamp()+INTERVAL '5 minutes'",
+        "processed_at=NULL",
+        "last_error=NULL",
+    ):
+        assert phrase in update
+    assert "claimed_at" not in update
+
 def test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     job = workflow["jobs"]["provider-ack-ambiguity"]
