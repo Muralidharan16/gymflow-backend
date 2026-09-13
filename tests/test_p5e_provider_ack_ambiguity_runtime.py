@@ -405,7 +405,7 @@ def _seed_notification() -> _NotificationSeed:
         f"branch-lifecycle/{correlation_id}/{member_id}/email"
     )
 
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
+    with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT pg_catalog.set_config('app.current_org_id',%s,true)",
@@ -429,6 +429,10 @@ def _seed_notification() -> _NotificationSeed:
                     f"P5E{member_id.hex[:17].upper()}",
                 ),
             )
+        connection.commit()
+
+    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
+        with connection.cursor() as cursor:
             _as_security_owner(cursor)
             cursor.execute(
                 """

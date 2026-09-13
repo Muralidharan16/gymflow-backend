@@ -200,6 +200,32 @@ def test_replacement_processes_reuse_the_persisted_provider_store() -> None:
     assert source.count("_run_worker(store)") >= 4
 
 
+def test_notification_member_fixture_uses_canonical_auth_app_runtime_identity() -> None:
+    runtime = RUNTIME.read_text(encoding="utf-8")
+    seed = runtime[
+        runtime.index("def _seed_notification()") :
+        runtime.index("def _install_fault_triggers()")
+    ]
+    auth_connection = seed.index(
+        'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:'
+    )
+    member_insert = seed.index("INSERT INTO public.members(")
+    admin_connection = seed.index(
+        'with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:',
+        member_insert,
+    )
+    security_owner = seed.index("_as_security_owner(cursor)", admin_connection)
+    assert auth_connection < member_insert < admin_connection < security_owner
+    assert seed.count(
+        'with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:'
+    ) == 1
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert (
+        "GRANT app_runtime TO auth_p5e_runtime "
+        "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;"
+    ) in workflow
+
+
 def test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     job = workflow["jobs"]["provider-ack-ambiguity"]
@@ -291,6 +317,7 @@ def test_workflow_uses_pg16_reduced_worker_and_same_head_markers() -> None:
         "scripts/ci/install_pg16_test_stack.sh",
         "scripts/ci/bootstrap_cluster_roles.sh",
         "worker_test_runtime",
+        "GRANT app_runtime TO auth_p5e_runtime",
         "GRANT worker_runtime TO worker_test_runtime",
         "NOBYPASSRLS",
         "python -s -m alembic -c alembic.ini upgrade head",
