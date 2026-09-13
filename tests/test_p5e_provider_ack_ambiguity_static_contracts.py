@@ -242,7 +242,8 @@ def test_aba_fixture_uses_canonical_worker_claim_and_reclaim_authority() -> None
     test = runtime[
         runtime.index("def test_provider_capabilities_reject_same_worker_aba_fence") :
     ]
-    auth_insert = test.index("'notification.reconcile','{}'::jsonb")
+    materialization_insert = test.index("'branch.member_notification','{}'::jsonb")
+    reconciliation_insert = test.index("'notification.reconcile','{}'::jsonb")
     worker_url = test.index(
         'os.environ["WORKER_DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]'
     )
@@ -258,8 +259,12 @@ def test_aba_fixture_uses_canonical_worker_claim_and_reclaim_authority() -> None
         "asyncio.run(_claim_events(worker_id))",
         first_claim + 1,
     )
-    assert auth_insert < worker_url < claim_import < first_claim < expiry < second_claim
+    assert materialization_insert < worker_url
+    assert reconciliation_insert < worker_url < claim_import < first_claim < expiry < second_claim
     assert test.count("asyncio.run(_claim_events(worker_id))") == 2
+    assert "materialization_id" in test
+    assert "(notification.parent_id, worker_id, 1)" not in test
+    assert "(materialization_id, worker_id, 1)" in test
     assert 'with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:' not in test
     assert "_as_security_owner(cursor)" not in test
     assert "SET status='processing',attempt_count=1,lease_fence=2" not in test

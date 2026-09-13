@@ -953,6 +953,7 @@ def test_provider_capabilities_reject_same_worker_aba_fence(tmp_path: Path) -> N
     search = _seed_search("index", tmp_path / "p5e-capability-fence.sqlite3")
     notification = _seed_notification()
     reconciliation_id = uuid.uuid4()
+    materialization_id = uuid.uuid4()
 
     with _connect(_AUTH_LOGIN, "AUTH_RUNTIME_PASSWORD") as connection:
         with connection.cursor() as cursor:
@@ -980,11 +981,27 @@ def test_provider_capabilities_reject_same_worker_aba_fence(tmp_path: Path) -> N
                     uuid.uuid4(),
                 ),
             )
+            cursor.execute(
+                """
+                INSERT INTO public.branch_outbox_events(
+                    outbox_id,tenant_id,branch_id,event_type,payload,
+                    max_attempts,correlation_id
+                ) VALUES (
+                    %s,%s,%s,'branch.member_notification','{}'::jsonb,5,%s
+                )
+                """,
+                (
+                    materialization_id,
+                    notification.base.org_id,
+                    notification.base.branch_id,
+                    uuid.uuid4(),
+                ),
+            )
         connection.commit()
 
     aba_event_ids = (
         search.event_id,
-        notification.parent_id,
+        materialization_id,
         notification.command_id,
         reconciliation_id,
     )
@@ -1079,7 +1096,7 @@ def test_provider_capabilities_reject_same_worker_aba_fence(tmp_path: Path) -> N
             (
                 notification.base.org_id,
                 "SELECT app_secure.materialize_branch_member_notifications(%s,%s,%s)",
-                (notification.parent_id, worker_id, 1),
+                (materialization_id, worker_id, 1),
             ),
             (
                 notification.base.org_id,
