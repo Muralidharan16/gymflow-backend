@@ -18,73 +18,44 @@ jobs:
           ref: hardening/p5e-verification-authority-temp
           fetch-depth: 1
 
-      - name: Make lifecycle static guard formatting-insensitive
+      - name: Bound notification fixture member UID to schema contract
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "948e8ed2b28930f4fd9f93956b791997bf9ffc47"
+          test "$(git rev-parse HEAD)" = "7005bc5676842e908947d4e0d373b4fd23453f07"
           python - <<'PY'
           from pathlib import Path
+          import uuid
 
-          path = Path("tests/test_p5e_provider_ack_ambiguity_static_contracts.py")
+          path = Path("tests/test_p5e_provider_ack_ambiguity_runtime.py")
           source = path.read_text(encoding="utf-8")
-
-          brittle_literal = "_set_branch_publicity_with_ci_infrastructure(base, is_public=False)"
-          structural_literal = "_set_branch_publicity_with_ci_infrastructure("
-          if source.count(brittle_literal) != 1:
-              raise SystemExit(
-                  f"expected brittle helper literal once, found {source.count(brittle_literal)}"
-              )
-          source = source.replace(brittle_literal, structural_literal)
-
-          state_line = "    state_assertion = seed.index('assert fixture_state == \"false|2|1|NULL\"')\n"
-          publicity_line = (
-              '    publicity_argument = seed.index("is_public=False", infrastructure_change)\n'
-          )
-          if source.count(state_line) != 1:
-              raise SystemExit(
-                  f"expected state assertion anchor once, found {source.count(state_line)}"
-              )
-          source = source.replace(state_line, publicity_line + state_line)
-
-          old_assert = (
-              "    assert provider_seed < infrastructure_change < state_assertion < outbox_insert\n"
-          )
-          new_assert = (
-              "    assert (\n"
-              "        provider_seed\n"
-              "        < infrastructure_change\n"
-              "        < publicity_argument\n"
-              "        < state_assertion\n"
-              "        < outbox_insert\n"
-              "    )\n"
-          )
-          if source.count(old_assert) != 1:
-              raise SystemExit(
-                  f"expected brittle ordering guard once, found {source.count(old_assert)}"
-              )
-          source = source.replace(old_assert, new_assert)
-
-          if brittle_literal in source:
-              raise SystemExit("brittle helper literal remains after replacement")
-          for expected in (structural_literal, publicity_line.strip(), new_assert.strip()):
-              if expected not in source:
-                  raise SystemExit(f"expected repaired guard missing: {expected!r}")
+          old = 'f"P5E{member_id.hex[:20].upper()}"'
+          new = 'f"P5E{member_id.hex[:17].upper()}"'
+          if source.count(old) != 1:
+              raise SystemExit(f"expected overlength P5-E member UID fixture once, found {source.count(old)}")
+          source = source.replace(old, new)
+          if old in source or source.count(new) != 1:
+              raise SystemExit("P5-E member UID fixture replacement did not converge exactly")
           path.write_text(source, encoding="utf-8")
+
+          sample_id = uuid.UUID("01234567-89ab-cdef-0123-456789abcdef")
+          sample_uid = f"P5E{sample_id.hex[:17].upper()}"
+          if len(sample_uid) != 20:
+              raise SystemExit(f"bounded fixture UID length is {len(sample_uid)}, expected 20")
           PY
           git diff --check
-          python -m py_compile tests/test_p5e_provider_ack_ambiguity_static_contracts.py
+          python -m py_compile tests/test_p5e_provider_ack_ambiguity_runtime.py
           test "$(git status --short | wc -l)" = "1"
-          git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
+          git status --short | grep -Fx ' M tests/test_p5e_provider_ack_ambiguity_runtime.py'
 
-      - name: Commit only formatting-insensitive static guard
+      - name: Commit only bounded notification fixture
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'Muralidharan16'
           git config user.email '145135907+Muralidharan16@users.noreply.github.com'
-          git add -- tests/test_p5e_provider_ack_ambiguity_static_contracts.py
+          git add -- tests/test_p5e_provider_ack_ambiguity_runtime.py
           git diff --cached --check
-          test "$(git diff --cached --name-only)" = 'tests/test_p5e_provider_ack_ambiguity_static_contracts.py'
-          git commit -m 'P5E make lifecycle static guard formatting-insensitive'
+          test "$(git diff --cached --name-only)" = 'tests/test_p5e_provider_ack_ambiguity_runtime.py'
+          git commit -m 'P5E bound notification fixture member UID'
           git push origin HEAD:hardening/p5e-verification-authority-temp
