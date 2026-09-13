@@ -234,6 +234,23 @@ def test_migration_removes_unfenced_worker_authority_and_is_reversible() -> None
         assert phrase in source
 
 
+def test_migration_resolves_private_schema_only_after_security_role_switch() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    upgrade = source[source.index("def upgrade()") : source.index("def downgrade()")]
+    downgrade = source[source.index("def downgrade()") :]
+    for body, verification in (
+        (upgrade, "_require_predecessor(bind)"),
+        (downgrade, "_verify_upgrade(bind)"),
+    ):
+        assert body.index("_require_identity(bind)") < body.index(
+            'op.execute(f"SET LOCAL ROLE {_SECURITY_OWNER}")'
+        )
+        assert body.index('op.execute(f"SET LOCAL ROLE {_SECURITY_OWNER}")') < body.index(
+            verification
+        )
+        assert body.index(verification) < body.rindex('op.execute("RESET ROLE")')
+
+
 def test_application_passes_claim_generation_to_every_provider_capability() -> None:
     search = SEARCH_WORKER.read_text(encoding="utf-8")
     notification = NOTIFICATION_WORKER.read_text(encoding="utf-8")

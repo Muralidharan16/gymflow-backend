@@ -438,34 +438,29 @@ def _verify_upgrade(bind) -> None:
 def upgrade() -> None:
     bind = op.get_bind()
     _require_identity(bind)
-    _require_predecessor(bind)
     op.execute(f"SET LOCAL ROLE {_SECURITY_OWNER}")
-    try:
-        for old_signature, _new_signature in _SIGNATURES:
-            op.execute(f"REVOKE EXECUTE ON FUNCTION {old_signature} FROM {_WORKER}")
-        _create_helper()
-        _create_wrappers()
-        for _old_signature, new_signature in _SIGNATURES:
-            op.execute(f"REVOKE ALL ON FUNCTION {new_signature} FROM PUBLIC")
-            op.execute(f"GRANT EXECUTE ON FUNCTION {new_signature} TO {_WORKER}")
-    finally:
-        op.execute("RESET ROLE")
+    _require_predecessor(bind)
+    for old_signature, _new_signature in _SIGNATURES:
+        op.execute(f"REVOKE EXECUTE ON FUNCTION {old_signature} FROM {_WORKER}")
+    _create_helper()
+    _create_wrappers()
+    for _old_signature, new_signature in _SIGNATURES:
+        op.execute(f"REVOKE ALL ON FUNCTION {new_signature} FROM PUBLIC")
+        op.execute(f"GRANT EXECUTE ON FUNCTION {new_signature} TO {_WORKER}")
     _verify_upgrade(bind)
+    op.execute("RESET ROLE")
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     _require_identity(bind)
-    _verify_upgrade(bind)
     op.execute(f"SET LOCAL ROLE {_SECURITY_OWNER}")
-    try:
-        for old_signature, new_signature in reversed(_SIGNATURES):
-            op.execute(f"REVOKE EXECUTE ON FUNCTION {new_signature} FROM {_WORKER}")
-            op.execute(f"DROP FUNCTION {new_signature}")
-            op.execute(f"GRANT EXECUTE ON FUNCTION {old_signature} TO {_WORKER}")
-        op.execute(f"DROP FUNCTION {_HELPER}")
-    finally:
-        op.execute("RESET ROLE")
+    _verify_upgrade(bind)
+    for old_signature, new_signature in reversed(_SIGNATURES):
+        op.execute(f"REVOKE EXECUTE ON FUNCTION {new_signature} FROM {_WORKER}")
+        op.execute(f"DROP FUNCTION {new_signature}")
+        op.execute(f"GRANT EXECUTE ON FUNCTION {old_signature} TO {_WORKER}")
+    op.execute(f"DROP FUNCTION {_HELPER}")
 
     for old_signature, new_signature in _SIGNATURES:
         if _to_regprocedure(bind, new_signature) is not None:
@@ -476,3 +471,4 @@ def downgrade() -> None:
             )
     if _to_regprocedure(bind, _HELPER) is not None:
         raise RuntimeError("zi07 downgrade left provider-fence helper")
+    op.execute("RESET ROLE")
