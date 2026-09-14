@@ -84,7 +84,8 @@ jobs:
             scripts/ci/p5d_fake_opensearch.py \
             scripts/ci/p5d_celery_fault_hooks.py \
             tests/test_p5d_dependency_loss_runtime.py \
-            tests/test_p5d_dependency_loss_static_contracts.py
+            tests/test_p5d_dependency_loss_static_contracts.py \
+            alembic/versions/zj07d8e9f0a44_p5d_app_outbox_enqueue_columns.py
           python -m pytest --noconftest -q --maxfail=1 \
             tests/test_p5_governance_contracts.py \
             tests/test_p5w_worker_fencing_static_contracts.py \
@@ -135,7 +136,7 @@ jobs:
           CERTIFICATION_HEAD: ${{ inputs.certification_head }}
         run: |
           set -euo pipefail
-          expected_head="${CERTIFICATION_HEAD:-zi07d8e9f0a43}"
+          expected_head="${CERTIFICATION_HEAD:-zj07d8e9f0a44}"
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${expected_head}"
           python -s -m alembic -c alembic.ini upgrade head
@@ -144,13 +145,43 @@ jobs:
             -h 127.0.0.1 -U worker_test_runtime -d gymflow_p5d_test \
             -c 'SELECT current_user,pg_catalog.current_setting('\''row_security'\'');'
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_p5d_test <<'SQL'
-          SELECT
-            pg_catalog.has_table_privilege(
+          DO $$
+          DECLARE
+            column_name text;
+            required_columns text[] := ARRAY[
+              'outbox_id','tenant_id','branch_id','event_type','payload','created_at',
+              'process_after','status','attempt_count','max_attempts','correlation_id','lease_fence'
+            ];
+          BEGIN
+            IF pg_catalog.has_table_privilege(
               'app_runtime','public.branch_outbox_events','INSERT'
-            ) AS app_runtime_insert,
-            pg_catalog.has_table_privilege(
+            ) THEN
+              RAISE EXCEPTION 'P5D app_runtime must not regain table-wide outbox INSERT';
+            END IF;
+            IF pg_catalog.has_table_privilege(
               'app_test_runtime','public.branch_outbox_events','INSERT'
-            ) AS app_test_runtime_insert;
+            ) THEN
+              RAISE EXCEPTION 'P5D app_test_runtime must not gain table-wide outbox INSERT';
+            END IF;
+            FOREACH column_name IN ARRAY required_columns LOOP
+              IF NOT pg_catalog.has_column_privilege(
+                'app_runtime','public.branch_outbox_events',column_name,'INSERT'
+              ) THEN
+                RAISE EXCEPTION 'P5D app_runtime missing outbox INSERT column %', column_name;
+              END IF;
+              IF NOT pg_catalog.has_column_privilege(
+                'app_test_runtime','public.branch_outbox_events',column_name,'INSERT'
+              ) THEN
+                RAISE EXCEPTION 'P5D app_test_runtime missing inherited outbox INSERT column %', column_name;
+              END IF;
+              IF pg_catalog.has_column_privilege(
+                'worker_runtime','public.branch_outbox_events',column_name,'INSERT'
+              ) THEN
+                RAISE EXCEPTION 'P5D worker_runtime leaked outbox INSERT column %', column_name;
+              END IF;
+            END LOOP;
+          END
+          $$;
           SELECT rolname,rolinherit
           FROM pg_catalog.pg_roles
           WHERE rolname IN ('app_runtime','app_test_runtime')
