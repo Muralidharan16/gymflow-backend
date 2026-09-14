@@ -10,6 +10,8 @@ DOC = ROOT / "docs/architecture/P5R_RACE_AND_DEADLOCK_INTERLEAVINGS.md"
 RUNTIME = ROOT / "tests/test_p5r_race_deadlock_runtime.py"
 WORKFLOW = ROOT / ".github/workflows/p5r-race-deadlock-pg16.yml"
 LIFECYCLE = ROOT / "app/services/branch_lifecycle_service.py"
+ROUTER = ROOT / "app/routers/branch_lifecycle.py"
+DATABASE = ROOT / "app/core/database.py"
 POLLER = ROOT / "app/tasks/branch_outbox_poller.py"
 P4D = ROOT / "alembic/versions/zd07d8e9f0a3e_p4d_refund_obligation_resolution.py"
 
@@ -39,6 +41,7 @@ def test_scope_names_every_p5r_interleaving_and_hard_failure() -> None:
         "lifecycle-to-finance handoff race",
         "deadlock detection and production lock-order proof",
         "40p01",
+        "55p03",
         "lost update",
         "stuck transition",
         "false terminal success",
@@ -62,6 +65,21 @@ def test_production_lifecycle_lock_order_is_org_then_branch_then_row() -> None:
     assert org_lock < branch_lock < row_lock < revalidate < invariant
     assert "Branch status changed concurrently; retry the transition" in method
     assert "A lifecycle transition is already in progress for this branch" in method
+
+
+def test_api_lock_budget_and_55p03_mapping_are_bounded_without_hiding_deadlocks() -> None:
+    database = DATABASE.read_text(encoding="utf-8")
+    router = ROUTER.read_text(encoding="utf-8")
+    start = router.index("async def _initiate_transition_with_contention_mapping")
+    end = router.index("\n\n@router.get", start)
+    helper = router[start:end]
+
+    assert "_API_LOCK_TIMEOUT_MS = 500" in database
+    assert 'if _db_sqlstate(exc) == "55P03"' in helper
+    assert "status.HTTP_409_CONFLICT" in helper
+    assert "Lifecycle transition is busy; retry the transition" in helper
+    assert "40P01" not in helper
+    assert "await _initiate_transition_with_contention_mapping(" in router
 
 
 def test_worker_claim_and_delivery_are_skip_locked_and_monotonic_fenced() -> None:
@@ -90,6 +108,7 @@ def test_runtime_uses_real_independent_transactions_not_mock_concurrency() -> No
         "pg_stat_activity",
         "p5r_transaction_b_barrier",
         "p5r_refund_visibility_barrier",
+        "_initiate_transition_with_contention_mapping",
     ):
         assert phrase in source
     assert "monkeypatch" not in source
@@ -103,7 +122,7 @@ def test_runtime_names_all_certified_races() -> None:
         "test_same_branch_transition_race_commits_exactly_one_transaction_a",
         "test_last_operational_branch_race_preserves_org_invariant",
         "test_duplicate_claim_and_expired_reclaim_reject_stale_fence",
-        "test_api_waits_for_transaction_b_then_revalidates_stable_state",
+        "test_api_lock_timeout_is_bounded_then_retry_succeeds_after_transaction_b",
         "test_lifecycle_to_finance_handoff_is_invisible_until_commit",
         "test_deadlock_detector_canary_observes_exactly_one_40p01_victim",
     ):
@@ -145,12 +164,13 @@ def test_workflow_is_pg16_reduced_identity_exact_head_and_same_sha() -> None:
         assert phrase in source
     assert "continue-on-error" not in source
     assert "|| true" not in source
+    assert "p5r_blocker_probe.py" not in source
 
 
 def test_slice_does_not_broaden_privilege_or_later_phase_scope() -> None:
     executable = "\n".join(
         path.read_text(encoding="utf-8").lower()
-        for path in (RUNTIME, WORKFLOW)
+        for path in (RUNTIME, WORKFLOW, ROUTER)
     )
     for forbidden in (
         "grant all on",
