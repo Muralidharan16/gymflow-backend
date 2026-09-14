@@ -68,13 +68,19 @@ obligation authority; and P4E external-effect/operational observability.
 These are protection gates. A historical green P4 run is not enough: the
 inherited gates must execute from the same P5-F candidate SHA.
 
-Broad inherited pytest suites must not execute P5-C's destructive process-kill
-scenario merely because they collect the repository. The repository-level test
-hook skips only `tests/test_p5c_compensation_crash_replay_runtime.py` unless the
-explicit `P5C_PROCESS_FAULTS=1` opt-in is present. The decisive P5-C workflow
-runs with `--noconftest` plus the disposable-database/process-fault
-acknowledgements, so the real SIGKILL proof remains mandatory in its own
-same-head gate and cannot be converted into a broad-suite skip.
+Broad inherited pytest suites must not execute the dedicated P5 fault-runtime
+modules merely because they collect the repository. The repository-level test
+hook routes the W1 fencing, W2 worker-death/redelivery, P5-E provider-ack,
+P5-D dependency-loss, P5-R race/deadlock and P5-C compensation-crash runtime
+modules out of broad suites. Those tests require their own disposable database,
+broker, reduced identities, process/network fault acknowledgements or race
+barriers and are not ordinary general-regression tests.
+
+No decisive P5 runtime proof is skipped by P5-F. Each corresponding P5 workflow
+invokes its runtime explicitly with `--noconftest` after provisioning the exact
+certified disposable topology, so the repository-level broad-suite routing hook
+cannot affect the decisive same-head fault proof. The terminal fan-in still
+requires all P5-G/W1/W2/E/D/R/C logical gates to report `success`.
 
 ## 4. Required P5 gates
 
@@ -119,7 +125,7 @@ gates.
 ## 7. Scope and post-pass state
 
 P5-F may change only final-certification artifacts, reusable certification
-topology, test-only opt-in routing, and exact inherited certification
+topology, test-only runtime routing, and exact inherited certification
 inventories proven stale by the same-head fan-in. It must not modify production
 behavior, schema semantics, RLS policy, worker authority, Finance authority,
 provider adapters or entitlement policy.
