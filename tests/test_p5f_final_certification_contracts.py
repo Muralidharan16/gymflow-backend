@@ -32,10 +32,10 @@ INHERITED = {
     "lifecycle_maintenance": (".github/workflows/lifecycle-maintenance-production-boundary.yml", {"maintenance-boundary"}),
     "platform_maintenance": (".github/workflows/platform-maintenance-production-boundary.yml", {"platform-maintenance-boundary"}),
     "p4b_opensearch": (".github/workflows/p4b-opensearch-live.yml", {"live-opensearch"}),
-    "p4b_evidence": (".github/workflows/p5e-provider-ack-ambiguity-pg16.yml", {"provider-ack-ambiguity"}),
-    "p4b_drift": (".github/workflows/p5e-provider-ack-ambiguity-pg16.yml", {"provider-ack-ambiguity"}),
+    "p4b_evidence": (".github/workflows/p5f-current-head-p4b-evidence.yml", {"p4b-evidence-current-head"}),
+    "p4b_drift": (".github/workflows/p5f-current-head-p4b-drift.yml", {"p4b-drift-current-head"}),
     "p4c_general": (".github/workflows/p4c-general-regression.yml", {"general-regressions"}),
-    "p4c_notification": (".github/workflows/p5e-provider-ack-ambiguity-pg16.yml", {"provider-ack-ambiguity"}),
+    "p4c_notification": (".github/workflows/p5f-current-head-p4c-notification.yml", {"p4c-notification-current-head"}),
     "p4d_refund": (".github/workflows/p4d-refund-authority-pg16.yml", {"refund-authority"}),
     "p4e_contract": (".github/workflows/p5f-inherited-p4e-contract.yml", {"p4e-contract-current-head"}),
     "p4e_operational": (".github/workflows/p5f-inherited-p4e-operational-pg16.yml", {"p4e-operational-current-head"}),
@@ -43,7 +43,7 @@ INHERITED = {
 
 P5 = {
     "p5_governance": (".github/workflows/p5-governance-fault-matrix.yml", {"governance"}),
-    "p5_worker_fencing": (".github/workflows/p5w2-worker-crash-redelivery-pg16.yml", {"worker-crash-redelivery"}),
+    "p5_worker_fencing": (".github/workflows/p5f-current-head-p5w1.yml", {"p5w1-current-head"}),
     "p5_worker_crash_redelivery": (".github/workflows/p5w2-worker-crash-redelivery-pg16.yml", {"worker-crash-redelivery"}),
     "p5_provider_ack": (".github/workflows/p5e-provider-ack-ambiguity-pg16.yml", {"provider-ack-ambiguity"}),
     "p5_dependency_loss": (".github/workflows/p5d-dependency-loss-pg16.yml", {"dependency-loss"}),
@@ -125,10 +125,9 @@ def test_matrix_requires_complete_inherited_and_p5_topology() -> None:
         )
 
 
-def test_current_fenced_gates_subsume_stale_historical_interfaces() -> None:
-    p5e = (ROOT / ".github/workflows/p5e-provider-ack-ambiguity-pg16.yml").read_text(
-        encoding="utf-8"
-    )
+def test_current_fenced_compatibility_gates_bind_to_decisive_runtime_owners() -> None:
+    p5e_path = ROOT / ".github/workflows/p5e-provider-ack-ambiguity-pg16.yml"
+    p5e = p5e_path.read_text(encoding="utf-8")
     for path in (
         "tests/test_p4b_search_evidence_static_contracts.py",
         "tests/test_p4b_search_provider.py",
@@ -142,11 +141,33 @@ def test_current_fenced_gates_subsume_stale_historical_interfaces() -> None:
         assert path in p5e
     assert "P5E_PROVIDER_CAPABILITY_FENCE=PASS" in p5e
 
-    p5w2 = (ROOT / ".github/workflows/p5w2-worker-crash-redelivery-pg16.yml").read_text(
-        encoding="utf-8"
-    )
+    p5w2_path = ROOT / ".github/workflows/p5w2-worker-crash-redelivery-pg16.yml"
+    p5w2 = p5w2_path.read_text(encoding="utf-8")
     assert "tests/test_p5w_worker_fencing_runtime.py" in p5w2
     assert "Reprove P5-W1 stale-owner fences" in p5w2
+
+    wrapper_expectations = {
+        "p4b_evidence": (
+            "tests/test_p4b_search_evidence_static_contracts.py",
+            "P5E_PROVIDER_CAPABILITY_FENCE=PASS",
+        ),
+        "p4b_drift": (
+            "tests/test_p4b_search_drift_repair.py",
+            "P5E_PROVIDER_CAPABILITY_FENCE=PASS",
+        ),
+        "p4c_notification": (
+            "tests/test_p4c_notification_static_contracts.py",
+            "P5E_NOTIFICATION_ACK_FAILURE=PASS",
+        ),
+        "p5_worker_fencing": (
+            "tests/test_p5w_worker_fencing_static_contracts.py",
+            "P5W2_REAL_REDIS_REDELIVERY=PASS",
+        ),
+    }
+    for gate, phrases in wrapper_expectations.items():
+        source = (ROOT / ({**INHERITED, **P5}[gate][0])).read_text(encoding="utf-8")
+        for phrase in phrases:
+            assert phrase in source
 
 
 def test_final_workflow_calls_all_27_gates_on_same_head() -> None:
@@ -173,6 +194,8 @@ def test_final_workflow_calls_all_27_gates_on_same_head() -> None:
     assert "continue-on-error" not in terminal
 
     source = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert source.count("./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml") == 1
+    assert source.count("./.github/workflows/p5w2-worker-crash-redelivery-pg16.yml") == 1
     assert 'details["result"] != "success"' in source
     assert "P5F_FINAL_SAME_HEAD_CERTIFICATION=PASS" in source
     assert "P5F_NO_LOST_UPDATES=PASS" in source
