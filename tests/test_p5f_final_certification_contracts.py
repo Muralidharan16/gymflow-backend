@@ -68,6 +68,15 @@ HEAD_AWARE = {
     "p5_compensation",
 }
 
+DEDICATED_P5_RUNTIMES = {
+    "tests/test_p5w_worker_fencing_runtime.py": ".github/workflows/p5w2-worker-crash-redelivery-pg16.yml",
+    "tests/test_p5w2_worker_crash_redelivery_runtime.py": ".github/workflows/p5w2-worker-crash-redelivery-pg16.yml",
+    "tests/test_p5e_provider_ack_ambiguity_runtime.py": ".github/workflows/p5e-provider-ack-ambiguity-pg16.yml",
+    "tests/test_p5d_dependency_loss_runtime.py": ".github/workflows/p5d-dependency-loss-pg16.yml",
+    "tests/test_p5r_race_deadlock_runtime.py": ".github/workflows/p5r-race-deadlock-pg16.yml",
+    "tests/test_p5c_compensation_crash_replay_runtime.py": ".github/workflows/p5c-compensation-crash-replay-pg16.yml",
+}
+
 
 def _matrix() -> dict:
     return json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
@@ -215,6 +224,16 @@ def test_current_head_inputs_are_explicit_and_reusable() -> None:
 
     governance = _workflow(ROOT / P5["p5_governance"][0])
     assert "workflow_call" in governance["on"]
+
+
+def test_dedicated_p5_fault_runtimes_are_routed_out_of_broad_suites() -> None:
+    conftest = (ROOT / "conftest.py").read_text(encoding="utf-8")
+    for runtime, workflow_path in DEDICATED_P5_RUNTIMES.items():
+        assert runtime in conftest
+        source = (ROOT / workflow_path).read_text(encoding="utf-8")
+        assert runtime in source
+        assert "--noconftest" in source
+    assert "dedicated same-head gate" in conftest
 
 
 def test_p5f_keeps_governance_matrix_frozen_and_hard_stops_closed() -> None:
