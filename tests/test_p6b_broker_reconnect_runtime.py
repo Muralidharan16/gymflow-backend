@@ -99,6 +99,13 @@ def _seed_branch() -> tuple[uuid.UUID, uuid.UUID]:
                 """,
                 (org_id, f"p6b-{org_id.hex}"),
             )
+            # The hardened branch-limit trigger requires the same tenant context
+            # used by the already-certified P5-D fixture.  This is fixture setup
+            # only; the production worker still runs under worker_runtime.
+            cursor.execute(
+                "SELECT pg_catalog.set_config('app.current_org_id',%s,true)",
+                (str(org_id),),
+            )
             cursor.execute(
                 """
                 INSERT INTO public.org_branches(
@@ -128,6 +135,17 @@ def _insert_durable_obligation(
     event_id = uuid.uuid4()
     with _admin_connect() as connection:
         with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    pg_catalog.set_config('app.current_org_id',%s,true),
+                    pg_catalog.set_config('app.current_role','saga_orchestrator',true),
+                    pg_catalog.set_config('app.current_user_id','',true),
+                    pg_catalog.set_config('app.current_principal_type','',true),
+                    pg_catalog.set_config('app.current_gym_id','',true)
+                """,
+                (str(org_id),),
+            )
             cursor.execute(
                 """
                 INSERT INTO public.branch_outbox_events(
