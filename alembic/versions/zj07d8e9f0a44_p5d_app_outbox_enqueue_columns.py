@@ -5,15 +5,15 @@ Revises: zi07d8e9f0a43
 Create Date: 2026-09-14
 
 The canonical lifecycle Transaction-A path persists tenant-scoped search and
-lifecycle-saga commands directly in ``branch_outbox_events``.  A later security
+lifecycle-saga commands directly in ``branch_outbox_events``. A later security
 hardening chain removed the application runtime's effective INSERT authority,
 which made the legal lifecycle mutation fail before P5-D could reach its
 PostgreSQL disconnect boundary.
 
-Do not restore table-wide INSERT.  Grant ``app_runtime`` INSERT on only the
-columns emitted by ``BranchLifecycleService``/its ORM defaults.  Existing FORCE
+Do not restore table-wide INSERT. Grant ``app_runtime`` INSERT on only the
+columns emitted by ``BranchLifecycleService``/its ORM defaults. Existing FORCE
 RLS and the app-runtime-only ``p_outbox_insert`` policy remain the row authority.
-Worker and PUBLIC INSERT remain denied.  Downgrade removes exactly this P5-D
+Worker and PUBLIC INSERT remain denied. Downgrade removes exactly this P5-D
 column grant and recreates the zi07 predecessor authority state.
 """
 
@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
-
 
 revision = "zj07d8e9f0a44"
 down_revision = "zi07d8e9f0a43"
@@ -95,10 +94,30 @@ def _role_oid(bind, role_name: str) -> int:
 def _has_table_insert(bind, role_name: str) -> bool:
     return bool(
         bind.execute(
-            sa.text(
-                "SELECT pg_catalog.has_table_privilege(:role_name,:relation,'INSERT')"
-            ),
+            sa.text("SELECT pg_catalog.has_table_privilege(:role_name,:relation,'INSERT')"),
             {"role_name": role_name, "relation": _OUTBOX},
+        ).scalar_one()
+    )
+
+
+def _public_has_table_insert(bind) -> bool:
+    return bool(
+        bind.execute(
+            sa.text(
+                """
+                SELECT COALESCE(bool_or(acl_data.privilege_type='INSERT'),FALSE)
+                FROM pg_catalog.pg_class AS relation_data
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                    COALESCE(
+                        relation_data.relacl,
+                        pg_catalog.acldefault('r', relation_data.relowner)
+                    )
+                ) AS acl_data
+                WHERE relation_data.oid=CAST(:relation AS regclass)
+                  AND acl_data.grantee=0
+                """
+            ),
+            {"relation": _OUTBOX},
         ).scalar_one()
     )
 
@@ -110,11 +129,29 @@ def _has_column_insert(bind, role_name: str, column_name: str) -> bool:
                 "SELECT pg_catalog.has_column_privilege("
                 ":role_name,:relation,:column_name,'INSERT')"
             ),
-            {
-                "role_name": role_name,
-                "relation": _OUTBOX,
-                "column_name": column_name,
-            },
+            {"role_name": role_name, "relation": _OUTBOX, "column_name": column_name},
+        ).scalar_one()
+    )
+
+
+def _public_has_column_insert(bind, column_name: str) -> bool:
+    return bool(
+        bind.execute(
+            sa.text(
+                """
+                SELECT COALESCE(bool_or(acl_data.privilege_type='INSERT'),FALSE)
+                FROM pg_catalog.pg_attribute AS column_data
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                    COALESCE(column_data.attacl, ARRAY[]::aclitem[])
+                ) AS acl_data
+                WHERE column_data.attrelid=CAST(:relation AS regclass)
+                  AND column_data.attname=:column_name
+                  AND column_data.attnum>0
+                  AND NOT column_data.attisdropped
+                  AND acl_data.grantee=0
+                """
+            ),
+            {"relation": _OUTBOX, "column_name": column_name},
         ).scalar_one()
     )
 
@@ -159,11 +196,10 @@ def _require_predecessor(bind) -> None:
         raise RuntimeError("zj07 refuses predecessor table-wide app_runtime INSERT")
     if _has_table_insert(bind, _WORKER):
         raise RuntimeError("zj07 refuses predecessor worker table-wide INSERT")
-    if _has_table_insert(bind, "PUBLIC"):
+    if _public_has_table_insert(bind):
         raise RuntimeError("zj07 refuses predecessor PUBLIC table-wide INSERT")
     collisions = [
-        column_name
-        for column_name in _INSERT_COLUMNS
+        column_name for column_name in _INSERT_COLUMNS
         if _has_column_insert(bind, _APP, column_name)
     ]
     if collisions:
@@ -179,24 +215,29 @@ def _verify_forward(bind) -> None:
     if _has_table_insert(bind, _APP):
         raise RuntimeError("zj07 accidentally broadened app_runtime to table-wide INSERT")
     missing = [
-        column_name
-        for column_name in _INSERT_COLUMNS
+        column_name for column_name in _INSERT_COLUMNS
         if not _has_column_insert(bind, _APP, column_name)
     ]
     if missing:
         raise RuntimeError(f"zj07 app_runtime lifecycle enqueue columns missing: {missing!r}")
-    for role_name in (_WORKER, "PUBLIC"):
-        if _has_table_insert(bind, role_name):
-            raise RuntimeError(f"zj07 leaked table-wide outbox INSERT to {role_name}")
-        leaked = [
-            column_name
-            for column_name in _INSERT_COLUMNS
-            if _has_column_insert(bind, role_name, column_name)
-        ]
-        if leaked:
-            raise RuntimeError(
-                f"zj07 leaked outbox INSERT columns to {role_name}: {leaked!r}"
-            )
+    if _has_table_insert(bind, _WORKER):
+        raise RuntimeError("zj07 leaked table-wide outbox INSERT to worker_runtime")
+    worker_leaked = [
+        column_name for column_name in _INSERT_COLUMNS
+        if _has_column_insert(bind, _WORKER, column_name)
+    ]
+    if worker_leaked:
+        raise RuntimeError(
+            f"zj07 leaked outbox INSERT columns to worker_runtime: {worker_leaked!r}"
+        )
+    if _public_has_table_insert(bind):
+        raise RuntimeError("zj07 leaked table-wide outbox INSERT to PUBLIC")
+    public_leaked = [
+        column_name for column_name in _INSERT_COLUMNS
+        if _public_has_column_insert(bind, column_name)
+    ]
+    if public_leaked:
+        raise RuntimeError(f"zj07 leaked outbox INSERT columns to PUBLIC: {public_leaked!r}")
 
 
 def _verify_downgrade(bind) -> None:
@@ -205,8 +246,7 @@ def _verify_downgrade(bind) -> None:
     if _has_table_insert(bind, _APP):
         raise RuntimeError("zj07 downgrade left table-wide app_runtime INSERT")
     leftovers = [
-        column_name
-        for column_name in _INSERT_COLUMNS
+        column_name for column_name in _INSERT_COLUMNS
         if _has_column_insert(bind, _APP, column_name)
     ]
     if leftovers:
@@ -220,9 +260,7 @@ def upgrade() -> None:
     _require_identity(bind)
     _require_predecessor(bind)
     columns = ", ".join(_INSERT_COLUMNS)
-    op.execute(
-        f"GRANT INSERT ({columns}) ON TABLE {_OUTBOX} TO {_APP}"
-    )
+    op.execute(f"GRANT INSERT ({columns}) ON TABLE {_OUTBOX} TO {_APP}")
     _verify_forward(bind)
 
 
@@ -231,7 +269,5 @@ def downgrade() -> None:
     _require_identity(bind)
     _verify_forward(bind)
     columns = ", ".join(_INSERT_COLUMNS)
-    op.execute(
-        f"REVOKE INSERT ({columns}) ON TABLE {_OUTBOX} FROM {_APP}"
-    )
+    op.execute(f"REVOKE INSERT ({columns}) ON TABLE {_OUTBOX} FROM {_APP}")
     _verify_downgrade(bind)
