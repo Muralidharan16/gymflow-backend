@@ -371,8 +371,16 @@ def _install_precommit_barrier(branch_id: uuid.UUID) -> None:
     )
 
 
-def _wait_for_sleeping_compensation() -> int:
+def _wait_for_sleeping_compensation(
+    process: subprocess.Popen[str],
+    log_file: Path,
+) -> int:
     def probe() -> int | None:
+        if process.poll() is not None:
+            raise AssertionError(
+                "P5-C compensation child exited before pre-commit barrier "
+                f"rc={process.returncode}:\n{_process_log(log_file)}"
+            )
         output = _infra_psql(
             "SELECT pid FROM pg_catalog.pg_stat_activity "
             "WHERE datname='gymflow_p5c_test' "
@@ -430,8 +438,10 @@ def _spawn_compensation_process(
     event_file.write_text(json.dumps(_json_event(event), sort_keys=True), encoding="utf-8")
 
     environment = os.environ.copy()
+    worker_database_url = environment.get("WORKER_DATABASE_URL", "").strip()
+    if not worker_database_url:
+        raise RuntimeError("P5-C killable child requires WORKER_DATABASE_URL")
     for forbidden_name in (
-        "DATABASE_URL",
         "AUTH_DATABASE_URL",
         "MAINTENANCE_DATABASE_URL",
         "FINANCE_CONFIG_DATABASE_URL",
@@ -443,6 +453,10 @@ def _spawn_compensation_process(
         "WORKER_RUNTIME_PASSWORD",
     ):
         environment[forbidden_name] = ""
+    # Non-production Settings validates DATABASE_URL and app.core.database builds
+    # all engines at import time. Give that bootstrap the exact worker URL so the
+    # crash process has no database authority beyond worker_test_runtime.
+    environment["DATABASE_URL"] = worker_database_url
     environment["PYTHONUNBUFFERED"] = "1"
 
     command = [
@@ -595,7 +609,7 @@ def test_precommit_process_death_rolls_back_and_replacement_worker_recovers(tmp_
         after_commit_pause=False,
     )
     try:
-        _wait_for_sleeping_compensation()
+        _wait_for_sleeping_compensation(process, log_file)
         assert not commit_marker.exists()
         assert not ack_marker.exists()
         _kill_process(process)
@@ -668,6 +682,11 @@ def test_after_commit_process_death_redelivery_is_single_effect(tmp_path: Path) 
     )
     try:
         def committed() -> bool:
+            if process.poll() is not None:
+                raise AssertionError(
+                    "P5-C compensation child exited before post-commit hold "
+                    f"rc={process.returncode}:\n{_process_log(log_file)}"
+                )
             return commit_marker.exists() and (
                 commit_marker.read_text(encoding="utf-8").strip()
                 == "dead_lettered_compensated"
