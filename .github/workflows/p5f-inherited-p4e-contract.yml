@@ -1,0 +1,90 @@
+name: P5-F Inherited P4E Contract
+
+on:
+  workflow_call:
+    inputs:
+      certification_head:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  p4e-contract-current-head:
+    name: Inherited P4E external-effect contract on P5 head
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CERTIFICATION_HEAD: ${{ inputs.certification_head }}
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_p5f_p4e_contract_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p5f-p4e-contract-not-production
+      AWS_ACCESS_KEY_ID: ci-p5f-p4e-contract
+      AWS_SECRET_ACCESS_KEY: ci-p5f-p4e-contract
+      S3_BUCKET_NAME: gymflow-p5f-p4e-contract-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Reprove inherited P4 external-effect contract on current P5 head
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/p4_external_effect_inventory.json >/dev/null
+          python -m json.tool docs/architecture/p4e_certification_matrix.json >/dev/null
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${CERTIFICATION_HEAD}"
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4e_final_certification_contracts.py \
+            tests/test_p4a_external_effect_contracts.py \
+            tests/test_p4b_p4a_inherited_contracts.py \
+            tests/test_p4b_search_evidence_static_contracts.py \
+            tests/test_p4b_search_provider.py \
+            tests/test_p4b_search_provider_adversarial.py \
+            tests/test_p4b_search_drift_repair.py \
+            tests/test_p4b_search_metrics_export.py \
+            tests/test_p4b_search_deployment_contract.py \
+            tests/test_p4c_inherited_contracts.py \
+            tests/test_p4c_notification_static_contracts.py \
+            tests/test_p4c_notification_history_boundary.py \
+            tests/test_p4c_notification_member_boundary.py \
+            tests/test_p4c_notification_provider.py \
+            tests/test_p4c_resend_webhook.py \
+            tests/test_p4c_notification_metrics_export.py \
+            tests/test_p4c_notification_deployment_contract.py \
+            tests/test_p4d_refund_authority_static_contracts.py \
+            tests/test_p4e_operational_snapshots_static_contracts.py \
+            tests/test_p4e_operational_metrics_export.py \
+            tests/test_process_database_profile_boundary.py \
+            tests/test_p3e_async_identity_static_contracts.py
+
+      - name: Exact-head and hard-stop proof
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${CERTIFICATION_HEAD}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo "P5F_INHERITED_P4E_CONTRACT=PASS"
+          echo "P5F_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED"
