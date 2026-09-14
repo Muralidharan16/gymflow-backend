@@ -158,7 +158,7 @@ jobs:
       - name: Prove real lifecycle worker Finance and deadlock interleavings
         run: |
           set -euo pipefail
-          python -m pytest --noconftest -q -s --maxfail=1 \
+          python -m pytest --noconftest -q -s --showlocals --maxfail=1 \
             tests/test_p5r_race_deadlock_runtime.py
 
       - name: Reprove inherited lifecycle worker and refund authority boundaries
