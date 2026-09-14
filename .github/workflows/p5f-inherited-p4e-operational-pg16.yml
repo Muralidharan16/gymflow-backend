@@ -1,0 +1,151 @@
+name: P5-F Inherited P4E Operational PostgreSQL 16
+
+on:
+  workflow_call:
+    inputs:
+      certification_head:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  p4e-operational-current-head:
+    name: Inherited P4E operational authority on current P5 head
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      CERTIFICATION_HEAD: ${{ inputs.certification_head }}
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p5f-p4e-operational-not-production
+      AWS_ACCESS_KEY_ID: ci-p5f-p4e-operational
+      AWS_SECRET_ACCESS_KEY: ci-p5f-p4e-operational
+      S3_BUCKET_NAME: gymflow-p5f-p4e-operational-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Install PostgreSQL 16 and reduced runtime identities
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+
+          MIGRATION_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(24))')"
+          AUTH_RUNTIME_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(24))')"
+          APP_RUNTIME_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(24))')"
+          WORKER_RUNTIME_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(24))')"
+          MAINTENANCE_RUNTIME_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(24))')"
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<SQL
+          ALTER ROLE migration_owner PASSWORD '${MIGRATION_PASSWORD}';
+          CREATE ROLE auth_p5f_p4e_runtime LOGIN PASSWORD '${AUTH_RUNTIME_PASSWORD}'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_p5f_p4e_runtime LOGIN PASSWORD '${APP_RUNTIME_PASSWORD}'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_p5f_p4e_runtime LOGIN PASSWORD '${WORKER_RUNTIME_PASSWORD}'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE maintenance_p5f_p4e_runtime LOGIN PASSWORD '${MAINTENANCE_RUNTIME_PASSWORD}'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT auth_runtime TO auth_p5f_p4e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_p5f_p4e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO app_p5f_p4e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_p5f_p4e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_p5f_p4e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO maintenance_p5f_p4e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE auth_p5f_p4e_runtime SET row_security='on';
+          ALTER ROLE app_p5f_p4e_runtime SET row_security='on';
+          ALTER ROLE worker_p5f_p4e_runtime SET row_security='on';
+          ALTER ROLE maintenance_p5f_p4e_runtime SET row_security='on';
+          CREATE DATABASE gymflow_p5f_p4e_test OWNER migration_owner;
+          REVOKE ALL ON DATABASE gymflow_p5f_p4e_test FROM PUBLIC;
+          GRANT CONNECT ON DATABASE gymflow_p5f_p4e_test TO
+            migration_owner,auth_p5f_p4e_runtime,app_p5f_p4e_runtime,
+            worker_p5f_p4e_runtime,maintenance_p5f_p4e_runtime;
+          SQL
+
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p5f_p4e_test
+
+          {
+            echo "MIGRATION_PASSWORD=${MIGRATION_PASSWORD}"
+            echo "AUTH_RUNTIME_PASSWORD=${AUTH_RUNTIME_PASSWORD}"
+            echo "APP_RUNTIME_PASSWORD=${APP_RUNTIME_PASSWORD}"
+            echo "WORKER_RUNTIME_PASSWORD=${WORKER_RUNTIME_PASSWORD}"
+            echo "MAINTENANCE_RUNTIME_PASSWORD=${MAINTENANCE_RUNTIME_PASSWORD}"
+            echo "DATABASE_URL=postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_p5f_p4e_test"
+            echo "TEST_DATABASE_URL=postgresql+asyncpg://app_p5f_p4e_runtime:${APP_RUNTIME_PASSWORD}@127.0.0.1:5432/gymflow_p5f_p4e_test"
+            echo "TEST_ADMIN_DATABASE_URL=postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_p5f_p4e_test"
+            echo "WORKER_DATABASE_URL=postgresql+asyncpg://worker_p5f_p4e_runtime:${WORKER_RUNTIME_PASSWORD}@127.0.0.1:5432/gymflow_p5f_p4e_test"
+            echo "MAINTENANCE_DATABASE_URL=postgresql+asyncpg://maintenance_p5f_p4e_runtime:${MAINTENANCE_RUNTIME_PASSWORD}@127.0.0.1:5432/gymflow_p5f_p4e_test"
+          } >> "${GITHUB_ENV}"
+
+      - name: Prove exact current migration head and inherited P4E contracts
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${CERTIFICATION_HEAD}"
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4e_operational_snapshots_static_contracts.py \
+            tests/test_p3e_async_identity_static_contracts.py \
+            tests/test_celery_single_app_boundary.py \
+            tests/test_process_database_profile_boundary.py \
+            tests/test_process_profile_deployment_contract.py \
+            tests/test_p4b_search_deployment_contract.py \
+            tests/test_p4c_notification_deployment_contract.py \
+            tests/test_migration_app_secure_owner_context_boundary.py \
+            tests/test_p4d_refund_authority_static_contracts.py \
+            tests/test_p4c_inherited_contracts.py \
+            tests/test_platform_maintenance_control_plane.py \
+            tests/test_p4a_external_effect_contracts.py
+
+      - name: Upgrade exact P5 head under migration owner
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          test "$(python -s -m alembic -c alembic.ini current | awk '{print $1}')" = "${CERTIFICATION_HEAD}"
+
+      - name: Prove reduced maintenance identity and P4E runtime semantics
+        run: |
+          set -euo pipefail
+          PGPASSWORD="${MAINTENANCE_RUNTIME_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U maintenance_p5f_p4e_runtime -d gymflow_p5f_p4e_test \
+            -c "SELECT current_user,pg_catalog.current_setting('row_security');"
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4e_operational_metrics_export.py \
+            tests/test_p4e_operational_snapshots_runtime.py
+
+      - name: Reprove current-head migration lifecycle ownership
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_head_workflow_bootstrap.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${CERTIFICATION_HEAD}"
+          python -s -m alembic -c alembic.ini current --check-heads
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo "P5F_INHERITED_P4E_OPERATIONAL_PG16=PASS"
+          echo "P5F_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED"
