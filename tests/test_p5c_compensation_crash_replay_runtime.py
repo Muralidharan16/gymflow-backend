@@ -264,42 +264,29 @@ async def _transition(seed: _Seed, branch_id: uuid.UUID) -> uuid.UUID:
 
 
 def _find_parent(correlation_id: uuid.UUID) -> uuid.UUID:
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT outbox_id
-                FROM public.branch_outbox_events
-                WHERE correlation_id=%s
-                  AND event_type='branch.lifecycle_saga'
-                """,
-                (correlation_id,),
-            )
-            rows = cursor.fetchall()
+    output = _infra_psql(
+        "SELECT outbox_id::text "
+        "FROM public.branch_outbox_events "
+        f"WHERE correlation_id='{correlation_id}'::uuid "
+        "AND event_type='branch.lifecycle_saga' "
+        "ORDER BY outbox_id;",
+        tuples_only=True,
+    )
+    rows = [line.strip() for line in output.splitlines() if line.strip()]
     assert len(rows) == 1
-    return rows[0][0]
+    return uuid.UUID(rows[0])
 
 
 def _postpone_other_pending(parent_id: uuid.UUID) -> None:
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE public.branch_outbox_events
-                SET process_after=pg_catalog.clock_timestamp()+INTERVAL '1 hour'
-                WHERE status='pending' AND outbox_id<>%s
-                """,
-                (parent_id,),
-            )
-            cursor.execute(
-                """
-                UPDATE public.branch_outbox_events
-                SET process_after=pg_catalog.clock_timestamp()
-                WHERE status='pending' AND outbox_id=%s
-                """,
-                (parent_id,),
-            )
-        connection.commit()
+    _infra_psql(
+        "UPDATE public.branch_outbox_events "
+        "SET process_after=pg_catalog.clock_timestamp()+INTERVAL '1 hour' "
+        "WHERE status='pending' "
+        f"AND outbox_id<>'{parent_id}'::uuid;"
+        "UPDATE public.branch_outbox_events "
+        "SET process_after=pg_catalog.clock_timestamp() "
+        f"WHERE status='pending' AND outbox_id='{parent_id}'::uuid;"
+    )
 
 
 async def _claim_specific(parent_id: uuid.UUID, worker_id: uuid.UUID) -> dict[str, Any]:
@@ -515,64 +502,72 @@ def _expire_killed_lease(
 
 
 def _branch_state(branch_id: uuid.UUID) -> tuple[str, bool, bool, str | None, str | None]:
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT status,is_operational,lifecycle_transition_in_progress,
-                       transition_source,saga_compensation_strategy
-                FROM public.org_branch_state
-                WHERE branch_id=%s
-                """,
-                (branch_id,),
-            )
-            row = cursor.fetchone()
-    assert row is not None
-    return row[0], bool(row[1]), bool(row[2]), row[3], row[4]
+    output = _infra_psql(
+        "SELECT status || '|' || is_operational::text || '|' || "
+        "lifecycle_transition_in_progress::text || '|' || "
+        "COALESCE(transition_source,'NULL') || '|' || "
+        "COALESCE(saga_compensation_strategy,'NULL') "
+        "FROM public.org_branch_state "
+        f"WHERE branch_id='{branch_id}'::uuid;",
+        tuples_only=True,
+    )
+    rows = [line.strip() for line in output.splitlines() if line.strip()]
+    assert len(rows) == 1
+    values = rows[0].split("|")
+    assert len(values) == 5
+    return (
+        values[0],
+        values[1] == "true",
+        values[2] == "true",
+        None if values[3] == "NULL" else values[3],
+        None if values[4] == "NULL" else values[4],
+    )
 
 
 def _parent_state(parent_id: uuid.UUID) -> tuple[str, int, int, int, str | None, bool]:
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT status,attempt_count,max_attempts,lease_fence,
-                       leased_by::text,leased_until IS NOT NULL
-                FROM public.branch_outbox_events
-                WHERE outbox_id=%s
-                """,
-                (parent_id,),
-            )
-            row = cursor.fetchone()
-    assert row is not None
-    return row[0], int(row[1]), int(row[2]), int(row[3]), row[4], bool(row[5])
+    output = _infra_psql(
+        "SELECT status || '|' || attempt_count::text || '|' || "
+        "max_attempts::text || '|' || lease_fence::text || '|' || "
+        "COALESCE(leased_by::text,'NULL') || '|' || "
+        "(leased_until IS NOT NULL)::text "
+        "FROM public.branch_outbox_events "
+        f"WHERE outbox_id='{parent_id}'::uuid;",
+        tuples_only=True,
+    )
+    rows = [line.strip() for line in output.splitlines() if line.strip()]
+    assert len(rows) == 1
+    values = rows[0].split("|")
+    assert len(values) == 6
+    return (
+        values[0],
+        int(values[1]),
+        int(values[2]),
+        int(values[3]),
+        None if values[4] == "NULL" else values[4],
+        values[5] == "true",
+    )
 
 
 def _compensation_counts(correlation_id: uuid.UUID) -> tuple[int, int, int]:
-    with _connect(_ADMIN_LOGIN, "MIGRATION_PASSWORD") as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                  (SELECT count(*)
-                     FROM public.branch_lifecycle_events
-                    WHERE correlation_id=%s
-                      AND event_type='compensation_completed'),
-                  (SELECT count(*)
-                     FROM public.branch_status_history
-                    WHERE correlation_id=%s
-                      AND transition_source='saga_compensation'),
-                  (SELECT count(*)
-                     FROM public.branch_outbox_events
-                    WHERE correlation_id=%s
-                      AND event_type='branch.search_index'
-                      AND payload->>'reason'='saga_dead_letter_compensation')
-                """,
-                (correlation_id, correlation_id, correlation_id),
-            )
-            row = cursor.fetchone()
-    assert row is not None
-    return int(row[0]), int(row[1]), int(row[2])
+    output = _infra_psql(
+        "SELECT "
+        "(SELECT count(*) FROM public.branch_lifecycle_events "
+        f" WHERE correlation_id='{correlation_id}'::uuid "
+        " AND event_type='compensation_completed')::text || '|' || "
+        "(SELECT count(*) FROM public.branch_status_history "
+        f" WHERE correlation_id='{correlation_id}'::uuid "
+        " AND transition_source='saga_compensation')::text || '|' || "
+        "(SELECT count(*) FROM public.branch_outbox_events "
+        f" WHERE correlation_id='{correlation_id}'::uuid "
+        " AND event_type='branch.search_index' "
+        " AND payload->>'reason'='saga_dead_letter_compensation')::text;",
+        tuples_only=True,
+    )
+    rows = [line.strip() for line in output.splitlines() if line.strip()]
+    assert len(rows) == 1
+    values = rows[0].split("|")
+    assert len(values) == 3
+    return int(values[0]), int(values[1]), int(values[2])
 
 
 def _prepare_exhausted_parent(seed: _Seed) -> tuple[uuid.UUID, uuid.UUID, dict[str, Any], uuid.UUID]:
