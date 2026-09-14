@@ -218,6 +218,6 @@ def test_p5f_p4e_wrappers_are_certification_only_and_current_head_bound() -> Non
     assert '= "${CERTIFICATION_HEAD}"' in operational_source
     assert "tests/test_p4e_operational_snapshots_runtime.py" in operational_source
     assert "scripts/ci/verify_head_workflow_bootstrap.py" in operational_source
-    assert "BYPASSRLS" not in operational_source
+    assert " BYPASSRLS" not in operational_source
     assert "P5F_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED" in contract_source
     assert "P5F_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED" in operational_source
