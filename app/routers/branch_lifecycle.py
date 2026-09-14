@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from uuid import UUID
 from typing import List
 
@@ -21,6 +22,39 @@ from app.models.branch_lifecycle import BranchStatusHistory
 from app.services.branch_lifecycle_service import BranchLifecycleService
 
 router = APIRouter(prefix="/branches", tags=["Branch Lifecycle Control Plane"])
+
+
+def _db_sqlstate(exc: DBAPIError) -> str | None:
+    orig = getattr(exc, "orig", None)
+    return (
+        getattr(orig, "sqlstate", None)
+        or getattr(orig, "pgcode", None)
+        or getattr(exc, "sqlstate", None)
+    )
+
+
+async def _initiate_transition_with_contention_mapping(
+    service: BranchLifecycleService,
+    **kwargs,
+):
+    """Expose bounded lifecycle lock contention as a retryable API conflict.
+
+    API transactions intentionally carry a short lock budget. A live durable
+    Transaction-B worker may therefore outlast that budget while safely owning
+    the branch row. SQLSTATE 55P03 is the expected bounded-contention signal and
+    becomes 409 so callers can retry from fresh committed state. Deadlocks and
+    all other database failures remain visible to the normal failure path.
+    """
+
+    try:
+        return await service.initiate_transition(**kwargs)
+    except DBAPIError as exc:
+        if _db_sqlstate(exc) == "55P03":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Lifecycle transition is busy; retry the transition",
+            ) from exc
+        raise
 
 
 @router.get("", summary="List all branches for the organization")
@@ -130,7 +164,8 @@ async def transition_branch(
     """
 
     service = BranchLifecycleService(db)
-    await service.initiate_transition(
+    await _initiate_transition_with_contention_mapping(
+        service,
         branch_id=branch_id,
         org_id=current_staff.org_id,
         to_status=req.to_status,
