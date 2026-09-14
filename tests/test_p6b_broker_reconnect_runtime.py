@@ -38,17 +38,22 @@ def _required(name: str) -> str:
     return value
 
 
+def _validate_local_database_url(name: str) -> None:
+    parsed = urlparse(_required(name))
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise RuntimeError(f"unsafe P6-B database host for {name}: {parsed.hostname}")
+    if parsed.path.lstrip("/") != _DATABASE:
+        raise RuntimeError(f"unsafe P6-B database for {name}: {parsed.path!r}")
+
+
 def _safe_topology() -> None:
     if os.environ.get("P6B_PROCESS_FAULTS") != "1":
         raise RuntimeError("P6-B destructive broker faults require explicit CI enablement")
     if os.environ.get("P6B_DISPOSABLE_DATABASE") != _DATABASE:
         raise RuntimeError("P6-B disposable database acknowledgement is absent")
 
-    database = urlparse(_required("TEST_ADMIN_DATABASE_URL"))
-    if database.hostname not in {"127.0.0.1", "localhost"}:
-        raise RuntimeError(f"unsafe P6-B database host: {database.hostname}")
-    if database.path.lstrip("/") != _DATABASE:
-        raise RuntimeError(f"unsafe P6-B database: {database.path!r}")
+    _validate_local_database_url("TEST_ADMIN_DATABASE_URL")
+    _validate_local_database_url("P6B_APP_DATABASE_URL")
 
     broker = urlparse(_required("CELERY_BROKER_URL"))
     if broker.scheme != "rediss" or broker.hostname not in {"127.0.0.1", "localhost"}:
@@ -57,8 +62,8 @@ def _safe_topology() -> None:
         raise RuntimeError(f"unsafe P6-B broker port: {broker.port}")
 
 
-def _admin_connect():
-    parsed = urlparse(_required("TEST_ADMIN_DATABASE_URL"))
+def _connect_url(name: str):
+    parsed = urlparse(_required(name))
     return psycopg.connect(
         host=parsed.hostname,
         port=parsed.port or 5432,
@@ -66,6 +71,14 @@ def _admin_connect():
         user=parsed.username,
         password=parsed.password,
     )
+
+
+def _admin_connect():
+    return _connect_url("TEST_ADMIN_DATABASE_URL")
+
+
+def _app_connect():
+    return _connect_url("P6B_APP_DATABASE_URL")
 
 
 def _wait_for(
@@ -99,9 +112,8 @@ def _seed_branch() -> tuple[uuid.UUID, uuid.UUID]:
                 """,
                 (org_id, f"p6b-{org_id.hex}"),
             )
-            # The hardened branch-limit trigger requires the same tenant context
-            # used by the already-certified P5-D fixture.  This is fixture setup
-            # only; the production worker still runs under worker_runtime.
+            # Fixture-only setup under migration authority. The hardened branch-limit
+            # trigger requires tenant context even for this disposable seed.
             cursor.execute(
                 "SELECT pg_catalog.set_config('app.current_org_id',%s,true)",
                 (str(org_id),),
@@ -133,7 +145,9 @@ def _insert_durable_obligation(
     label: str,
 ) -> uuid.UUID:
     event_id = uuid.uuid4()
-    with _admin_connect() as connection:
+    # Match the already-certified P5-D producer boundary: durable application work
+    # is created through reduced app_runtime authority, never migration ownership.
+    with _app_connect() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -269,6 +283,7 @@ def _worker_environment() -> dict[str, str]:
         "FINANCE_CONFIG_DATABASE_URL",
         "TEST_DATABASE_URL",
         "TEST_ADMIN_DATABASE_URL",
+        "P6B_APP_DATABASE_URL",
         "MIGRATION_PASSWORD",
     ):
         environment.pop(forbidden, None)
