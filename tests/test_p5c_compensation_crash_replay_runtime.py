@@ -457,6 +457,10 @@ def _spawn_compensation_process(
     # all engines at import time. Give that bootstrap the exact worker URL so the
     # crash process has no database authority beyond worker_test_runtime.
     environment["DATABASE_URL"] = worker_database_url
+    # Running this test file directly puts tests/ rather than the repository root
+    # on sys.path. Expose only source import location; database authority remains
+    # the bounded worker URL above.
+    environment["PYTHONPATH"] = str(ROOT)
     environment["PYTHONUNBUFFERED"] = "1"
 
     command = [
