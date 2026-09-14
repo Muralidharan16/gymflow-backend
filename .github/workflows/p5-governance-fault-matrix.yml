@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - hardening/p5-concurrency-crash-fault-tolerance
+  workflow_call:
   workflow_dispatch:
 
 permissions:
