@@ -28,15 +28,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     env:
-      MIGRATION_PASSWORD: ci-p5e-migration-owner
-      AUTH_RUNTIME_PASSWORD: ci-p5e-auth-runtime
-      WORKER_RUNTIME_PASSWORD: ci-p5e-worker-runtime
-      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p5e-migration-owner@127.0.0.1:5432/gymflow_p5e_test
-      TEST_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-p5e-worker-runtime@127.0.0.1:5432/gymflow_p5e_test
-      TEST_ADMIN_DATABASE_URL: postgresql+psycopg://migration_owner:ci-p5e-migration-owner@127.0.0.1:5432/gymflow_p5e_test
-      SECRET_KEY: ci-p5e-not-production
-      AWS_ACCESS_KEY_ID: ci-p5e-not-production
-      AWS_SECRET_ACCESS_KEY: ci-p5e-not-production
+      MIGRATION_PASSWORD: test-migration
+      AUTH_RUNTIME_PASSWORD: test-auth
+      WORKER_RUNTIME_PASSWORD: test-worker
+      DATABASE_URL: postgresql+asyncpg://migration_owner:test-migration@127.0.0.1:5432/gymflow_p5e_test
+      TEST_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:test-worker@127.0.0.1:5432/gymflow_p5e_test
+      TEST_ADMIN_DATABASE_URL: postgresql+psycopg://migration_owner:test-migration@127.0.0.1:5432/gymflow_p5e_test
+      SECRET_KEY: test-only
+      AWS_ACCESS_KEY_ID: test-only
+      AWS_SECRET_ACCESS_KEY: test-only
       S3_BUCKET_NAME: gymflow-p5e-test
       ENVIRONMENT: test
       P5E_PROCESS_FAULTS: '1'
@@ -81,10 +81,10 @@ jobs:
           bash scripts/ci/install_pg16_test_stack.sh
           bash scripts/ci/bootstrap_cluster_roles.sh
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          ALTER ROLE migration_owner PASSWORD 'ci-p5e-migration-owner';
-          CREATE ROLE auth_p5e_runtime LOGIN PASSWORD 'ci-p5e-auth-runtime'
+          ALTER ROLE migration_owner PASSWORD 'test-migration';
+          CREATE ROLE auth_p5e_runtime LOGIN PASSWORD 'test-auth'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-p5e-worker-runtime'
+          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'test-worker'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           GRANT auth_runtime TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_runtime TO auth_p5e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
@@ -111,7 +111,7 @@ jobs:
           CERTIFICATION_HEAD: ${{ inputs.certification_head }}
         run: |
           set -euo pipefail
-          expected_head="${CERTIFICATION_HEAD:-zi07d8e9f0a43}"
+          expected_head="${CERTIFICATION_HEAD:-zj07d8e9f0a44}"
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${expected_head}"
           python -s -m alembic -c alembic.ini upgrade head
