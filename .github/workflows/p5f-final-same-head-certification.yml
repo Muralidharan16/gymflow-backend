@@ -110,13 +110,13 @@ jobs:
     name: Real local OpenSearch behavior
     uses: ./.github/workflows/p4b-opensearch-live.yml
   p4b_evidence:
-    name: P4B provider evidence and reconciliation
-    uses: ./.github/workflows/p4b-search-evidence-pg16.yml
+    name: P4B provider evidence on current P5 fences
+    uses: ./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml
     with:
       certification_head: zj07d8e9f0a44
   p4b_drift:
-    name: P4B search drift repair
-    uses: ./.github/workflows/p4b-search-drift-pg16.yml
+    name: P4B drift repair on current P5 fences
+    uses: ./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml
     with:
       certification_head: zj07d8e9f0a44
   p4c_general:
@@ -125,8 +125,8 @@ jobs:
     with:
       certification_head: zj07d8e9f0a44
   p4c_notification:
-    name: P4C notification delivery and recovery
-    uses: ./.github/workflows/p4c-notification-storage-pg16.yml
+    name: P4C notification evidence on current P5 fences
+    uses: ./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml
     with:
       certification_head: zj07d8e9f0a44
   p4d_refund:
@@ -149,8 +149,8 @@ jobs:
     name: P5 governance and frozen fault matrix
     uses: ./.github/workflows/p5-governance-fault-matrix.yml
   p5_worker_fencing:
-    name: P5-W1 monotonic worker fencing
-    uses: ./.github/workflows/p5w-worker-fencing-pg16.yml
+    name: P5-W1 monotonic worker fencing reproof on W2 boundary
+    uses: ./.github/workflows/p5w2-worker-crash-redelivery-pg16.yml
     with:
       certification_head: zj07d8e9f0a44
   p5_worker_crash_redelivery:
