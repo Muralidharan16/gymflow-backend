@@ -4,6 +4,7 @@ import os
 import secrets
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -38,7 +39,7 @@ def _wait_redis(url: str, *, replica: bool = False) -> None:
                 if not replica:
                     return
                 info = client.info("replication")
-                if info.get("role") == "slave" and info.get("master_link_status") == "up":
+                if info.get("role") in {"slave", "replica"} and info.get("master_link_status") == "up":
                     return
         except (redis.RedisError, OSError):
             pass
