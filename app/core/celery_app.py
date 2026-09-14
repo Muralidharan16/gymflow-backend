@@ -5,6 +5,14 @@ from celery import Celery, bootsteps
 from celery.schedules import crontab
 
 from app.core.config import settings
+from app.core.redis_production_readiness import validate_redis_production_settings
+
+
+# P6: broker-facing production processes fail closed before Celery constructs a
+# broker connection.  API processes are covered by deployment preflight and do
+# not gain a second business-authority path through this guard.
+if settings.is_production and settings.process_profile in {"worker", "maintenance", "beat"}:
+    validate_redis_production_settings(settings)
 
 
 WORKER_QUEUE = "worker"
