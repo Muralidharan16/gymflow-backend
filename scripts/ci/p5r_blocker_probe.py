@@ -8,6 +8,7 @@ import uuid
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 RUNTIME_PATH = ROOT / "tests" / "test_p5r_race_deadlock_runtime.py"
 spec = importlib.util.spec_from_file_location("p5r_runtime_probe_target", RUNTIME_PATH)
 if spec is None or spec.loader is None:
