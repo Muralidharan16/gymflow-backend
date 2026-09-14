@@ -35,18 +35,26 @@ head. This prevents an old `zf07d8e9f0a40` head assertion from weakening or
 blocking current-head inheritance.
 
 P5-E intentionally replaced the legacy unfenced P4B/P4C provider functions
-with lease-fence-bearing overloads. Therefore the P4B evidence, P4B drift and
-P4C notification logical slots in the final fan-in use the current P5-E gate.
-That gate explicitly re-runs the inherited P4B evidence/provider/adversarial/
-drift tests, the P4C notification/provider/inherited tests, and the P5-W1
-fencing runtime after upgrading to the current P5 head. The historical P4B/P4C
-workflows remain unchanged and are not granted their obsolete provider
-capabilities again.
+with lease-fence-bearing overloads. P5-F therefore uses current-head
+compatibility gates for the inherited P4B evidence, P4B drift and P4C
+notification logical slots. Those gates re-run their historical source/provider
+contracts against the P5 candidate and bind them to the single decisive P5-E
+runtime gate. P5-E itself re-runs the P4B evidence/provider/adversarial/drift
+suite and P4C notification/provider/inherited suite after upgrading to the
+current P5 head. Historical P4B/P4C workflows remain unchanged and their
+obsolete provider capabilities are never re-granted.
 
-P5-W2 explicitly re-runs the P5-W1 stale-owner fencing runtime. The P5-W1
-logical slot therefore uses the current P5-W2 gate rather than the historical
-W1 ACL assertion that predates P5-D's bounded `INSERT(lease_fence)` column
-authority. Table-wide INSERT and lease-fence UPDATE remain forbidden.
+P5-W2 explicitly re-runs the P5-W1 stale-owner fencing runtime on the current
+head. The P5-W1 logical slot therefore uses a certification-only compatibility
+gate that freezes W1 static contracts and binds them to the single decisive
+P5-W2 runtime gate. This avoids the historical W1 ACL assertion that predates
+P5-D's bounded `INSERT(lease_fence)` column authority while still forbidding
+table-wide INSERT and lease-fence UPDATE.
+
+The final fan-in calls P5-E exactly once and P5-W2 exactly once. This is
+required because their reusable workflows use `cancel-in-progress` concurrency
+groups; duplicating either decisive workflow inside one aggregate could cancel
+a sibling proof and can never count as certification.
 
 ## 3. Required inherited gates
 
