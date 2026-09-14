@@ -234,6 +234,7 @@ jobs:
             --host localhost \
             --port 16379 \
             --ca-cert "${P6B_CERT_DIR}/ca.crt" \
+            --password-env P6B_REDIS_PASSWORD \
             --expected-replicas 1 \
             --require-local-overcommit
 
