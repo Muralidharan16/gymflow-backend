@@ -224,7 +224,7 @@ def _insert_initial_state(seed: _Seed, branch_id: uuid.UUID, *, is_primary: bool
                     worm_archive_status,version,search_logical_clock,
                     search_epoch_ulid,deleted_at,archived_at,purged_at
                 ) VALUES (
-                    %s,%s,'active',%s,true,true,'active',true,true,NULL,NULL,
+                    %s,%s,'active',%s,true,true,'active',true,NULL,NULL,
                     'api',NULL,NULL,false,NULL,NULL,NULL,0,1,NULL,NULL,NULL,
                     NULL,NULL,NULL,NULL,NULL,1,0,%s,NULL,NULL,NULL
                 )
