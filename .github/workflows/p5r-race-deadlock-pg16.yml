@@ -157,9 +157,16 @@ jobs:
 
       - name: Prove real lifecycle worker Finance and deadlock interleavings
         run: |
-          set -euo pipefail
+          set +e
           python -m pytest --noconftest -q -s --showlocals --maxfail=1 \
             tests/test_p5r_race_deadlock_runtime.py
+          rc=$?
+          set -e
+          if [ "${rc}" -ne 0 ]; then
+            echo "--- PostgreSQL 16 error statements ---"
+            sudo tail -n 120 /var/log/postgresql/postgresql-16-main.log
+          fi
+          exit "${rc}"
 
       - name: Reprove inherited lifecycle worker and refund authority boundaries
         run: |
