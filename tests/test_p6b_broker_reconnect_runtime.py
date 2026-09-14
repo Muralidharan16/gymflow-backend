@@ -54,6 +54,7 @@ def _safe_topology() -> None:
 
     _validate_local_database_url("TEST_ADMIN_DATABASE_URL")
     _validate_local_database_url("P6B_APP_DATABASE_URL")
+    _validate_local_database_url("WORKER_DATABASE_URL")
 
     broker = urlparse(_required("CELERY_BROKER_URL"))
     if broker.scheme != "rediss" or broker.hostname not in {"127.0.0.1", "localhost"}:
@@ -79,6 +80,10 @@ def _admin_connect():
 
 def _app_connect():
     return _connect_url("P6B_APP_DATABASE_URL")
+
+
+def _worker_connect():
+    return _connect_url("WORKER_DATABASE_URL")
 
 
 def _wait_for(
@@ -177,7 +182,9 @@ def _insert_durable_obligation(
 
 
 def _state(event_id: uuid.UUID) -> tuple[object, ...]:
-    with _admin_connect() as connection:
+    # Match the certified P5-D observation boundary: worker_runtime may inspect
+    # durable worker state under FORCE RLS without widening migration authority.
+    with _worker_connect() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
