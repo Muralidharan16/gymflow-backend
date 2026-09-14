@@ -245,6 +245,7 @@ def _async_app_url():
 
 async def _transition(seed: _Seed, branch_id: uuid.UUID, to_status: str) -> uuid.UUID:
     from app.core.database import update_session_context
+    from app.routers.branch_lifecycle import _initiate_transition_with_contention_mapping
     from app.services.branch_lifecycle_service import BranchLifecycleService
 
     engine = create_async_engine(_async_app_url(), poolclass=NullPool)
@@ -260,7 +261,8 @@ async def _transition(seed: _Seed, branch_id: uuid.UUID, to_status: str) -> uuid
                 role="owner",
             )
             service = BranchLifecycleService(session)
-            return await service.initiate_transition(
+            return await _initiate_transition_with_contention_mapping(
+                service,
                 branch_id=branch_id,
                 org_id=seed.org_id,
                 to_status=to_status,
@@ -585,7 +587,7 @@ def test_duplicate_claim_and_expired_reclaim_reject_stale_fence() -> None:
     assert (status, fence, attempts, leased_by) == ("delivered", 2, 1, None)
 
 
-def test_api_waits_for_transaction_b_then_revalidates_stable_state() -> None:
+def test_api_lock_timeout_is_bounded_then_retry_succeeds_after_transaction_b() -> None:
     _safe_database_topology()
     seed = _seed(2)
     branch_id = seed.branch_ids[0]
@@ -601,19 +603,28 @@ def test_api_waits_for_transaction_b_then_revalidates_stable_state() -> None:
         api_task = asyncio.create_task(_attempt_transition(seed, branch_id, "active"))
         await asyncio.sleep(0.25)
         assert not api_task.done(), "API transition bypassed the Transaction-B row lock"
-        worker_outcome = await worker_task
+
         api_outcome = await api_task
-        return worker_outcome, api_outcome
+        assert api_outcome[0:2] == ("http", 409)
+        assert "busy" in api_outcome[2].lower()
+        assert "retry" in api_outcome[2].lower()
+
+        worker_outcome = await worker_task
+        retry_outcome = await _attempt_transition(seed, branch_id, "active")
+        return worker_outcome, api_outcome, retry_outcome
 
     try:
-        worker_outcome, api_outcome = asyncio.run(scenario())
+        worker_outcome, api_outcome, retry_outcome = asyncio.run(scenario())
     finally:
         _drop_barriers()
 
     assert worker_outcome == "delivered"
-    assert api_outcome[0] == "ok"
+    assert api_outcome[0:2] == ("http", 409)
+    assert retry_outcome[0] == "ok"
     assert _outbox_state(parent_id)[0] == "delivered"
     assert _branch_state(branch_id) == ("active", True, True)
+    assert _history_count(branch_id, "active", "temporarily_closed") == 1
+    assert _history_count(branch_id, "temporarily_closed", "active") == 1
 
 
 def test_lifecycle_to_finance_handoff_is_invisible_until_commit() -> None:
