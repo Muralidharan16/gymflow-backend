@@ -1,0 +1,276 @@
+name: P6-P Poison Message Containment
+
+on:
+  push:
+    branches:
+      - hardening/p6-celery-redis-scheduler-production-readiness
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+    inputs:
+      certification_head:
+        description: Exact immutable SHA required by a later P6 same-head fan-in
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p6p-poison-message-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  poison-message:
+    name: P6-P real broker and durable poison containment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CERTIFICATION_HEAD: ${{ inputs.certification_head }}
+      MIGRATION_PASSWORD: ci-p6p-migration-owner
+      APP_RUNTIME_PASSWORD: ci-p6p-app-runtime
+      WORKER_RUNTIME_PASSWORD: ci-p6p-worker-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p6p-migration-owner@127.0.0.1:5432/gymflow_p6p_test
+      TEST_ADMIN_DATABASE_URL: postgresql://migration_owner:ci-p6p-migration-owner@127.0.0.1:5432/gymflow_p6p_test
+      P6P_APP_DATABASE_URL: postgresql://app_p6p_runtime:ci-p6p-app-runtime@127.0.0.1:5432/gymflow_p6p_test
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_p6p_runtime:ci-p6p-worker-runtime@127.0.0.1:5432/gymflow_p6p_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: p6p-ci-not-production
+      AWS_ACCESS_KEY_ID: p6p-test
+      AWS_SECRET_ACCESS_KEY: p6p-test
+      S3_BUCKET_NAME: gymflow-p6p-test
+      P6P_POISON_FAULTS: '1'
+      P6P_DISPOSABLE_DATABASE: gymflow_p6p_test
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Guard optional same-head certification input
+        run: |
+          set -euo pipefail
+          if [ -n "${CERTIFICATION_HEAD}" ]; then
+            test "$(git rev-parse HEAD)" = "${CERTIFICATION_HEAD}"
+          fi
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment and prove P6-P static contracts
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+          python -m py_compile \
+            scripts/ci/p6p_poison_fault_hooks.py \
+            tests/test_p6p_poison_message_runtime.py \
+            tests/test_p6p_poison_message_static_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p6_governance_contracts.py \
+            tests/test_p6r_redis_production_contract.py \
+            tests/test_p6b_broker_reconnect_static_contracts.py \
+            tests/test_p6w_worker_shutdown_redelivery_static_contracts.py \
+            tests/test_p6p_poison_message_static_contracts.py \
+            tests/test_p5d_dependency_loss_static_contracts.py \
+            tests/test_p5w2_worker_crash_static_contracts.py
+
+      - name: Install PostgreSQL 16 and reduced runtime identities
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-p6p-migration-owner';
+          CREATE ROLE app_p6p_runtime LOGIN PASSWORD 'ci-p6p-app-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT app_runtime TO app_p6p_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE app_p6p_runtime SET row_security='on';
+          ALTER ROLE app_p6p_runtime SET statement_timeout='15s';
+          ALTER ROLE app_p6p_runtime SET lock_timeout='2s';
+          ALTER ROLE app_p6p_runtime SET idle_in_transaction_session_timeout='30s';
+          CREATE ROLE worker_p6p_runtime LOGIN PASSWORD 'ci-p6p-worker-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT worker_runtime TO worker_p6p_runtime
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE worker_p6p_runtime SET row_security='on';
+          ALTER ROLE worker_p6p_runtime SET statement_timeout='15s';
+          ALTER ROLE worker_p6p_runtime SET lock_timeout='2s';
+          ALTER ROLE worker_p6p_runtime SET idle_in_transaction_session_timeout='30s';
+          CREATE DATABASE gymflow_p6p_test OWNER migration_owner;
+          REVOKE ALL ON DATABASE gymflow_p6p_test FROM PUBLIC;
+          GRANT CONNECT ON DATABASE gymflow_p6p_test
+            TO migration_owner,app_p6p_runtime,worker_p6p_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p6p_test
+
+      - name: Migrate disposable PostgreSQL authority and attest worker login
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          python - <<'PY'
+          from app.core.runtime_principal_attestation import attest_runtime_url_binding
+          import os
+          observation = attest_runtime_url_binding("worker", os.environ["WORKER_DATABASE_URL"])
+          assert observation.session_user == "worker_p6p_runtime"
+          assert observation.current_user == "worker_p6p_runtime"
+          assert observation.bypass_rls is False
+          print("P6P_REDUCED_WORKER_IDENTITY=PASS")
+          PY
+
+      - name: Prepare production-like TLS Redis primary and replica
+        run: |
+          set -euo pipefail
+          sudo sysctl -w vm.overcommit_memory=1
+          test "$(cat /proc/sys/vm/overcommit_memory)" = "1"
+
+          CERT_DIR="/tmp/p6p-redis-tls"
+          CONFIG_DIR="/tmp/p6p-redis-config"
+          mkdir -p "${CERT_DIR}" "${CONFIG_DIR}"
+
+          openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
+            -keyout "${CERT_DIR}/ca.key" \
+            -out "${CERT_DIR}/ca.crt" \
+            -subj '/CN=DOERS P6P CI CA'
+          openssl req -newkey rsa:2048 -sha256 -nodes \
+            -keyout "${CERT_DIR}/server.key" \
+            -out "${CERT_DIR}/server.csr" \
+            -subj '/CN=p6p-primary'
+          cat > "${CERT_DIR}/server.ext" <<'EOF'
+          basicConstraints=CA:FALSE
+          keyUsage=digitalSignature,keyEncipherment
+          extendedKeyUsage=serverAuth
+          subjectAltName=DNS:localhost,DNS:p6p-primary,DNS:p6p-replica,IP:127.0.0.1
+          EOF
+          openssl x509 -req -sha256 -days 1 \
+            -in "${CERT_DIR}/server.csr" \
+            -CA "${CERT_DIR}/ca.crt" \
+            -CAkey "${CERT_DIR}/ca.key" \
+            -CAcreateserial \
+            -out "${CERT_DIR}/server.crt" \
+            -extfile "${CERT_DIR}/server.ext"
+          chmod 0644 "${CERT_DIR}/ca.crt" "${CERT_DIR}/server.crt" "${CERT_DIR}/server.key"
+
+          P6P_REDIS_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::${P6P_REDIS_PASSWORD}"
+          echo "P6P_REDIS_PASSWORD=${P6P_REDIS_PASSWORD}" >> "${GITHUB_ENV}"
+          echo "P6P_CERT_DIR=${CERT_DIR}" >> "${GITHUB_ENV}"
+
+          cat > "${CONFIG_DIR}/primary.conf" <<EOF
+          port 0
+          tls-port 6379
+          tls-cert-file /tls/server.crt
+          tls-key-file /tls/server.key
+          tls-ca-cert-file /tls/ca.crt
+          tls-auth-clients no
+          requirepass ${P6P_REDIS_PASSWORD}
+          dir /data
+          appendonly yes
+          appendfsync everysec
+          save 60 1
+          maxmemory 128mb
+          maxmemory-policy noeviction
+          EOF
+
+          cat > "${CONFIG_DIR}/replica.conf" <<EOF
+          port 0
+          tls-port 6379
+          tls-cert-file /tls/server.crt
+          tls-key-file /tls/server.key
+          tls-ca-cert-file /tls/ca.crt
+          tls-auth-clients no
+          requirepass ${P6P_REDIS_PASSWORD}
+          masterauth ${P6P_REDIS_PASSWORD}
+          replicaof p6p-primary 6379
+          tls-replication yes
+          dir /data
+          appendonly yes
+          appendfsync everysec
+          save 60 1
+          maxmemory 128mb
+          maxmemory-policy noeviction
+          EOF
+
+          docker network create p6p-net
+          docker volume create p6p-primary-data
+          docker volume create p6p-replica-data
+          docker run -d --name p6p-primary \
+            --network p6p-net \
+            -p 16381:6379 \
+            -v p6p-primary-data:/data \
+            -v "${CERT_DIR}:/tls:ro" \
+            -v "${CONFIG_DIR}:/config:ro" \
+            redis:7-alpine redis-server /config/primary.conf
+          docker run -d --name p6p-replica \
+            --network p6p-net \
+            -v p6p-replica-data:/data \
+            -v "${CERT_DIR}:/tls:ro" \
+            -v "${CONFIG_DIR}:/config:ro" \
+            redis:7-alpine redis-server /config/replica.conf
+
+          BROKER_CA="${CERT_DIR}/ca.crt"
+          REDISS_BASE="rediss://:${P6P_REDIS_PASSWORD}@localhost:16381"
+          REDISS_QUERY="ssl_cert_reqs=required&ssl_ca_certs=${BROKER_CA}"
+          echo "REDIS_URL=${REDISS_BASE}/0?${REDISS_QUERY}" >> "${GITHUB_ENV}"
+          echo "CELERY_BROKER_URL=${REDISS_BASE}/1?${REDISS_QUERY}" >> "${GITHUB_ENV}"
+          echo "CELERY_RESULT_BACKEND=${REDISS_BASE}/2?${REDISS_QUERY}" >> "${GITHUB_ENV}"
+          echo "REDIS_PRODUCTION_TOPOLOGY=self_managed_ha" >> "${GITHUB_ENV}"
+          echo "REDIS_PERSISTENCE_MODE=aof_everysec_rdb" >> "${GITHUB_ENV}"
+          echo "REDIS_MAXMEMORY_POLICY=noeviction" >> "${GITHUB_ENV}"
+          echo "REDIS_HA_MIN_REPLICAS=1" >> "${GITHUB_ENV}"
+          echo "REDIS_VM_OVERCOMMIT_MEMORY=1" >> "${GITHUB_ENV}"
+          echo "REDIS_MANAGED_PROVIDER_ATTESTED=false" >> "${GITHUB_ENV}"
+
+      - name: Verify TLS Redis topology before poison evidence
+        run: |
+          set -euo pipefail
+          python scripts/verify_redis_production_readiness.py \
+            --host localhost \
+            --port 16381 \
+            --ca-cert "${P6P_CERT_DIR}/ca.crt" \
+            --password-env P6P_REDIS_PASSWORD \
+            --expected-replicas 1 \
+            --require-local-overcommit
+
+      - name: Prove broker and durable poison containment
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q -s --maxfail=1 \
+            tests/test_p6p_poison_message_runtime.py
+
+      - name: Emit P6-P decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo "P6_POISON_MESSAGE_CONTAINED=PASS"
+          echo "P6_NO_LOST_DURABLE_BUSINESS_WORK=PASS"
+          echo "P6_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED"
+
+      - name: Cleanup disposable P6-P infrastructure
+        if: always()
+        run: |
+          docker rm -f p6p-replica p6p-primary >/dev/null 2>&1 || true
+          docker volume rm p6p-replica-data p6p-primary-data >/dev/null 2>&1 || true
+          docker network rm p6p-net >/dev/null 2>&1 || true
