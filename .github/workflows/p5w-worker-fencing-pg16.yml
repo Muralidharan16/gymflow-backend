@@ -128,12 +128,25 @@ jobs:
           python -s -m alembic -c alembic.ini current --check-heads
 
       - name: Prove claim-fence ACL partition
+        env:
+          CERTIFICATION_HEAD: ${{ inputs.certification_head }}
         run: |
           set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == 'pull_request' || "${CERTIFICATION_HEAD:-}" == 'zj07d8e9f0a44' ]]; then
+            final_head_acl='on'
+          else
+            final_head_acl='off'
+          fi
           PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -v ON_ERROR_STOP=1 \
+            -v final_head_acl="${final_head_acl}" \
             -h 127.0.0.1 -U migration_owner -d gymflow_p5w_test <<'SQL'
+          SELECT pg_catalog.set_config('p5w.final_head_acl', :'final_head_acl', false);
           DO $$
-          DECLARE relation_name text; role_name text;
+          DECLARE
+            relation_name text;
+            role_name text;
+            has_insert boolean;
+            final_head_acl boolean := pg_catalog.current_setting('p5w.final_head_acl')::boolean;
           BEGIN
             FOREACH relation_name IN ARRAY ARRAY[
               'public.branch_outbox_events',
@@ -149,9 +162,16 @@ jobs:
                 'finance_config_runtime','lifecycle_maintenance_runtime',
                 'worker_runtime','app_test_runtime','worker_test_runtime'
               ] LOOP
-                IF pg_catalog.has_column_privilege(
+                has_insert := pg_catalog.has_column_privilege(
                   role_name,relation_name,'lease_fence','INSERT'
-                ) THEN
+                );
+                IF final_head_acl
+                   AND relation_name = 'public.branch_outbox_events'
+                   AND role_name IN ('app_runtime','app_test_runtime') THEN
+                  IF NOT has_insert THEN
+                    RAISE EXCEPTION 'P5-D lease_fence INSERT is absent: % %',role_name,relation_name;
+                  END IF;
+                ELSIF has_insert THEN
                   RAISE EXCEPTION 'claim-fence INSERT leaked: % %',role_name,relation_name;
                 END IF;
               END LOOP;
