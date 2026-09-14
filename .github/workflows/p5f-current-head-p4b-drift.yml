@@ -1,0 +1,57 @@
+name: P5-F Current-Head P4B Drift Compatibility
+
+on:
+  workflow_call:
+    inputs:
+      certification_head:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  p4b-drift-current-head:
+    name: Inherited P4B drift repair contract on current provider fences
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_p5f_p4b_drift_contract
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p5f-p4b-drift-not-production
+      AWS_ACCESS_KEY_ID: ci-p5f-p4b-drift
+      AWS_SECRET_ACCESS_KEY: ci-p5f-p4b-drift
+      S3_BUCKET_NAME: gymflow-p5f-p4b-drift
+      ENVIRONMENT: test
+      CERTIFICATION_HEAD: ${{ inputs.certification_head }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Reprove P4B drift semantics against the current fenced contract
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${CERTIFICATION_HEAD}"
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p4b_search_drift_repair.py \
+            tests/test_p4b_search_provider_adversarial.py \
+            tests/test_p5e_provider_ack_ambiguity_static_contracts.py
+          grep -F 'tests/test_p4b_search_drift_repair.py' .github/workflows/p5e-provider-ack-ambiguity-pg16.yml
+          grep -F 'tests/test_p5e_provider_ack_ambiguity_runtime.py' .github/workflows/p5e-provider-ack-ambiguity-pg16.yml
+          grep -F 'P5E_PROVIDER_CAPABILITY_FENCE=PASS' .github/workflows/p5e-provider-ack-ambiguity-pg16.yml
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P5F_INHERITED_P4B_DRIFT_CURRENT_FENCE=PASS'
