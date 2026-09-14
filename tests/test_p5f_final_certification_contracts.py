@@ -32,10 +32,10 @@ INHERITED = {
     "lifecycle_maintenance": (".github/workflows/lifecycle-maintenance-production-boundary.yml", {"maintenance-boundary"}),
     "platform_maintenance": (".github/workflows/platform-maintenance-production-boundary.yml", {"platform-maintenance-boundary"}),
     "p4b_opensearch": (".github/workflows/p4b-opensearch-live.yml", {"live-opensearch"}),
-    "p4b_evidence": (".github/workflows/p4b-search-evidence-pg16.yml", {"search-evidence"}),
-    "p4b_drift": (".github/workflows/p4b-search-drift-pg16.yml", {"drift-repair"}),
+    "p4b_evidence": (".github/workflows/p5e-provider-ack-ambiguity-pg16.yml", {"provider-ack-ambiguity"}),
+    "p4b_drift": (".github/workflows/p5e-provider-ack-ambiguity-pg16.yml", {"provider-ack-ambiguity"}),
     "p4c_general": (".github/workflows/p4c-general-regression.yml", {"general-regressions"}),
-    "p4c_notification": (".github/workflows/p4c-notification-storage-pg16.yml", {"notification-storage"}),
+    "p4c_notification": (".github/workflows/p5e-provider-ack-ambiguity-pg16.yml", {"provider-ack-ambiguity"}),
     "p4d_refund": (".github/workflows/p4d-refund-authority-pg16.yml", {"refund-authority"}),
     "p4e_contract": (".github/workflows/p5f-inherited-p4e-contract.yml", {"p4e-contract-current-head"}),
     "p4e_operational": (".github/workflows/p5f-inherited-p4e-operational-pg16.yml", {"p4e-operational-current-head"}),
@@ -43,7 +43,7 @@ INHERITED = {
 
 P5 = {
     "p5_governance": (".github/workflows/p5-governance-fault-matrix.yml", {"governance"}),
-    "p5_worker_fencing": (".github/workflows/p5w-worker-fencing-pg16.yml", {"worker-fencing"}),
+    "p5_worker_fencing": (".github/workflows/p5w2-worker-crash-redelivery-pg16.yml", {"worker-crash-redelivery"}),
     "p5_worker_crash_redelivery": (".github/workflows/p5w2-worker-crash-redelivery-pg16.yml", {"worker-crash-redelivery"}),
     "p5_provider_ack": (".github/workflows/p5e-provider-ack-ambiguity-pg16.yml", {"provider-ack-ambiguity"}),
     "p5_dependency_loss": (".github/workflows/p5d-dependency-loss-pg16.yml", {"dependency-loss"}),
@@ -123,6 +123,30 @@ def test_matrix_requires_complete_inherited_and_p5_topology() -> None:
         assert "continue-on-error: true" not in source or (
             "Enforce general regression result" in source
         )
+
+
+def test_current_fenced_gates_subsume_stale_historical_interfaces() -> None:
+    p5e = (ROOT / ".github/workflows/p5e-provider-ack-ambiguity-pg16.yml").read_text(
+        encoding="utf-8"
+    )
+    for path in (
+        "tests/test_p4b_search_evidence_static_contracts.py",
+        "tests/test_p4b_search_provider.py",
+        "tests/test_p4b_search_provider_adversarial.py",
+        "tests/test_p4b_search_drift_repair.py",
+        "tests/test_p4c_notification_static_contracts.py",
+        "tests/test_p4c_notification_provider.py",
+        "tests/test_p4c_inherited_contracts.py",
+        "tests/test_p5w_worker_fencing_runtime.py",
+    ):
+        assert path in p5e
+    assert "P5E_PROVIDER_CAPABILITY_FENCE=PASS" in p5e
+
+    p5w2 = (ROOT / ".github/workflows/p5w2-worker-crash-redelivery-pg16.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "tests/test_p5w_worker_fencing_runtime.py" in p5w2
+    assert "Reprove P5-W1 stale-owner fences" in p5w2
 
 
 def test_final_workflow_calls_all_27_gates_on_same_head() -> None:
@@ -218,6 +242,7 @@ def test_p5f_p4e_wrappers_are_certification_only_and_current_head_bound() -> Non
     assert '= "${CERTIFICATION_HEAD}"' in operational_source
     assert "tests/test_p4e_operational_snapshots_runtime.py" in operational_source
     assert "scripts/verify_head_workflow_bootstrap.py" in operational_source
+    assert "export MIGRATION_PASSWORD" in operational_source
     assert " BYPASSRLS" not in operational_source
     assert "P5F_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED" in contract_source
     assert "P5F_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED" in operational_source
