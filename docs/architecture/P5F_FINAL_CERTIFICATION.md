@@ -70,8 +70,7 @@ all prerequisite results before emitting its marker.
 
 No live refund API call is introduced or authorized. Refund-provider execution
 remains `DEFERRED_FAIL_CLOSED`; no live money movement or live provider
-credential is permitted. Telemetry, queue labels and operator input never
-become business authority.
+credential is permitted. Telemetry, queue labels and operator input never become business authority.
 
 ## 6. Runtime and migration authority
 
@@ -87,9 +86,11 @@ remain independently owned by the inherited migration-lifecycle gates.
 
 ## 7. Scope and post-pass state
 
-P5-F may change only final-certification artifacts and reusable certification
-topology. It must not modify production behavior, schema semantics, RLS policy,
-worker authority, Finance authority, provider adapters or entitlement policy.
+P5-F may change only final-certification artifacts, reusable certification
+topology and exact inherited certification inventories proven stale by the
+same-head fan-in. It must not modify production behavior, schema semantics, RLS
+policy, worker authority, Finance authority, provider adapters or entitlement
+policy.
 
 This phase does not perform or authorize a merge, retarget, tag, release or
 deployment. A passing P5-F candidate requires a separate exact-candidate
