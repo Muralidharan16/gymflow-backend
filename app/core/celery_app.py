@@ -52,6 +52,15 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
+    # P6-B: make the production reconnect contract explicit instead of
+    # depending on Celery defaults.  A running worker retries indefinitely
+    # after broker loss; publisher retries remain enabled; prefetch count is
+    # reduced while the connection is recovering.
+    broker_connection_retry_on_startup=True,
+    broker_connection_retry=True,
+    broker_connection_max_retries=None,
+    task_publish_retry=True,
+    worker_enable_prefetch_count_reduction=True,
     task_always_eager=(settings.ENVIRONMENT == "development"),
     task_default_queue=WORKER_QUEUE,
     imports=(
