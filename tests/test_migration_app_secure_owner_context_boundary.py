@@ -90,6 +90,7 @@ _P4D_REFUND_AUTHORITY_MIGRATION = "zc07d8e9f0a3d_p4d_refund_authority_boundary.p
 _P4D_REFUND_OBLIGATION_MIGRATION = "zd07d8e9f0a3e_p4d_refund_obligation_resolution.py"
 _P4D_AUDIT_PARTITION_MIGRATION = "ze07d8e9f0a3f_audit_partition_lifecycle.py"
 _P4E_OPERATIONAL_SNAPSHOTS_MIGRATION = "zf07d8e9f0a40_p4e_operational_snapshots.py"
+_P5E_PROVIDER_FENCE_MIGRATION = "zi07d8e9f0a43_p5e_provider_capability_fences.py"
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -126,6 +127,7 @@ APP_SECURE_FILES.update(
         _P4D_REFUND_OBLIGATION_MIGRATION,
         _P4D_AUDIT_PARTITION_MIGRATION,
         _P4E_OPERATIONAL_SNAPSHOTS_MIGRATION,
+        _P5E_PROVIDER_FENCE_MIGRATION,
     }
 )
 
@@ -253,6 +255,11 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # schema/view/policy DDL, so zf07 is present in the closed inventory
         # with no category expansion.
         _P4E_OPERATIONAL_SNAPSHOTS_MIGRATION: set(),
+        # P5-E adds fence-bearing app_secure function overloads while retaining
+        # the established schema/view/policy surface. Dedicated P5-E contracts
+        # own the function bodies, owners and EXECUTE partition; this closed
+        # inventory records the new sensitive migration explicitly.
+        _P5E_PROVIDER_FENCE_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {

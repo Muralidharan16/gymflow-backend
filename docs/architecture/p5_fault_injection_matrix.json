@@ -1,0 +1,246 @@
+{
+  "schema_version": 1,
+  "phase": "P5 concurrency, crash and durable-worker fault tolerance",
+  "governance_stage": "P5-G",
+  "p4_merge_base_sha": "99de1600636979fa355f8ba8ff665f98dc8148bf",
+  "p4_certified_tree": "766243d0bdd0ccd1377d57ae726222f04ff4cf1c",
+  "hard_gate": [
+    "no_lost_updates",
+    "no_duplicate_financial_effects",
+    "no_stuck_transitions",
+    "no_unrecoverable_jobs"
+  ],
+  "inherited_boundaries": {
+    "local_attempt_is_not_external_success": true,
+    "provider_refund_execution": "deferred_fail_closed",
+    "live_money_activation": "forbidden",
+    "production_deployment": "forbidden",
+    "queue_or_redis_as_business_authority": "forbidden",
+    "runtime_privilege_widening": "forbidden"
+  },
+  "durable_surfaces": [
+    {
+      "id": "lifecycle_outbox",
+      "storage": "public.branch_outbox_events",
+      "worker": "app.tasks.branch_outbox_poller",
+      "domains": [
+        "lifecycle",
+        "search",
+        "notification",
+        "finance_refund_obligation"
+      ],
+      "baseline_evidence": [
+        "bounded_database_claim",
+        "for_update_skip_locked",
+        "finite_database_clock_lease",
+        "durable_attempt_and_dead_letter_state",
+        "provider_evidence_bound_acknowledgement"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "transactional_outbox",
+      "storage": "public.transactional_outbox",
+      "worker": "app.tasks.outbox_poller",
+      "domains": [
+        "branch_hours_projection"
+      ],
+      "baseline_evidence": [
+        "bounded_database_claim",
+        "for_update_skip_locked",
+        "finite_database_clock_lease",
+        "atomic_projection_and_processed_marker"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "notification_commands",
+      "storage": "public.notification_commands",
+      "worker": "app.services.notification_delivery_service",
+      "domains": [
+        "notification_delivery",
+        "notification_reconciliation"
+      ],
+      "baseline_evidence": [
+        "authoritative_recipient_recheck",
+        "provider_acceptance_nonterminal",
+        "expired_processing_reclaim",
+        "duplicate_webhook_deduplication"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "refund_execution_commands",
+      "storage": "finance.refund_execution_commands",
+      "worker": "provider_execution_deferred",
+      "domains": [
+        "finance_refund_obligation"
+      ],
+      "baseline_evidence": [
+        "deterministic_logical_obligation",
+        "concurrent_materialization_uniqueness",
+        "monotonic_lease_fence",
+        "expired_final_attempt_recovery"
+      ],
+      "p5_certification": "not_yet_certified",
+      "provider_execution": "deferred_fail_closed"
+    },
+    {
+      "id": "lifecycle_compensation",
+      "storage": "public.org_branch_state",
+      "worker": "app.services.branch_lifecycle_service.BranchLifecycleService.compensate_saga_from_dead_letter",
+      "domains": [
+        "lifecycle_compensation"
+      ],
+      "baseline_evidence": [
+        "lease_bound_compensation",
+        "compensation_history_and_event_metadata",
+        "transactional_dead_letter_and_compensation_attempt"
+      ],
+      "p5_certification": "not_yet_certified"
+    }
+  ],
+  "fault_scenarios": [
+    {
+      "id": "worker_death_before_db_commit",
+      "slice": "P5-W",
+      "injection_point": "terminate the worker after durable claim or domain mutation begins and before the attacked transaction commits",
+      "expected_durable_state": "no partial attacked transaction; the command is recoverable after lease expiry or remains eligible according to the pre-commit state",
+      "required_proof": [
+        "separate_process_termination",
+        "post_restart_database_assertions",
+        "replacement_worker_recovery"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "worker_death_after_db_commit_before_task_ack",
+      "slice": "P5-W",
+      "injection_point": "terminate after the durable transaction commits and before Celery or the broker records task acknowledgement",
+      "expected_durable_state": "redelivery observes the committed result and cannot repeat the logical business effect",
+      "required_proof": [
+        "real_broker_redelivery_or_equivalent_process_boundary",
+        "single_logical_effect_count",
+        "terminal_or_recoverable_job_state"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "provider_success_db_ack_failure",
+      "slice": "P5-E",
+      "injection_point": "persist provider-side success or acceptance, then break the database acknowledgement transaction",
+      "expected_durable_state": "local state remains non-terminal until same-identity replay or reconciliation stores authoritative evidence; no new provider identity is created",
+      "required_proof": [
+        "durable_test_provider_evidence",
+        "database_acknowledgement_failure",
+        "same_idempotency_identity",
+        "single_provider_effect_count"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "duplicate_celery_or_outbox_delivery",
+      "slice": "P5-W",
+      "injection_point": "deliver the same Celery task and durable command sequentially and concurrently",
+      "expected_durable_state": "duplicates converge on one logical command/effect and cannot overwrite newer authoritative state",
+      "required_proof": [
+        "sequential_duplicate",
+        "concurrent_duplicate",
+        "single_logical_effect_count",
+        "stale_completion_rejection"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "lease_expiry_and_reclaim",
+      "slice": "P5-W",
+      "injection_point": "expire a live claim, reclaim it with a replacement owner and resume the stale owner",
+      "expected_durable_state": "only the current ownership generation can write completion or failure; the stale owner is rejected",
+      "required_proof": [
+        "independent_worker_connections",
+        "ownership_generation_change",
+        "stale_success_rejection",
+        "stale_failure_rejection",
+        "aba_replay_rejection"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "redis_or_network_loss",
+      "slice": "P5-D",
+      "injection_point": "interrupt Redis/broker or provider network before delivery, during processing and before acknowledgement",
+      "expected_durable_state": "PostgreSQL business meaning is unchanged; replacement processes reach bounded retry, reconciliation or dead letter without false success",
+      "required_proof": [
+        "real_dependency_stop_or_network_fault",
+        "process_restart",
+        "durable_state_verification",
+        "bounded_recovery_disposition"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "database_disconnect",
+      "slice": "P5-D",
+      "injection_point": "disconnect the database at claim, domain mutation and provider acknowledgement boundaries",
+      "expected_durable_state": "each attempt is either rolled back or recoverable according to its commit point and no durable job disappears",
+      "required_proof": [
+        "real_connection_termination_or_database_restart",
+        "fresh_connection_rebind",
+        "commit_point_specific_assertions",
+        "replacement_worker_recovery"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "deadlock_and_concurrent_lifecycle_transition",
+      "slice": "P5-R",
+      "injection_point": "run conflicting lifecycle transitions and force a real deadlock or serialization victim across independent sessions",
+      "expected_durable_state": "one authoritative transition wins; loser behavior is explicit and retry-safe; dependent effects match the winner exactly once",
+      "required_proof": [
+        "independent_database_sessions",
+        "real_lock_conflict",
+        "single_winner",
+        "bounded_loser_retry_or_conflict",
+        "child_effect_cardinality"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "finance_lifecycle_race",
+      "slice": "P5-R",
+      "injection_point": "race lifecycle refund evaluation with payment allocation, settlement or refund-state changes",
+      "expected_durable_state": "locked current authority determines the result; stale queue values cannot create an obligation and at most one logical refund obligation exists",
+      "required_proof": [
+        "independent_lifecycle_and_finance_sessions",
+        "authoritative_state_locking",
+        "deterministic_obligation_identity",
+        "single_refund_and_command_cardinality",
+        "ledger_and_allocation_consistency"
+      ],
+      "p5_certification": "not_yet_certified"
+    },
+    {
+      "id": "compensation_crash_and_replay",
+      "slice": "P5-C",
+      "injection_point": "terminate compensation before commit and after commit but before task acknowledgement, then replay",
+      "expected_durable_state": "one authoritative compensated state and one logical history/effect set exist; no aggregate remains frozen without recovery disposition",
+      "required_proof": [
+        "before_commit_process_death",
+        "after_commit_redelivery",
+        "single_compensation_effect_count",
+        "replacement_worker_recovery",
+        "no_frozen_unrecoverable_aggregate"
+      ],
+      "p5_certification": "not_yet_certified"
+    }
+  ],
+  "decisive_runtime_requirements": {
+    "postgresql_major": 16,
+    "separate_runtime_identities": true,
+    "independent_connections_for_races": true,
+    "durable_postcondition_verification": true,
+    "source_mutation_during_certification": "forbidden",
+    "same_immutable_sha": true,
+    "mock_only_evidence_for_restart_or_concurrency": "forbidden"
+  }
+}

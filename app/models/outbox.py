@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     ForeignKey,
     SmallInteger,
@@ -87,6 +88,9 @@ class TransactionalOutbox(Base):
     leased_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
+    lease_fence: Mapped[int] = mapped_column(
+        BigInteger, server_default=text("0"), default=0, nullable=False
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -110,5 +114,9 @@ class TransactionalOutbox(Base):
             "(processed_at IS NULL AND dead_lettered_at IS NULL) "
             "OR (leased_by IS NULL AND leased_until IS NULL)",
             name="chk_transactional_outbox_terminal_unleased",
+        ),
+        CheckConstraint(
+            "lease_fence >= 0",
+            name="chk_transactional_outbox_lease_fence",
         ),
     )

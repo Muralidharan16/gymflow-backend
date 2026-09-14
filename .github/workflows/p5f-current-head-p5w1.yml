@@ -1,0 +1,56 @@
+name: P5-F Current-Head P5-W1 Compatibility
+
+on:
+  workflow_call:
+    inputs:
+      certification_head:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  p5w1-current-head:
+    name: P5-W1 fencing contract carried by the current W2 boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_p5f_p5w1_contract
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p5f-p5w1-contract-not-production
+      AWS_ACCESS_KEY_ID: ci-p5f-p5w1-contract
+      AWS_SECRET_ACCESS_KEY: ci-p5f-p5w1-contract
+      S3_BUCKET_NAME: gymflow-p5f-p5w1-contract
+      ENVIRONMENT: test
+      CERTIFICATION_HEAD: ${{ inputs.certification_head }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Reprove W1 static contract and bind its decisive current runtime owner
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${CERTIFICATION_HEAD}"
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p5w_worker_fencing_static_contracts.py \
+            tests/test_p5w2_worker_crash_static_contracts.py
+          grep -F 'Reprove P5-W1 stale-owner fences and inherited worker boundaries' .github/workflows/p5w2-worker-crash-redelivery-pg16.yml
+          grep -F 'tests/test_p5w_worker_fencing_runtime.py' .github/workflows/p5w2-worker-crash-redelivery-pg16.yml
+          grep -F 'P5W2_REAL_REDIS_REDELIVERY=PASS' .github/workflows/p5w2-worker-crash-redelivery-pg16.yml
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P5F_P5W1_CURRENT_W2_BOUNDARY=PASS'

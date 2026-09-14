@@ -95,7 +95,9 @@ def test_worker_claims_reclaims_and_commits_parent_with_transaction_b() -> None:
     assert "status = 'pending'" in source
     assert "status = 'processing'" in source
     assert "leased_until <= pg_catalog.clock_timestamp()" in source
-    assert "attempt_count = outbox_data.attempt_count + 1" in source
+    assert "WHEN candidates.reclaiming THEN outbox_data.attempt_count" in source
+    assert "ELSE outbox_data.attempt_count + 1" in source
+    assert "lease_fence = outbox_data.lease_fence + 1" in source
     assert "execute_saga_cascade" in source
     assert "await _mark_delivered" in source
     assert "await session.commit()" in source

@@ -156,6 +156,9 @@ class BranchOutboxEvent(Base):
     leased_until: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    lease_fence: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0"), nullable=False
+    )
 
     __table_args__ = (
         sa.CheckConstraint(
@@ -165,6 +168,10 @@ class BranchOutboxEvent(Base):
         sa.CheckConstraint(
             "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
             name="chk_branch_outbox_lease_state",
+        ),
+        sa.CheckConstraint(
+            "lease_fence >= 0",
+            name="chk_branch_outbox_lease_fence",
         ),
     )
 

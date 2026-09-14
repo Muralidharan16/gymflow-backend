@@ -47,7 +47,9 @@ def test_poller_uses_atomic_leases_and_no_nested_celery_dispatch() -> None:
     assert "worker_async_session_maker" in source
     assert "FOR UPDATE SKIP LOCKED" in source
     assert "leased_by = :worker_id" in source
-    assert "delivery_attempts = outbox_data.delivery_attempts + 1" in source
+    assert "WHEN candidates.reclaiming THEN outbox_data.delivery_attempts" in source
+    assert "ELSE outbox_data.delivery_attempts + 1" in source
+    assert "lease_fence = outbox_data.lease_fence + 1" in source
     assert "enqueue_branch_hours_child" in source
     assert "internal_maintenance=_MAINTENANCE_TOKEN" in source
     assert "worker_id=str(worker_id)" in source
