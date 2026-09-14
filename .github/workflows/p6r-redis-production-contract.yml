@@ -32,6 +32,14 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       CERTIFICATION_HEAD: ${{ inputs.certification_head }}
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+asyncpg://p6r_test@localhost/p6r
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/1
+      CELERY_RESULT_BACKEND: redis://localhost:6379/2
+      SECRET_KEY: p6r-ci-bootstrap-only
+      AWS_ACCESS_KEY_ID: p6r-test
+      AWS_SECRET_ACCESS_KEY: p6r-test
 
     steps:
       - name: Checkout exact candidate
