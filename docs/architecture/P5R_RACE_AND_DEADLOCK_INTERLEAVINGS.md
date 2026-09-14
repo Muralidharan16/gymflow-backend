@@ -66,9 +66,18 @@ lease and fence are still live.
 
 A leased lifecycle worker holds the branch row during Transaction B while an
 API session attempts the next legal lifecycle transition. The API transaction
-must block behind the row lock rather than overwrite worker state. After
-Transaction B commits atomically, the API session may revalidate and continue
-from the newly stable state.
+must block behind the row lock rather than overwrite worker state.
+
+API transactions intentionally install a `500ms` PostgreSQL `lock_timeout`.
+When the live worker holds the row beyond that bounded request budget,
+PostgreSQL SQLSTATE `55P03` must be translated at the lifecycle HTTP boundary to
+an explicit HTTP 409 retry conflict. It must not escape as an unhandled database
+error, be mistaken for success, or cause the request to wait without bound.
+
+After Transaction B commits atomically, a fresh API attempt must read and
+revalidate the committed stable state and may then start the next legal
+transition. SQLSTATE `40P01` is not translated by this contention mapping and
+continues to fail P5-R if production lifecycle contention produces a deadlock.
 
 No partial child commands, duplicate parent completion, impossible status or
 stuck `lifecycle_transition_in_progress` state is allowed.
@@ -107,6 +116,7 @@ P5-R runtime certification must use:
 - reduced production-equivalent auth, API and worker login identities;
 - FORCE RLS and existing capability functions without BYPASSRLS;
 - independent physical connections (`NullPool` for API contenders);
+- the production `500ms` API lock budget rather than an enlarged test-only wait;
 - real `asyncio`/thread transaction overlap, not sequential replay presented as
   concurrency;
 - database barriers only as disposable CI fault-injection infrastructure;
@@ -126,6 +136,8 @@ Any of the following fails P5-R:
 - duplicate durable ownership of one live lease;
 - stale-fence delivery succeeding after reclaim;
 - API overwrite of an in-flight Transaction B;
+- raw SQLSTATE `55P03` escaping the lifecycle HTTP contention boundary instead
+  of a bounded retry conflict;
 - uncommitted lifecycle-to-Finance work becoming externally visible;
 - duplicate lifecycle refund-obligation handoff for one correlation;
 - production lifecycle contention surfacing SQLSTATE `40P01`;
