@@ -58,6 +58,8 @@ jobs:
           APP_RUNTIME_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(24))')"
           WORKER_RUNTIME_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(24))')"
           MAINTENANCE_RUNTIME_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(24))')"
+          export MIGRATION_PASSWORD AUTH_RUNTIME_PASSWORD APP_RUNTIME_PASSWORD
+          export WORKER_RUNTIME_PASSWORD MAINTENANCE_RUNTIME_PASSWORD
 
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<SQL
           ALTER ROLE migration_owner PASSWORD '${MIGRATION_PASSWORD}';
