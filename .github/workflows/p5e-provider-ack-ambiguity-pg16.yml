@@ -278,6 +278,17 @@ jobs:
       - name: Cleanup disposable P5-E Redis topology
         if: always()
         run: |
-          docker rm -f p5e-replica p5e-primary >/dev/null 2>&1 || true
-          docker volume rm p5e-replica-data p5e-primary-data >/dev/null 2>&1 || true
-          docker network rm p5e-redis-net >/dev/null 2>&1 || true
+          set -euo pipefail
+          for container in p5e-replica p5e-primary; do
+            if docker container inspect "${container}" >/dev/null 2>&1; then
+              docker rm -f "${container}" >/dev/null
+            fi
+          done
+          for volume in p5e-replica-data p5e-primary-data; do
+            if docker volume inspect "${volume}" >/dev/null 2>&1; then
+              docker volume rm "${volume}" >/dev/null
+            fi
+          done
+          if docker network inspect p5e-redis-net >/dev/null 2>&1; then
+            docker network rm p5e-redis-net >/dev/null
+          fi
