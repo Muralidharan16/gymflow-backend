@@ -64,7 +64,8 @@
       {"name": "doers.platform.redis.health", "type": "gauge", "labels": ["role"], "source": "API/broker/result-backend probes"},
       {"name": "doers.platform.scheduler.ownership", "type": "gauge", "labels": ["state"], "source": "P6 Beat ownership lease"},
       {"name": "doers.platform.backup.age", "type": "gauge", "labels": ["backup_class"], "source": "external infrastructure backup monitor ingress"},
-      {"name": "doers.platform.backup.failures", "type": "counter", "labels": ["backup_class"], "source": "external infrastructure backup monitor ingress"}
+      {"name": "doers.platform.backup.failures", "type": "counter", "labels": ["backup_class"], "source": "external infrastructure backup monitor ingress"},
+      {"name": "doers.platform.observability.heartbeat", "type": "gauge", "labels": ["profile"], "source": "P8 process metrics bootstrap"}
     ]
   },
   "truth_boundaries": {
@@ -76,6 +77,7 @@
     "provider_result": "provider adapter plus durable acknowledgement evidence",
     "scheduler_owner": "P6 Redis ownership lease",
     "backup_status": "external infrastructure backup system",
+    "observability_heartbeat": "process_local_metric_provider",
     "observability_is_business_authority": false
   },
   "non_goals": [
