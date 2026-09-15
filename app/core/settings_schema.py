@@ -83,6 +83,12 @@ class DoersSettingsSchema(BaseSettings):
     P4E_METRICS_EXPORT_INTERVAL_SECONDS: float = 30.0
     P4E_METRICS_EXPORT_TIMEOUT_SECONDS: float = 5.0
 
+    # P8 process-local runtime metrics. Production API, worker, maintenance and
+    # Beat processes each export only low-cardinality operational evidence.
+    P8_METRICS_OTLP_ENDPOINT: str = ""
+    P8_METRICS_EXPORT_INTERVAL_SECONDS: float = 30.0
+    P8_METRICS_EXPORT_TIMEOUT_SECONDS: float = 5.0
+
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "info"
 
