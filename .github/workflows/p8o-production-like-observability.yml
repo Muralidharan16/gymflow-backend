@@ -134,9 +134,11 @@ jobs:
           set -euo pipefail
           python -m pytest --noconftest -q -s --maxfail=1 \
             tests/test_p8_production_like_observability_runtime.py \
-            -k 'not test_20_real_postgresql_stuck_lifecycle_snapshot_crosses_watchdog_boundary and not test_90_real_postgresql_service_outage_emits_disconnect_storm_and_recovers'
+            -k 'not test_20_real_postgresql_stuck_lifecycle_snapshot_crosses_watchdog_boundary and not test_90_real_postgresql_service_outage_emits_disconnect_storm_and_recovers and not test_95_real_otlp_sink_loss_does_not_block_durable_postgresql_commit'
           python -m pytest --noconftest -q -s --maxfail=1 \
             tests/test_p8o_stuck_lifecycle_runtime.py
+          python -m pytest --noconftest -q -s --maxfail=1 \
+            tests/test_p8o_otlp_sink_loss_runtime.py
           : > "${P8O_OTLP_CAPTURE_PATH}"
           python -m pytest --noconftest -q -s --maxfail=1 \
             tests/test_p8o_database_disconnect_runtime.py
@@ -417,6 +419,7 @@ jobs:
             scripts/ci/p8o_verify_worker_capture.py \
             tests/test_p8_production_like_observability_runtime.py \
             tests/test_p8o_stuck_lifecycle_runtime.py \
+            tests/test_p8o_otlp_sink_loss_runtime.py \
             tests/test_p8o_database_disconnect_runtime.py \
             tests/test_p8_production_like_observability_contracts.py
 
