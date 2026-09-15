@@ -192,3 +192,7 @@ celery_app.conf.beat_schedule = {
         "options": {"queue": MAINTENANCE_QUEUE},
     },
 }
+
+# P8-L registers logging/context signals only.  It does not alter queues, acks,
+# retries, routing, prefetch, scheduler authority, or durable task semantics.
+from app.observability import celery_context as _p8_celery_observability  # noqa: E402,F401
