@@ -213,6 +213,12 @@ class RuntimeMetrics:
         self.scheduler_ownership = meter.create_gauge("doers.platform.scheduler.ownership", unit="1")
         self.backup_age = meter.create_gauge("doers.platform.backup.age", unit="s")
         self.backup_failures = meter.create_counter("doers.platform.backup.failures", unit="1")
+        # A persistent gauge is exported every collection interval after one
+        # process-local set. Missing samples therefore distinguish telemetry loss
+        # from an otherwise idle but healthy runtime profile.
+        self.observability_heartbeat = meter.create_gauge(
+            "doers.platform.observability.heartbeat", unit="1"
+        )
 
     @staticmethod
     def _safe(operation: str, recorder: Callable[[], None]) -> bool:
@@ -441,6 +447,13 @@ class RuntimeMetrics:
                 self.backup_failures.add(1, attrs)
 
         return self._safe("backup_snapshot", _record)
+
+    def telemetry_heartbeat(self, *, profile: str) -> bool:
+        attrs = {"profile": _enum(profile, _PROCESS_PROFILES)}
+        return self._safe(
+            "telemetry_heartbeat",
+            lambda: self.observability_heartbeat.set(1, attrs),
+        )
 
 
 _RUNTIME = RuntimeMetrics(metrics.get_meter(_METER_NAME, _METER_VERSION))
