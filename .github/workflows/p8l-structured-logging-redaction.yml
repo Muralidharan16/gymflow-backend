@@ -26,6 +26,15 @@ jobs:
     env:
       P8_GOVERNANCE_BASE: 053939f360120b175f8efa21396db30d4c28076b
       P8_GOVERNANCE_TREE: 46e0def182dac1aac59a27c534d943e33235677c
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_p8l_contract
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p8l-structured-logging-not-production
+      AWS_ACCESS_KEY_ID: ci-p8l-structured-logging
+      AWS_SECRET_ACCESS_KEY: ci-p8l-structured-logging
+      S3_BUCKET_NAME: gymflow-p8l-contract
+      ENVIRONMENT: test
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Checkout exact candidate
