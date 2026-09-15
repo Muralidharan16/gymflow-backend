@@ -10,8 +10,10 @@ Middleware order (add_middleware is applied bottom-to-top, so innermost first):
   RedisRateLimiterMiddleware
   OpenTelemetryTraceMiddleware
   CorrelationIdMiddleware
-  SecurityHeadersMiddleware   ← outermost
-  CORSMiddleware              ← very outermost
+  DrainAdmissionMiddleware    ← P7 ordinary-request admission/in-flight boundary
+  P7SecurityHeadersMiddleware
+  CORSMiddleware
+  SystemControlMiddleware     ← outermost; exact system paths bypass business middleware
 """
 
 from __future__ import annotations
@@ -26,6 +28,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.core.api_runtime import (
+    DrainAdmissionMiddleware,
+    P7SecurityHeadersMiddleware,
+    SYSTEM_REQUEST_PATHS,
+    SystemControlMiddleware,
+)
 from app.core.config import settings
 from app.core.middleware import (
     AdaptiveWriteThrottler,
@@ -34,7 +42,6 @@ from app.core.middleware import (
     IdempotencyMiddleware,
     OpenTelemetryTraceMiddleware,
     RedisRateLimiterMiddleware,
-    SecurityHeadersMiddleware,
     TenantMiddleware,
 )
 from app.core.redis import close_redis, init_redis
@@ -77,6 +84,11 @@ from app.finance_core.api import payment_boundary as finance_payment_boundary
 # while provider authenticity is established from the untouched raw body and
 # Svix headers inside the P4C router before any database capability is invoked.
 EXEMPT_PATHS.add("/webhooks/notifications/resend")
+
+# P7 system paths are intercepted by the outer SystemControlMiddleware. Keeping
+# them exempt is defense-in-depth for alternate ASGI/test composition and does not
+# grant drain authority: preStop still requires its dedicated orchestration secret.
+EXEMPT_PATHS.update(SYSTEM_REQUEST_PATHS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -137,7 +149,8 @@ app.add_middleware(AdaptiveWriteThrottler)
 app.add_middleware(RedisRateLimiterMiddleware)
 app.add_middleware(OpenTelemetryTraceMiddleware)
 app.add_middleware(CorrelationIdMiddleware)
-app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(DrainAdmissionMiddleware)
+app.add_middleware(P7SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -145,6 +158,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SystemControlMiddleware)
 
 # ── Static storage ─────────────────────────────────────────────────────────
 
@@ -184,60 +198,8 @@ app.include_router(platform_billing_checkout_simulation.router)
 app.include_router(finance_payment_boundary.router)
 
 
-# ── Health probe ──────────────────────────────────────────────────────────
+# ── Public root ────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
     return {"message": "Doers SaaS API v2.0 — Enterprise Edition"}
-
-
-@app.get("/_system/preStop")
-async def system_pre_stop():
-    from app.core.drain import drain_coordinator
-    # Triggers draining sequence (readiness check will start failing, blocks until requests complete)
-    await drain_coordinator.trigger_drain()
-    return {"status": "drained"}
-
-
-@app.get("/health")
-async def health_check():
-    from sqlalchemy import text as sa_text
-    from app.core.database import AsyncSessionLocal
-    from app.core.redis import redis_client
-    from app.core.drain import drain_coordinator
-
-    db_ok = redis_ok = False
-
-    # Return degraded immediately if pod is draining
-    if not drain_coordinator.is_healthy:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "draining",
-                "db": False,
-                "redis": False,
-                "version": "2.0.0",
-            }
-        )
-
-    try:
-        async with AsyncSessionLocal() as session:
-            await session.execute(sa_text("SELECT 1"))
-        db_ok = True
-    except Exception:
-        pass
-
-    try:
-        redis_ok = bool(await redis_client.ping())
-    except Exception:
-        pass
-
-    payload = {
-        "status":  "healthy" if (db_ok and redis_ok) else "degraded",
-        "db":      db_ok,
-        "redis":   redis_ok,
-        "version": "2.0.0",
-    }
-    if not (db_ok and redis_ok):
-        return JSONResponse(status_code=503, content=payload)
-    return payload
