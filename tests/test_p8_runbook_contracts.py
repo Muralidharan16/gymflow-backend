@@ -69,9 +69,13 @@ def test_every_runbook_contains_required_operator_sections_and_identity() -> Non
         assert f"`{alert['alert']}`" in ownership
         assert f"`{alert['owner']}`" in ownership
         assert f"`{failure_mode}`" in ownership
-        assert alert["customer_impact"].split()[0].lower() in _section(
-            text, "Customer impact"
-        ).lower()
+        impact = _section(text, "Customer impact")
+        assert len(impact) >= 80, relative
+        assert any(
+            token.lower().strip(".,;:") in impact.lower()
+            for token in alert["customer_impact"].split()
+            if len(token) >= 8
+        ), relative
 
 
 def test_runbooks_have_ordered_diagnosis_safe_actions_forbidden_actions_and_escalation() -> None:
