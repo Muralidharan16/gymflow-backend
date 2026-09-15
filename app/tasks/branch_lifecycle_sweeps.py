@@ -10,7 +10,6 @@ from app.core.database import (
     maintenance_async_session_maker,
     update_session_context,
 )
-from app.models.branch_lifecycle import BranchOutboxEvent
 from app.models.org_branch import OrgBranchState
 from app.observability.notification_metrics import (
     configure_notification_metrics,
@@ -62,14 +61,12 @@ async def _record_lifecycle_snapshot(session) -> None:
         )
         or 0
     )
+    # Maintenance deliberately has no direct branch_outbox_events SELECT.  The
+    # P8 aggregate capability exposes only the bounded dead-letter count while
+    # preserving the raw durable queue boundary.
     failed = int(
         await session.scalar(
-            select(func.count())
-            .select_from(BranchOutboxEvent)
-            .where(
-                BranchOutboxEvent.event_type == "branch.lifecycle_saga",
-                BranchOutboxEvent.status == "dead_lettered",
-            )
+            text("SELECT app_secure.lifecycle_saga_dead_letter_count()")
         )
         or 0
     )
