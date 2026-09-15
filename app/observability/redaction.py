@@ -91,7 +91,7 @@ _KEY_VALUE_SECRET_RE = re.compile(
     r"(?i)\b(authorization|password|passwd|secret|client_secret|api[_-]?key|access[_-]?token|refresh[_-]?token|webhook[_-]?signature)\s*[:=]\s*([^\s,;]+)"
 )
 _EMAIL_RE = re.compile(r"(?<![\w.+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}(?![\w.-])", re.IGNORECASE)
-_PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d[\d ()-]{7,}\d)(?!\w)")
+_PHONE_CANDIDATE_RE = re.compile(r"(?<!\w)(?:\+?\d[\d ()-]{6,}\d)(?!\w)")
 _IPV4_RE = re.compile(r"(?<!\d)(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?!\d)")
 
 
@@ -106,6 +106,12 @@ def is_sensitive_key(key: Any) -> bool:
     return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
 
 
+def _redact_phone_candidate(match: re.Match[str]) -> str:
+    value = match.group(0)
+    # Avoid treating ordinary ISO dates such as 2026-09-15 as phone numbers.
+    return REDACTED if sum(character.isdigit() for character in value) >= 9 else value
+
+
 def redact_text(value: str) -> str:
     """Redact common secrets/PII embedded in otherwise free-form text."""
 
@@ -115,7 +121,7 @@ def redact_text(value: str) -> str:
     text = _URI_CREDENTIAL_RE.sub(lambda m: f"{m.group(1)}[REDACTED]@", text)
     text = _KEY_VALUE_SECRET_RE.sub(lambda m: f"{m.group(1)}={REDACTED}", text)
     text = _EMAIL_RE.sub(REDACTED, text)
-    text = _PHONE_RE.sub(REDACTED, text)
+    text = _PHONE_CANDIDATE_RE.sub(_redact_phone_candidate, text)
     text = _IPV4_RE.sub(REDACTED, text)
     return text
 
