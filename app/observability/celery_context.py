@@ -1,17 +1,25 @@
-"""Celery observability context propagation without changing task semantics."""
+"""Celery observability context and P8 queue/worker metrics.
+
+Signals add evidence only. They do not alter acknowledgement, retry, routing,
+prefetch, lease or durable PostgreSQL authority semantics.
+"""
 
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Mapping
 from typing import Any
 
 from celery.signals import (
+    beat_init,
     before_task_publish,
     setup_logging,
     task_failure,
     task_postrun,
     task_prerun,
+    worker_process_init,
+    worker_process_shutdown,
 )
 
 from app.core.config import settings
@@ -22,11 +30,14 @@ from app.observability.context import (
     propagatable_task_context,
     reset_observability_context,
 )
+from app.observability.metrics_bootstrap import configure_process_runtime_metrics
+from app.observability.runtime_metrics import runtime_metrics, shutdown_runtime_metrics
 from app.observability.structured_logging import configure_structured_logging
 
 
 logger = logging.getLogger("doers.observability.celery")
 _HEADER = "doers_observability"
+_PUBLISHED_AT_HEADER = "doers_published_at_unix"
 _ALLOWED_INHERITED_FIELDS = {
     "request_id",
     "correlation_id",
@@ -47,6 +58,32 @@ def configure_celery_structured_logging(*args, **kwargs) -> None:
     configure_structured_logging(settings.LOG_LEVEL)
 
 
+@worker_process_init.connect
+def configure_worker_runtime_metrics(*args, **kwargs) -> None:
+    del args, kwargs
+    configure_process_runtime_metrics(settings)
+    runtime_metrics().worker_state(
+        profile=settings.celery_worker_profile or settings.process_profile,
+        available=True,
+    )
+
+
+@worker_process_shutdown.connect
+def shutdown_worker_runtime_metrics(*args, **kwargs) -> None:
+    del args, kwargs
+    runtime_metrics().worker_state(
+        profile=settings.celery_worker_profile or settings.process_profile,
+        available=False,
+    )
+    shutdown_runtime_metrics()
+
+
+@beat_init.connect
+def configure_beat_runtime_metrics(*args, **kwargs) -> None:
+    del args, kwargs
+    configure_process_runtime_metrics(settings)
+
+
 @before_task_publish.connect
 def inject_observability_headers(headers=None, **kwargs) -> None:
     del kwargs
@@ -55,6 +92,9 @@ def inject_observability_headers(headers=None, **kwargs) -> None:
     inherited = propagatable_task_context()
     if inherited:
         headers[_HEADER] = inherited
+    # Bounded scalar used only to estimate broker/durable queue age. It carries
+    # no identity or authority and does not affect Celery delivery semantics.
+    headers[_PUBLISHED_AT_HEADER] = time.time()
 
 
 def _task_inherited_context(task: Any) -> dict[str, str]:
@@ -85,6 +125,18 @@ def _task_token_key(task_id: Any, task: Any) -> str:
     return f"object-{id(task)}"
 
 
+def _delivery_queue(task: Any) -> str:
+    delivery = getattr(getattr(task, "request", None), "delivery_info", None)
+    if not isinstance(delivery, Mapping):
+        return "unknown"
+    return str(delivery.get("routing_key") or delivery.get("exchange") or "unknown")
+
+
+def _is_redelivered(task: Any) -> bool:
+    delivery = getattr(getattr(task, "request", None), "delivery_info", None)
+    return bool(isinstance(delivery, Mapping) and delivery.get("redelivered"))
+
+
 @task_prerun.connect
 def bind_task_observability_context(task_id=None, task=None, sender=None, **kwargs) -> None:
     del kwargs
@@ -93,11 +145,18 @@ def bind_task_observability_context(task_id=None, task=None, sender=None, **kwar
     values["task_id"] = normalized_task_id
     tokens = bind_observability_context(**values)
     _ACTIVE_TASK_TOKENS[_task_token_key(task_id, task)] = tokens
+
+    task_name = getattr(sender, "name", None) or getattr(task, "name", "unknown")
+    if _is_redelivered(task):
+        runtime_metrics().queue_redelivery(queue=_delivery_queue(task))
+        if "lifecycle" in str(task_name):
+            runtime_metrics().lifecycle_replay(result="replayed")
+
     logger.info(
         "Celery task started",
         extra={
             "event": "celery.task.started",
-            "task_name": getattr(sender, "name", None) or getattr(task, "name", "unknown"),
+            "task_name": task_name,
         },
     )
 
