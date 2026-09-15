@@ -1,0 +1,75 @@
+name: P7-S System Control and Probes
+
+on:
+  push:
+    branches:
+      - hardening/p7-api-runtime-graceful-deployment
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p7s-system-control-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  system-control:
+    name: Secure preStop and split liveness readiness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      P7_GOVERNANCE_BASE: a666250e8dd83a7de195ce06731f935406a90846
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Guard certified P7 governance ancestry
+        run: |
+          set -euo pipefail
+          git cat-file -e "${P7_GOVERNANCE_BASE}^{commit}"
+          git merge-base --is-ancestor "${P7_GOVERNANCE_BASE}" HEAD
+
+      - name: Prove secure system control and probe separation
+        run: |
+          set -euo pipefail
+          python -m py_compile app/core/api_runtime.py app/core/drain.py tests/test_p7_system_drain_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p7_system_drain_contracts.py \
+            -k 'prestop or liveness or main_uses_outer or system_control_paths'
+
+      - name: Emit P7-S decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo "P7_PRESTOP_AUTHORIZATION=PASS"
+          echo "P7_LIVENESS_READINESS_SEPARATED=PASS"
+          echo "P7_READINESS_FALSE_BEFORE_SHUTDOWN=PASS"
+          echo "P7S_SYSTEM_CONTROL=PASS"
