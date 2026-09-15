@@ -20,6 +20,14 @@ logger = logging.getLogger("doers.observability.probes")
 _API_POOL_CAPACITY = 30  # database.py: pool_size=10 + max_overflow=20
 _API_PROBE_INTERVAL_SECONDS = 15.0
 
+# PostgreSQL SQLSTATE class 08 is connection exceptions. The 57P0x shutdown
+# states can be raised directly by asyncpg while SQLAlchemy is still creating a
+# physical connection, before SQLAlchemy has a DBAPIError wrapper to classify.
+# Those are genuine runtime disconnect/unavailability evidence and must feed the
+# same bounded disconnect counter used by wrapped connection failures.
+_POSTGRES_CONNECTION_SQLSTATE_PREFIX = "08"
+_POSTGRES_SHUTDOWN_SQLSTATES = frozenset({"57P01", "57P02", "57P03"})
+
 
 def _api_pool_checked_out(pool) -> int:
     checked_out = getattr(pool, "checkedout", None)
@@ -29,6 +37,25 @@ def _api_pool_checked_out(pool) -> int:
         except Exception:
             return 0
     return 0
+
+
+def _is_database_disconnect_exception(exc: BaseException) -> bool:
+    """Classify connectivity failures without depending on an asyncpg type.
+
+    SQLAlchemy normally wraps driver connection errors as ``DBAPIError`` but
+    asyncpg may surface PostgreSQL shutdown/cannot-connect errors directly while
+    a new physical connection is being established. SQLSTATE gives us a stable
+    driver-independent boundary: class 08 is connection failure and 57P01/02/03
+    are administrative shutdown, crash shutdown and cannot-connect-now.
+    """
+
+    if isinstance(exc, (DBAPIError, OSError, ConnectionError)):
+        return True
+    sqlstate = getattr(exc, "sqlstate", None) or getattr(exc, "pgcode", None)
+    if not isinstance(sqlstate, str):
+        return False
+    normalized = sqlstate.upper()
+    return normalized.startswith(_POSTGRES_CONNECTION_SQLSTATE_PREFIX) or normalized in _POSTGRES_SHUTDOWN_SQLSTATES
 
 
 async def probe_api_runtime_once() -> None:
@@ -55,13 +82,15 @@ async def probe_api_runtime_once() -> None:
         )
     except SQLAlchemyTimeoutError:
         metrics.database_pool_timeout(pool="api")
-    except DBAPIError:
+    except (DBAPIError, OSError, ConnectionError):
         metrics.database_disconnect(pool="api")
-    except (OSError, ConnectionError):
-        metrics.database_disconnect(pool="api")
-    except Exception:
-        # Unknown probe failures are evidence only; log without destabilizing the API.
-        logger.warning("P8 API database probe failed", exc_info=True)
+    except Exception as exc:
+        if _is_database_disconnect_exception(exc):
+            metrics.database_disconnect(pool="api")
+            logger.warning("P8 API database connectivity probe failed", exc_info=True)
+        else:
+            # Unknown probe failures are evidence only; log without destabilizing the API.
+            logger.warning("P8 API database probe failed", exc_info=True)
     finally:
         if connection is not None:
             try:
