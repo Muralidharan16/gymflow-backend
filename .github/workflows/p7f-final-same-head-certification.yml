@@ -216,28 +216,18 @@ jobs:
   p7_governance:
     name: P7 governance API runtime contract
     uses: ./.github/workflows/p7-governance-api-runtime.yml
-    with:
-      certification_head: ${{ github.sha }}
   p7_system:
     name: P7 system control and probes
     uses: ./.github/workflows/p7s-system-control.yml
-    with:
-      certification_head: ${{ github.sha }}
   p7_drain:
     name: P7 request drain
     uses: ./.github/workflows/p7d-request-drain.yml
-    with:
-      certification_head: ${{ github.sha }}
   p7_resource:
     name: P7 API resource shutdown
     uses: ./.github/workflows/p7r-api-resource-shutdown.yml
-    with:
-      certification_head: ${{ github.sha }}
   p7_worker:
     name: P7 worker termination inheritance
     uses: ./.github/workflows/p7w-worker-termination-inheritance.yml
-    with:
-      certification_head: ${{ github.sha }}
   p7_orchestration:
     name: P7 real production-like API orchestration
     uses: ./.github/workflows/p7o-production-like-orchestration.yml
