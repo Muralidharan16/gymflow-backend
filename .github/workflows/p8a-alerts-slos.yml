@@ -19,23 +19,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  p8_governance:
-    name: Reprove P8 governance
-    uses: ./.github/workflows/p8-governance-observability.yml
-
-  p8_logging:
-    name: Reprove P8 structured logging and redaction
-    uses: ./.github/workflows/p8l-structured-logging-redaction.yml
-
-  p8_metrics:
-    name: Reprove P8 runtime metrics
-    uses: ./.github/workflows/p8m-runtime-metrics.yml
-
   alerts_slos:
     name: P8-A critical alerts and SLO contract
-    needs: [p8_governance, p8_logging, p8_metrics]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       P8M_CERTIFIED_HEAD: 5ef26cd1698e12589b586596b60641bbeba507bd
       P8M_CERTIFIED_TREE: 4c6eb08ba4b93352c45ee302910f37c2d37d2006
@@ -95,17 +82,22 @@ jobs:
             tests/test_p8_alert_slo_contracts.py \
             tests/test_p8_metrics_contracts.py
 
+      - name: Reprove P8 governance logging metrics and inherited runtime boundaries
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8_governance_contracts.py \
+            tests/test_p8_logging_redaction_contracts.py \
+            tests/test_p8_metrics_contracts.py \
+            tests/test_p6s_scheduler_static_contracts.py \
+            tests/test_celery_single_app_boundary.py \
+            tests/test_p7_system_drain_contracts.py
+
       - name: Prove critical alert coverage and SLO contract
         run: |
           set -euo pipefail
           python -m pytest --noconftest -q --maxfail=1 \
             tests/test_p8_alert_slo_contracts.py
-
-      - name: Reprove heartbeat metric through real SDK reader
-        run: |
-          set -euo pipefail
-          python -m pytest --noconftest -q --maxfail=1 \
-            tests/test_p8_metrics_contracts.py
 
       - name: Emit P8-A decision
         run: |
