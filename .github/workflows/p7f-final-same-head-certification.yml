@@ -227,6 +227,7 @@ jobs:
     uses: ./.github/workflows/p7r-api-resource-shutdown.yml
   p7_worker:
     name: P7 worker termination inheritance
+    needs: p6_worker
     uses: ./.github/workflows/p7w-worker-termination-inheritance.yml
   p7_orchestration:
     name: P7 real production-like API orchestration
