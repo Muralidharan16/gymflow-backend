@@ -63,11 +63,20 @@ celery_app.conf.update(
     worker_enable_prefetch_count_reduction=True,
     task_always_eager=(settings.ENVIRONMENT == "development"),
     task_default_queue=WORKER_QUEUE,
+    # Celery autodiscovery imports ``app.tasks.tasks``; it does not recursively
+    # import sibling task modules.  Every module owning a task referenced by the
+    # production Beat schedule must therefore be registered explicitly.  This
+    # keeps the real Docker worker/maintenance commands executable without
+    # test-only ``--include`` flags.
     imports=(
         "app.tasks.logos",
         "app.tasks.covers",
         "app.tasks.platform_maintenance",
         "app.tasks.external_effect_observability",
+        "app.tasks.branch_hours_partition",
+        "app.tasks.outbox_poller",
+        "app.tasks.branch_outbox_poller",
+        "app.tasks.branch_lifecycle_sweeps",
     ),
     task_routes={
         task_name: {"queue": MAINTENANCE_QUEUE}
