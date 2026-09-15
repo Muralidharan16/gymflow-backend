@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.core.api_resources import close_api_runtime_resources
 from app.core.api_runtime import (
     DrainAdmissionMiddleware,
     P7SecurityHeadersMiddleware,
@@ -44,7 +45,7 @@ from app.core.middleware import (
     RedisRateLimiterMiddleware,
     TenantMiddleware,
 )
-from app.core.redis import close_redis, init_redis
+from app.core.redis import init_redis
 from app.core.supervisor import platform_lifespan
 from app.core.telemetry import sentry_before_send
 
@@ -115,12 +116,15 @@ logging.config.dictConfig(LOGGING_CONFIG)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_redis()
-    # Database partition lifecycle is infrastructure-owned (pg_partman).  The
-    # ordinary application identity deliberately performs no schema/table DDL
-    # during startup.
-    async with platform_lifespan():
-        yield
-    await close_redis()
+    try:
+        # Database partition lifecycle is infrastructure-owned (pg_partman).  The
+        # ordinary application identity deliberately performs no schema/table DDL
+        # during startup. API-local supervised tasks are stopped by platform_lifespan
+        # before process-owned Redis/database pools are disposed in the outer finally.
+        async with platform_lifespan():
+            yield
+    finally:
+        await close_api_runtime_resources()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
