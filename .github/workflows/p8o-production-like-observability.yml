@@ -95,8 +95,8 @@ jobs:
       - name: Install PostgreSQL 16 and exact disposable identities
         run: |
           set -euo pipefail
-          # This command remains visible to the P8-O static certification contract.
           bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
           bash scripts/ci/p8o_provision_pg16.sh operational
 
       - name: Migrate exact current schema head
@@ -134,9 +134,12 @@ jobs:
           set -euo pipefail
           python -m pytest --noconftest -q -s --maxfail=1 \
             tests/test_p8_production_like_observability_runtime.py \
-            -k 'not test_20_real_postgresql_stuck_lifecycle_snapshot_crosses_watchdog_boundary'
+            -k 'not test_20_real_postgresql_stuck_lifecycle_snapshot_crosses_watchdog_boundary and not test_90_real_postgresql_service_outage_emits_disconnect_storm_and_recovers'
           python -m pytest --noconftest -q -s --maxfail=1 \
             tests/test_p8o_stuck_lifecycle_runtime.py
+          : > "${P8O_OTLP_CAPTURE_PATH}"
+          python -m pytest --noconftest -q -s --maxfail=1 \
+            tests/test_p8o_database_disconnect_runtime.py
 
       - name: Stop OTLP collector and guard exact head
         if: always()
@@ -214,6 +217,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
           bash scripts/ci/p8o_provision_pg16.sh p5d
 
       - name: Migrate exact current schema head
@@ -320,6 +324,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
           bash scripts/ci/p8o_provision_pg16.sh p5w2
 
       - name: Migrate exact current schema head
@@ -412,6 +417,7 @@ jobs:
             scripts/ci/p8o_verify_worker_capture.py \
             tests/test_p8_production_like_observability_runtime.py \
             tests/test_p8o_stuck_lifecycle_runtime.py \
+            tests/test_p8o_database_disconnect_runtime.py \
             tests/test_p8_production_like_observability_contracts.py
 
       - name: Reprove P8 prerequisite contracts and inherited runtime boundaries
