@@ -1,0 +1,335 @@
+name: P7-F Final Same-Head Certification
+
+on:
+  push:
+    branches:
+      - hardening/p7f-final-certification-temp
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p7f-final-same-head-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Frozen Final P7 scope and 40-gate topology
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_p7f_contract_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p7f-contract-not-production
+      AWS_ACCESS_KEY_ID: ci-p7f-contract
+      AWS_SECRET_ACCESS_KEY: ci-p7f-contract
+      S3_BUCKET_NAME: gymflow-p7f-contract-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Validate immutable Final P7 contract
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/verify_head_workflow_bootstrap.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = 'zj07d8e9f0a44'
+          python -m py_compile tests/test_p7f_final_certification_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p6f_final_certification_contracts.py \
+            tests/test_p7_governance_contracts.py \
+            tests/test_p7_system_drain_contracts.py \
+            tests/test_p7_resource_shutdown_contracts.py \
+            tests/test_p7o_production_like_orchestration_static_contracts.py \
+            tests/test_p7f_final_certification_contracts.py
+          git cat-file -e '916bc58e80f06e46311b3c3572e54268a06c82f8^{commit}'
+          test "$(git rev-parse '916bc58e80f06e46311b3c3572e54268a06c82f8^{tree}')" = \
+            'b13592b0cd80a8112826c26af538e06d7369450f'
+          git merge-base --is-ancestor 916bc58e80f06e46311b3c3572e54268a06c82f8 HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+  architecture:
+    name: Inherited architecture contracts
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+  migration_hardening:
+    name: General, Platform Billing, and fresh-lineage regression
+    uses: ./.github/workflows/hardening-ci.yml
+  finance:
+    name: Finance Core regression
+    uses: ./.github/workflows/finance-hardening-ci.yml
+  migration_lifecycle:
+    name: Full migration lifecycle
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+  migration_preservation:
+    name: Populated migration data preservation
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+  migration_adversarial:
+    name: Adversarial migration recovery
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+  migration_contracts:
+    name: Migration lifecycle contracts
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+  migration_semantics:
+    name: Migration semantics inventory
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+  p3:
+    name: Inherited P1, P2, and P3 certification
+    uses: ./.github/workflows/p3e-certification.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p3a_general:
+    name: P3A broad inherited regression
+    uses: ./.github/workflows/p3a-general-regressions.yml
+  lifecycle_maintenance:
+    name: Lifecycle maintenance production boundary
+    uses: ./.github/workflows/lifecycle-maintenance-production-boundary.yml
+  platform_maintenance:
+    name: Platform maintenance production boundary
+    uses: ./.github/workflows/platform-maintenance-production-boundary.yml
+  p4b_opensearch:
+    name: Real local OpenSearch behavior
+    uses: ./.github/workflows/p4b-opensearch-live.yml
+  p4b_evidence:
+    name: P4B provider evidence compatibility on current P5 fences
+    uses: ./.github/workflows/p5f-current-head-p4b-evidence.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p4b_drift:
+    name: P4B drift repair compatibility on current P5 fences
+    uses: ./.github/workflows/p5f-current-head-p4b-drift.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p4c_general:
+    name: P4C broad inherited regression
+    uses: ./.github/workflows/p4c-general-regression.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p4c_notification:
+    name: P4C notification compatibility on current P5 fences
+    uses: ./.github/workflows/p5f-current-head-p4c-notification.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p4d_refund:
+    name: P4D refund-obligation authority without provider execution
+    uses: ./.github/workflows/p4d-refund-authority-pg16.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p4e_contract:
+    name: P4E current-head external-effect contract
+    uses: ./.github/workflows/p5f-inherited-p4e-contract.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p4e_operational:
+    name: P4E current-head operational observability
+    uses: ./.github/workflows/p5f-inherited-p4e-operational-pg16.yml
+    with:
+      certification_head: zj07d8e9f0a44
+
+  p5_governance:
+    name: P5 governance and frozen fault matrix
+    uses: ./.github/workflows/p5-governance-fault-matrix.yml
+  p5_worker_fencing:
+    name: P5-W1 current-head fencing compatibility
+    uses: ./.github/workflows/p5f-current-head-p5w1.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p5_worker_crash_redelivery:
+    name: P5-W2 real worker crash and redelivery
+    uses: ./.github/workflows/p5w2-worker-crash-redelivery-pg16.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p5_provider_ack:
+    name: P5-E provider success and DB-ack ambiguity
+    uses: ./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p5_dependency_loss:
+    name: P5-D dependency and database loss
+    uses: ./.github/workflows/p5d-dependency-loss-pg16.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p5_race_deadlock:
+    name: P5-R race and deadlock interleavings
+    uses: ./.github/workflows/p5r-race-deadlock-pg16.yml
+    with:
+      certification_head: zj07d8e9f0a44
+  p5_compensation:
+    name: P5-C compensation crash and replay
+    uses: ./.github/workflows/p5c-compensation-crash-replay-pg16.yml
+    with:
+      certification_head: zj07d8e9f0a44
+
+  p6_governance:
+    name: P6 governance and production-readiness contract
+    uses: ./.github/workflows/p6-governance-production-readiness.yml
+  p6_redis:
+    name: P6-R real Redis production contract
+    uses: ./.github/workflows/p6r-redis-production-contract.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_broker:
+    name: P6-B broker restart and reconnect recovery
+    uses: ./.github/workflows/p6b-broker-reconnect-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_worker:
+    name: P6-W graceful shutdown and late-ack redelivery
+    uses: ./.github/workflows/p6w-worker-shutdown-redelivery-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_poison:
+    name: P6-P poison-message containment
+    uses: ./.github/workflows/p6p-poison-message-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_scheduler:
+    name: P6-S Beat ownership and duplicate scheduler protection
+    uses: ./.github/workflows/p6s-scheduler-ownership-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+
+  p7_governance:
+    name: P7 governance API runtime contract
+    uses: ./.github/workflows/p7-governance-api-runtime.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p7_system:
+    name: P7 system control and probes
+    uses: ./.github/workflows/p7s-system-control.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p7_drain:
+    name: P7 request drain
+    uses: ./.github/workflows/p7d-request-drain.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p7_resource:
+    name: P7 API resource shutdown
+    uses: ./.github/workflows/p7r-api-resource-shutdown.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p7_worker:
+    name: P7 worker termination inheritance
+    uses: ./.github/workflows/p7w-worker-termination-inheritance.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p7_orchestration:
+    name: P7 real production-like API orchestration
+    uses: ./.github/workflows/p7o-production-like-orchestration.yml
+    with:
+      certification_head: ${{ github.sha }}
+
+  certify:
+    name: Terminal immutable Final P7 decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - architecture
+      - migration_hardening
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+      - p3
+      - p3a_general
+      - lifecycle_maintenance
+      - platform_maintenance
+      - p4b_opensearch
+      - p4b_evidence
+      - p4b_drift
+      - p4c_general
+      - p4c_notification
+      - p4d_refund
+      - p4e_contract
+      - p4e_operational
+      - p5_governance
+      - p5_worker_fencing
+      - p5_worker_crash_redelivery
+      - p5_provider_ack
+      - p5_dependency_loss
+      - p5_race_deadlock
+      - p5_compensation
+      - p6_governance
+      - p6_redis
+      - p6_broker
+      - p6_worker
+      - p6_poison
+      - p6_scheduler
+      - p7_governance
+      - p7_system
+      - p7_drain
+      - p7_resource
+      - p7_worker
+      - p7_orchestration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require every inherited P1-P6 and P7 same-head gate
+        env:
+          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+
+          results = json.loads(os.environ["REQUIRED_RESULTS_JSON"])
+          failures = {
+              name: details["result"]
+              for name, details in results.items()
+              if details["result"] != "success"
+          }
+          if failures:
+              raise SystemExit(f"Final P7 same-head gates failed: {failures}")
+          if len(results) != 40:
+              raise SystemExit(f"Final P7 prerequisite topology changed: {len(results)}")
+          print(f"Final P7 prerequisite gates passed: {len(results)}")
+          PY
+
+      - name: Reconfirm exact candidate and terminal hard stops
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Emit terminal P7 same-head certification
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD^{tree})" = "$(git write-tree)"
+          test -z "$(git status --porcelain)"
+          echo "P7_PRESTOP_AUTHORIZATION=PASS"
+          echo "P7_LIVENESS_READINESS_SEPARATED=PASS"
+          echo "P7_READINESS_FALSE_BEFORE_SHUTDOWN=PASS"
+          echo "P7_NEW_REQUEST_DRAIN=PASS"
+          echo "P7_INFLIGHT_COMPLETION=PASS"
+          echo "P7_API_RESOURCE_SHUTDOWN=PASS"
+          echo "P7_WORKER_TERMINATION_RECOVERABLE=PASS"
+          echo "P7_PRODUCTION_LIKE_ROLLOUT=PASS"
+          echo "P7_NO_LOST_DURABLE_BUSINESS_WORK=PASS"
+          echo "P7_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED"
+          echo "P7F_FINAL_SAME_HEAD_CERTIFICATION=PASS"
