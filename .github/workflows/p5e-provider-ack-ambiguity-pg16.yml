@@ -165,6 +165,7 @@ jobs:
 
           REDIS_PASSWORD="$(openssl rand -hex 24)"
           echo "::add-mask::${REDIS_PASSWORD}"
+          export P5E_REDIS_PASSWORD="${REDIS_PASSWORD}"
           echo "P5E_REDIS_PASSWORD=${REDIS_PASSWORD}" >> "${GITHUB_ENV}"
           echo "P5E_REDIS_CERT_DIR=${CERT_DIR}" >> "${GITHUB_ENV}"
 
