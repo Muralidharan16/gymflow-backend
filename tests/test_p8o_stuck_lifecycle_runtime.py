@@ -194,12 +194,15 @@ def test_real_persisted_stuck_lifecycle_is_visible_to_maintenance_observability(
 
     branch_id = _seed_disposable_branch_state()
 
-    # Fault aging is deliberately performed only by the disposable migration
-    # owner. The lifecycle state itself was created through the certified auth
-    # bootstrap boundary above, and observation below still runs through the
-    # certified lifecycle-maintenance runtime identity/capability.
+    # Fault aging is a test-only internal mutation. migration_owner deliberately
+    # has NOBYPASSRLS, so use its pre-existing membership in app_security_owner
+    # and the already-certified bounded internal org_branch_state UPDATE policy.
+    # This mirrors P4E operational fixture seeding; no grants or RLS changes are
+    # introduced. Observation below still runs through the dedicated lifecycle
+    # maintenance runtime identity/capability.
     with _admin_connection() as connection:
         with connection.cursor() as cursor:
+            cursor.execute("SET LOCAL ROLE app_security_owner")
             cursor.execute(
                 """
                 UPDATE public.org_branch_state
@@ -211,6 +214,7 @@ def test_real_persisted_stuck_lifecycle_is_visible_to_maintenance_observability(
                 (branch_id,),
             )
             assert cursor.rowcount == 1
+            cursor.execute("RESET ROLE")
         connection.commit()
 
     from app.core.database import maintenance_async_session_maker
