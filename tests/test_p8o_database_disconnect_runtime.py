@@ -92,9 +92,9 @@ def test_real_postgresql_disconnect_storm_exports_five_increment_alert_signal(
 ) -> None:
     """Prove the production alert numerator from an isolated real DB outage.
 
-    The alert is defined as ``increase(...[5m]) >= 5``.  Capture the exported
+    The alert is defined as ``increase(...[5m]) >= 5``. Capture the exported
     counter baseline before the destructive fault and require a real increase
-    of at least five after five probe attempts.  The fault, runtime classifier,
+    of at least five after five probe attempts. The fault, runtime classifier,
     metric SDK and OTLP/HTTP exporter are all the production code paths.
     """
 
@@ -172,12 +172,9 @@ def test_real_postgresql_disconnect_storm_exports_five_increment_alert_signal(
     }
 
     contract = json.loads(ALERTS.read_text(encoding="utf-8"))
-    alert = next(
-        item
-        for item in contract["critical_alerts"]
-        if item["failure_mode"] == "database_disconnect_storm"
-    )
-    assert alert["signal"] == "doers.database.disconnects"
-    assert ">= 5" in alert["threshold"] or ">=5" in alert["query"]
+    alert = contract["critical_alerts"]["database_disconnect_storm"]
+    assert "doers_database_disconnects_total" in alert["query"]
+    assert ">= 5" in alert["query"]
+    assert ">= 5 disconnects" in alert["threshold"]
 
     shutdown_runtime_metrics(timeout_millis=1000)
