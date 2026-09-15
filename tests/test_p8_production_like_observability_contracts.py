@@ -142,7 +142,6 @@ def test_p8o_database_disconnect_proof_is_process_isolated_without_lowering_thre
     assert "for _ in range(5)" in runtime
     assert "observed - baseline >= 5" in runtime
     assert '"doers_database_disconnects_total"' in runtime
-    assert '"\u003e= 5"' not in runtime  # guard accidental encoded/rewritten threshold text
     assert '">= 5"' in runtime
 
     # Installation/bootstrap are workflow-visible exactly once per migrating job.
