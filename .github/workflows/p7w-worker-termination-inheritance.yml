@@ -1,0 +1,48 @@
+name: P7-W Worker Termination Inheritance
+
+on:
+  push:
+    branches:
+      - hardening/p7-api-runtime-graceful-deployment
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p7w-worker-termination-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p6-worker-reproof:
+    name: Reprove P6 worker SIGTERM and late-ack recovery on P7 head
+    uses: ./.github/workflows/p6w-worker-shutdown-redelivery-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+
+  p7-worker-decision:
+    name: Bind P7 worker recoverability decision
+    needs: [p6-worker-reproof]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require inherited P6 worker proof
+        env:
+          P6_WORKER_RESULT: ${{ needs.p6-worker-reproof.result }}
+        run: |
+          set -euo pipefail
+          test "${P6_WORKER_RESULT}" = "success"
+
+      - name: Emit P7-W decision
+        run: |
+          set -euo pipefail
+          echo "P7_WORKER_TERMINATION_RECOVERABLE=PASS"
+          echo "P7_NO_LOST_DURABLE_BUSINESS_WORK=PASS"
+          echo "P7_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED"
+          echo "P7W_WORKER_TERMINATION_INHERITANCE=PASS"
