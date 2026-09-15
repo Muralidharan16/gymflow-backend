@@ -32,7 +32,17 @@ async def p7o_slow_request() -> dict[str, object]:
     async with AsyncSessionLocal() as session:
         backend_pid = int((await session.execute(sa_text("SELECT pg_backend_pid()"))).scalar_one())
         marker.write_text(str(backend_pid), encoding="utf-8")
-        await asyncio.sleep(hold_seconds)
-        assert int((await session.execute(sa_text("SELECT 1"))).scalar_one()) == 1
+
+        # The production API role intentionally enforces a 15-second
+        # idle-in-transaction timeout. Keep this deliberately long request
+        # active without weakening that guard by issuing cheap DB heartbeats.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + hold_seconds
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(3.0, remaining))
+            assert int((await session.execute(sa_text("SELECT 1"))).scalar_one()) == 1
 
     return {"status": "completed", "db_roundtrip": True, "backend_pid": backend_pid}
