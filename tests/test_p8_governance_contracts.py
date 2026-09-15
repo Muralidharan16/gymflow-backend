@@ -178,7 +178,7 @@ def test_p8_acceptance_locks_terminal_markers_and_key_language() -> None:
     for marker in FINAL_MARKERS:
         assert marker in acceptance
     for phrase in (
-        "observability data is evidence, not business truth",
+        "Observability data is evidence, not business truth",
         "forbidden as metrics labels",
         "Redaction must happen before data reaches any log, trace, error-reporting or telemetry sink",
         "Public unauthenticated Internet exposure is forbidden",
