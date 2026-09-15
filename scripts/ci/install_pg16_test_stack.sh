@@ -18,6 +18,11 @@ test -f /usr/share/postgresql/16/extension/pg_partman.control
 # the original local broker fault surface. Replace only those jobs' disposable
 # Redis service with a dual-port TLS/auth + replicated topology. A test-only
 # sitecustomize then switches only the production worker subprocess to rediss.
-if [[ "${P5D_PROCESS_FAULTS:-0}" == "1" || "${P5W2_PROCESS_FAULTS:-0}" == "1" ]]; then
+#
+# P6-W deliberately carries P5W2_PROCESS_FAULTS=1 to reuse inherited W2
+# contracts, but it provisions and verifies its own P6 TLS Redis topology later
+# in the workflow. Never activate this inherited-P5 bridge for the P6-W job.
+if [[ "${P6W_PROCESS_FAULTS:-0}" != "1" ]] && \
+   [[ "${P5D_PROCESS_FAULTS:-0}" == "1" || "${P5W2_PROCESS_FAULTS:-0}" == "1" ]]; then
   bash "$(dirname "${BASH_SOURCE[0]}")/provision_p6_fault_redis.sh"
 fi
