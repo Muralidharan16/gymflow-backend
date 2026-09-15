@@ -174,12 +174,14 @@ def p6s_runtime_environment(tmp_path_factory: pytest.TempPathFactory):
             ALTER ROLE app_p6s_runtime SET row_security='on';
             ALTER ROLE app_p6s_runtime SET statement_timeout='15s';
             ALTER ROLE app_p6s_runtime SET lock_timeout='2s';
+            ALTER ROLE app_p6s_runtime SET idle_in_transaction_session_timeout='30s';
             CREATE ROLE worker_p6s_runtime LOGIN PASSWORD '{worker_password}'
               NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
             GRANT worker_runtime TO worker_p6s_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
             ALTER ROLE worker_p6s_runtime SET row_security='on';
             ALTER ROLE worker_p6s_runtime SET statement_timeout='15s';
             ALTER ROLE worker_p6s_runtime SET lock_timeout='2s';
+            ALTER ROLE worker_p6s_runtime SET idle_in_transaction_session_timeout='30s';
             CREATE DATABASE {DATABASE} OWNER migration_owner;
             REVOKE ALL ON DATABASE {DATABASE} FROM PUBLIC;
             GRANT CONNECT ON DATABASE {DATABASE} TO migration_owner,app_p6s_runtime,worker_p6s_runtime;
