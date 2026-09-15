@@ -87,13 +87,15 @@ jobs:
             app/tasks/external_effect_observability.py \
             app/tasks/branch_lifecycle_sweeps.py \
             app/main.py \
-            tests/test_p8_metrics_contracts.py
+            tests/test_p8_metrics_contracts.py \
+            tests/test_p8_runtime_probe_contracts.py
 
       - name: Prove real SDK metrics and bounded cardinality
         run: |
           set -euo pipefail
           python -m pytest --noconftest -q --maxfail=1 \
-            tests/test_p8_metrics_contracts.py
+            tests/test_p8_metrics_contracts.py \
+            tests/test_p8_runtime_probe_contracts.py
 
       - name: Reprove P8 logging redaction and governance
         run: |
