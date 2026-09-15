@@ -12,6 +12,7 @@ import redis
 from celery.beat import PersistentScheduler
 
 from app.core.config import settings
+from app.observability.runtime_metrics import runtime_metrics
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ class BeatOwnershipLease:
         """Acquire or renew ownership, failing closed on Redis uncertainty."""
 
         try:
-            return bool(
+            owned = bool(
                 self._client.eval(
                     _ACQUIRE_OR_RENEW_LUA,
                     1,
@@ -108,7 +109,14 @@ class BeatOwnershipLease:
                     self._ttl_ms,
                 )
             )
+            runtime_metrics().scheduler_state(
+                state="owned" if owned else "contended"
+            )
+            runtime_metrics().redis_state(role="broker", healthy=True)
+            return owned
         except (redis.RedisError, OSError):
+            runtime_metrics().scheduler_state(state="unavailable")
+            runtime_metrics().redis_state(role="broker", healthy=False)
             _LOGGER.exception("Celery Beat ownership check failed closed")
             return False
 
@@ -116,8 +124,15 @@ class BeatOwnershipLease:
         """Return True only while Redis names this exact scheduler as owner."""
 
         try:
-            return self._client.get(self.key) == self.owner_id
+            owned = self._client.get(self.key) == self.owner_id
+            runtime_metrics().scheduler_state(
+                state="owned" if owned else "contended"
+            )
+            runtime_metrics().redis_state(role="broker", healthy=True)
+            return owned
         except (redis.RedisError, OSError):
+            runtime_metrics().scheduler_state(state="unavailable")
+            runtime_metrics().redis_state(role="broker", healthy=False)
             _LOGGER.exception("Celery Beat ownership verification failed closed")
             return False
 
@@ -125,8 +140,13 @@ class BeatOwnershipLease:
         """Release only this scheduler's own lease; never delete another owner."""
 
         try:
-            self._client.eval(_RELEASE_LUA, 1, self.key, self.owner_id)
+            released = bool(self._client.eval(_RELEASE_LUA, 1, self.key, self.owner_id))
+            runtime_metrics().scheduler_state(
+                state="released" if released else "contended"
+            )
         except (redis.RedisError, OSError):
+            runtime_metrics().scheduler_state(state="unavailable")
+            runtime_metrics().redis_state(role="broker", healthy=False)
             _LOGGER.warning(
                 "Celery Beat ownership release could not reach Redis",
                 exc_info=True,
