@@ -44,9 +44,9 @@ def test_p7o_uses_real_processes_and_reduced_production_identity() -> None:
         "REDIS_PERSISTENCE_MODE=aof_everysec_rdb",
         "REDIS_MAXMEMORY_POLICY=noeviction",
         "scripts/verify_redis_production_readiness.py",
-        "WORKER_DATABASE_URL=",
-        "MAINTENANCE_DATABASE_URL=",
-        "FINANCE_CONFIG_DATABASE_URL=",
+        "WORKER_DATABASE_URL: ''",
+        "MAINTENANCE_DATABASE_URL: ''",
+        "FINANCE_CONFIG_DATABASE_URL: ''",
     ):
         assert required in source
     assert "TestClient" not in source
