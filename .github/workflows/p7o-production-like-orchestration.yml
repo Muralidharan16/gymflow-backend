@@ -1,0 +1,492 @@
+name: P7-O Production-like API Orchestration
+
+on:
+  push:
+    branches:
+      - hardening/p7-api-runtime-graceful-deployment
+  workflow_call:
+    inputs:
+      certification_head:
+        description: Exact immutable SHA required by P7-F same-head certification
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p7o-production-like-orchestration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-like-orchestration:
+    name: Real API rollout, drain, shutdown and resource recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CERTIFICATION_HEAD: ${{ inputs.certification_head }}
+      P7_GOVERNANCE_SHA: a666250e8dd83a7de195ce06731f935406a90846
+      MIGRATION_PASSWORD: ci-p7o-migration-owner
+      APP_RUNTIME_PASSWORD: ci-p7o-app-runtime
+      AUTH_RUNTIME_PASSWORD: ci-p7o-auth-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p7o-migration-owner@127.0.0.1:5432/gymflow_p7o_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: p7o-ci-not-production-secret
+      AWS_ACCESS_KEY_ID: p7o-test
+      AWS_SECRET_ACCESS_KEY: p7o-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-p7o-test
+      ENVIRONMENT: test
+      P7O_SLOW_STARTED_FILE: /tmp/p7o-slow-started
+      P7O_SLOW_SECONDS: '20'
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Guard exact head and certified P7 governance ancestry
+        run: |
+          set -euo pipefail
+          if [ -n "${CERTIFICATION_HEAD}" ]; then
+            test "$(git rev-parse HEAD)" = "${CERTIFICATION_HEAD}"
+          fi
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git merge-base --is-ancestor "${P7_GOVERNANCE_SHA}" HEAD
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment and prove P7-O static contracts
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+          python -m py_compile scripts/ci/p7o_runtime_app.py tests/test_p7o_production_like_orchestration_static_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p7_governance_contracts.py \
+            tests/test_p7s_system_control.py \
+            tests/test_p7d_request_drain.py \
+            tests/test_p7r_api_resource_shutdown.py \
+            tests/test_p7o_production_like_orchestration_static_contracts.py
+
+      - name: Install PostgreSQL 16 and reduced API identities
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-p7o-migration-owner';
+          CREATE ROLE app_p7o_runtime LOGIN PASSWORD 'ci-p7o-app-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT app_runtime TO app_p7o_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_p7o_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE app_p7o_runtime SET row_security='on';
+          ALTER ROLE app_p7o_runtime SET statement_timeout='5s';
+          ALTER ROLE app_p7o_runtime SET lock_timeout='500ms';
+          ALTER ROLE app_p7o_runtime SET idle_in_transaction_session_timeout='15s';
+
+          CREATE ROLE auth_p7o_runtime LOGIN PASSWORD 'ci-p7o-auth-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT auth_runtime TO auth_p7o_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO auth_p7o_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE auth_p7o_runtime SET row_security='on';
+          ALTER ROLE auth_p7o_runtime SET statement_timeout='5s';
+          ALTER ROLE auth_p7o_runtime SET lock_timeout='500ms';
+          ALTER ROLE auth_p7o_runtime SET idle_in_transaction_session_timeout='15s';
+
+          CREATE DATABASE gymflow_p7o_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_p7o_test TO app_p7o_runtime, auth_p7o_runtime;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p7o_test
+
+      - name: Migrate disposable PostgreSQL database to exact head
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+
+      - name: Provision P6-conformant TLS Redis primary and replica
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y redis-tools
+          sudo sysctl -w vm.overcommit_memory=1
+          test "$(cat /proc/sys/vm/overcommit_memory)" = "1"
+
+          CERT_DIR=/tmp/p7o-redis-tls
+          CONFIG_DIR=/tmp/p7o-redis-config
+          mkdir -p "${CERT_DIR}" "${CONFIG_DIR}"
+
+          openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
+            -keyout "${CERT_DIR}/ca.key" -out "${CERT_DIR}/ca.crt" \
+            -subj '/CN=DOERS P7-O CI CA'
+          openssl req -newkey rsa:2048 -sha256 -nodes \
+            -keyout "${CERT_DIR}/server.key" -out "${CERT_DIR}/server.csr" \
+            -subj '/CN=p7o-primary'
+          cat > "${CERT_DIR}/server.ext" <<'EOF'
+          basicConstraints=CA:FALSE
+          keyUsage=digitalSignature,keyEncipherment
+          extendedKeyUsage=serverAuth
+          subjectAltName=DNS:localhost,DNS:p7o-primary,DNS:p7o-replica,IP:127.0.0.1
+          EOF
+          openssl x509 -req -sha256 -days 1 \
+            -in "${CERT_DIR}/server.csr" -CA "${CERT_DIR}/ca.crt" \
+            -CAkey "${CERT_DIR}/ca.key" -CAcreateserial \
+            -out "${CERT_DIR}/server.crt" -extfile "${CERT_DIR}/server.ext"
+          chmod 0644 "${CERT_DIR}/ca.crt" "${CERT_DIR}/server.crt" "${CERT_DIR}/server.key"
+
+          REDIS_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::${REDIS_PASSWORD}"
+          export P7O_REDIS_PASSWORD="${REDIS_PASSWORD}"
+          export P7O_CERT_DIR="${CERT_DIR}"
+          echo "P7O_REDIS_PASSWORD=${REDIS_PASSWORD}" >> "${GITHUB_ENV}"
+          echo "P7O_CERT_DIR=${CERT_DIR}" >> "${GITHUB_ENV}"
+
+          cat > "${CONFIG_DIR}/primary.conf" <<EOF
+          port 0
+          tls-port 6379
+          tls-cert-file /tls/server.crt
+          tls-key-file /tls/server.key
+          tls-ca-cert-file /tls/ca.crt
+          tls-auth-clients no
+          requirepass ${REDIS_PASSWORD}
+          dir /data
+          appendonly yes
+          appendfsync everysec
+          save 60 1
+          maxmemory 128mb
+          maxmemory-policy noeviction
+          EOF
+
+          cat > "${CONFIG_DIR}/replica.conf" <<EOF
+          port 0
+          tls-port 6379
+          tls-cert-file /tls/server.crt
+          tls-key-file /tls/server.key
+          tls-ca-cert-file /tls/ca.crt
+          tls-auth-clients no
+          requirepass ${REDIS_PASSWORD}
+          masterauth ${REDIS_PASSWORD}
+          replicaof p7o-primary 6379
+          tls-replication yes
+          dir /data
+          appendonly yes
+          appendfsync everysec
+          save 60 1
+          maxmemory 128mb
+          maxmemory-policy noeviction
+          EOF
+
+          docker network create p7o-redis-net
+          docker volume create p7o-primary-data
+          docker volume create p7o-replica-data
+          docker run -d --name p7o-primary --network p7o-redis-net -p 16379:6379 \
+            -v p7o-primary-data:/data -v "${CERT_DIR}:/tls:ro" \
+            -v "${CONFIG_DIR}:/config:ro" redis:7-alpine redis-server /config/primary.conf
+          docker run -d --name p7o-replica --network p7o-redis-net \
+            -v p7o-replica-data:/data -v "${CERT_DIR}:/tls:ro" \
+            -v "${CONFIG_DIR}:/config:ro" redis:7-alpine redis-server /config/replica.conf
+
+          for attempt in $(seq 1 60); do
+            if REDISCLI_AUTH="${REDIS_PASSWORD}" redis-cli --tls --cacert "${CERT_DIR}/ca.crt" \
+                -h localhost -p 16379 ping 2>/dev/null | grep -qx PONG; then
+              break
+            fi
+            if [ "${attempt}" -eq 60 ]; then
+              docker logs p7o-primary
+              exit 1
+            fi
+            sleep 1
+          done
+          for attempt in $(seq 1 60); do
+            role="$(REDISCLI_AUTH="${REDIS_PASSWORD}" redis-cli --tls --cacert "${CERT_DIR}/ca.crt" \
+              -h localhost -p 16379 INFO replication | tr -d '\r' | awk -F: '/^connected_slaves:/{print $2}')"
+            if [ "${role}" = "1" ]; then
+              break
+            fi
+            if [ "${attempt}" -eq 60 ]; then
+              docker logs p7o-replica
+              exit 1
+            fi
+            sleep 1
+          done
+
+          REDISS_BASE="rediss://:${REDIS_PASSWORD}@localhost:16379"
+          REDISS_QUERY="ssl_cert_reqs=required&ssl_ca_certs=${CERT_DIR}/ca.crt"
+          echo "REDIS_URL=${REDISS_BASE}/0?${REDISS_QUERY}" >> "${GITHUB_ENV}"
+          echo "CELERY_BROKER_URL=${REDISS_BASE}/1?${REDISS_QUERY}" >> "${GITHUB_ENV}"
+          echo "CELERY_RESULT_BACKEND=${REDISS_BASE}/2?${REDISS_QUERY}" >> "${GITHUB_ENV}"
+          echo "REDIS_PRODUCTION_TOPOLOGY=ha_primary_replica" >> "${GITHUB_ENV}"
+          echo "REDIS_PERSISTENCE_MODE=aof_everysec_rdb" >> "${GITHUB_ENV}"
+          echo "REDIS_MAXMEMORY_POLICY=noeviction" >> "${GITHUB_ENV}"
+          echo "REDIS_HA_MIN_REPLICAS=1" >> "${GITHUB_ENV}"
+          echo "REDIS_VM_OVERCOMMIT_MEMORY=1" >> "${GITHUB_ENV}"
+
+      - name: Verify production Redis readiness contract
+        env:
+          ENVIRONMENT: production
+          DOERS_PROCESS_PROFILE: api
+          CELERY_WORKER_PROFILE: ''
+          DATABASE_URL: postgresql+asyncpg://app_p7o_runtime:ci-p7o-app-runtime@127.0.0.1:5432/gymflow_p7o_test
+          AUTH_DATABASE_URL: postgresql+asyncpg://auth_p7o_runtime:ci-p7o-auth-runtime@127.0.0.1:5432/gymflow_p7o_test
+          WORKER_DATABASE_URL: ''
+          MAINTENANCE_DATABASE_URL: ''
+          FINANCE_CONFIG_DATABASE_URL: ''
+          NOTIFICATION_EMAIL_PROVIDER_MODE: disabled
+          SEARCH_PROVIDER_MODE: disabled
+          P4E_METRICS_OTLP_ENDPOINT: ''
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_redis_production_readiness.py
+
+      - name: Run real Uvicorn preStop drain and graceful shutdown sequence
+        env:
+          ENVIRONMENT: production
+          DOERS_PROCESS_PROFILE: api
+          CELERY_WORKER_PROFILE: ''
+          DATABASE_URL: postgresql+asyncpg://app_p7o_runtime:ci-p7o-app-runtime@127.0.0.1:5432/gymflow_p7o_test
+          AUTH_DATABASE_URL: postgresql+asyncpg://auth_p7o_runtime:ci-p7o-auth-runtime@127.0.0.1:5432/gymflow_p7o_test
+          WORKER_DATABASE_URL: ''
+          MAINTENANCE_DATABASE_URL: ''
+          FINANCE_CONFIG_DATABASE_URL: ''
+          NOTIFICATION_EMAIL_PROVIDER_MODE: disabled
+          SEARCH_PROVIDER_MODE: disabled
+          P4E_METRICS_OTLP_ENDPOINT: ''
+        run: |
+          set -euo pipefail
+          LOG=/tmp/p7o-api.log
+          rm -f "${P7O_SLOW_STARTED_FILE}" /tmp/p7o-slow.json /tmp/p7o-prestop.json
+          DOERS_PRESTOP_CONTROL_TOKEN="$(openssl rand -hex 32)"
+          export DOERS_PRESTOP_CONTROL_TOKEN
+          echo "::add-mask::${DOERS_PRESTOP_CONTROL_TOKEN}"
+
+          redis_normal_count() {
+            REDISCLI_AUTH="${P7O_REDIS_PASSWORD}" redis-cli --tls --cacert "${P7O_CERT_DIR}/ca.crt" \
+              -h localhost -p 16379 --no-auth-warning CLIENT LIST TYPE normal | sed '/^$/d' | wc -l
+          }
+          redis_baseline="$(redis_normal_count)"
+
+          api_pid=''
+          slow_pid=''
+          prestop_pid=''
+          cleanup() {
+            set +e
+            if [ -n "${api_pid}" ] && kill -0 "${api_pid}" 2>/dev/null; then
+              kill -TERM "${api_pid}"
+              wait "${api_pid}"
+            fi
+            if [ -n "${slow_pid}" ] && kill -0 "${slow_pid}" 2>/dev/null; then
+              kill "${slow_pid}"
+              wait "${slow_pid}"
+            fi
+            if [ -n "${prestop_pid}" ] && kill -0 "${prestop_pid}" 2>/dev/null; then
+              kill "${prestop_pid}"
+              wait "${prestop_pid}"
+            fi
+            set -e
+          }
+          trap cleanup EXIT
+
+          uvicorn scripts.ci.p7o_runtime_app:app --host 127.0.0.1 --port 8765 > "${LOG}" 2>&1 &
+          api_pid=$!
+
+          for attempt in $(seq 1 90); do
+            live_code="$(curl -sS -o /tmp/p7o-live.json -w '%{http_code}' http://127.0.0.1:8765/_system/live 2>/dev/null || printf '000')"
+            ready_code="$(curl -sS -o /tmp/p7o-ready.json -w '%{http_code}' http://127.0.0.1:8765/_system/ready 2>/dev/null || printf '000')"
+            if [ "${live_code}" = "200" ] && [ "${ready_code}" = "200" ]; then
+              break
+            fi
+            if ! kill -0 "${api_pid}" 2>/dev/null; then
+              cat "${LOG}"
+              exit 1
+            fi
+            if [ "${attempt}" -eq 90 ]; then
+              cat "${LOG}"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          missing_code="$(curl -sS -o /tmp/p7o-missing.json -w '%{http_code}' -X POST \
+            http://127.0.0.1:8765/_system/preStop)"
+          if [ "${missing_code}" != "403" ]; then
+            echo 'missing preStop token unexpectedly authorized' >&2
+            cat /tmp/p7o-missing.json
+            exit 1
+          fi
+          test "$(curl -sS -o /tmp/p7o-ready-after-missing.json -w '%{http_code}' \
+            http://127.0.0.1:8765/_system/ready)" = "200"
+
+          wrong_code="$(curl -sS -o /tmp/p7o-wrong.json -w '%{http_code}' -X POST \
+            -H 'X-Doers-PreStop-Token: definitely-wrong-token-value' \
+            http://127.0.0.1:8765/_system/preStop)"
+          if [ "${wrong_code}" != "403" ]; then
+            echo 'wrong preStop token unexpectedly authorized' >&2
+            cat /tmp/p7o-wrong.json
+            exit 1
+          fi
+          test "$(curl -sS -o /tmp/p7o-ready-after-wrong.json -w '%{http_code}' \
+            http://127.0.0.1:8765/_system/ready)" = "200"
+
+          curl -fsS http://127.0.0.1:8765/_p7/slow > /tmp/p7o-slow.json &
+          slow_pid=$!
+          for attempt in $(seq 1 30); do
+            if [ -s "${P7O_SLOW_STARTED_FILE}" ]; then
+              break
+            fi
+            if [ "${attempt}" -eq 30 ]; then
+              cat "${LOG}"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          db_live_count="$(PGPASSWORD='ci-p7o-migration-owner' psql -X -At \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p7o_test \
+            -c "SELECT count(*) FROM pg_stat_activity WHERE usename='app_p7o_runtime';")"
+          test "${db_live_count}" -ge 1
+          redis_live="$(redis_normal_count)"
+          test "${redis_live}" -gt "${redis_baseline}"
+
+          curl -fsS -X POST -H "X-Doers-PreStop-Token: ${DOERS_PRESTOP_CONTROL_TOKEN}" \
+            http://127.0.0.1:8765/_system/preStop > /tmp/p7o-prestop.json &
+          prestop_pid=$!
+
+          drained=0
+          for attempt in $(seq 1 30); do
+            code="$(curl -sS -o /tmp/p7o-ready-draining.json -w '%{http_code}' \
+              http://127.0.0.1:8765/_system/ready)"
+            if [ "${code}" = "503" ]; then
+              drained=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "${drained}" -ne 1 ]; then
+            echo 'readiness did not become 503 during drain' >&2
+            cat "${LOG}"
+            exit 1
+          fi
+
+          if ! kill -0 "${prestop_pid}" 2>/dev/null; then
+            echo 'preStop returned before admitted slow request completed' >&2
+            exit 1
+          fi
+          if [ "$(curl -sS -o /tmp/p7o-live-draining.json -w '%{http_code}' \
+              http://127.0.0.1:8765/_system/live)" != "200" ]; then
+            echo 'liveness failed while draining' >&2
+            exit 1
+          fi
+
+          new_code="$(curl -sS -o /tmp/p7o-new-during-drain.json -w '%{http_code}' \
+            http://127.0.0.1:8765/)"
+          if [ "${new_code}" != "503" ]; then
+            echo 'new request was not rejected during drain' >&2
+            cat /tmp/p7o-new-during-drain.json
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          payload = json.load(open('/tmp/p7o-new-during-drain.json', encoding='utf-8'))
+          assert payload['reason'] == 'pod_draining', payload
+          PY
+
+          set +e
+          wait "${slow_pid}"
+          slow_rc=$?
+          set -e
+          slow_pid=''
+          if [ "${slow_rc}" -ne 0 ]; then
+            echo 'slow admitted request did not complete' >&2
+            cat "${LOG}"
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          payload = json.load(open('/tmp/p7o-slow.json', encoding='utf-8'))
+          assert payload['status'] == 'completed', payload
+          assert payload['db_roundtrip'] is True, payload
+          PY
+
+          set +e
+          wait "${prestop_pid}"
+          prestop_rc=$?
+          set -e
+          prestop_pid=''
+          test "${prestop_rc}" -eq 0
+          python - <<'PY'
+          import json
+          payload = json.load(open('/tmp/p7o-prestop.json', encoding='utf-8'))
+          assert payload['status'] == 'drained', payload
+          PY
+          test "$(curl -sS -o /tmp/p7o-live-before-term.json -w '%{http_code}' \
+            http://127.0.0.1:8765/_system/live)" = "200"
+
+          kill -TERM "${api_pid}"
+          set +e
+          wait "${api_pid}"
+          api_rc=$?
+          set -e
+          api_pid=''
+          if [ "${api_rc}" -ne 0 ]; then
+            cat "${LOG}"
+            exit "${api_rc}"
+          fi
+
+          db_after="$(PGPASSWORD='ci-p7o-migration-owner' psql -X -At \
+            -h 127.0.0.1 -U migration_owner -d gymflow_p7o_test \
+            -c "SELECT count(*) FROM pg_stat_activity WHERE usename='app_p7o_runtime';")"
+          if [ "${db_after}" != "0" ]; then
+            echo 'API database connections remain after shutdown' >&2
+            exit 1
+          fi
+          redis_after="$(redis_normal_count)"
+          if [ "${redis_after}" != "${redis_baseline}" ]; then
+            echo 'Redis client count did not return to baseline' >&2
+            echo "baseline=${redis_baseline} after=${redis_after}" >&2
+            exit 1
+          fi
+
+          grep -q 'Application shutdown complete' "${LOG}"
+          trap - EXIT
+          cleanup
+
+      - name: Emit P7-O decision
+        run: |
+          set -euo pipefail
+          echo 'P7_PRESTOP_AUTHORIZATION=PASS'
+          echo 'P7_LIVENESS_READINESS_SEPARATED=PASS'
+          echo 'P7_READINESS_FALSE_BEFORE_SHUTDOWN=PASS'
+          echo 'P7_NEW_REQUEST_DRAIN=PASS'
+          echo 'P7_INFLIGHT_COMPLETION=PASS'
+          echo 'P7_API_RESOURCE_SHUTDOWN=PASS'
+          echo 'P7_PRODUCTION_LIKE_ROLLOUT=PASS'
+          echo 'P7_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+
+      - name: Cleanup Redis topology
+        if: always()
+        run: |
+          set +e
+          if docker inspect p7o-replica >/dev/null 2>&1; then docker rm -f p7o-replica; fi
+          if docker inspect p7o-primary >/dev/null 2>&1; then docker rm -f p7o-primary; fi
+          if docker network inspect p7o-redis-net >/dev/null 2>&1; then docker network rm p7o-redis-net; fi
+          if docker volume inspect p7o-primary-data >/dev/null 2>&1; then docker volume rm p7o-primary-data; fi
+          if docker volume inspect p7o-replica-data >/dev/null 2>&1; then docker volume rm p7o-replica-data; fi
+          set -e
