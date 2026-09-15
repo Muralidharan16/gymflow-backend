@@ -173,7 +173,7 @@ def _seed_disposable_branch_state() -> uuid.UUID:
                     'api',NULL,NULL,false,NULL,NULL,NULL,0,1,NULL,NULL,NULL,
                     NULL,NULL,NULL,NULL,NULL,1,0,%s,NULL,NULL,NULL
                 )
-                RETURNING branch_id
+                RETURNING status_changed_at,updated_at
                 """,
                 (
                     branch_id,
@@ -182,7 +182,8 @@ def _seed_disposable_branch_state() -> uuid.UUID:
                 ),
             )
             returned = cursor.fetchone()
-            assert returned == (branch_id,)
+            assert returned is not None
+            assert all(value is not None for value in returned)
         connection.commit()
 
     return branch_id
