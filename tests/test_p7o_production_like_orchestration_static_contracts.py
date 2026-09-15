@@ -7,6 +7,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/p7o-production-like-orchestration.yml"
+RUNNER_PATH = ROOT / "scripts/ci/run_p7o_production_like_orchestration.sh"
 FIXTURE_PATH = ROOT / "scripts/ci/p7o_runtime_app.py"
 API_RUNTIME_PATH = ROOT / "app/core/api_runtime.py"
 P7_BRANCH = "hardening/p7-api-runtime-graceful-deployment"
@@ -15,6 +16,14 @@ P7_GOVERNANCE = "a666250e8dd83a7de195ce06731f935406a90846"
 
 def _workflow() -> dict:
     return yaml.load(WORKFLOW_PATH.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+
+def _runtime_source() -> str:
+    return (
+        WORKFLOW_PATH.read_text(encoding="utf-8")
+        + "\n"
+        + RUNNER_PATH.read_text(encoding="utf-8")
+    )
 
 
 def test_p7o_is_reusable_exact_head_production_like_gate() -> None:
@@ -31,30 +40,35 @@ def test_p7o_is_reusable_exact_head_production_like_gate() -> None:
 
 
 def test_p7o_uses_real_processes_and_reduced_production_identity() -> None:
-    source = WORKFLOW_PATH.read_text(encoding="utf-8")
+    source = _runtime_source()
     for required in (
-        "ENVIRONMENT: production",
-        "DOERS_PROCESS_PROFILE: api",
+        "export ENVIRONMENT=production",
+        "export DOERS_PROCESS_PROFILE=api",
         "uvicorn scripts.ci.p7o_runtime_app:app",
         "scripts/ci/install_pg16_test_stack.sh",
         "scripts/ci/bootstrap_cluster_roles.sh",
         "python -s -m alembic -c alembic.ini upgrade head",
         "redis:7-alpine",
-        "REDIS_PRODUCTION_TOPOLOGY=ha_primary_replica",
+        "REDIS_PRODUCTION_TOPOLOGY=self_managed_ha",
         "REDIS_PERSISTENCE_MODE=aof_everysec_rdb",
         "REDIS_MAXMEMORY_POLICY=noeviction",
         "scripts/verify_redis_production_readiness.py",
-        "WORKER_DATABASE_URL: ''",
-        "MAINTENANCE_DATABASE_URL: ''",
-        "FINANCE_CONFIG_DATABASE_URL: ''",
+        "--host localhost",
+        "--port 16379",
+        "--expected-replicas 1",
+        "--require-local-overcommit",
+        "export WORKER_DATABASE_URL=''",
+        "export MAINTENANCE_DATABASE_URL=''",
+        "export FINANCE_CONFIG_DATABASE_URL=''",
     ):
         assert required in source
+    assert "ha_primary_replica" not in source
     assert "TestClient" not in source
     assert "docker compose up" not in source
 
 
 def test_p7o_proves_control_drain_and_inflight_sequence() -> None:
-    source = WORKFLOW_PATH.read_text(encoding="utf-8")
+    source = _runtime_source()
     for required in (
         "/_system/live",
         "/_system/ready",
@@ -76,9 +90,10 @@ def test_p7o_proves_control_drain_and_inflight_sequence() -> None:
 
 
 def test_p7o_proves_post_shutdown_database_and_redis_cleanup() -> None:
-    source = WORKFLOW_PATH.read_text(encoding="utf-8")
+    source = _runtime_source()
     assert "pg_stat_activity" in source
     assert "app_p7o_runtime" in source
+    assert "auth_p7o_runtime" in source
     assert "CLIENT LIST TYPE normal" in source
     assert "Redis client count did not return to baseline" in source
     assert "API database connections remain after shutdown" in source
@@ -98,7 +113,7 @@ def test_p7o_fixture_is_ci_only_ordinary_traffic() -> None:
 
 
 def test_p7o_emits_frozen_slice_markers_without_release_or_deploy() -> None:
-    source = WORKFLOW_PATH.read_text(encoding="utf-8")
+    source = _runtime_source()
     for marker in (
         "P7_PRESTOP_AUTHORIZATION=PASS",
         "P7_LIVENESS_READINESS_SEPARATED=PASS",
@@ -107,6 +122,7 @@ def test_p7o_emits_frozen_slice_markers_without_release_or_deploy() -> None:
         "P7_INFLIGHT_COMPLETION=PASS",
         "P7_API_RESOURCE_SHUTDOWN=PASS",
         "P7_PRODUCTION_LIKE_ROLLOUT=PASS",
+        "P7_NO_LOST_DURABLE_BUSINESS_WORK=PASS",
         "P7_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED",
     ):
         assert marker in source
