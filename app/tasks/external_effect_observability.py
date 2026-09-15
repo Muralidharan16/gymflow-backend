@@ -1,4 +1,4 @@
-"""P4E aggregate observability owned by the isolated maintenance process."""
+"""P4E/P8 aggregate observability owned by the isolated maintenance process."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from app.observability.external_effect_metrics import (
     configure_external_effect_metrics,
     record_operational_snapshots,
 )
+from app.observability.runtime_metrics import runtime_metrics
 
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,51 @@ def _normalize_row(
             float(value) if column.endswith("_age_seconds") else int(value)
         )
     return normalized
+
+
+def _record_p8_snapshots(snapshot: dict[str, dict[str, int | float]]) -> None:
+    metrics = runtime_metrics()
+    search = snapshot["search"]
+    refund = snapshot["refund"]
+
+    search_depth = sum(
+        int(search[key])
+        for key in ("pending_count", "processing_count", "reconciliation_candidate_count")
+    )
+    refund_depth = sum(
+        int(refund[key])
+        for key in (
+            "pending_count",
+            "processing_count",
+            "retry_pending_count",
+            "provider_accepted_count",
+            "reconciliation_pending_count",
+        )
+    )
+
+    metrics.queue_snapshot(
+        queue="search",
+        depth=search_depth,
+        oldest_age_seconds=float(search["oldest_actionable_age_seconds"]),
+        dead_letters=int(search["dead_letter_count"]),
+    )
+    metrics.queue_snapshot(
+        queue="refund",
+        depth=refund_depth,
+        oldest_age_seconds=float(refund["oldest_unresolved_age_seconds"]),
+        dead_letters=int(refund["dead_letter_count"]),
+    )
+
+    # These are aggregate operational evidence from the existing SECURITY
+    # DEFINER snapshot. They do not alter refund state or provider authority.
+    metrics.finance_snapshot(
+        reconciliation_mismatches=int(refund["reconciliation_pending_count"]),
+        provider_ack_ambiguity=(
+            int(refund["provider_accepted_count"])
+            + int(refund["reconciliation_pending_count"])
+        ),
+        refund_obligations=refund_depth + int(refund["dead_letter_count"]),
+    )
 
 
 async def _run_external_effect_operational_snapshot() -> dict[
@@ -115,6 +161,8 @@ async def _run_external_effect_operational_snapshot() -> dict[
             search=snapshot["search"],
             refund=snapshot["refund"],
         )
+
+    _record_p8_snapshots(snapshot)
 
     logger.info(
         "P4E operational snapshot collected: search_actionable=%s, "
