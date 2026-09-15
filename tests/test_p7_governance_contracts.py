@@ -111,7 +111,7 @@ def test_p7_decisive_evidence_requires_real_process_orchestration() -> None:
 
 def test_p7_acceptance_locks_terminal_markers_and_hard_stops() -> None:
     acceptance = ACCEPTANCE_PATH.read_text(encoding="utf-8")
-    scope = SCOPE_PATH.read_text(encoding="utf-8")
+    scope = " ".join(SCOPE_PATH.read_text(encoding="utf-8").split())
     for marker in FINAL_MARKERS:
         assert marker in acceptance
     for phrase in (
