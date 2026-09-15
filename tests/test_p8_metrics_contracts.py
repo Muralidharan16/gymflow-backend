@@ -27,6 +27,9 @@ CELERY_SOURCE = (ROOT / "app/core/celery_app.py").read_text(encoding="utf-8")
 CELERY_CONTEXT_SOURCE = (ROOT / "app/observability/celery_context.py").read_text(encoding="utf-8")
 EXTERNAL_SNAPSHOT_SOURCE = (ROOT / "app/tasks/external_effect_observability.py").read_text(encoding="utf-8")
 LIFECYCLE_SNAPSHOT_SOURCE = (ROOT / "app/tasks/branch_lifecycle_sweeps.py").read_text(encoding="utf-8")
+LIFECYCLE_DEAD_LETTER_MIGRATION_SOURCE = (
+    ROOT / "alembic/versions/zk07d8e9f0a45_p8_lifecycle_dead_letter_snapshot.py"
+).read_text(encoding="utf-8")
 RUNTIME_SNAPSHOT_SOURCE = (ROOT / "app/tasks/runtime_observability.py").read_text(encoding="utf-8")
 BEAT_OWNER_SOURCE = (ROOT / "app/core/celery_beat_owner.py").read_text(encoding="utf-8")
 
@@ -267,7 +270,12 @@ def test_durable_queue_lifecycle_finance_and_platform_sources_are_real_not_mock_
     assert "finance_snapshot(" in EXTERNAL_SNAPSHOT_SOURCE
 
     assert "OrgBranchState.lifecycle_transition_in_progress.is_(True)" in LIFECYCLE_SNAPSHOT_SOURCE
-    assert 'BranchOutboxEvent.status == "dead_lettered"' in LIFECYCLE_SNAPSHOT_SOURCE
+    assert "app_secure.lifecycle_saga_dead_letter_count()" in LIFECYCLE_SNAPSHOT_SOURCE
+    assert "SECURITY DEFINER" in LIFECYCLE_DEAD_LETTER_MIGRATION_SOURCE
+    assert "o.event_type = 'branch.lifecycle_saga'" in LIFECYCLE_DEAD_LETTER_MIGRATION_SOURCE
+    assert "o.status = 'dead_lettered'" in LIFECYCLE_DEAD_LETTER_MIGRATION_SOURCE
+    assert "TO lifecycle_maintenance_runtime" in LIFECYCLE_DEAD_LETTER_MIGRATION_SOURCE
+    assert "zk07 leaked raw outbox SELECT to maintenance" in LIFECYCLE_DEAD_LETTER_MIGRATION_SOURCE
     assert 'queue="notification"' in LIFECYCLE_SNAPSHOT_SOURCE
 
     assert "await client.llen(queue)" in RUNTIME_SNAPSHOT_SOURCE
