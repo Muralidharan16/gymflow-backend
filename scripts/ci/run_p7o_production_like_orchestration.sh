@@ -360,10 +360,12 @@ wait "${API_PID}"
 api_rc=$?
 set -e
 API_PID=''
-if [ "${api_rc}" -ne 0 ]; then
+if [ "${api_rc}" -ne 0 ] && [ "${api_rc}" -ne 143 ]; then
   cat "${LOG}"
   exit "${api_rc}"
 fi
+
+grep -q 'Application shutdown complete' "${LOG}"
 
 db_after="$(PGPASSWORD="${MIGRATION_PASSWORD}" psql -X -At \
   -h 127.0.0.1 -U migration_owner -d gymflow_p7o_test \
@@ -379,7 +381,6 @@ if [ "${redis_after}" != "${redis_baseline}" ]; then
   exit 1
 fi
 
-grep -q 'Application shutdown complete' "${LOG}"
 echo 'P7O_REAL_UVICORN_RUNTIME=PASS'
 echo 'P7O_POSTGRES_RESOURCE_CLEANUP=PASS'
 echo 'P7O_REDIS_RESOURCE_CLEANUP=PASS'
