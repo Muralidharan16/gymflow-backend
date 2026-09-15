@@ -14,6 +14,14 @@ def _source(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _assignment_targets(node: ast.AST) -> tuple[ast.expr, ...]:
+    if isinstance(node, ast.Assign):
+        return tuple(node.targets)
+    if isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+        return (node.target,)
+    return ()
+
+
 def test_deployment_entrypoint_exports_canonical_app_only() -> None:
     source = _source(ENTRYPOINT)
     tree = ast.parse(source)
@@ -30,7 +38,12 @@ def test_deployment_entrypoint_exports_canonical_app_only() -> None:
         )
         for node in ast.walk(tree)
     )
-    assert "beat_schedule" not in source
+    assert not any(
+        isinstance(target, ast.Attribute) and target.attr == "beat_schedule"
+        for node in ast.walk(tree)
+        for target in _assignment_targets(node)
+    )
+    assert "celery_app.conf.beat_scheduler" in source
 
 
 def test_canonical_app_has_crash_safe_worker_semantics() -> None:
