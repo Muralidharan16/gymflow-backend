@@ -5,6 +5,14 @@ from celery import Celery, bootsteps
 from celery.schedules import crontab
 
 from app.core.config import settings
+from app.core.redis_production_readiness import validate_redis_production_settings
+
+
+# P6: broker-facing production processes fail closed before Celery constructs a
+# broker connection.  API processes are covered by deployment preflight and do
+# not gain a second business-authority path through this guard.
+if settings.is_production and settings.process_profile in {"worker", "maintenance", "beat"}:
+    validate_redis_production_settings(settings)
 
 
 WORKER_QUEUE = "worker"
@@ -44,13 +52,31 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
+    # P6-B: make the production reconnect contract explicit instead of
+    # depending on Celery defaults.  A running worker retries indefinitely
+    # after broker loss; publisher retries remain enabled; prefetch count is
+    # reduced while the connection is recovering.
+    broker_connection_retry_on_startup=True,
+    broker_connection_retry=True,
+    broker_connection_max_retries=None,
+    task_publish_retry=True,
+    worker_enable_prefetch_count_reduction=True,
     task_always_eager=(settings.ENVIRONMENT == "development"),
     task_default_queue=WORKER_QUEUE,
+    # Celery autodiscovery imports ``app.tasks.tasks``; it does not recursively
+    # import sibling task modules.  Every module owning a task referenced by the
+    # production Beat schedule must therefore be registered explicitly.  This
+    # keeps the real Docker worker/maintenance commands executable without
+    # test-only ``--include`` flags.
     imports=(
         "app.tasks.logos",
         "app.tasks.covers",
         "app.tasks.platform_maintenance",
         "app.tasks.external_effect_observability",
+        "app.tasks.branch_hours_partition",
+        "app.tasks.outbox_poller",
+        "app.tasks.branch_outbox_poller",
+        "app.tasks.branch_lifecycle_sweeps",
     ),
     task_routes={
         task_name: {"queue": MAINTENANCE_QUEUE}

@@ -1,0 +1,272 @@
+name: P6-R Redis Production Contract
+
+on:
+  push:
+    branches:
+      - hardening/p6-celery-redis-scheduler-production-readiness
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+    inputs:
+      certification_head:
+        description: Exact immutable SHA required by a later P6 same-head fan-in
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p6r-redis-production-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  redis-production-contract:
+    name: P6-R real TLS auth persistence HA Redis contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CERTIFICATION_HEAD: ${{ inputs.certification_head }}
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+asyncpg://p6r_test@localhost/p6r
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/1
+      CELERY_RESULT_BACKEND: redis://localhost:6379/2
+      SECRET_KEY: p6r-ci-bootstrap-only
+      AWS_ACCESS_KEY_ID: p6r-test
+      AWS_SECRET_ACCESS_KEY: p6r-test
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Guard optional same-head certification input
+        run: |
+          set -euo pipefail
+          if [ -n "${CERTIFICATION_HEAD}" ]; then
+            test "$(git rev-parse HEAD)" = "${CERTIFICATION_HEAD}"
+          fi
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Prove P6-R static and fail-closed contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            app/core/redis_production_readiness.py \
+            scripts/verify_redis_production_readiness.py \
+            tests/test_p6r_redis_production_contract.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p6_governance_contracts.py \
+            tests/test_p6r_redis_production_contract.py \
+            tests/test_process_database_profile_boundary.py
+
+      - name: Prepare self-managed host and ephemeral TLS identity
+        run: |
+          set -euo pipefail
+          sudo sysctl -w vm.overcommit_memory=1
+          test "$(cat /proc/sys/vm/overcommit_memory)" = "1"
+
+          CERT_DIR="/tmp/p6r-redis-tls"
+          CONFIG_DIR="/tmp/p6r-redis-config"
+          mkdir -p "${CERT_DIR}" "${CONFIG_DIR}"
+
+          openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
+            -keyout "${CERT_DIR}/ca.key" \
+            -out "${CERT_DIR}/ca.crt" \
+            -subj '/CN=DOERS P6R CI CA'
+          openssl req -newkey rsa:2048 -sha256 -nodes \
+            -keyout "${CERT_DIR}/server.key" \
+            -out "${CERT_DIR}/server.csr" \
+            -subj '/CN=p6r-primary'
+          cat > "${CERT_DIR}/server.ext" <<'EOF'
+          basicConstraints=CA:FALSE
+          keyUsage=digitalSignature,keyEncipherment
+          extendedKeyUsage=serverAuth
+          subjectAltName=DNS:localhost,DNS:p6r-primary,DNS:p6r-replica,IP:127.0.0.1
+          EOF
+          openssl x509 -req -sha256 -days 1 \
+            -in "${CERT_DIR}/server.csr" \
+            -CA "${CERT_DIR}/ca.crt" \
+            -CAkey "${CERT_DIR}/ca.key" \
+            -CAcreateserial \
+            -out "${CERT_DIR}/server.crt" \
+            -extfile "${CERT_DIR}/server.ext"
+          chmod 0644 "${CERT_DIR}/ca.crt" "${CERT_DIR}/server.crt" "${CERT_DIR}/server.key"
+
+          P6R_REDIS_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::${P6R_REDIS_PASSWORD}"
+          echo "P6R_REDIS_PASSWORD=${P6R_REDIS_PASSWORD}" >> "${GITHUB_ENV}"
+          echo "P6R_CERT_DIR=${CERT_DIR}" >> "${GITHUB_ENV}"
+          echo "P6R_CONFIG_DIR=${CONFIG_DIR}" >> "${GITHUB_ENV}"
+
+          cat > "${CONFIG_DIR}/primary.conf" <<EOF
+          port 0
+          tls-port 6379
+          tls-cert-file /tls/server.crt
+          tls-key-file /tls/server.key
+          tls-ca-cert-file /tls/ca.crt
+          tls-auth-clients no
+          requirepass ${P6R_REDIS_PASSWORD}
+          dir /data
+          appendonly yes
+          appendfsync everysec
+          save 60 1
+          maxmemory 128mb
+          maxmemory-policy noeviction
+          EOF
+
+          cat > "${CONFIG_DIR}/replica.conf" <<EOF
+          port 0
+          tls-port 6379
+          tls-cert-file /tls/server.crt
+          tls-key-file /tls/server.key
+          tls-ca-cert-file /tls/ca.crt
+          tls-auth-clients no
+          requirepass ${P6R_REDIS_PASSWORD}
+          masterauth ${P6R_REDIS_PASSWORD}
+          replicaof p6r-primary 6379
+          tls-replication yes
+          dir /data
+          appendonly yes
+          appendfsync everysec
+          save 60 1
+          maxmemory 128mb
+          maxmemory-policy noeviction
+          EOF
+
+      - name: Start real TLS primary and replica
+        run: |
+          set -euo pipefail
+          docker network create p6r-net
+          docker volume create p6r-primary-data
+          docker volume create p6r-replica-data
+
+          docker run -d --name p6r-primary \
+            --network p6r-net \
+            -p 16379:6379 \
+            -v p6r-primary-data:/data \
+            -v "${P6R_CERT_DIR}:/tls:ro" \
+            -v "${P6R_CONFIG_DIR}:/config:ro" \
+            redis:7-alpine redis-server /config/primary.conf
+
+          docker run -d --name p6r-replica \
+            --network p6r-net \
+            -v p6r-replica-data:/data \
+            -v "${P6R_CERT_DIR}:/tls:ro" \
+            -v "${P6R_CONFIG_DIR}:/config:ro" \
+            redis:7-alpine redis-server /config/replica.conf
+
+      - name: Prove TLS authentication AOF noeviction HA and host contract
+        run: |
+          set -euo pipefail
+          python scripts/verify_redis_production_readiness.py \
+            --host localhost \
+            --port 16379 \
+            --ca-cert "${P6R_CERT_DIR}/ca.crt" \
+            --expected-replicas 1 \
+            --require-local-overcommit
+
+          python - <<'PY'
+          import os
+          import ssl
+          import redis
+
+          kwargs = dict(
+              host="localhost",
+              port=16379,
+              ssl=True,
+              ssl_cert_reqs=ssl.CERT_REQUIRED,
+              ssl_ca_certs=os.path.join(os.environ["P6R_CERT_DIR"], "ca.crt"),
+              socket_timeout=3,
+              decode_responses=True,
+          )
+          try:
+              redis.Redis(**kwargs).ping()
+          except redis.AuthenticationError:
+              pass
+          else:
+              raise SystemExit("unauthenticated Redis connection unexpectedly succeeded")
+
+          client = redis.Redis(password=os.environ["P6R_REDIS_PASSWORD"], **kwargs)
+          assert client.ping() is True
+          assert client.set("p6r:restart-probe", "persisted") is True
+          assert client.wait(1, 5000) >= 1
+          PY
+          echo "P6R_TLS_AUTH=PASS"
+          echo "P6R_AOF_EVERYSEC=PASS"
+          echo "P6R_NOEVICTION=PASS"
+          echo "P6R_HA_REPLICA=PASS"
+          echo "P6R_VM_OVERCOMMIT_MEMORY=PASS"
+
+      - name: Prove primary restart persistence and replica recovery
+        run: |
+          set -euo pipefail
+          sleep 2
+          docker restart --time 5 p6r-primary >/dev/null
+
+          python scripts/verify_redis_production_readiness.py \
+            --host localhost \
+            --port 16379 \
+            --ca-cert "${P6R_CERT_DIR}/ca.crt" \
+            --expected-replicas 1 \
+            --require-local-overcommit
+
+          python - <<'PY'
+          import os
+          import ssl
+          import redis
+
+          client = redis.Redis(
+              host="localhost",
+              port=16379,
+              password=os.environ["P6R_REDIS_PASSWORD"],
+              ssl=True,
+              ssl_cert_reqs=ssl.CERT_REQUIRED,
+              ssl_ca_certs=os.path.join(os.environ["P6R_CERT_DIR"], "ca.crt"),
+              socket_timeout=3,
+              decode_responses=True,
+          )
+          assert client.get("p6r:restart-probe") == "persisted"
+          info = client.info("replication")
+          assert int(info.get("connected_slaves", 0)) >= 1
+          PY
+          echo "P6R_RESTART_PERSISTENCE=PASS"
+
+      - name: Emit P6-R decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo "P6_REDIS_PRODUCTION_CONTRACT=PASS"
+          echo "P6_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED"
+
+      - name: Cleanup disposable Redis topology
+        if: always()
+        run: |
+          docker rm -f p6r-replica p6r-primary >/dev/null 2>&1 || true
+          docker volume rm p6r-replica-data p6r-primary-data >/dev/null 2>&1 || true
+          docker network rm p6r-net >/dev/null 2>&1 || true

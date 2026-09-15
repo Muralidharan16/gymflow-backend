@@ -247,6 +247,117 @@ jobs:
           $$;
           SQL
 
+      - name: Prepare P6 production Redis for production entrypoints
+        run: |
+          set -euo pipefail
+          sudo sysctl -w vm.overcommit_memory=1
+          test "$(cat /proc/sys/vm/overcommit_memory)" = "1"
+
+          CERT_DIR="/tmp/platform-maintenance-redis-tls"
+          CONFIG_DIR="/tmp/platform-maintenance-redis-config"
+          mkdir -p "${CERT_DIR}" "${CONFIG_DIR}"
+
+          openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
+            -keyout "${CERT_DIR}/ca.key" \
+            -out "${CERT_DIR}/ca.crt" \
+            -subj '/CN=DOERS Platform Maintenance CI CA'
+          openssl req -newkey rsa:2048 -sha256 -nodes \
+            -keyout "${CERT_DIR}/server.key" \
+            -out "${CERT_DIR}/server.csr" \
+            -subj '/CN=platform-maint-primary'
+          cat > "${CERT_DIR}/server.ext" <<'EOF'
+          basicConstraints=CA:FALSE
+          keyUsage=digitalSignature,keyEncipherment
+          extendedKeyUsage=serverAuth
+          subjectAltName=DNS:localhost,DNS:platform-maint-primary,DNS:platform-maint-replica,IP:127.0.0.1
+          EOF
+          openssl x509 -req -sha256 -days 1 \
+            -in "${CERT_DIR}/server.csr" \
+            -CA "${CERT_DIR}/ca.crt" \
+            -CAkey "${CERT_DIR}/ca.key" \
+            -CAcreateserial \
+            -out "${CERT_DIR}/server.crt" \
+            -extfile "${CERT_DIR}/server.ext"
+          chmod 0644 "${CERT_DIR}/ca.crt" "${CERT_DIR}/server.crt" "${CERT_DIR}/server.key"
+
+          REDIS_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::${REDIS_PASSWORD}"
+          export PLATFORM_MAINT_REDIS_PASSWORD="${REDIS_PASSWORD}"
+          echo "PLATFORM_MAINT_REDIS_PASSWORD=${REDIS_PASSWORD}" >> "${GITHUB_ENV}"
+          echo "PLATFORM_MAINT_CERT_DIR=${CERT_DIR}" >> "${GITHUB_ENV}"
+
+          cat > "${CONFIG_DIR}/primary.conf" <<EOF
+          port 0
+          tls-port 6379
+          tls-cert-file /tls/server.crt
+          tls-key-file /tls/server.key
+          tls-ca-cert-file /tls/ca.crt
+          tls-auth-clients no
+          requirepass ${REDIS_PASSWORD}
+          dir /data
+          appendonly yes
+          appendfsync everysec
+          save 60 1
+          maxmemory 128mb
+          maxmemory-policy noeviction
+          EOF
+
+          cat > "${CONFIG_DIR}/replica.conf" <<EOF
+          port 0
+          tls-port 6379
+          tls-cert-file /tls/server.crt
+          tls-key-file /tls/server.key
+          tls-ca-cert-file /tls/ca.crt
+          tls-auth-clients no
+          requirepass ${REDIS_PASSWORD}
+          masterauth ${REDIS_PASSWORD}
+          replicaof platform-maint-primary 6379
+          tls-replication yes
+          dir /data
+          appendonly yes
+          appendfsync everysec
+          save 60 1
+          maxmemory 128mb
+          maxmemory-policy noeviction
+          EOF
+
+          docker network create platform-maint-redis-net
+          docker volume create platform-maint-primary-data
+          docker volume create platform-maint-replica-data
+          docker run -d --name platform-maint-primary \
+            --network platform-maint-redis-net \
+            -p 16379:6379 \
+            -v platform-maint-primary-data:/data \
+            -v "${CERT_DIR}:/tls:ro" \
+            -v "${CONFIG_DIR}:/config:ro" \
+            redis:7-alpine redis-server /config/primary.conf
+          docker run -d --name platform-maint-replica \
+            --network platform-maint-redis-net \
+            -v platform-maint-replica-data:/data \
+            -v "${CERT_DIR}:/tls:ro" \
+            -v "${CONFIG_DIR}:/config:ro" \
+            redis:7-alpine redis-server /config/replica.conf
+
+          REDISS_BASE="rediss://:${REDIS_PASSWORD}@localhost:16379"
+          REDISS_QUERY="ssl_cert_reqs=required&ssl_ca_certs=${CERT_DIR}/ca.crt"
+          echo "REDIS_URL=${REDISS_BASE}/0?${REDISS_QUERY}" >> "${GITHUB_ENV}"
+          echo "CELERY_BROKER_URL=${REDISS_BASE}/1?${REDISS_QUERY}" >> "${GITHUB_ENV}"
+          echo "CELERY_RESULT_BACKEND=${REDISS_BASE}/2?${REDISS_QUERY}" >> "${GITHUB_ENV}"
+          echo "REDIS_PRODUCTION_TOPOLOGY=self_managed_ha" >> "${GITHUB_ENV}"
+          echo "REDIS_PERSISTENCE_MODE=aof_everysec_rdb" >> "${GITHUB_ENV}"
+          echo "REDIS_MAXMEMORY_POLICY=noeviction" >> "${GITHUB_ENV}"
+          echo "REDIS_HA_MIN_REPLICAS=1" >> "${GITHUB_ENV}"
+          echo "REDIS_VM_OVERCOMMIT_MEMORY=1" >> "${GITHUB_ENV}"
+          echo "REDIS_MANAGED_PROVIDER_ATTESTED=false" >> "${GITHUB_ENV}"
+
+          python scripts/verify_redis_production_readiness.py \
+            --host localhost \
+            --port 16379 \
+            --ca-cert "${CERT_DIR}/ca.crt" \
+            --password-env PLATFORM_MAINT_REDIS_PASSWORD \
+            --expected-replicas 1 \
+            --require-local-overcommit
+
       - name: Execute production maintenance task integration through maintenance DB identity
         env:
           ENVIRONMENT: production
@@ -325,3 +436,10 @@ jobs:
           set -euo pipefail
           python -s scripts/verify_cluster_role_bootstrap.py
           python -s scripts/verify_cluster_identity_graph.py
+
+      - name: Cleanup disposable production Redis topology
+        if: always()
+        run: |
+          docker rm -f platform-maint-replica platform-maint-primary >/dev/null 2>&1 || true
+          docker volume rm platform-maint-replica-data platform-maint-primary-data >/dev/null 2>&1 || true
+          docker network rm platform-maint-redis-net >/dev/null 2>&1 || true

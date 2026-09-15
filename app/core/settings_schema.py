@@ -14,6 +14,15 @@ class DoersSettingsSchema(BaseSettings):
     REDIS_URL: str
     CELERY_BROKER_URL: str
     CELERY_RESULT_BACKEND: str
+    # P6 production Redis contract. These are declarations consumed by the
+    # Celery/Beat fail-closed startup guard and deployment readiness probe.
+    # Development/test may leave them at their inert defaults.
+    REDIS_PRODUCTION_TOPOLOGY: str = ""
+    REDIS_PERSISTENCE_MODE: str = ""
+    REDIS_MAXMEMORY_POLICY: str = ""
+    REDIS_HA_MIN_REPLICAS: int = 0
+    REDIS_VM_OVERCOMMIT_MEMORY: int = -1
+    REDIS_MANAGED_PROVIDER_ATTESTED: bool = False
     DOERS_PROCESS_PROFILE: str = ""
     CELERY_WORKER_PROFILE: str = ""
 

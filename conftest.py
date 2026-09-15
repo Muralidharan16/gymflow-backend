@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 
@@ -12,15 +14,34 @@ _DEDICATED_P5_RUNTIME_MODULES = {
     "tests/test_p5c_compensation_crash_replay_runtime.py": "P5-C compensation crash and replay",
 }
 
+_DEDICATED_P6_RUNTIME_MODULES = {
+    "tests/test_p6b_broker_reconnect_runtime.py": (
+        "P6-B broker restart and reconnect",
+        "P6B_PROCESS_FAULTS",
+    ),
+    "tests/test_p6w_worker_shutdown_redelivery_runtime.py": (
+        "P6-W worker shutdown and late-ack redelivery",
+        "P6W_PROCESS_FAULTS",
+    ),
+    "tests/test_p6p_poison_message_runtime.py": (
+        "P6-P poison-message containment",
+        "P6P_POISON_FAULTS",
+    ),
+    "tests/test_p6s_scheduler_runtime.py": (
+        "P6-S scheduler ownership and duplicate protection",
+        "P6S_PROCESS_FAULTS",
+    ),
+}
+
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Keep P5 disposable fault runtimes inside their dedicated same-head gates.
+    """Keep destructive disposable runtimes inside their dedicated same-head gates.
 
-    The decisive P5 workflows invoke these modules with ``--noconftest`` after
-    provisioning their exact disposable PostgreSQL/Redis/process-fault topology.
-    Broad inherited suites intentionally collect the repository at large; they
-    must not execute a fault-injection module without that module's dedicated
-    topology, credentials, acknowledgements and safety guards.
+    The decisive P5/P6 workflows provision exact disposable PostgreSQL/Redis and
+    process-fault topology before invoking these modules. Broad inherited suites
+    intentionally collect the repository at large; they must not execute a
+    fault-injection module without that module's dedicated topology, credentials,
+    acknowledgements and safety guards.
     """
     del config
     for item in items:
@@ -32,3 +53,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                     )
                 )
                 break
+        else:
+            for module, (description, activation_flag) in _DEDICATED_P6_RUNTIME_MODULES.items():
+                if item.nodeid.startswith(module):
+                    if os.environ.get(activation_flag) != "1":
+                        item.add_marker(
+                            pytest.mark.skip(
+                                reason=(
+                                    f"{description} runs only in its dedicated same-head gate"
+                                )
+                            )
+                        )
+                    break

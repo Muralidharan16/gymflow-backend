@@ -237,6 +237,7 @@ def test_notification_fixture_preserves_canonical_rls_role_domains() -> None:
         "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;"
     ) in workflow
 
+
 def test_aba_fixture_uses_canonical_worker_claim_and_reclaim_authority() -> None:
     runtime = RUNTIME.read_text(encoding="utf-8")
     test = runtime[
@@ -288,34 +289,59 @@ def test_aba_reclaim_preserves_attempt_and_rotates_monotonic_fence() -> None:
     assert "claimed_at" not in test
     assert "processed_at" not in test
 
-def test_runtime_step_uses_only_non_routable_broker_placeholders() -> None:
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+def test_runtime_step_uses_p6_production_redis_contract() -> None:
+    workflow_source = WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_source)
     job = workflow["jobs"]["provider-ack-ambiguity"]
     assert "services" not in job
+    prepare_step = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Prepare P6 production Redis for replacement worker"
+    )
     runtime_step = next(
         step
         for step in job["steps"]
         if step.get("name")
         == "Prove provider success and real acknowledgement transaction failure"
     )
-    expected = {
-        "REDIS_URL": "redis://p5e-cache.invalid:6379/0",
-        "CELERY_BROKER_URL": "redis://p5e-broker.invalid:6379/1",
-        "CELERY_RESULT_BACKEND": "redis://p5e-result.invalid:6379/2",
-    }
-    assert runtime_step.get("env") == expected
-    for step in job["steps"]:
-        if step is runtime_step:
-            continue
-        step_env = step.get("env") or {}
-        assert not set(expected) & set(step_env)
+    assert runtime_step.get("env") is None
+    prepare_source = prepare_step["run"]
+    for phrase in (
+        "sudo sysctl -w vm.overcommit_memory=1",
+        "tls-port 6379",
+        "requirepass ${REDIS_PASSWORD}",
+        "masterauth ${REDIS_PASSWORD}",
+        "replicaof p5e-primary 6379",
+        "tls-replication yes",
+        "appendonly yes",
+        "appendfsync everysec",
+        "save 60 1",
+        "maxmemory-policy noeviction",
+        'REDISS_BASE="rediss://:${REDIS_PASSWORD}@localhost:16379"',
+        "ssl_cert_reqs=required",
+        "REDIS_PRODUCTION_TOPOLOGY=self_managed_ha",
+        "REDIS_PERSISTENCE_MODE=aof_everysec_rdb",
+        "REDIS_MAXMEMORY_POLICY=noeviction",
+        "REDIS_HA_MIN_REPLICAS=1",
+        "REDIS_VM_OVERCOMMIT_MEMORY=1",
+        "REDIS_MANAGED_PROVIDER_ATTESTED=false",
+        "python scripts/verify_redis_production_readiness.py",
+        "--expected-replicas 1",
+        "--require-local-overcommit",
+    ):
+        assert phrase in prepare_source
+    for obsolete in (
+        "redis://p5e-cache.invalid:6379/0",
+        "redis://p5e-broker.invalid:6379/1",
+        "redis://p5e-result.invalid:6379/2",
+    ):
+        assert obsolete not in workflow_source
+    assert "ssl_cert_reqs=none" not in workflow_source
     runtime_source = RUNTIME.read_text(encoding="utf-8")
     assert "environment = os.environ.copy()" in runtime_source
     assert "env=environment" in runtime_source
-    for value in expected.values():
-        assert ".invalid:" in value
-        assert "localhost" not in value
-        assert "127.0.0.1" not in value
 
 
 def test_durable_provider_double_enforces_search_version_and_notification_key() -> None:

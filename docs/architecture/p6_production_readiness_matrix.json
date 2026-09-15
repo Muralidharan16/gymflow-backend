@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "phase": "P6 Celery, Redis and scheduler production readiness",
+  "governance_stage": "P6-G",
+  "p5_merge_base_sha": "52949397fc3f7d4822e0c31c5ee76a21f2c182fb",
+  "p5_certified_tree": "388a89ef09daff7c719ae07ebc5d22d152af4c58",
+  "candidate_branch": "hardening/p6-celery-redis-scheduler-production-readiness",
+  "locked_dependencies": {
+    "celery": "5.6.3",
+    "redis_py": "6.4.0"
+  },
+  "hard_gate": [
+    "no_lost_durable_business_work"
+  ],
+  "required_final_markers": [
+    "P6_REDIS_PRODUCTION_CONTRACT=PASS",
+    "P6_BROKER_RECONNECT_RECOVERY=PASS",
+    "P6_WORKER_SIGTERM_SAFE=PASS",
+    "P6_LATE_ACK_REDELIVERY_SAFE=PASS",
+    "P6_POISON_MESSAGE_CONTAINED=PASS",
+    "P6_BEAT_SINGLE_OWNER=PASS",
+    "P6_DUPLICATE_SCHEDULER_EFFECT_SAFE=PASS",
+    "P6_NO_LOST_DURABLE_BUSINESS_WORK=PASS",
+    "P6_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED"
+  ],
+  "inherited_boundaries": {
+    "postgresql_is_durable_business_authority": true,
+    "redis_or_celery_as_business_authority": "forbidden",
+    "task_acks_late": true,
+    "task_reject_on_worker_lost": true,
+    "worker_prefetch_multiplier": 1,
+    "provider_refund_execution": "deferred_fail_closed",
+    "live_money_activation": "forbidden",
+    "production_deployment": "forbidden",
+    "runtime_privilege_widening": "forbidden"
+  },
+  "redis_production_contract": {
+    "persistence": {
+      "required": true,
+      "self_managed_target": "aof_appendfsync_everysec_plus_periodic_rdb",
+      "durable_storage_required": true,
+      "managed_equivalent_allowed_with_attestation": true,
+      "business_authority": false
+    },
+    "transport_security": {
+      "authentication_required": true,
+      "tls_required": true,
+      "certificate_identity_verification_required": true,
+      "plain_redis_scheme_in_production": "forbidden"
+    },
+    "availability": {
+      "single_unreplicated_instance_as_production_ha": "forbidden",
+      "supported_model_must_be_declared": true,
+      "failover_reconnect_must_be_tested": true
+    },
+    "memory": {
+      "maxmemory_policy": "noeviction",
+      "silent_broker_key_eviction": "forbidden"
+    },
+    "host": {
+      "self_managed_linux_vm_overcommit_memory": 1,
+      "managed_provider_equivalent_must_be_declared": true
+    }
+  },
+  "fault_scenarios": [
+    {
+      "id": "redis_production_configuration_drift",
+      "slice": "P6-R",
+      "injection_point": "start production-mode preflight against Redis with one required persistence, TLS/auth, HA, noeviction or host assumption missing",
+      "expected_result": "production process or deployment check fails closed before treating the broker as ready",
+      "required_proof": [
+        "real_redis_config_probe_or_managed_attestation_contract",
+        "negative_configuration_cases",
+        "no_business_authority_migration_to_redis"
+      ],
+      "p6_certification": "not_yet_certified"
+    },
+    {
+      "id": "broker_restart_and_reconnect",
+      "slice": "P6-B",
+      "injection_point": "stop and restart the real Redis broker before delivery and while workers have durable work",
+      "expected_result": "workers reconnect or replacement workers consume after recovery and PostgreSQL durable work is not lost or falsely completed",
+      "required_proof": [
+        "real_redis_stop_start",
+        "worker_reconnect_or_replacement",
+        "durable_post_restart_assertions",
+        "bounded_recovery_disposition"
+      ],
+      "p6_certification": "not_yet_certified"
+    },
+    {
+      "id": "graceful_worker_sigterm",
+      "slice": "P6-W",
+      "injection_point": "send SIGTERM to the main prefork worker while a durable task is executing",
+      "expected_result": "warm shutdown completes the task safely or leaves authoritative work recoverable without partial or duplicate business effect",
+      "required_proof": [
+        "real_prefork_worker",
+        "main_process_sigterm",
+        "warm_shutdown_observation",
+        "authoritative_post_shutdown_state",
+        "replacement_worker_recovery_if_needed"
+      ],
+      "p6_certification": "not_yet_certified"
+    },
+    {
+      "id": "late_ack_redelivery",
+      "slice": "P6-W",
+      "injection_point": "interrupt execution before commit and after commit but before broker acknowledgement with late acknowledgement enabled",
+      "expected_result": "redelivery reuses the same logical identity and converges on one authoritative business effect",
+      "required_proof": [
+        "real_redis_broker",
+        "real_prefork_worker",
+        "before_commit_fault",
+        "after_commit_before_ack_fault",
+        "redelivery_observation",
+        "single_logical_effect_count"
+      ],
+      "p6_certification": "not_yet_certified"
+    },
+    {
+      "id": "poison_message_containment",
+      "slice": "P6-P",
+      "injection_point": "publish malformed or unregistered broker work and execute a valid durable command that deterministically fails across retries",
+      "expected_result": "malformed work never executes or kills the fleet; durable poison work reaches a bounded authoritative retry, reconciliation or dead-letter disposition",
+      "required_proof": [
+        "malformed_or_unregistered_message",
+        "worker_survival",
+        "bounded_retry_count",
+        "durable_failure_disposition",
+        "no_hot_redelivery_loop",
+        "no_lost_business_obligation"
+      ],
+      "p6_certification": "not_yet_certified"
+    },
+    {
+      "id": "beat_single_owner",
+      "slice": "P6-S",
+      "injection_point": "start two Beat scheduler contenders and then force owner loss or Redis failover",
+      "expected_result": "only the current operational owner publishes during normal operation and a stale owner stops publishing after ownership loss",
+      "required_proof": [
+        "independent_scheduler_processes",
+        "renewable_owner_identity",
+        "stale_owner_rejection_or_exit",
+        "ownership_recovery_after_failure",
+        "no_database_privilege_widening"
+      ],
+      "p6_certification": "not_yet_certified"
+    },
+    {
+      "id": "duplicate_scheduler_publication",
+      "slice": "P6-S",
+      "injection_point": "deliberately bypass or race scheduler ownership so the same periodic trigger is published more than once",
+      "expected_result": "downstream PostgreSQL idempotency and claiming converge duplicate messages on one logical business effect",
+      "required_proof": [
+        "forced_duplicate_periodic_publication",
+        "duplicate_worker_delivery",
+        "single_authoritative_effect_count",
+        "durable_terminal_or_recoverable_state"
+      ],
+      "p6_certification": "not_yet_certified"
+    }
+  ],
+  "decisive_runtime_requirements": {
+    "same_immutable_sha": true,
+    "source_mutation_during_certification": "forbidden",
+    "real_redis_required_for_broker_worker_scheduler_faults": true,
+    "postgresql_major_for_durable_state_tests": 16,
+    "production_equivalent_runtime_identities": true,
+    "real_worker_process_required": true,
+    "authoritative_durable_postcondition_verification": true,
+    "mock_only_restart_reconnect_sigterm_redelivery_scheduler_evidence": "forbidden"
+  },
+  "forbidden_actions": [
+    "merge",
+    "retarget",
+    "tag",
+    "release",
+    "deploy",
+    "live_refund_provider_activation",
+    "live_money_movement"
+  ]
+}
