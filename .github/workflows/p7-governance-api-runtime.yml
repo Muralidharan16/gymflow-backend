@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           git cat-file -e "${P6_MERGE_BASE}^{commit}"
-          test "$(git rev-parse "${P6_MERGE_BASE}^{tree})" = "${P6_CERTIFIED_TREE}"
+          test "$(git rev-parse "${P6_MERGE_BASE}^{tree}")" = "${P6_CERTIFIED_TREE}"
           git merge-base --is-ancestor "${P6_MERGE_BASE}" HEAD
 
       - name: Validate P7 governance artifacts
