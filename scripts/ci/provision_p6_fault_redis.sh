@@ -18,6 +18,11 @@ fi
 sudo sysctl -w vm.overcommit_memory=1 >/dev/null
 test "$(cat /proc/sys/vm/overcommit_memory)" = "1"
 
+# The inherited workflows provide Redis as a GitHub service container, not as a
+# host package. Install only the CLI client needed to prove the replacement
+# broker's plaintext fault surface and authenticated TLS production surface.
+sudo apt-get install -y redis-tools >/dev/null
+
 mapfile -t service_ids < <(docker ps -aq --filter ancestor=redis:7-alpine)
 if [[ "${#service_ids[@]}" -ne 1 ]]; then
   echo "Expected exactly one inherited redis:7-alpine service before P6 replacement; found ${#service_ids[@]}" >&2
