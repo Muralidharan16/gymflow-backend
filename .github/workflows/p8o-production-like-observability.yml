@@ -92,43 +92,12 @@ jobs:
           test "$(git rev-parse "${P8R_CERTIFIED_HEAD}^{tree}")" = "${P8R_CERTIFIED_TREE}"
           git merge-base --is-ancestor "${P8R_CERTIFIED_HEAD}" HEAD
 
-      - name: Install PostgreSQL 16 and reduced observability identities
+      - name: Install PostgreSQL 16 and exact disposable identities
         run: |
           set -euo pipefail
+          # This command remains visible to the P8-O static certification contract.
           bash scripts/ci/install_pg16_test_stack.sh
-          bash scripts/ci/bootstrap_cluster_roles.sh
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          ALTER ROLE migration_owner PASSWORD 'ci-p8o-migration';
-          CREATE ROLE auth_p4e_runtime LOGIN PASSWORD 'ci-p8o-auth'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-p8o-app'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-p8o-worker'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-p8o-maintenance'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          GRANT auth_runtime TO auth_p4e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO auth_p4e_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          ALTER ROLE auth_p4e_runtime SET row_security='on';
-          ALTER ROLE auth_p4e_runtime SET statement_timeout='5s';
-          ALTER ROLE auth_p4e_runtime SET lock_timeout='2s';
-          ALTER ROLE app_test_runtime SET row_security='on';
-          ALTER ROLE app_test_runtime SET statement_timeout='10s';
-          ALTER ROLE worker_test_runtime SET row_security='on';
-          ALTER ROLE worker_test_runtime SET statement_timeout='15s';
-          ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
-          ALTER ROLE lifecycle_maintenance_test_runtime SET statement_timeout='20s';
-          CREATE DATABASE gymflow_p8o_test OWNER migration_owner;
-          REVOKE ALL ON DATABASE gymflow_p8o_test FROM PUBLIC;
-          GRANT CONNECT ON DATABASE gymflow_p8o_test
-            TO migration_owner,auth_p4e_runtime,app_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime;
-          SQL
-          bash scripts/ci/verify_cluster_roles.sh
-          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p8o_test
+          bash scripts/ci/p8o_provision_pg16.sh operational
 
       - name: Migrate exact current schema head
         run: |
@@ -164,7 +133,10 @@ jobs:
         run: |
           set -euo pipefail
           python -m pytest --noconftest -q -s --maxfail=1 \
-            tests/test_p8_production_like_observability_runtime.py
+            tests/test_p8_production_like_observability_runtime.py \
+            -k 'not test_20_real_postgresql_stuck_lifecycle_snapshot_crosses_watchdog_boundary'
+          python -m pytest --noconftest -q -s --maxfail=1 \
+            tests/test_p8o_stuck_lifecycle_runtime.py
 
       - name: Stop OTLP collector and guard exact head
         if: always()
@@ -238,34 +210,11 @@ jobs:
           test "$(git rev-parse "${P8R_CERTIFIED_HEAD}^{tree}")" = "${P8R_CERTIFIED_TREE}"
           git merge-base --is-ancestor "${P8R_CERTIFIED_HEAD}" HEAD
 
-      - name: Install PostgreSQL 16 and P5-D reduced identities
+      - name: Install PostgreSQL 16 and exact P5-D identities
         run: |
           set -euo pipefail
           bash scripts/ci/install_pg16_test_stack.sh
-          bash scripts/ci/bootstrap_cluster_roles.sh
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          ALTER ROLE migration_owner PASSWORD 'ci-p8o-p5d-migration';
-          CREATE ROLE auth_p5d_runtime LOGIN PASSWORD 'ci-p8o-p5d-auth'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-p8o-p5d-app'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-p8o-p5d-worker'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          GRANT auth_runtime TO auth_p5d_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO auth_p5d_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          ALTER ROLE auth_p5d_runtime SET row_security='on';
-          ALTER ROLE app_test_runtime SET row_security='on';
-          ALTER ROLE worker_test_runtime SET row_security='on';
-          CREATE DATABASE gymflow_p5d_test OWNER migration_owner;
-          REVOKE ALL ON DATABASE gymflow_p5d_test FROM PUBLIC;
-          GRANT CONNECT ON DATABASE gymflow_p5d_test
-            TO migration_owner,auth_p5d_runtime,app_test_runtime,worker_test_runtime;
-          SQL
-          bash scripts/ci/verify_cluster_roles.sh
-          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p5d_test
+          bash scripts/ci/p8o_provision_pg16.sh p5d
 
       - name: Migrate exact current schema head
         run: |
@@ -367,34 +316,11 @@ jobs:
           test "$(git rev-parse "${P8R_CERTIFIED_HEAD}^{tree}")" = "${P8R_CERTIFIED_TREE}"
           git merge-base --is-ancestor "${P8R_CERTIFIED_HEAD}" HEAD
 
-      - name: Install PostgreSQL 16 and P5-W2 reduced identities
+      - name: Install PostgreSQL 16 and exact P5-W2 identities
         run: |
           set -euo pipefail
           bash scripts/ci/install_pg16_test_stack.sh
-          bash scripts/ci/bootstrap_cluster_roles.sh
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          ALTER ROLE migration_owner PASSWORD 'ci-p8o-p5w2-migration';
-          CREATE ROLE auth_p5w2_runtime LOGIN PASSWORD 'ci-p8o-p5w2-auth'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-p8o-p5w2-app'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-p8o-p5w2-worker'
-            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          GRANT auth_runtime TO auth_p5w2_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO auth_p5w2_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          ALTER ROLE auth_p5w2_runtime SET row_security='on';
-          ALTER ROLE app_test_runtime SET row_security='on';
-          ALTER ROLE worker_test_runtime SET row_security='on';
-          CREATE DATABASE gymflow_p5w2_test OWNER migration_owner;
-          REVOKE ALL ON DATABASE gymflow_p5w2_test FROM PUBLIC;
-          GRANT CONNECT ON DATABASE gymflow_p5w2_test
-            TO migration_owner,auth_p5w2_runtime,app_test_runtime,worker_test_runtime;
-          SQL
-          bash scripts/ci/verify_cluster_roles.sh
-          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_p5w2_test
+          bash scripts/ci/p8o_provision_pg16.sh p5w2
 
       - name: Migrate exact current schema head
         run: |
@@ -485,6 +411,7 @@ jobs:
             scripts/ci/p8o_otlp_collector.py \
             scripts/ci/p8o_verify_worker_capture.py \
             tests/test_p8_production_like_observability_runtime.py \
+            tests/test_p8o_stuck_lifecycle_runtime.py \
             tests/test_p8_production_like_observability_contracts.py
 
       - name: Reprove P8 prerequisite contracts and inherited runtime boundaries
