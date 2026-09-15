@@ -1,0 +1,102 @@
+name: P7-O Production-like API Orchestration
+
+on:
+  push:
+    branches:
+      - hardening/p7-api-runtime-graceful-deployment
+  workflow_call:
+    inputs:
+      certification_head:
+        description: Exact immutable SHA required by P7-F same-head certification
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p7o-production-like-orchestration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-like-orchestration:
+    name: Real API rollout, drain, shutdown and resource recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CERTIFICATION_HEAD: ${{ inputs.certification_head }}
+      P7_GOVERNANCE_SHA: a666250e8dd83a7de195ce06731f935406a90846
+      MIGRATION_PASSWORD: ci-p7o-migration-owner
+      APP_RUNTIME_PASSWORD: ci-p7o-app-runtime
+      AUTH_RUNTIME_PASSWORD: ci-p7o-auth-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p7o-migration-owner@127.0.0.1:5432/gymflow_p7o_test
+      SECRET_KEY: p7o-ci-not-production-secret
+      AWS_ACCESS_KEY_ID: p7o-test
+      AWS_SECRET_ACCESS_KEY: p7o-test
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: gymflow-p7o-test
+      ENVIRONMENT: test
+      P7O_SLOW_STARTED_FILE: /tmp/p7o-slow-started
+      P7O_SLOW_SECONDS: '20'
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Guard exact head and certified P7 governance ancestry
+        run: |
+          set -euo pipefail
+          if [ -n "${CERTIFICATION_HEAD}" ]; then
+            test "$(git rev-parse HEAD)" = "${CERTIFICATION_HEAD}"
+          fi
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git merge-base --is-ancestor "${P7_GOVERNANCE_SHA}" HEAD
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment and prove P7-O contracts
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+          bash -n scripts/ci/run_p7o_production_like_orchestration.sh
+          python -m py_compile scripts/ci/p7o_runtime_app.py tests/test_p7o_production_like_orchestration_static_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p7_governance_contracts.py \
+            tests/test_p7_system_drain_contracts.py \
+            tests/test_p7_resource_shutdown_contracts.py \
+            tests/test_p7o_production_like_orchestration_static_contracts.py
+
+      - name: Run real PostgreSQL TLS-Redis Uvicorn orchestration
+        run: |
+          set -euo pipefail
+          bash scripts/ci/run_p7o_production_like_orchestration.sh
+
+      - name: Emit P7-O decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P7_PRESTOP_AUTHORIZATION=PASS'
+          echo 'P7_LIVENESS_READINESS_SEPARATED=PASS'
+          echo 'P7_READINESS_FALSE_BEFORE_SHUTDOWN=PASS'
+          echo 'P7_NEW_REQUEST_DRAIN=PASS'
+          echo 'P7_INFLIGHT_COMPLETION=PASS'
+          echo 'P7_API_RESOURCE_SHUTDOWN=PASS'
+          echo 'P7_PRODUCTION_LIKE_ROLLOUT=PASS'
+          echo 'P7_NO_LOST_DURABLE_BUSINESS_WORK=PASS'
+          echo 'P7_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'

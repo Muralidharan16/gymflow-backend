@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "phase": "P7",
+  "title": "API runtime, probes and graceful deployment behavior",
+  "base_commit": "561510eed6244cee268215ff1c53af72a636a601",
+  "base_tree": "6ae7a92bd06100434b80aed98772147f2bbeaef4",
+  "hard_gate": "rollout_shutdown_production_like_orchestration",
+  "authority": {
+    "durable_business_work": "postgresql",
+    "redis_celery_beat": "delivery_coordination_only",
+    "refund_provider_execution": "deferred_fail_closed"
+  },
+  "system_endpoints": {
+    "prestop": {
+      "path": "/_system/preStop",
+      "dedicated_secret_required_in_production": true,
+      "tenant_jwt_is_not_authorization": true,
+      "missing_or_invalid_secret_must_not_drain": true
+    },
+    "liveness": {
+      "dependency_sensitive": false,
+      "must_remain_successful_while_draining": true
+    },
+    "readiness": {
+      "must_fail_immediately_when_draining": true,
+      "http_failure_status": 503
+    }
+  },
+  "drain": {
+    "reject_new_business_requests": true,
+    "complete_admitted_inflight_requests": true,
+    "exclude_system_requests_from_inflight": true,
+    "repeated_prestop_idempotent": true,
+    "bounded_shutdown_deadline": true
+  },
+  "resource_shutdown": {
+    "supervisor": true,
+    "redis": true,
+    "api_async_database_engine": true,
+    "api_sync_database_engine_if_present": true,
+    "idempotent": true
+  },
+  "worker_termination": {
+    "inherit_p6_warm_sigterm": true,
+    "inherit_p6_late_ack_redelivery": true,
+    "durable_work_must_remain_recoverable": true
+  },
+  "decisive_evidence": {
+    "real_api_process_required": true,
+    "mock_only_rollout_proof_forbidden": true,
+    "separate_liveness_readiness_required": true,
+    "slow_inflight_request_required": true,
+    "authorized_prestop_required": true,
+    "new_request_rejection_required": true,
+    "graceful_sigterm_exit_required": true,
+    "resource_cleanup_required": true
+  },
+  "slices": ["P7-G", "P7-S", "P7-D", "P7-R", "P7-W", "P7-O", "P7-F"],
+  "hard_stops": [
+    "public_prestop",
+    "combined_liveness_readiness_semantics",
+    "new_business_work_after_draining",
+    "p6_worker_semantic_weakening",
+    "database_credential_broadening",
+    "release",
+    "deployment",
+    "refund_provider_activation",
+    "live_money_movement"
+  ]
+}

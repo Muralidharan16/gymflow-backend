@@ -1,15 +1,8 @@
-"""
-app/core/drain.py
-==================
-Kubernetes preStop drain coordination for the Doers SaaS platform.
+"""Graceful API request-drain coordination for DOers P7.
 
-Ensures zero-downtime rollouts by:
-  1. Catching the preStop hook request at `/_system/preStop`.
-  2. Marking the pod status as DRAINING.
-  3. Intentionally failing `/health` probes (readiness checks) so the ingress/load balancer
-     stops routing new requests to this pod.
-  4. Waiting for a configurable drain window (e.g. 15s) to allow inflight requests to complete.
-  5. Returning success so Kubernetes can proceed with sending SIGTERM to the process.
+The coordinator owns one process-local admission state.  PostgreSQL remains the
+durable business authority; this state only decides whether this API process may
+accept a new request during deployment termination.
 """
 
 from __future__ import annotations
@@ -21,15 +14,22 @@ logger = logging.getLogger("doers.drain")
 
 
 class PodDrainCoordinator:
-    """
-    Coordinating pre-shutdown drain sequence for zero-downtime deploys.
-    """
+    """Coordinate request admission and bounded graceful draining."""
 
-    def __init__(self, drain_window_seconds: float = 15.0):
-        self._drain_window = drain_window_seconds
+    def __init__(
+        self,
+        drain_window_seconds: float = 15.0,
+        *,
+        hard_timeout_seconds: float = 30.0,
+    ) -> None:
+        self._drain_window = max(0.0, float(drain_window_seconds))
+        self._hard_timeout = max(0.0, float(hard_timeout_seconds))
         self._status = "HEALTHY"  # HEALTHY | DRAINING | SHUTDOWN
         self._inflight_requests = 0
         self._lock = asyncio.Lock()
+        self._zero_inflight = asyncio.Event()
+        self._zero_inflight.set()
+        self._drain_task: asyncio.Task[None] | None = None
 
     @property
     def status(self) -> str:
@@ -37,54 +37,91 @@ class PodDrainCoordinator:
 
     @property
     def is_healthy(self) -> bool:
+        """Compatibility alias for the old readiness meaning."""
+        return self._status == "HEALTHY"
+
+    @property
+    def is_ready(self) -> bool:
         return self._status == "HEALTHY"
 
     @property
     def inflight_count(self) -> int:
         return self._inflight_requests
 
-    async def increment_inflight(self):
+    async def try_admit_request(self) -> bool:
+        """Atomically admit/count a request only while the process is healthy."""
         async with self._lock:
+            if self._status != "HEALTHY":
+                return False
             self._inflight_requests += 1
+            self._zero_inflight.clear()
+            return True
 
-    async def decrement_inflight(self):
+    async def release_request(self) -> None:
+        """Release one admitted request without ever underflowing the counter."""
         async with self._lock:
-            self._inflight_requests = max(0, self._inflight_requests - 1)
-
-    async def trigger_drain(self) -> None:
-        """
-        Triggers the draining state, waits for the load balancer to de-register
-        the pod, and monitors remaining inflight requests.
-        """
-        async with self._lock:
-            if self._status == "DRAINING":
-                logger.warning("Pod drain already in progress.")
+            if self._inflight_requests <= 0:
+                logger.error("Ignored unbalanced P7 in-flight request release.")
                 return
-            self._status = "DRAINING"
+            self._inflight_requests -= 1
+            if self._inflight_requests == 0:
+                self._zero_inflight.set()
 
+    async def increment_inflight(self) -> None:
+        """Legacy compatibility helper; new code must use try_admit_request()."""
+        await self.try_admit_request()
+
+    async def decrement_inflight(self) -> None:
+        """Legacy compatibility helper; new code must use release_request()."""
+        await self.release_request()
+
+    async def _complete_drain(self) -> None:
         logger.info(
-            "K8s preStop hook triggered. Entering DRAINING state (drain_window=%.1fs)...",
+            "P7 preStop entered DRAINING (propagation_window=%.1fs, hard_timeout=%.1fs).",
             self._drain_window,
+            self._hard_timeout,
         )
 
-        # Wait for the load balancer to de-register the pod after health checks fail
-        await asyncio.sleep(self._drain_window)
+        if self._drain_window:
+            await asyncio.sleep(self._drain_window)
 
-        # Keep checking until inflight requests reach zero or hard timeout is reached
-        max_wait = 30.0  # seconds
-        wait_interval = 0.5
-        elapsed = 0.0
-
-        while self._inflight_requests > 0 and elapsed < max_wait:
-            logger.info("Draining... %d inflight requests remain.", self._inflight_requests)
-            await asyncio.sleep(wait_interval)
-            elapsed += wait_interval
+        try:
+            await asyncio.wait_for(
+                self._zero_inflight.wait(),
+                timeout=self._hard_timeout,
+            )
+        except TimeoutError:
+            logger.warning(
+                "P7 drain hard timeout reached with %d admitted request(s) still in flight.",
+                self._inflight_requests,
+            )
 
         async with self._lock:
             self._status = "SHUTDOWN"
 
-        logger.info("Drain complete. Ready for process shutdown.")
+        logger.info(
+            "P7 drain sequence complete (remaining_inflight=%d).",
+            self._inflight_requests,
+        )
+
+    async def trigger_drain(self) -> None:
+        """Begin drain once and await the same bounded drain task on repeat calls.
+
+        The task is shielded from a cancelled HTTP preStop request so readiness
+        cannot accidentally return to HEALTHY and later calls do not extend the
+        termination budget.
+        """
+        async with self._lock:
+            if self._status == "SHUTDOWN":
+                return
+            if self._status == "HEALTHY":
+                self._status = "DRAINING"
+                self._drain_task = asyncio.create_task(self._complete_drain())
+            task = self._drain_task
+
+        if task is not None:
+            await asyncio.shield(task)
 
 
-# Singleton coordinator
+# Singleton coordinator for the API process.
 drain_coordinator = PodDrainCoordinator()
