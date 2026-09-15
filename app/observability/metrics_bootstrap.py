@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.observability.runtime_metrics import configure_runtime_metrics
+from app.observability.runtime_metrics import configure_runtime_metrics, runtime_metrics
 
 
 _RUNTIME_PROFILES = frozenset({"api", "worker", "maintenance", "beat"})
@@ -45,4 +45,9 @@ def configure_process_runtime_metrics(settings: Any) -> bool:
         environment=str(getattr(settings, "ENVIRONMENT", "unknown")),
         service_name=service_name_for_profile(profile),
     )
+    # Synchronous gauges retain their last observation for subsequent periodic
+    # collections. This heartbeat therefore gives the alert backend a positive,
+    # bounded signal for an otherwise idle runtime process without creating a
+    # business dependency on telemetry delivery.
+    runtime_metrics().telemetry_heartbeat(profile=profile)
     return True
