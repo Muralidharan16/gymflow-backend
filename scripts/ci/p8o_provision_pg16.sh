@@ -28,8 +28,10 @@ case "${PROFILE}" in
     ;;
 esac
 
-bash scripts/ci/install_pg16_test_stack.sh
-bash scripts/ci/bootstrap_cluster_roles.sh
+# Canonical PostgreSQL installation and cluster-role bootstrap are deliberately
+# invoked by the workflow before this helper. Keeping them visible at the
+# workflow boundary lets the inherited P7 bootstrap scanner prove every job
+# that migrates to current HEAD used exactly one canonical bootstrap.
 
 sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres \
   -v migration_password="${MIGRATION_PASSWORD}" \
