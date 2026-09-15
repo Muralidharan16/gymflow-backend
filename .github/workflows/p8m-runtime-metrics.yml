@@ -1,0 +1,128 @@
+name: P8-M Runtime Metrics
+
+on:
+  push:
+    branches:
+      - hardening/p8-observability-operational-response
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p8m-runtime-metrics-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime_metrics:
+    name: P8-M bounded operational metrics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      P8L_CERTIFIED_HEAD: 0aee9c3e49f693132bb358334744c228b4848225
+      P8L_CERTIFIED_TREE: 3c40259148eaed01e587c5d3921567d2577b8356
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_p8m_contract
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p8m-contract-not-production
+      AWS_ACCESS_KEY_ID: ci-p8m-contract
+      AWS_SECRET_ACCESS_KEY: ci-p8m-contract
+      S3_BUCKET_NAME: gymflow-p8m-contract
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Guard certified P8-L parent boundary
+        run: |
+          set -euo pipefail
+          git cat-file -e "${P8L_CERTIFIED_HEAD}^{commit}"
+          test "$(git rev-parse "${P8L_CERTIFIED_HEAD}^{tree}")" = "${P8L_CERTIFIED_TREE}"
+          git merge-base --is-ancestor "${P8L_CERTIFIED_HEAD}" HEAD
+
+      - name: Validate metric contract and compile P8-M surface
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/p8_metric_contract.json >/dev/null
+          python -m py_compile \
+            app/observability/runtime_metrics.py \
+            app/observability/metrics_bootstrap.py \
+            app/observability/trace_context.py \
+            app/observability/request_context.py \
+            app/observability/celery_context.py \
+            app/observability/runtime_probes.py \
+            app/observability/search_metrics.py \
+            app/observability/notification_metrics.py \
+            app/core/api_runtime.py \
+            app/core/celery_app.py \
+            app/core/celery_beat_owner.py \
+            app/core/supervisor.py \
+            app/tasks/runtime_observability.py \
+            app/tasks/external_effect_observability.py \
+            app/tasks/branch_lifecycle_sweeps.py \
+            app/main.py \
+            tests/test_p8_metrics_contracts.py
+
+      - name: Prove real SDK metrics and bounded cardinality
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8_metrics_contracts.py
+
+      - name: Reprove P8 logging redaction and governance
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8_logging_redaction_contracts.py \
+            tests/test_p8_governance_contracts.py
+
+      - name: Reprove inherited P6 scheduler worker and P7 API boundaries
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p6s_scheduler_static_contracts.py \
+            tests/test_celery_single_app_boundary.py \
+            tests/test_p7_system_drain_contracts.py
+
+      - name: Emit P8-M decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P8_METRIC_CARDINALITY_BOUNDED=PASS'
+          echo 'P8_API_METRICS=PASS'
+          echo 'P8_DATABASE_METRICS=PASS'
+          echo 'P8_QUEUE_METRICS=PASS'
+          echo 'P8_LIFECYCLE_METRICS=PASS'
+          echo 'P8_FINANCE_METRICS=PASS'
+          echo 'P8_PROVIDER_METRICS=PASS'
+          echo 'P8_PLATFORM_METRICS=PASS'
+          echo 'P8_OBSERVABILITY_NON_AUTHORITATIVE=PASS'
+          echo 'P8_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
