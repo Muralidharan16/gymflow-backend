@@ -59,7 +59,7 @@ The P7-F workflow has one frozen contract job, the 33 reusable inherited P1-P6 g
 39. P7 worker termination inheritance
 40. P7 production-like orchestration
 
-Every P6 and P7 gate that accepts a certification head is bound to `${{ github.sha }}`. The terminal job runs with `always()` and fails if any prerequisite result is not `success`.
+Every P6 runtime gate that accepts a certification head is explicitly bound to `${{ github.sha }}`. The P7 reusable gates are referenced with same-repository relative workflow paths, so GitHub resolves them from the same commit as the P7-F caller; P7-O additionally accepts and validates an explicit `certification_head`. The terminal job runs with `always()` and fails if any prerequisite result is not `success`.
 
 ## Terminal invariants
 
