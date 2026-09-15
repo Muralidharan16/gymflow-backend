@@ -22,6 +22,7 @@ from app.observability.context import (
     request_authority_context,
     reset_observability_context,
 )
+from app.observability.runtime_metrics import runtime_metrics, safe_route_template
 
 
 logger = logging.getLogger("doers.observability.request")
@@ -48,8 +49,13 @@ def _bind_final_request_context(request: Request):
     return bind_observability_context(**request_authority_context(request))
 
 
+def _route_template(request: Request) -> str:
+    route = request.scope.get("route")
+    return safe_route_template(getattr(route, "path", None))
+
+
 class RequestObservabilityMiddleware(BaseHTTPMiddleware):
-    """Own server request IDs, sanitize correlation IDs, and log completion."""
+    """Own server request IDs, sanitize correlation IDs, and log/measure completion."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
         request_id = str(uuid.uuid4())
@@ -63,6 +69,8 @@ class RequestObservabilityMiddleware(BaseHTTPMiddleware):
             correlation_id=correlation_id,
         )
         started = time.monotonic()
+        metrics = runtime_metrics()
+        metrics.api_started(method=request.method)
         logger.info(
             "API request started",
             extra={
@@ -73,6 +81,13 @@ class RequestObservabilityMiddleware(BaseHTTPMiddleware):
         )
         try:
             response = await call_next(request)
+            duration_ms = (time.monotonic() - started) * 1000
+            metrics.api_completed(
+                method=request.method,
+                route=_route_template(request),
+                status_code=response.status_code,
+                duration_ms=duration_ms,
+            )
             final_tokens = _bind_final_request_context(request)
             try:
                 logger.info(
@@ -82,7 +97,7 @@ class RequestObservabilityMiddleware(BaseHTTPMiddleware):
                         "http_method": request.method,
                         "http_path": request.url.path,
                         "http_status_code": response.status_code,
-                        "duration_ms": round((time.monotonic() - started) * 1000, 3),
+                        "duration_ms": round(duration_ms, 3),
                     },
                 )
             finally:
@@ -90,6 +105,13 @@ class RequestObservabilityMiddleware(BaseHTTPMiddleware):
             response.headers["X-Doers-Request-ID"] = request_id
             return response
         except Exception:
+            duration_ms = (time.monotonic() - started) * 1000
+            metrics.api_completed(
+                method=request.method,
+                route=_route_template(request),
+                status_code=500,
+                duration_ms=duration_ms,
+            )
             final_tokens = _bind_final_request_context(request)
             try:
                 logger.exception(
@@ -98,13 +120,14 @@ class RequestObservabilityMiddleware(BaseHTTPMiddleware):
                         "event": "api.request.failed",
                         "http_method": request.method,
                         "http_path": request.url.path,
-                        "duration_ms": round((time.monotonic() - started) * 1000, 3),
+                        "duration_ms": round(duration_ms, 3),
                     },
                 )
             finally:
                 reset_observability_context(final_tokens)
             raise
         finally:
+            metrics.api_finished(method=request.method)
             reset_observability_context(outer_tokens)
 
 
