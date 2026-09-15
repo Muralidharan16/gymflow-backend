@@ -11,6 +11,7 @@ P6F_WORKFLOW = ROOT / ".github/workflows/p6f-final-same-head-certification.yml"
 CONTRACT = ROOT / "docs/architecture/P6F_FINAL_CERTIFICATION.md"
 P6S_PREDECESSOR = "4170b3a3d3438294f3b7999316f55d20749894c3"
 P6S_TREE = "3eff2d54ce6ea1b58cea94e8e2574430a93a9fe7"
+P6F_BRANCH = "hardening/p6f-final-certification-temp"
 
 P6 = {
     "p6_governance": (
@@ -88,9 +89,7 @@ def test_p6f_adds_all_six_p6_reusable_gates_and_exact_sha_binding() -> None:
     workflow = _workflow(P6F_WORKFLOW)
     jobs = workflow["jobs"]
 
-    assert workflow["on"]["push"]["branches"] == [
-        "hardening/p6-celery-redis-scheduler-production-readiness"
-    ]
+    assert workflow["on"]["push"]["branches"] == [P6F_BRANCH]
     assert workflow["permissions"] == {"contents": "read"}
 
     expected_jobs = {"contract", "certify", *_p5_gate_jobs(), *P6}
