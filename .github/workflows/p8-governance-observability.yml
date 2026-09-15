@@ -1,0 +1,63 @@
+name: P8 Governance Observability
+
+on:
+  push:
+    branches:
+      - hardening/p8-observability-operational-response
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  governance:
+    name: Frozen P8 observability and operational-response contract
+    runs-on: ubuntu-24.04
+    env:
+      P7_MERGE_BASE: c0e18944b15bee2ae7b37b9ede86a7832a232c59
+      P7_CERTIFIED_TREE: 0edf7e8f997bfe8ca44af474f5f8b93b30a748ea
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Prove exact merged P7 ancestry and tree
+        run: |
+          set -euo pipefail
+          git cat-file -e "${P7_MERGE_BASE}^{commit}"
+          git merge-base --is-ancestor "${P7_MERGE_BASE}" HEAD
+          test "$(git rev-parse "${P7_MERGE_BASE}^{tree}")" = "${P7_CERTIFIED_TREE}"
+
+      - name: Validate P8 governance artifacts
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/p8_observability_matrix.json >/dev/null
+          python -m py_compile tests/test_p8_governance_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8_governance_contracts.py
+
+      - name: Reprove inherited P7 final-certification contract
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p7_governance_contracts.py \
+            tests/test_p7f_final_certification_contracts.py
+
+      - name: Emit P8 governance markers
+        run: |
+          set -euo pipefail
+          echo 'P8_GOVERNANCE_OBSERVABILITY=PASS'
+          echo 'P8_EVERY_CRITICAL_FAILURE_VISIBLE_ACTIONABLE=GOVERNANCE_FROZEN'
+          echo 'P8_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
