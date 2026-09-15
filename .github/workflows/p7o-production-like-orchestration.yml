@@ -80,9 +80,8 @@ jobs:
           python -m py_compile scripts/ci/p7o_runtime_app.py tests/test_p7o_production_like_orchestration_static_contracts.py
           python -m pytest --noconftest -q --maxfail=1 \
             tests/test_p7_governance_contracts.py \
-            tests/test_p7s_system_control.py \
-            tests/test_p7d_request_drain.py \
-            tests/test_p7r_api_resource_shutdown.py \
+            tests/test_p7_system_drain_contracts.py \
+            tests/test_p7_resource_shutdown_contracts.py \
             tests/test_p7o_production_like_orchestration_static_contracts.py
 
       - name: Install PostgreSQL 16 and reduced API identities
