@@ -25,6 +25,7 @@ MAINTENANCE_TASKS = (
     "app.tasks.branch_lifecycle_sweeps.reconciliation",
     "app.tasks.branch_lifecycle_sweeps.notification_reconciliation",
     "app.tasks.external_effect_observability.snapshot",
+    "app.tasks.runtime_observability.snapshot",
     "app.tasks.platform_maintenance.expire_legacy_member_subscriptions",
     "app.tasks.platform_maintenance.advance_trial_lifecycles",
     "app.tasks.platform_maintenance.dispatch_organization_asset_jobs",
@@ -73,6 +74,7 @@ celery_app.conf.update(
         "app.tasks.covers",
         "app.tasks.platform_maintenance",
         "app.tasks.external_effect_observability",
+        "app.tasks.runtime_observability",
         "app.tasks.branch_hours_partition",
         "app.tasks.outbox_poller",
         "app.tasks.branch_outbox_poller",
@@ -166,6 +168,11 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute="*/5"),
         "options": {"queue": MAINTENANCE_QUEUE},
     },
+    "p8-runtime-operational-snapshot": {
+        "task": "app.tasks.runtime_observability.snapshot",
+        "schedule": crontab(minute="*"),
+        "options": {"queue": MAINTENANCE_QUEUE},
+    },
     "platform-idempotency-zombie-reclaim": {
         "task": "app.tasks.platform_maintenance.reclaim_stale_idempotency",
         "schedule": crontab(minute="*"),
@@ -193,6 +200,7 @@ celery_app.conf.beat_schedule = {
     },
 }
 
-# P8-L registers logging/context signals only.  It does not alter queues, acks,
-# retries, routing, prefetch, scheduler authority, or durable task semantics.
+# P8 observability registers logging/context/metric signals only. It does not
+# alter queues, acknowledgements, retries, prefetch, scheduler authority or the
+# PostgreSQL source-of-truth semantics inherited from P5/P6.
 from app.observability import celery_context as _p8_celery_observability  # noqa: E402,F401
