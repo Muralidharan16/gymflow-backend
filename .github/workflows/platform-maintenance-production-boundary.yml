@@ -282,6 +282,7 @@ jobs:
 
           REDIS_PASSWORD="$(openssl rand -hex 24)"
           echo "::add-mask::${REDIS_PASSWORD}"
+          export PLATFORM_MAINT_REDIS_PASSWORD="${REDIS_PASSWORD}"
           echo "PLATFORM_MAINT_REDIS_PASSWORD=${REDIS_PASSWORD}" >> "${GITHUB_ENV}"
           echo "PLATFORM_MAINT_CERT_DIR=${CERT_DIR}" >> "${GITHUB_ENV}"
 
