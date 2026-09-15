@@ -104,7 +104,10 @@ def test_p7f_reuses_all_p7_gates_on_same_candidate() -> None:
     for job_name, reusable_path in P7_JOBS.items():
         job = jobs[job_name]
         assert job["uses"] == reusable_path
-        assert job["with"]["certification_head"] == "${{ github.sha }}"
+        if job_name == "p7_orchestration":
+            assert job["with"]["certification_head"] == "${{ github.sha }}"
+        else:
+            assert "with" not in job
 
 
 def test_p7f_keeps_inherited_p6_same_head_runtime_gates() -> None:
