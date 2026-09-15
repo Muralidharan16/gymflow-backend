@@ -17,6 +17,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from app.core.drain import PodDrainCoordinator, drain_coordinator
+from app.observability.runtime_metrics import runtime_metrics
 
 
 PRESTOP_HEADER_NAME: Final[str] = "X-Doers-PreStop-Token"
@@ -76,9 +77,14 @@ def _json_response(status_code: int, content: dict, *, headers: dict[str, str] |
     )
 
 
+def _readiness_metric(ready: bool) -> None:
+    runtime_metrics().api_ready(ready)
+
+
 async def _readiness_response(coordinator: PodDrainCoordinator) -> Response:
     """Return bounded dependency-sensitive readiness without affecting liveness."""
     if not coordinator.is_ready:
+        _readiness_metric(False)
         return _json_response(503, {"status": "not_ready", "reason": "draining"})
 
     async def _database_ok() -> bool:
@@ -110,12 +116,15 @@ async def _readiness_response(coordinator: PodDrainCoordinator) -> Response:
 
     # Drain may have started while dependency checks were in flight.
     if not coordinator.is_ready:
+        _readiness_metric(False)
         return _json_response(503, {"status": "not_ready", "reason": "draining"})
     if not (db_ok and redis_ok):
+        _readiness_metric(False)
         return _json_response(
             503,
             {"status": "not_ready", "reason": "dependencies_unavailable"},
         )
+    _readiness_metric(True)
     return _json_response(200, {"status": "ready"})
 
 
@@ -174,6 +183,7 @@ class SystemControlMiddleware(BaseHTTPMiddleware):
             return _json_response(403, {"detail": "Forbidden."})
 
         await self._coordinator.trigger_drain()
+        _readiness_metric(False)
         return _json_response(200, {"status": "drained"})
 
 
@@ -205,6 +215,7 @@ class DrainAdmissionMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if not await self._coordinator.try_admit_request():
+            runtime_metrics().api_drain_rejected(method=request.method)
             return JSONResponse(
                 status_code=503,
                 headers={"Retry-After": "5"},
