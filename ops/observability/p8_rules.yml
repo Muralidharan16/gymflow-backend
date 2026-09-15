@@ -1,0 +1,253 @@
+groups:
+  - name: doers.p8.slo.recording
+    interval: 30s
+    rules:
+      - record: doers:p8:api_availability_bad_ratio:5m
+        expr: 'sum(rate(doers_api_errors_total{route!~"/_system/.*"}[5m])) / clamp_min(sum(rate(doers_api_requests_total{route!~"/_system/.*"}[5m])), 1)'
+      - record: doers:p8:api_availability_bad_ratio:1h
+        expr: 'sum(rate(doers_api_errors_total{route!~"/_system/.*"}[1h])) / clamp_min(sum(rate(doers_api_requests_total{route!~"/_system/.*"}[1h])), 1)'
+      - record: doers:p8:api_availability_bad_ratio:30m
+        expr: 'sum(rate(doers_api_errors_total{route!~"/_system/.*"}[30m])) / clamp_min(sum(rate(doers_api_requests_total{route!~"/_system/.*"}[30m])), 1)'
+      - record: doers:p8:api_availability_bad_ratio:6h
+        expr: 'sum(rate(doers_api_errors_total{route!~"/_system/.*"}[6h])) / clamp_min(sum(rate(doers_api_requests_total{route!~"/_system/.*"}[6h])), 1)'
+      - record: doers:p8:api_availability_burn_rate:5m
+        expr: 'doers:p8:api_availability_bad_ratio:5m / 0.001'
+      - record: doers:p8:api_availability_burn_rate:1h
+        expr: 'doers:p8:api_availability_bad_ratio:1h / 0.001'
+      - record: doers:p8:api_availability_burn_rate:30m
+        expr: 'doers:p8:api_availability_bad_ratio:30m / 0.001'
+      - record: doers:p8:api_availability_burn_rate:6h
+        expr: 'doers:p8:api_availability_bad_ratio:6h / 0.001'
+
+      - record: doers:p8:api_latency_bad_ratio:5m
+        expr: '1 - (sum(rate(doers_api_request_duration_milliseconds_bucket{route!~"/_system/.*",le="1000"}[5m])) / clamp_min(sum(rate(doers_api_request_duration_milliseconds_count{route!~"/_system/.*"}[5m])), 1))'
+      - record: doers:p8:api_latency_bad_ratio:1h
+        expr: '1 - (sum(rate(doers_api_request_duration_milliseconds_bucket{route!~"/_system/.*",le="1000"}[1h])) / clamp_min(sum(rate(doers_api_request_duration_milliseconds_count{route!~"/_system/.*"}[1h])), 1))'
+      - record: doers:p8:api_latency_bad_ratio:30m
+        expr: '1 - (sum(rate(doers_api_request_duration_milliseconds_bucket{route!~"/_system/.*",le="1000"}[30m])) / clamp_min(sum(rate(doers_api_request_duration_milliseconds_count{route!~"/_system/.*"}[30m])), 1))'
+      - record: doers:p8:api_latency_bad_ratio:6h
+        expr: '1 - (sum(rate(doers_api_request_duration_milliseconds_bucket{route!~"/_system/.*",le="1000"}[6h])) / clamp_min(sum(rate(doers_api_request_duration_milliseconds_count{route!~"/_system/.*"}[6h])), 1))'
+      - record: doers:p8:api_latency_burn_rate:5m
+        expr: 'doers:p8:api_latency_bad_ratio:5m / 0.01'
+      - record: doers:p8:api_latency_burn_rate:1h
+        expr: 'doers:p8:api_latency_bad_ratio:1h / 0.01'
+      - record: doers:p8:api_latency_burn_rate:30m
+        expr: 'doers:p8:api_latency_bad_ratio:30m / 0.01'
+      - record: doers:p8:api_latency_burn_rate:6h
+        expr: 'doers:p8:api_latency_bad_ratio:6h / 0.01'
+
+      - record: doers:p8:provider_error_bad_ratio:5m
+        expr: 'sum(rate(doers_provider_errors_total[5m])) / clamp_min(sum(rate(doers_provider_requests_total[5m])), 1)'
+      - record: doers:p8:provider_error_bad_ratio:1h
+        expr: 'sum(rate(doers_provider_errors_total[1h])) / clamp_min(sum(rate(doers_provider_requests_total[1h])), 1)'
+      - record: doers:p8:provider_error_bad_ratio:30m
+        expr: 'sum(rate(doers_provider_errors_total[30m])) / clamp_min(sum(rate(doers_provider_requests_total[30m])), 1)'
+      - record: doers:p8:provider_error_bad_ratio:6h
+        expr: 'sum(rate(doers_provider_errors_total[6h])) / clamp_min(sum(rate(doers_provider_requests_total[6h])), 1)'
+      - record: doers:p8:provider_error_burn_rate:5m
+        expr: 'doers:p8:provider_error_bad_ratio:5m / 0.005'
+      - record: doers:p8:provider_error_burn_rate:1h
+        expr: 'doers:p8:provider_error_bad_ratio:1h / 0.005'
+      - record: doers:p8:provider_error_burn_rate:30m
+        expr: 'doers:p8:provider_error_bad_ratio:30m / 0.005'
+      - record: doers:p8:provider_error_burn_rate:6h
+        expr: 'doers:p8:provider_error_bad_ratio:6h / 0.005'
+
+  - name: doers.p8.critical.alerts
+    interval: 30s
+    rules:
+      - alert: DoersDeadLetterPresent
+        expr: 'max(doers_queue_dead_letters) > 0'
+        for: 1m
+        labels:
+          severity: critical
+          owner: platform-runtime
+          failure_mode: dead_letter_present
+          dedupe_key: p8/dead-letter/{queue}
+        annotations:
+          customer_impact: 'Durable business work exhausted automated recovery and may require operator action.'
+          runbook: 'docs/runbooks/p8/dead-letter-present.md'
+          safe_first_actions: 'Inspect the authoritative PostgreSQL dead-letter row and retry history; do not delete or force-deliver it.'
+          escalation_condition: 'Unresolved for 10m, repeated after replay, or Finance/refund work affected.'
+
+      - alert: DoersLifecycleStuck
+        expr: 'max(doers_lifecycle_state_depth{state="stuck"}) > 0'
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-runtime
+          failure_mode: stuck_saga_or_lifecycle
+          dedupe_key: p8/lifecycle-stuck
+        annotations:
+          customer_impact: 'Lifecycle state may remain transitional and block dependent operations.'
+          runbook: 'docs/runbooks/p8/stuck-lifecycle.md'
+          safe_first_actions: 'Inspect authoritative branch state and the parent outbox lease before any replay.'
+          escalation_condition: 'Survives one maintenance sweep or exceeds 45m.'
+
+      - alert: DoersQueueOldestAgeBreach
+        expr: 'max(doers_queue_oldest_message_age_seconds) > 300'
+        for: 5m
+        labels:
+          severity: critical
+          owner: platform-runtime
+          failure_mode: queue_oldest_age_breach
+          dedupe_key: p8/queue-age/{queue}
+        annotations:
+          customer_impact: 'Customer-visible asynchronous work is exceeding the five-minute freshness target.'
+          runbook: 'docs/runbooks/p8/queue-age-breach.md'
+          safe_first_actions: 'Identify the oldest bounded queue, verify worker availability, and inspect durable PostgreSQL work before replay.'
+          escalation_condition: 'Age exceeds 900s, rises for 10m, or affects Finance/provider reconciliation.'
+
+      - alert: DoersFinanceReconciliationMismatch
+        expr: 'max(doers_finance_signal_depth{signal="reconciliation_mismatch"}) > 0'
+        for: 1m
+        labels:
+          severity: critical
+          owner: finance-reliability
+          failure_mode: finance_reconciliation_mismatch
+          dedupe_key: p8/finance-reconciliation
+        annotations:
+          customer_impact: 'Recorded Finance state disagrees with expected provider/evidence state.'
+          runbook: 'docs/runbooks/p8/finance-reconciliation-mismatch.md'
+          safe_first_actions: 'Preserve Finance/provider evidence and stop automated mutation for the affected obligation until understood.'
+          escalation_condition: 'Persists 5m, grows, or touches issued invoices, payments, credits, or refund obligations.'
+
+      - alert: DoersProviderAckAmbiguity
+        expr: 'max(doers_finance_signal_depth{signal="provider_ack_ambiguity"}) > 0'
+        for: 1m
+        labels:
+          severity: critical
+          owner: finance-reliability
+          failure_mode: provider_success_db_ack_ambiguity
+          dedupe_key: p8/provider-ack-ambiguity
+        annotations:
+          customer_impact: 'External provider success may be real while local acknowledgement is uncertain; blind retry can duplicate effects.'
+          runbook: 'docs/runbooks/p8/provider-ack-ambiguity.md'
+          safe_first_actions: 'Do not blindly repeat the provider mutation; reconcile provider evidence with the fenced durable command.'
+          escalation_condition: 'Persists after one reconciliation attempt or involves a monetary effect.'
+
+      - alert: DoersDatabasePoolExhaustion
+        expr: 'max(doers_database_pool_utilization) >= 0.90 or sum(increase(doers_database_pool_timeouts_total[5m])) > 0'
+        for: 5m
+        labels:
+          severity: critical
+          owner: platform-runtime
+          failure_mode: database_pool_exhaustion
+          dedupe_key: p8/db-pool/{pool}
+        annotations:
+          customer_impact: 'Requests or workers may be unable to acquire database connections within bounded budgets.'
+          runbook: 'docs/runbooks/p8/database-pool-exhaustion.md'
+          safe_first_actions: 'Identify the saturated pool and long transactions before changing pool size.'
+          escalation_condition: 'Timeouts continue 5m, utilization reaches 98%, or API readiness becomes dependency-unavailable.'
+
+      - alert: DoersDatabaseDisconnectStorm
+        expr: 'sum(increase(doers_database_disconnects_total[5m])) >= 5'
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-runtime
+          failure_mode: database_disconnect_storm
+          dedupe_key: p8/db-disconnect-storm
+        annotations:
+          customer_impact: 'Repeated database connection loss may interrupt requests and delay durable workers.'
+          runbook: 'docs/runbooks/p8/database-disconnect-storm.md'
+          safe_first_actions: 'Check DB reachability/TLS, pool health, failover and networking before restarting application processes.'
+          escalation_condition: 'Disconnects double in the next 5m or any production profile cannot reconnect.'
+
+      - alert: DoersRedisOrBrokerUnavailable
+        expr: 'min(doers_platform_redis_health{role=~"application|broker|result_backend"}) < 1'
+        for: 1m
+        labels:
+          severity: critical
+          owner: platform-runtime
+          failure_mode: redis_or_broker_unavailable
+          dedupe_key: p8/redis/{role}
+        annotations:
+          customer_impact: 'Rate-limit/session coordination or Celery delivery may degrade while PostgreSQL durable authority must remain intact.'
+          runbook: 'docs/runbooks/p8/redis-broker-unavailable.md'
+          safe_first_actions: 'Confirm the affected Redis role and TLS/auth/topology health; do not mutate durable DB work to compensate.'
+          escalation_condition: 'Broker unavailable 5m, workers cannot reconnect, or queue age begins breaching.'
+
+      - alert: DoersWorkerUnavailableOrRedeliveryStorm
+        expr: 'min(max by (profile) (doers_queue_worker_available{profile=~"worker|maintenance"})) < 1 or sum(increase(doers_queue_redeliveries_total[5m])) >= 20'
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform-runtime
+          failure_mode: worker_unavailable_or_redelivery_storm
+          dedupe_key: p8/worker-redelivery
+        annotations:
+          customer_impact: 'Durable asynchronous work may stop progressing or repeatedly replay after worker loss.'
+          runbook: 'docs/runbooks/p8/worker-unavailable-redelivery.md'
+          safe_first_actions: 'Check worker/maintenance capacity and broker connectivity while preserving late-ack/redelivery semantics.'
+          escalation_condition: 'No healthy replacement within 5m or redeliveries continue rising.'
+
+      - alert: DoersDuplicateSchedulerEffectRisk
+        expr: 'sum(count_over_time(doers_platform_scheduler_ownership{state=~"contended|unavailable"}[2m])) > 0'
+        for: 0m
+        labels:
+          severity: critical
+          owner: platform-runtime
+          failure_mode: duplicate_scheduler_effect_risk
+          dedupe_key: p8/scheduler-ownership
+        annotations:
+          customer_impact: 'Scheduler ownership uncertainty can create duplicate dispatch risk.'
+          runbook: 'docs/runbooks/p8/scheduler-ownership-risk.md'
+          safe_first_actions: 'Identify all Beat processes and Redis lease ownership; never disable ownership fencing.'
+          escalation_condition: 'Contention lasts beyond one lease TTL or duplicate dispatch is observed.'
+
+      - alert: DoersBackupFailureOrStale
+        expr: 'max(doers_platform_backup_age_seconds) > 90000 or sum(increase(doers_platform_backup_failures_total[24h])) > 0 or absent_over_time(doers_platform_backup_age_seconds{backup_class="database"}[30m])'
+        for: 10m
+        labels:
+          severity: critical
+          owner: data-reliability
+          failure_mode: backup_failure_or_stale_backup
+          dedupe_key: p8/backup/{backup_class}
+        annotations:
+          customer_impact: 'Recovery point objectives may no longer be trustworthy.'
+          runbook: 'docs/runbooks/p8/backup-failure-stale.md'
+          safe_first_actions: 'Verify infrastructure backup evidence outside the application and trigger only the infrastructure-owned backup path.'
+          escalation_condition: 'DB backup age >30h, two consecutive failures, or restore verification unavailable.'
+
+      - alert: DoersApiSloBurn
+        expr: '(doers:p8:api_availability_burn_rate:5m > 14.4 and doers:p8:api_availability_burn_rate:1h > 14.4) or (doers:p8:api_availability_burn_rate:30m > 6 and doers:p8:api_availability_burn_rate:6h > 6) or (doers:p8:api_latency_burn_rate:5m > 14.4 and doers:p8:api_latency_burn_rate:1h > 14.4) or (doers:p8:api_latency_burn_rate:30m > 6 and doers:p8:api_latency_burn_rate:6h > 6)'
+        for: 0m
+        labels:
+          severity: critical
+          owner: api-runtime
+          failure_mode: api_availability_or_latency_slo_breach
+          dedupe_key: p8/api-slo-burn
+        annotations:
+          customer_impact: 'API reliability is consuming the monthly error budget too quickly.'
+          runbook: 'docs/runbooks/p8/api-slo-burn.md'
+          safe_first_actions: 'Separate availability from latency burn and correlate bounded route/status evidence with readiness, DB, Redis and providers.'
+          escalation_condition: 'Fast burn persists 5m, slow burn persists 30m, or remaining monthly API budget <25%.'
+
+      - alert: DoersProviderSloBurn
+        expr: '(doers:p8:provider_error_burn_rate:5m > 14.4 and doers:p8:provider_error_burn_rate:1h > 14.4) or (doers:p8:provider_error_burn_rate:30m > 6 and doers:p8:provider_error_burn_rate:6h > 6) or max(doers_provider_circuit_open) > 0'
+        for: 0m
+        labels:
+          severity: critical
+          owner: external-integrations
+          failure_mode: provider_error_or_timeout_slo_breach
+          dedupe_key: p8/provider-slo/{provider}
+        annotations:
+          customer_impact: 'External integrations are failing faster than the allowed provider error budget.'
+          runbook: 'docs/runbooks/p8/provider-slo-burn.md'
+          safe_first_actions: 'Identify bounded provider/operation/outcome and use durable reconciliation instead of blind retries.'
+          escalation_condition: 'Fast burn persists 5m, circuit open 10m, or monetary/provider-ack ambiguity appears.'
+
+      - alert: DoersObservabilityPipelineFailure
+        expr: 'absent_over_time(doers_platform_observability_heartbeat{profile="api"}[5m]) or absent_over_time(doers_platform_observability_heartbeat{profile="worker"}[5m]) or absent_over_time(doers_platform_observability_heartbeat{profile="maintenance"}[5m]) or absent_over_time(doers_platform_observability_heartbeat{profile="beat"}[5m])'
+        for: 0m
+        labels:
+          severity: critical
+          owner: platform-runtime
+          failure_mode: observability_pipeline_failure
+          dedupe_key: p8/observability-pipeline/{profile}
+        annotations:
+          customer_impact: 'Operators may be blind to critical failures even while business processing continues.'
+          runbook: 'docs/runbooks/p8/observability-pipeline-failure.md'
+          safe_first_actions: 'Verify runtime process health separately from collector/backend ingestion and restore telemetry without touching durable business state.'
+          escalation_condition: 'Any required profile invisible 10m or another critical incident is active while telemetry is incomplete.'
