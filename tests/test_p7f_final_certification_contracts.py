@@ -110,6 +110,12 @@ def test_p7f_reuses_all_p7_gates_on_same_candidate() -> None:
             assert "with" not in job
 
 
+def test_p7f_serializes_p7_worker_reproof_after_direct_p6_worker() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    assert jobs["p7_worker"]["needs"] == "p6_worker"
+
+
 def test_p7f_keeps_inherited_p6_same_head_runtime_gates() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
