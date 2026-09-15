@@ -20,6 +20,7 @@ from app.tasks.runtime_observability import _published_at
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "docs/architecture/p8_metric_contract.json"
 RUNTIME_METRICS_SOURCE = (ROOT / "app/observability/runtime_metrics.py").read_text(encoding="utf-8")
+METRICS_BOOTSTRAP_SOURCE = (ROOT / "app/observability/metrics_bootstrap.py").read_text(encoding="utf-8")
 TRACE_CONTEXT_SOURCE = (ROOT / "app/observability/trace_context.py").read_text(encoding="utf-8")
 MAIN_SOURCE = (ROOT / "app/main.py").read_text(encoding="utf-8")
 CELERY_SOURCE = (ROOT / "app/core/celery_app.py").read_text(encoding="utf-8")
@@ -73,6 +74,7 @@ EXPECTED_METRICS = {
     "doers.platform.scheduler.ownership",
     "doers.platform.backup.age",
     "doers.platform.backup.failures",
+    "doers.platform.observability.heartbeat",
 }
 
 
@@ -123,6 +125,7 @@ def test_metric_contract_covers_all_required_domains_and_has_no_forbidden_labels
     assert contract["truth_boundaries"]["durable_dead_letters"] == "PostgreSQL"
     assert contract["truth_boundaries"]["lifecycle_state"] == "PostgreSQL"
     assert contract["truth_boundaries"]["backup_status"] == "external infrastructure backup system"
+    assert contract["truth_boundaries"]["observability_heartbeat"] == "process_local_metric_provider"
     assert contract["truth_boundaries"]["observability_is_business_authority"] is False
     assert "public_prometheus_endpoint" in contract["non_goals"]
     assert "refund_provider_activation" in contract["non_goals"]
@@ -175,6 +178,7 @@ def test_real_sdk_reader_observes_every_p8_metric_with_bounded_attributes() -> N
     recorder.redis_state(role="application", healthy=True)
     recorder.scheduler_state(state="owned")
     recorder.backup_snapshot(backup_class="database", age_seconds=600.0, failed=True)
+    recorder.telemetry_heartbeat(profile="api")
 
     observed = _collect_metrics_data(reader.get_metrics_data())
     assert EXPECTED_METRICS <= set(observed)
@@ -232,6 +236,12 @@ def test_production_processes_require_configured_p8_exporter_without_public_metr
     assert configure_process_runtime_metrics(disabled_test) is False
     assert '@app.get("/metrics")' not in MAIN_SOURCE
     assert '@app.route("/metrics")' not in MAIN_SOURCE
+
+
+def test_metrics_bootstrap_emits_bounded_profile_heartbeat() -> None:
+    assert "runtime_metrics().telemetry_heartbeat(profile=profile)" in METRICS_BOOTSTRAP_SOURCE
+    assert '"doers.platform.observability.heartbeat"' in RUNTIME_METRICS_SOURCE
+    assert 'attrs = {"profile": _enum(profile, _PROCESS_PROFILES)}' in RUNTIME_METRICS_SOURCE
 
 
 def test_trace_identity_is_finalized_from_authoritative_request_state_not_tenant_headers() -> None:
