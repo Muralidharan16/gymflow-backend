@@ -16,6 +16,7 @@ from celery.signals import (
 
 from app.core.config import settings
 from app.observability.context import (
+    UNKNOWN,
     bind_observability_context,
     normalize_identifier,
     propagatable_task_context,
@@ -69,9 +70,19 @@ def _task_inherited_context(task: Any) -> dict[str, str]:
         if key not in _ALLOWED_INHERITED_FIELDS:
             continue
         normalized = normalize_identifier(value)
-        if normalized != "unknown":
+        if normalized != UNKNOWN:
             inherited[key] = normalized
     return inherited
+
+
+def _task_token_key(task_id: Any, task: Any) -> str:
+    normalized = normalize_identifier(task_id)
+    if normalized != UNKNOWN:
+        return normalized
+    # Defensive fallback for direct unit invocation. Production Celery task IDs
+    # are always present, but context must still be reset if a malformed signal
+    # reaches this handler.
+    return f"object-{id(task)}"
 
 
 @task_prerun.connect
@@ -81,8 +92,7 @@ def bind_task_observability_context(task_id=None, task=None, sender=None, **kwar
     values = _task_inherited_context(task)
     values["task_id"] = normalized_task_id
     tokens = bind_observability_context(**values)
-    if normalized_task_id != "unknown":
-        _ACTIVE_TASK_TOKENS[normalized_task_id] = tokens
+    _ACTIVE_TASK_TOKENS[_task_token_key(task_id, task)] = tokens
     logger.info(
         "Celery task started",
         extra={
@@ -112,7 +122,6 @@ def log_task_failure(task_id=None, exception=None, traceback=None, sender=None, 
 @task_postrun.connect
 def reset_task_observability_context(task_id=None, task=None, sender=None, state=None, **kwargs) -> None:
     del kwargs
-    normalized_task_id = normalize_identifier(task_id)
     logger.info(
         "Celery task completed",
         extra={
@@ -121,6 +130,6 @@ def reset_task_observability_context(task_id=None, task=None, sender=None, state
             "task_state": str(state or "unknown"),
         },
     )
-    tokens = _ACTIVE_TASK_TOKENS.pop(normalized_task_id, None)
+    tokens = _ACTIVE_TASK_TOKENS.pop(_task_token_key(task_id, task), None)
     if tokens is not None:
         reset_observability_context(tokens)
