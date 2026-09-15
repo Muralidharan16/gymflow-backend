@@ -59,6 +59,17 @@ def _auth_connection():
     )
 
 
+def _app_connection():
+    value = _admin_url()
+    return psycopg.connect(
+        host=str(value.host),
+        port=int(value.port),
+        dbname=str(value.database),
+        user="app_test_runtime",
+        password=os.environ["APP_RUNTIME_PASSWORD"],
+    )
+
+
 def _records() -> list[dict[str, Any]]:
     if not CAPTURE.is_file():
         return []
@@ -83,7 +94,7 @@ def _stuck_depth() -> float:
     return max(values, default=-1.0)
 
 
-def _seed_disposable_branch_state() -> uuid.UUID:
+def _seed_disposable_branch_state() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     """Create one real branch state through the certified bootstrap boundary."""
     org_id = uuid.uuid4()
     owner_id = uuid.uuid4()
@@ -186,23 +197,32 @@ def _seed_disposable_branch_state() -> uuid.UUID:
             assert all(value is not None for value in returned)
         connection.commit()
 
-    return branch_id
+    return branch_id, org_id, owner_id
 
 
 def test_real_persisted_stuck_lifecycle_is_visible_to_maintenance_observability() -> None:
     assert os.environ.get("P8O_PROCESS_FAULTS") == "1"
 
-    branch_id = _seed_disposable_branch_state()
+    branch_id, org_id, owner_id = _seed_disposable_branch_state()
 
-    # Fault aging is a test-only internal mutation. migration_owner deliberately
-    # has NOBYPASSRLS, so use its pre-existing membership in app_security_owner
-    # and the already-certified bounded internal org_branch_state UPDATE policy.
-    # This mirrors P4E operational fixture seeding; no grants or RLS changes are
-    # introduced. Observation below still runs through the dedicated lifecycle
-    # maintenance runtime identity/capability.
-    with _admin_connection() as connection:
+    # Fault aging is a test-only tenant-scoped lifecycle mutation. app_runtime
+    # already owns UPDATE only on the lifecycle-domain columns used here, and
+    # p_branch_update requires the authoritative tenant GUC plus an allowed role.
+    # This deliberately exercises that existing least-privilege boundary rather
+    # than granting migration/security-owner access to lifecycle columns.
+    with _app_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute("SET LOCAL ROLE app_security_owner")
+            cursor.execute(
+                """
+                SELECT
+                    pg_catalog.set_config('app.current_role','owner',true),
+                    pg_catalog.set_config('app.current_org_id',%s,true),
+                    pg_catalog.set_config('app.current_user_id',%s,true),
+                    pg_catalog.set_config('app.current_principal_type','owner',true),
+                    pg_catalog.set_config('app.current_gym_id','',true)
+                """,
+                (str(org_id), str(owner_id)),
+            )
             cursor.execute(
                 """
                 UPDATE public.org_branch_state
@@ -214,7 +234,6 @@ def test_real_persisted_stuck_lifecycle_is_visible_to_maintenance_observability(
                 (branch_id,),
             )
             assert cursor.rowcount == 1
-            cursor.execute("RESET ROLE")
         connection.commit()
 
     from app.core.database import maintenance_async_session_maker
