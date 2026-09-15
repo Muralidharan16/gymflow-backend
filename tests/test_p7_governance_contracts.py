@@ -115,7 +115,7 @@ def test_p7_acceptance_locks_terminal_markers_and_hard_stops() -> None:
     for marker in FINAL_MARKERS:
         assert marker in acceptance
     for phrase in (
-        "public or ordinary authenticated application caller",
+        "A public or ordinary authenticated application caller",
         "liveness=200 and readiness=503",
         "newly arriving ordinary business requests are rejected with 503",
         "system liveness/readiness/preStop requests are not counted",
