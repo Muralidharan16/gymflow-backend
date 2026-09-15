@@ -12,6 +12,8 @@ RUNBOOKS = ROOT / "docs/architecture/p8_runbook_contract.json"
 P8O = ROOT / "docs/architecture/p8_production_like_observability_contract.json"
 DOC = ROOT / "docs/architecture/P8O_PRODUCTION_LIKE_OBSERVABILITY.md"
 WORKFLOW = ROOT / ".github/workflows/p8o-production-like-observability.yml"
+DB_DISCONNECT_RUNTIME = ROOT / "tests/test_p8o_database_disconnect_runtime.py"
+PROVISION_HELPER = ROOT / "scripts/ci/p8o_provision_pg16.sh"
 
 P8R_CERTIFIED_HEAD = "ecec7c21aa5f70331124796d81aab18b779e64b8"
 P8R_CERTIFIED_TREE = "8de69d66087da6fda721479a029078d102cf4437"
@@ -95,11 +97,13 @@ def test_p8o_workflow_runs_real_fault_harnesses_and_real_otlp_receiver() -> None
     required = (
         "redis:7-alpine",
         "scripts/ci/install_pg16_test_stack.sh",
+        "scripts/ci/bootstrap_cluster_roles.sh",
         "scripts/ci/p8o_otlp_collector.py",
         "tests/test_p4e_operational_snapshots_runtime.py",
         "tests/test_p5d_dependency_loss_runtime.py",
         "tests/test_p5w2_worker_crash_redelivery_runtime.py",
         "tests/test_p8_production_like_observability_runtime.py",
+        "tests/test_p8o_database_disconnect_runtime.py",
         "scripts/ci/p8o_verify_worker_capture.py",
         "P8O_PROCESS_FAULTS: '1'",
         "P5D_PROCESS_FAULTS: '1'",
@@ -111,6 +115,7 @@ def test_p8o_workflow_runs_real_fault_harnesses_and_real_otlp_receiver() -> None
     )
     for value in required:
         assert value in source, value
+    assert source.count("bash scripts/ci/bootstrap_cluster_roles.sh") == 3
     assert "mock" not in source.lower() or "mock-only" in DOC.read_text(encoding="utf-8").lower()
 
 
@@ -122,6 +127,27 @@ def test_p8o_workflow_has_three_independent_real_runtime_jobs_before_decision() 
     assert "timeout-minutes:" in source
     assert "P8R_CERTIFIED_HEAD" in source
     assert "P8R_CERTIFIED_TREE" in source
+
+
+def test_p8o_database_disconnect_proof_is_process_isolated_without_lowering_threshold() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    runtime = DB_DISCONNECT_RUNTIME.read_text(encoding="utf-8")
+    helper = PROVISION_HELPER.read_text(encoding="utf-8")
+
+    assert "not test_90_real_postgresql_service_outage_emits_disconnect_storm_and_recovers" in workflow
+    assert "tests/test_p8o_database_disconnect_runtime.py" in workflow
+    assert ': > "${P8O_OTLP_CAPTURE_PATH}"' in workflow
+    assert '["sudo", "systemctl", "stop", "postgresql"]' in runtime
+    assert '["sudo", "systemctl", "start", "postgresql"]' in runtime
+    assert "for _ in range(5)" in runtime
+    assert "observed - baseline >= 5" in runtime
+    assert '"doers_database_disconnects_total"' in runtime
+    assert '"\u003e= 5"' not in runtime  # guard accidental encoded/rewritten threshold text
+    assert '">= 5"' in runtime
+
+    # Installation/bootstrap are workflow-visible exactly once per migrating job.
+    assert "scripts/ci/install_pg16_test_stack.sh" not in helper
+    assert "scripts/ci/bootstrap_cluster_roles.sh" not in helper
 
 
 def test_p8o_authority_and_hard_stops_are_explicit() -> None:
