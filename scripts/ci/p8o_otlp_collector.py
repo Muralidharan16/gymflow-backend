@@ -14,7 +14,17 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
 
 
 _LOCK = threading.Lock()
+_SUM_LOCK = threading.Lock()
 _CAPTURE_PATH: Path | None = None
+# The production P8 alert backend is Prometheus-compatible and evaluates
+# ``increase(..._total[window])`` over monotonic counters. OTLP exporters may
+# legitimately send Counter sums with DELTA temporality, especially when a
+# fault spans more than one export interval. Keep a disposable collector-local
+# running total for DELTA sums so the captured series has the same cumulative
+# semantics that the Prometheus adapter exposes. This is evidence normalization
+# only; it never participates in application or business authority.
+_DELTA_SUM_TOTALS: dict[tuple[str, tuple[tuple[str, Any], ...], tuple[tuple[str, Any], ...]], float] = {}
+_OTLP_AGGREGATION_TEMPORALITY_DELTA = 1
 
 
 def _any_value(value) -> Any:
@@ -42,6 +52,29 @@ def _number(point) -> float:
     return 0.0
 
 
+def _normalized_sum_value(
+    *,
+    metric_name: str,
+    point,
+    resource: dict[str, Any],
+    aggregation_temporality: int,
+) -> float:
+    value = _number(point)
+    if aggregation_temporality != _OTLP_AGGREGATION_TEMPORALITY_DELTA:
+        return value
+
+    attributes = _attributes(point.attributes)
+    key = (
+        metric_name,
+        tuple(sorted(attributes.items())),
+        tuple(sorted(resource.items())),
+    )
+    with _SUM_LOCK:
+        total = _DELTA_SUM_TOTALS.get(key, 0.0) + value
+        _DELTA_SUM_TOTALS[key] = total
+    return total
+
+
 def _records(payload: bytes) -> list[dict[str, Any]]:
     request = ExportMetricsServiceRequest()
     request.ParseFromString(payload)
@@ -65,6 +98,7 @@ def _records(payload: bytes) -> list[dict[str, Any]]:
                             }
                         )
                 elif metric.HasField("sum"):
+                    temporality = int(metric.sum.aggregation_temporality)
                     for point in metric.sum.data_points:
                         records.append(
                             {
@@ -72,7 +106,13 @@ def _records(payload: bytes) -> list[dict[str, Any]]:
                                 "metric": metric.name,
                                 "kind": "sum",
                                 "attributes": _attributes(point.attributes),
-                                "value": _number(point),
+                                "value": _normalized_sum_value(
+                                    metric_name=metric.name,
+                                    point=point,
+                                    resource=resource,
+                                    aggregation_temporality=temporality,
+                                ),
+                                "aggregation_temporality": temporality,
                                 "resource": resource,
                             }
                         )
@@ -147,6 +187,8 @@ def main() -> int:
     _CAPTURE_PATH = Path(args.capture).resolve()
     _CAPTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
     _CAPTURE_PATH.write_text("", encoding="utf-8")
+    with _SUM_LOCK:
+        _DELTA_SUM_TOTALS.clear()
 
     server = ThreadingHTTPServer((args.host, args.port), CollectorHandler)
     try:
