@@ -5,6 +5,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEDULER = ROOT / "app/core/celery_beat_owner.py"
+CORE_APP = ROOT / "app/core/celery_app.py"
 ENTRYPOINT = ROOT / "app/tasks/celery_app.py"
 BASE_COMPOSE = ROOT / "docker-compose.yml"
 IDENTITIES = ROOT / "deploy/docker-compose.production-identities.yml"
@@ -43,6 +44,24 @@ def test_production_entrypoint_selects_owned_scheduler() -> None:
     assert "from app.core.config import settings" in source
     assert "if settings.is_production:" in source
     assert "app.core.celery_beat_owner:DoersOwnedPersistentScheduler" in source
+
+
+def test_canonical_app_registers_every_beat_scheduled_task_module() -> None:
+    source = CORE_APP.read_text(encoding="utf-8")
+    for module in (
+        "app.tasks.branch_hours_partition",
+        "app.tasks.outbox_poller",
+        "app.tasks.branch_outbox_poller",
+        "app.tasks.branch_lifecycle_sweeps",
+        "app.tasks.platform_maintenance",
+        "app.tasks.external_effect_observability",
+    ):
+        assert f'"{module}"' in source
+
+    # P6-S must certify the same production worker command used by deployment;
+    # it may not hide missing task registration behind a test-only include.
+    runtime = RUNTIME.read_text(encoding="utf-8")
+    assert "--include=" not in runtime
 
 
 def test_production_beat_remains_standalone_and_database_free() -> None:
