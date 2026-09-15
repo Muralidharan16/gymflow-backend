@@ -1,0 +1,121 @@
+name: P8-A Alerts and SLOs
+
+on:
+  push:
+    branches:
+      - hardening/p8-observability-operational-response
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p8a-alerts-slos-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p8_governance:
+    name: Reprove P8 governance
+    uses: ./.github/workflows/p8-governance-observability.yml
+
+  p8_logging:
+    name: Reprove P8 structured logging and redaction
+    uses: ./.github/workflows/p8l-structured-logging-redaction.yml
+
+  p8_metrics:
+    name: Reprove P8 runtime metrics
+    uses: ./.github/workflows/p8m-runtime-metrics.yml
+
+  alerts_slos:
+    name: P8-A critical alerts and SLO contract
+    needs: [p8_governance, p8_logging, p8_metrics]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      P8M_CERTIFIED_HEAD: 5ef26cd1698e12589b586596b60641bbeba507bd
+      P8M_CERTIFIED_TREE: 4c6eb08ba4b93352c45ee302910f37c2d37d2006
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_p8a_contract
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p8a-contract-not-production
+      AWS_ACCESS_KEY_ID: ci-p8a-contract
+      AWS_SECRET_ACCESS_KEY: ci-p8a-contract
+      S3_BUCKET_NAME: gymflow-p8a-contract
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Guard certified P8-M parent boundary
+        run: |
+          set -euo pipefail
+          git cat-file -e "${P8M_CERTIFIED_HEAD}^{commit}"
+          test "$(git rev-parse "${P8M_CERTIFIED_HEAD}^{tree}")" = "${P8M_CERTIFIED_TREE}"
+          git merge-base --is-ancestor "${P8M_CERTIFIED_HEAD}" HEAD
+
+      - name: Validate alert and SLO artifacts
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/p8_alert_slo_contract.json >/dev/null
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+          data = yaml.safe_load(Path('ops/observability/p8_rules.yml').read_text())
+          assert isinstance(data, dict) and isinstance(data.get('groups'), list)
+          PY
+          python -m py_compile \
+            app/observability/runtime_metrics.py \
+            app/observability/metrics_bootstrap.py \
+            tests/test_p8_alert_slo_contracts.py \
+            tests/test_p8_metrics_contracts.py
+
+      - name: Prove critical alert coverage and SLO contract
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8_alert_slo_contracts.py
+
+      - name: Reprove heartbeat metric through real SDK reader
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8_metrics_contracts.py
+
+      - name: Emit P8-A decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P8_CRITICAL_ALERT_COVERAGE=PASS'
+          echo 'P8_SLO_CONTRACT=PASS'
+          echo 'P8_ALERT_ACTIONABILITY=PASS'
+          echo 'P8_OBSERVABILITY_PIPELINE_ALERT=PASS'
+          echo 'P8_OBSERVABILITY_NON_AUTHORITATIVE=PASS'
+          echo 'P8_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
