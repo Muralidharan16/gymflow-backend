@@ -48,7 +48,7 @@ GRANT app_runtime TO app_p7o_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 GRANT app_user TO app_p7o_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 ALTER ROLE app_p7o_runtime SET row_security='on';
 ALTER ROLE app_p7o_runtime SET statement_timeout='5s';
-ALTER ROLE app_p7o_runtime SET lock_timeout='500ms';
+ALTER ROLE app_p7o_runtime SET lock_timeout='2s';
 ALTER ROLE app_p7o_runtime SET idle_in_transaction_session_timeout='15s';
 
 CREATE ROLE auth_p7o_runtime LOGIN PASSWORD '${AUTH_RUNTIME_PASSWORD}'
@@ -57,7 +57,7 @@ GRANT auth_runtime TO auth_p7o_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE
 GRANT app_user TO auth_p7o_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 ALTER ROLE auth_p7o_runtime SET row_security='on';
 ALTER ROLE auth_p7o_runtime SET statement_timeout='5s';
-ALTER ROLE auth_p7o_runtime SET lock_timeout='500ms';
+ALTER ROLE auth_p7o_runtime SET lock_timeout='2s';
 ALTER ROLE auth_p7o_runtime SET idle_in_transaction_session_timeout='15s';
 
 CREATE DATABASE gymflow_p7o_test OWNER migration_owner;
