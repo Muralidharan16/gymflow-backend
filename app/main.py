@@ -12,6 +12,7 @@ is reversed):
   DrainAdmissionMiddleware    — P7 ordinary-request admission/in-flight boundary
   CorrelationIdMiddleware
   OpenTelemetryTraceMiddleware
+  AuthoritativeTraceContextMiddleware — overwrites span identity from trusted state
   RedisRateLimiterMiddleware
   AdaptiveWriteThrottler
   IdempotencyMiddleware
@@ -51,11 +52,14 @@ from app.core.middleware import (
 from app.core.redis import init_redis
 from app.core.supervisor import platform_lifespan
 from app.core.telemetry import sentry_before_send
+from app.observability.metrics_bootstrap import configure_process_runtime_metrics
 from app.observability.request_context import (
     AuthenticatedObservabilityContextMiddleware,
     RequestObservabilityMiddleware,
 )
+from app.observability.runtime_metrics import shutdown_runtime_metrics
 from app.observability.structured_logging import configure_structured_logging
+from app.observability.trace_context import AuthoritativeTraceContextMiddleware
 
 
 configure_structured_logging(settings.LOG_LEVEL)
@@ -110,6 +114,10 @@ EXEMPT_PATHS.update(SYSTEM_REQUEST_PATHS)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # P8 production runtime metrics are a required operational dependency at
+    # process startup, but metric emission/export remains evidence-only once the
+    # process is serving business traffic.
+    configure_process_runtime_metrics(settings)
     await init_redis()
     try:
         # Database partition lifecycle is infrastructure-owned (pg_partman).  The
@@ -120,6 +128,7 @@ async def lifespan(app: FastAPI):
             yield
     finally:
         await close_api_runtime_resources()
+        shutdown_runtime_metrics()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -157,6 +166,10 @@ app.add_middleware(TenantMiddleware)
 app.add_middleware(IdempotencyMiddleware)
 app.add_middleware(AdaptiveWriteThrottler)
 app.add_middleware(RedisRateLimiterMiddleware)
+# Runs inside the active server span but outside Redis/auth short-circuits. Its
+# finally block replaces legacy caller-controlled span placeholders with trusted
+# request.state or explicit unknown values before the span is exported.
+app.add_middleware(AuthoritativeTraceContextMiddleware)
 app.add_middleware(OpenTelemetryTraceMiddleware)
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(DrainAdmissionMiddleware)
