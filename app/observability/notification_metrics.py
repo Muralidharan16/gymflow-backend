@@ -13,6 +13,8 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 
+from app.observability.runtime_metrics import runtime_metrics
+
 
 logger = logging.getLogger("doers.notification_metrics")
 _METER_NAME = "doers.notification"
@@ -176,10 +178,31 @@ def shutdown_notification_metrics(*, timeout_millis: int = 5000) -> None:
         provider.shutdown(timeout_millis=timeout_millis)
 
 
+def _p8_outcome(outcome: str) -> str:
+    value = str(outcome or "").strip().lower()
+    if value in {"success", "accepted", "delivered", "reconciled", "verified"}:
+        return "success"
+    if "timeout" in value:
+        return "timeout"
+    if "rate" in value and "limit" in value:
+        return "rate_limited"
+    if "circuit" in value:
+        return "circuit_open"
+    if "reject" in value or "permanent" in value:
+        return "rejected"
+    return "error"
+
+
 def record_provider_call(*, operation: str, outcome: str, duration_ms: float) -> None:
     attrs = {"provider": "resend", "operation": operation, "outcome": outcome}
     _PROVIDER_REQUESTS.add(1, attrs)
     _PROVIDER_LATENCY_MS.record(max(0.0, float(duration_ms)), attrs)
+    runtime_metrics().provider_call(
+        provider="resend",
+        operation=operation,
+        outcome=_p8_outcome(outcome),
+        duration_ms=duration_ms,
+    )
 
 
 def record_provider_accepted() -> None:
