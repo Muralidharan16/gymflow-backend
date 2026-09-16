@@ -91,10 +91,19 @@ def test_p9l_alembic_session_bounds_are_startup_only_test_only_and_self_proving(
         '"p9l_alembic_migration"',
         "P9L_ALEMBIC_SESSION_TIMEOUTS=PASS",
         "pg_catalog.pg_settings",
+        "connection.rollback()",
+        "P9-L timeout proof requires a pristine connection",
     ):
         assert token in source
     assert "ALTER ROLE" not in source
     assert "ALTER SYSTEM" not in source
+
+    do_run = source.split("def do_run_migrations(connection) -> None:", 1)[1].split(
+        "    context.configure(", 1
+    )[0]
+    assert do_run.index("assert_external_role_preflight(connection)") < do_run.index(
+        "assert_identity_graph_preflight(connection)"
+    ) < do_run.index("_assert_p9l_session_timeouts(connection)")
 
 
 def test_p9l_probe_observes_real_locks_blockers_and_monotonic_duration() -> None:

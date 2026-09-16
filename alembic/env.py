@@ -91,19 +91,35 @@ def _p9l_server_settings() -> dict[str, str]:
 def _assert_p9l_session_timeouts(connection) -> None:
     if not _p9l_bounded_session_enabled():
         return
+    if connection.in_transaction():
+        raise RuntimeError(
+            "P9-L timeout proof requires a pristine connection after identity preflights"
+        )
 
-    rows = connection.exec_driver_sql(
-        """
-        SELECT name, setting::bigint AS setting_ms, unit
-        FROM pg_catalog.pg_settings
-        WHERE name IN ('lock_timeout', 'statement_timeout')
-        ORDER BY name
-        """
-    ).mappings().all()
-    observed = {
-        row["name"]: (int(row["setting_ms"]), row["unit"])
-        for row in rows
-    }
+    observed: dict[str, tuple[int, str]] = {}
+    app_name = None
+    try:
+        rows = connection.exec_driver_sql(
+            """
+            SELECT name, setting::bigint AS setting_ms, unit
+            FROM pg_catalog.pg_settings
+            WHERE name IN ('lock_timeout', 'statement_timeout')
+            ORDER BY name
+            """
+        ).mappings().all()
+        observed = {
+            row["name"]: (int(row["setting_ms"]), row["unit"])
+            for row in rows
+        }
+        app_name = connection.exec_driver_sql(
+            "SELECT current_setting('application_name')"
+        ).scalar_one()
+    finally:
+        # SQLAlchemy 2.x autobegins on the readback SELECTs. Return a pristine
+        # connection so Alembic owns the migration transaction lifecycle.
+        if connection.in_transaction():
+            connection.rollback()
+
     expected = {
         "lock_timeout": (_P9L_EXPECTED_LOCK_TIMEOUT_MS, "ms"),
         "statement_timeout": (_P9L_EXPECTED_STATEMENT_TIMEOUT_MS, "ms"),
@@ -112,10 +128,6 @@ def _assert_p9l_session_timeouts(connection) -> None:
         raise RuntimeError(
             f"P9-L Alembic session timeout mismatch: {observed!r}"
         )
-
-    app_name = connection.exec_driver_sql(
-        "SELECT current_setting('application_name')"
-    ).scalar_one()
     if app_name != _P9L_APPLICATION_NAME:
         raise RuntimeError(
             "P9-L Alembic application_name mismatch: "
@@ -225,9 +237,6 @@ def run_migrations_offline() -> None:
 
 def do_run_migrations(connection) -> None:
     if _destination_targets_head():
-        # P9-L uses test-only connection startup settings. Prove the exact
-        # migration backend received them without persisting role/database GUCs.
-        _assert_p9l_session_timeouts(connection)
         # This is deliberately before context.configure()/begin_transaction():
         # HEAD may not mutate database state until the externally managed
         # PostgreSQL role/settings/membership contract has been proven live.
@@ -236,6 +245,10 @@ def do_run_migrations(connection) -> None:
         # exact roles accepted above cannot reach peer capabilities through
         # MEMBER, SET, USAGE, helper, or ADMIN-option escalation paths.
         assert_identity_graph_preflight(connection)
+        # Only after both canonical pristine-connection preflights have passed
+        # may P9-L read back its test-only connection startup GUCs. The helper
+        # rolls back its own read-only autobegin before Alembic owns migration.
+        _assert_p9l_session_timeouts(connection)
 
     context.configure(
         connection=connection, 
