@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - hardening/p9-data-protection-disaster-recovery
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
@@ -21,6 +25,12 @@ jobs:
       SOCKET: /tmp/p9r-diag-socket
       PORT: '55436'
     steps:
+      - name: Checkout exact diagnostic candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
       - name: Install PostgreSQL 16
         run: |
           set -euo pipefail
