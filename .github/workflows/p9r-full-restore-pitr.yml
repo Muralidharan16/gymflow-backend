@@ -84,13 +84,15 @@ jobs:
             tests/test_p9m_populated_migration_contracts.py \
             tests/test_p9l_lock_rewrite_contracts.py \
             tests/test_p9b_backup_integrity_contracts.py \
-            tests/test_p9r_full_restore_pitr_contracts.py
+            tests/test_p9r_full_restore_pitr_contracts.py \
+            tests/test_p9r_recovery_compatibility_contracts.py
           python -m pytest --noconftest -q --maxfail=1 \
             tests/test_p9_governance_contracts.py \
             tests/test_p9m_populated_migration_contracts.py \
             tests/test_p9l_lock_rewrite_contracts.py \
             tests/test_p9b_backup_integrity_contracts.py \
-            tests/test_p9r_full_restore_pitr_contracts.py
+            tests/test_p9r_full_restore_pitr_contracts.py \
+            tests/test_p9r_recovery_compatibility_contracts.py
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9R_HEAD}"
 
@@ -206,6 +208,19 @@ jobs:
             | tee "$EVIDENCE_DIR/source-head-capability.log"
           grep -q 'P9M_EXPECTED_CAPABILITY_DELTA=PASS' "$EVIDENCE_DIR/source-head-capability.log"
           sha256sum "$EVIDENCE_DIR/source-stable.txt" > "$EVIDENCE_DIR/source-stable.sha256"
+
+          recovery_compat="$(sudo -u postgres psql -X -qAt -F '|' -v ON_ERROR_STOP=1 -d postgres \
+            -c "SELECT current_setting('max_connections'), current_setting('max_prepared_transactions'), current_setting('max_locks_per_transaction'), current_setting('max_wal_senders'), current_setting('max_worker_processes')")"
+          IFS='|' read -r source_max_connections source_max_prepared source_max_locks source_max_wal_senders source_max_workers <<< "$recovery_compat"
+          printf '%s\n' "$recovery_compat" > "$EVIDENCE_DIR/source-recovery-compatible-settings.txt"
+          {
+            printf 'P9R_SOURCE_MAX_CONNECTIONS=%s\n' "$source_max_connections"
+            printf 'P9R_SOURCE_MAX_PREPARED_TRANSACTIONS=%s\n' "$source_max_prepared"
+            printf 'P9R_SOURCE_MAX_LOCKS_PER_TRANSACTION=%s\n' "$source_max_locks"
+            printf 'P9R_SOURCE_MAX_WAL_SENDERS=%s\n' "$source_max_wal_senders"
+            printf 'P9R_SOURCE_MAX_WORKER_PROCESSES=%s\n' "$source_max_workers"
+          } >> "$GITHUB_ENV"
+          echo 'P9R_SOURCE_RECOVERY_COMPATIBILITY_CAPTURE=PASS'
           echo 'P9R_SOURCE_RECOVERY_BASELINE=PASS'
 
       - name: Create and verify physical recovery base backup
@@ -245,7 +260,11 @@ jobs:
           unix_socket_group = 'postgres'
           unix_socket_permissions = 0770
           shared_buffers = '128MB'
-          max_connections = 50
+          max_connections = ${P9R_SOURCE_MAX_CONNECTIONS}
+          max_prepared_transactions = ${P9R_SOURCE_MAX_PREPARED_TRANSACTIONS}
+          max_locks_per_transaction = ${P9R_SOURCE_MAX_LOCKS_PER_TRANSACTION}
+          max_wal_senders = ${P9R_SOURCE_MAX_WAL_SENDERS}
+          max_worker_processes = ${P9R_SOURCE_MAX_WORKER_PROCESSES}
           EOF
           sudo tee /tmp/p9r-full-hba.conf >/dev/null <<'EOF'
           local all all trust
@@ -263,6 +282,12 @@ jobs:
           sudo -u postgres /usr/lib/postgresql/16/bin/pg_isready \
             -h "$P9R_FULL_SOCKET" -p "$P9R_FULL_PORT" \
             | tee "$EVIDENCE_DIR/full-restore-ready.txt"
+          sudo -u postgres psql -X -qAt -F '|' -v ON_ERROR_STOP=1 \
+            -h "$P9R_FULL_SOCKET" -p "$P9R_FULL_PORT" -d postgres \
+            -c "SELECT current_setting('max_connections'), current_setting('max_prepared_transactions'), current_setting('max_locks_per_transaction'), current_setting('max_wal_senders'), current_setting('max_worker_processes')" \
+            > "$EVIDENCE_DIR/full-recovery-compatible-settings.txt"
+          cmp "$EVIDENCE_DIR/source-recovery-compatible-settings.txt" "$EVIDENCE_DIR/full-recovery-compatible-settings.txt"
+          echo 'P9R_FULL_RECOVERY_COMPATIBLE_SETTINGS=PASS'
 
       - name: Prove full restore business security and application readiness
         run: |
@@ -507,7 +532,11 @@ jobs:
           unix_socket_group = 'postgres'
           unix_socket_permissions = 0770
           shared_buffers = '128MB'
-          max_connections = 50
+          max_connections = ${P9R_SOURCE_MAX_CONNECTIONS}
+          max_prepared_transactions = ${P9R_SOURCE_MAX_PREPARED_TRANSACTIONS}
+          max_locks_per_transaction = ${P9R_SOURCE_MAX_LOCKS_PER_TRANSACTION}
+          max_wal_senders = ${P9R_SOURCE_MAX_WAL_SENDERS}
+          max_worker_processes = ${P9R_SOURCE_MAX_WORKER_PROCESSES}
           restore_command = 'cp /tmp/p9r-wal-archive/%f %p'
           recovery_target_name = 'p9r_target'
           recovery_target_action = 'promote'
@@ -518,16 +547,27 @@ jobs:
           sudo chown postgres:postgres /tmp/p9r-pitr-postgresql.conf /tmp/p9r-pitr-hba.conf
           sudo chmod 0600 /tmp/p9r-pitr-postgresql.conf /tmp/p9r-pitr-hba.conf
           sudo -u postgres rm -f /tmp/p9r-pitr-postgres.log
-          sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \
-            -D "$P9R_PITR_RESTORE" \
-            -l /tmp/p9r-pitr-postgres.log \
-            -o "-c config_file=/tmp/p9r-pitr-postgresql.conf -c hba_file=/tmp/p9r-pitr-hba.conf -c archive_mode=off" \
-            -w start
+          if ! sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \
+              -D "$P9R_PITR_RESTORE" \
+              -l /tmp/p9r-pitr-postgres.log \
+              -o "-c config_file=/tmp/p9r-pitr-postgresql.conf -c hba_file=/tmp/p9r-pitr-hba.conf -c archive_mode=off" \
+              -w start; then
+            if sudo test -s /tmp/p9r-pitr-postgres.log; then
+              sudo cat /tmp/p9r-pitr-postgres.log | tee "$EVIDENCE_DIR/pitr-start-failure.log" >&2
+            fi
+            exit 1
+          fi
           sudo -u postgres test -s /tmp/p9r-pitr-postgres.log
           sudo cat /tmp/p9r-pitr-postgres.log > "$EVIDENCE_DIR/pitr-start.log"
           sudo -u postgres /usr/lib/postgresql/16/bin/pg_isready \
             -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" \
             | tee "$EVIDENCE_DIR/pitr-ready.txt"
+          sudo -u postgres psql -X -qAt -F '|' -v ON_ERROR_STOP=1 \
+            -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" -d postgres \
+            -c "SELECT current_setting('max_connections'), current_setting('max_prepared_transactions'), current_setting('max_locks_per_transaction'), current_setting('max_wal_senders'), current_setting('max_worker_processes')" \
+            > "$EVIDENCE_DIR/pitr-recovery-compatible-settings.txt"
+          cmp "$EVIDENCE_DIR/source-recovery-compatible-settings.txt" "$EVIDENCE_DIR/pitr-recovery-compatible-settings.txt"
+          echo 'P9R_PITR_RECOVERY_COMPATIBLE_SETTINGS=PASS'
 
           test "$(sudo -u postgres psql -X -qAt -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" -d "$P9R_SOURCE_DB" -c 'SELECT version_num FROM alembic_version')" = "${P9R_HEAD}"
           test "$(sudo -u postgres psql -X -qAt -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" -d postgres -c 'SHOW listen_addresses')" = ''
@@ -684,6 +724,7 @@ jobs:
               "full_restore_app_ready": True,
               "pitr_app_ready": True,
               "provider_egress_blocked": True,
+              "recovery_compatible_settings": True,
               "recovery_target_lsn": timeline["target_lsn"],
               "refund_provider_execution": "deferred_fail_closed",
           }
@@ -702,6 +743,7 @@ jobs:
           grep -q '"rpo_within_target": true' "$EVIDENCE_DIR/p9r-decision.json"
           grep -q '"rto_within_target": true' "$EVIDENCE_DIR/p9r-decision.json"
           grep -q '"provider_egress_blocked": true' "$EVIDENCE_DIR/p9r-decision.json"
+          grep -q '"recovery_compatible_settings": true' "$EVIDENCE_DIR/p9r-decision.json"
           grep -q '"refund_provider_execution": "deferred_fail_closed"' "$EVIDENCE_DIR/p9r-decision.json"
 
       - name: Reprove inherited P9 and P8 boundaries
@@ -713,6 +755,7 @@ jobs:
             tests/test_p9l_lock_rewrite_contracts.py \
             tests/test_p9b_backup_integrity_contracts.py \
             tests/test_p9r_full_restore_pitr_contracts.py \
+            tests/test_p9r_recovery_compatibility_contracts.py \
             tests/test_p8_governance_contracts.py \
             tests/test_migration_app_secure_owner_context_boundary.py \
             tests/test_pg_dump_normalizer.py
@@ -729,6 +772,10 @@ jobs:
           grep -q '"pitr": true' "$EVIDENCE_DIR/p9r-decision.json"
           grep -q '"rpo_within_target": true' "$EVIDENCE_DIR/p9r-decision.json"
           grep -q '"rto_within_target": true' "$EVIDENCE_DIR/p9r-decision.json"
+          grep -q '"recovery_compatible_settings": true' "$EVIDENCE_DIR/p9r-decision.json"
+          echo 'P9R_SOURCE_RECOVERY_COMPATIBILITY_CAPTURE=PASS'
+          echo 'P9R_FULL_RECOVERY_COMPATIBLE_SETTINGS=PASS'
+          echo 'P9R_PITR_RECOVERY_COMPATIBLE_SETTINGS=PASS'
           echo 'P9R_FULL_RESTORE_FINGERPRINT=PASS'
           echo 'P9R_FULL_RESTORE_APP_READINESS=PASS'
           echo 'P9R_LIVE_PROVIDER_EGRESS_BLOCKED=PASS'
