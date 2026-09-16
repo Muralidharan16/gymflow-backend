@@ -244,6 +244,29 @@ def test_p9r_app_runtime_is_staged_privately_instead_of_exposing_workspace() -> 
     assert "chmod -R 0755" not in source
 
 
+def test_p9r_uses_certified_api_login_overlay_not_nologin_capability_role() -> None:
+    workflow = _workflow()
+    source = WORKFLOW.read_text(encoding="utf-8")
+    env = workflow["jobs"]["recovery_rehearsal"]["env"]
+
+    assert env["P9R_API_LOGIN"] == "app_test_runtime"
+    assert "CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-p9r-app-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;" in source
+    assert "ALTER ROLE app_test_runtime SET row_security = 'on';" in source
+    assert "ALTER ROLE app_test_runtime SET statement_timeout = '5s';" in source
+    assert "ALTER ROLE app_test_runtime SET lock_timeout = '2s';" in source
+    assert "ALTER ROLE app_test_runtime SET idle_in_transaction_session_timeout = '15s';" in source
+    assert "GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;" in source
+    assert "GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;" in source
+    assert "GRANT CONNECT ON DATABASE ${P9R_SOURCE_DB} TO app_test_runtime;" in source
+    assert source.count('APP_DB_URL="postgresql+asyncpg://${P9R_API_LOGIN}@/${P9R_SOURCE_DB}?host=') == 2
+    assert "postgresql+asyncpg://app_runtime@" not in source
+    assert "ALTER ROLE app_runtime LOGIN" not in source
+    assert source.count("full-runtime-login-preflight.txt") >= 1
+    assert source.count("pitr-runtime-login-preflight.txt") >= 1
+    assert "app_test_runtime|app_test_runtime|on|5s|2s|15s|t|t|f|f|1" in source
+    assert source.count("sudo -u p9rapp redis-cli") == 2
+
+
 def test_p9r_decision_and_artifact_keep_backup_bytes_ephemeral() -> None:
     workflow = _workflow()
     source = WORKFLOW.read_text(encoding="utf-8")
