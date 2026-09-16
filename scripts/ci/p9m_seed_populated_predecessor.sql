@@ -32,31 +32,54 @@ SELECT
     TRUE
 FROM generate_series(1, 64) AS g;
 
-INSERT INTO public.org_branches (
-    id,
-    org_id,
-    branch_name,
-    branch_code,
-    internal_slug,
-    timezone,
-    currency_code,
-    region_code,
-    country_code,
-    branch_metadata
-)
-SELECT
-    md5(format('p9m-branch-%s-%s', g, b))::uuid,
-    md5('p9m-org-' || g::text)::uuid,
-    format('P9-M Synthetic Branch %s-%s', g, b),
-    format('P9M-%s-%s', lpad(g::text, 3, '0'), b),
-    format('p9m-%s-%s', g, b),
-    'Asia/Kolkata',
-    'INR',
-    'TN',
-    'IN',
-    jsonb_build_object('p9m_synthetic', TRUE, 'org_sequence', g, 'branch_sequence', b)
-FROM generate_series(1, 64) AS g
-CROSS JOIN generate_series(1, 3) AS b;
+-- The certified branch-limit trigger intentionally requires trusted tenant
+-- context even when a fixture is seeded under migration/infrastructure
+-- authority. Seed each tenant separately through that invariant rather than
+-- disabling the trigger or broadening any database privilege.
+DO $$
+DECLARE
+    org_sequence integer;
+    branch_sequence integer;
+    org_id uuid;
+BEGIN
+    FOR org_sequence IN 1..64 LOOP
+        org_id := md5('p9m-org-' || org_sequence::text)::uuid;
+        PERFORM pg_catalog.set_config('app.current_org_id', org_id::text, true);
+
+        FOR branch_sequence IN 1..3 LOOP
+            INSERT INTO public.org_branches (
+                id,
+                org_id,
+                branch_name,
+                branch_code,
+                internal_slug,
+                timezone,
+                currency_code,
+                region_code,
+                country_code,
+                branch_metadata
+            ) VALUES (
+                md5(format('p9m-branch-%s-%s', org_sequence, branch_sequence))::uuid,
+                org_id,
+                format('P9-M Synthetic Branch %s-%s', org_sequence, branch_sequence),
+                format('P9M-%s-%s', lpad(org_sequence::text, 3, '0'), branch_sequence),
+                format('p9m-%s-%s', org_sequence, branch_sequence),
+                'Asia/Kolkata',
+                'INR',
+                'TN',
+                'IN',
+                jsonb_build_object(
+                    'p9m_synthetic', TRUE,
+                    'org_sequence', org_sequence,
+                    'branch_sequence', branch_sequence
+                )
+            );
+        END LOOP;
+    END LOOP;
+
+    PERFORM pg_catalog.set_config('app.current_org_id', '', true);
+END
+$$;
 
 WITH source AS (
     SELECT
@@ -103,7 +126,7 @@ SELECT
     '2026-09-01 00:05:00+00'::timestamptz + (g::text || ' seconds')::interval,
     CASE
         WHEN g % 10 = 0 THEN 'dead_lettered'
-        WHEN g % 7 = 0 THEN 'processed'
+        WHEN g % 7 = 0 THEN 'delivered'
         ELSE 'pending'
     END,
     CASE
