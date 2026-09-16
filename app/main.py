@@ -3,22 +3,26 @@ app/main.py
 ============
 FastAPI application entrypoint for the Doers SaaS platform.
 
-Middleware order (add_middleware is applied bottom-to-top, so innermost first):
-  TenantMiddleware            ← innermost (runs last on request, first on response)
-  IdempotencyMiddleware
-  AdaptiveWriteThrottler
-  RedisRateLimiterMiddleware
-  OpenTelemetryTraceMiddleware
-  CorrelationIdMiddleware
-  DrainAdmissionMiddleware    ← P7 ordinary-request admission/in-flight boundary
-  P7SecurityHeadersMiddleware
+Middleware order (request flow outermost → innermost; add_middleware registration
+is reversed):
+  SystemControlMiddleware     — exact system paths bypass business middleware
   CORSMiddleware
-  SystemControlMiddleware     ← outermost; exact system paths bypass business middleware
+  P7SecurityHeadersMiddleware
+  RequestObservabilityMiddleware — server request ID + sanitized correlation/logging
+  DrainAdmissionMiddleware    — P7 ordinary-request admission/in-flight boundary
+  CorrelationIdMiddleware
+  OpenTelemetryTraceMiddleware
+  AuthoritativeTraceContextMiddleware — overwrites span identity from trusted state
+  RedisRateLimiterMiddleware
+  AdaptiveWriteThrottler
+  IdempotencyMiddleware
+  TenantMiddleware            — validates JWT and establishes tenant/principal state
+  AuthenticatedObservabilityContextMiddleware — binds trusted identity/trace context
 """
 
 from __future__ import annotations
 
-import logging.config
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -48,6 +52,18 @@ from app.core.middleware import (
 from app.core.redis import init_redis
 from app.core.supervisor import platform_lifespan
 from app.core.telemetry import sentry_before_send
+from app.observability.metrics_bootstrap import configure_process_runtime_metrics
+from app.observability.request_context import (
+    AuthenticatedObservabilityContextMiddleware,
+    RequestObservabilityMiddleware,
+)
+from app.observability.runtime_metrics import shutdown_runtime_metrics
+from app.observability.structured_logging import configure_structured_logging
+from app.observability.trace_context import AuthoritativeTraceContextMiddleware
+
+
+configure_structured_logging(settings.LOG_LEVEL)
+logger = logging.getLogger("doers.api")
 
 if os.environ.get("SENTRY_DSN"):
     sentry_sdk.init(dsn=os.environ["SENTRY_DSN"], before_send=sentry_before_send)
@@ -93,28 +109,15 @@ EXEMPT_PATHS.update(SYSTEM_REQUEST_PATHS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Logging
-# ─────────────────────────────────────────────────────────────────────────────
-
-LOGGING_CONFIG = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "formatters": {
-        "default": {"format": "%(asctime)s %(name)s %(levelname)s %(message)s"},
-    },
-    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "default"}},
-    "loggers": {
-        "doers": {"handlers": ["console"], "level": settings.LOG_LEVEL.upper(), "propagate": False},
-    },
-}
-logging.config.dictConfig(LOGGING_CONFIG)
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Lifespan
 # ─────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # P8 production runtime metrics are a required operational dependency at
+    # process startup, but metric emission/export remains evidence-only once the
+    # process is serving business traffic.
+    configure_process_runtime_metrics(settings)
     await init_redis()
     try:
         # Database partition lifecycle is infrastructure-owned (pg_partman).  The
@@ -125,6 +128,7 @@ async def lifespan(app: FastAPI):
             yield
     finally:
         await close_api_runtime_resources()
+        shutdown_runtime_metrics()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,18 +146,36 @@ app = FastAPI(
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
+    logger.error(
+        "Unhandled API exception",
+        exc_info=(type(exc), exc, exc.__traceback__),
+        extra={
+            "event": "api.exception.unhandled",
+            "http_method": request.method,
+            "http_path": request.url.path,
+        },
+    )
     return JSONResponse(status_code=500, content={"detail": "An unexpected error occurred."})
 
-# ── Middleware (bottom = innermost, top = outermost for request flow) ──────
-# Registration order is reversed — last added is outermost.
+# ── Middleware (registration bottom = outermost for request flow) ──────────
 
+# P8 authenticated context is deliberately innermost so TenantMiddleware has
+# already validated JWT claims before tenant/principal fields enter log context.
+app.add_middleware(AuthenticatedObservabilityContextMiddleware)
 app.add_middleware(TenantMiddleware)
 app.add_middleware(IdempotencyMiddleware)
 app.add_middleware(AdaptiveWriteThrottler)
 app.add_middleware(RedisRateLimiterMiddleware)
+# Runs inside the active server span but outside Redis/auth short-circuits. Its
+# finally block replaces legacy caller-controlled span placeholders with trusted
+# request.state or explicit unknown values before the span is exported.
+app.add_middleware(AuthoritativeTraceContextMiddleware)
 app.add_middleware(OpenTelemetryTraceMiddleware)
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(DrainAdmissionMiddleware)
+# P8 request evidence is outside P7 admission so drain rejections remain visible;
+# system-control paths are still intercepted by the outer P7 system middleware.
+app.add_middleware(RequestObservabilityMiddleware)
 app.add_middleware(P7SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,

@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "phase": "P8",
+  "base_commit": "c0e18944b15bee2ae7b37b9ede86a7832a232c59",
+  "base_tree": "0edf7e8f997bfe8ca44af474f5f8b93b30a748ea",
+  "branch": "hardening/p8-observability-operational-response",
+  "slices": ["P8-G", "P8-L", "P8-M", "P8-A", "P8-R", "P8-O", "P8-F"],
+  "hard_gate": "every_critical_failure_mode_visible_and_actionable",
+  "structured_context": {
+    "logs_and_traces": [
+      "request_id",
+      "correlation_id",
+      "tenant_id",
+      "branch_id",
+      "principal_id",
+      "principal_type",
+      "saga_id",
+      "task_id",
+      "trace_id",
+      "span_id"
+    ],
+    "metrics_high_cardinality_labels_forbidden": [
+      "request_id",
+      "correlation_id",
+      "principal_id",
+      "saga_id",
+      "task_id",
+      "trace_id",
+      "span_id"
+    ],
+    "metrics_tenant_or_branch_labels_default_forbidden": true,
+    "unknown_or_not_applicable_values_must_be_explicit": true
+  },
+  "redaction": {
+    "recursive_before_sink": true,
+    "authorization_headers": true,
+    "cookies": true,
+    "access_and_refresh_tokens": true,
+    "passwords_and_secrets": true,
+    "api_keys": true,
+    "webhook_signatures": true,
+    "database_credentials": true,
+    "provider_credentials": true,
+    "financial_credentials": true,
+    "granular_location_pii": true,
+    "email_phone_and_government_identifiers": true,
+    "exception_locals_and_breadcrumbs": true,
+    "redaction_marker": "[REDACTED]"
+  },
+  "metric_domains": {
+    "api": ["requests", "errors", "latency", "inflight", "readiness", "drain_rejections"],
+    "database": ["pool_checked_out", "pool_utilization", "pool_wait", "pool_timeouts", "disconnects"],
+    "queues": ["depth", "oldest_message_age", "redeliveries", "dead_letters", "worker_availability"],
+    "lifecycle": ["pending", "stuck", "failed", "replayed", "compensations"],
+    "finance": ["reconciliation_mismatches", "idempotency_conflicts", "provider_ack_ambiguity", "refund_obligations"],
+    "providers": ["requests", "errors", "latency", "timeouts", "rate_limits", "circuit_open"],
+    "platform": ["redis_health", "scheduler_ownership", "backup_age", "backup_failures"]
+  },
+  "critical_failure_modes": {
+    "dead_letter_present": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "stuck_saga_or_lifecycle": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "queue_oldest_age_breach": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "finance_reconciliation_mismatch": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "provider_success_db_ack_ambiguity": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "database_pool_exhaustion": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "database_disconnect_storm": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "redis_or_broker_unavailable": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "worker_unavailable_or_redelivery_storm": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "duplicate_scheduler_effect_risk": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "backup_failure_or_stale_backup": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "api_availability_or_latency_slo_breach": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "provider_error_or_timeout_slo_breach": {"severity": "critical", "must_alert": true, "runbook_required": true},
+    "observability_pipeline_failure": {"severity": "critical", "must_alert": true, "runbook_required": true}
+  },
+  "alert_actionability": {
+    "owner_required": true,
+    "severity_required": true,
+    "signal_query_required": true,
+    "threshold_required": true,
+    "sustain_window_required": true,
+    "runbook_link_required": true,
+    "deduplication_key_required": true,
+    "customer_impact_statement_required": true,
+    "safe_first_actions_required": true,
+    "escalation_condition_required": true
+  },
+  "slo_contract": {
+    "api_availability": true,
+    "api_latency": true,
+    "durable_queue_freshness": true,
+    "lifecycle_completion": true,
+    "finance_reconciliation": true,
+    "provider_success_rate": true,
+    "backup_freshness": true,
+    "error_budget_policy_required": true
+  },
+  "decisive_evidence": {
+    "real_request_context_propagation_required": true,
+    "real_task_context_propagation_required": true,
+    "redaction_leak_tests_required": true,
+    "metrics_scrape_required": true,
+    "cardinality_contract_tests_required": true,
+    "critical_alert_rule_tests_required": true,
+    "runbook_coverage_test_required": true,
+    "production_like_failure_injection_required": true,
+    "mock_only_observability_proof_forbidden": true
+  },
+  "authority": {
+    "durable_business_work": "postgresql",
+    "redis_celery_beat": "delivery_coordination_only",
+    "refund_provider_execution": "deferred_fail_closed",
+    "observability_data_is_not_business_authority": true
+  },
+  "hard_stops": [
+    "raw_secret_or_sensitive_pii_in_logs_traces_errors_or_metrics",
+    "high_cardinality_identifiers_as_metrics_labels",
+    "observability_sink_failure_breaks_business_authority",
+    "public_unauthenticated_metrics_endpoint_without_network_boundary",
+    "p1_p7_security_or_runtime_semantic_weakening",
+    "database_credential_broadening",
+    "refund_provider_activation",
+    "live_money_movement",
+    "release",
+    "deployment"
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "phase": "P8-M",
+  "parent_certified_head": "0aee9c3e49f693132bb358334744c228b4848225",
+  "parent_certified_tree": "3c40259148eaed01e587c5d3921567d2577b8356",
+  "export": {
+    "protocol": "otlp_http",
+    "public_metrics_endpoint": false,
+    "production_endpoint_required_for_profiles": ["api", "worker", "maintenance", "beat"],
+    "recording_or_export_failure_is_business_authority": false
+  },
+  "forbidden_labels": [
+    "request_id",
+    "correlation_id",
+    "tenant_id",
+    "branch_id",
+    "principal_id",
+    "saga_id",
+    "task_id",
+    "trace_id",
+    "span_id"
+  ],
+  "domains": {
+    "api": [
+      {"name": "doers.api.requests", "type": "counter", "labels": ["method", "route", "status_class"], "source": "RequestObservabilityMiddleware"},
+      {"name": "doers.api.errors", "type": "counter", "labels": ["method", "route", "status_class"], "source": "RequestObservabilityMiddleware"},
+      {"name": "doers.api.request.duration", "type": "histogram", "labels": ["method", "route", "status_class"], "source": "RequestObservabilityMiddleware"},
+      {"name": "doers.api.inflight", "type": "up_down_counter", "labels": ["method"], "source": "RequestObservabilityMiddleware"},
+      {"name": "doers.api.readiness", "type": "gauge", "labels": [], "source": "SystemControlMiddleware"},
+      {"name": "doers.api.drain_rejections", "type": "counter", "labels": ["method"], "source": "DrainAdmissionMiddleware"}
+    ],
+    "database": [
+      {"name": "doers.database.pool.checked_out", "type": "gauge", "labels": ["pool"], "source": "api_runtime_probe_loop"},
+      {"name": "doers.database.pool.utilization", "type": "gauge", "labels": ["pool"], "source": "api_runtime_probe_loop"},
+      {"name": "doers.database.pool.wait", "type": "histogram", "labels": ["pool"], "source": "api_runtime_probe_loop"},
+      {"name": "doers.database.pool.timeouts", "type": "counter", "labels": ["pool"], "source": "api_runtime_probe_loop"},
+      {"name": "doers.database.disconnects", "type": "counter", "labels": ["pool"], "source": "api_runtime_probe_loop"}
+    ],
+    "queues": [
+      {"name": "doers.queue.depth", "type": "gauge", "labels": ["queue"], "source": "runtime_and_durable_operational_snapshots"},
+      {"name": "doers.queue.oldest_message_age", "type": "gauge", "labels": ["queue"], "source": "runtime_and_durable_operational_snapshots"},
+      {"name": "doers.queue.redeliveries", "type": "counter", "labels": ["queue"], "source": "Celery task_prerun delivery_info"},
+      {"name": "doers.queue.dead_letters", "type": "gauge", "labels": ["queue"], "source": "PostgreSQL durable operational snapshots"},
+      {"name": "doers.queue.worker.available", "type": "gauge", "labels": ["profile"], "source": "Celery worker process lifecycle"}
+    ],
+    "lifecycle": [
+      {"name": "doers.lifecycle.state.depth", "type": "gauge", "labels": ["state"], "source": "maintenance lifecycle watchdog snapshot"},
+      {"name": "doers.lifecycle.replayed", "type": "counter", "labels": ["result"], "source": "Celery redelivery evidence"},
+      {"name": "doers.lifecycle.compensations", "type": "counter", "labels": ["result"], "source": "certified lifecycle compensation recorder"}
+    ],
+    "finance": [
+      {"name": "doers.finance.signal.depth", "type": "gauge", "labels": ["signal"], "source": "app_secure.refund_execution_operational_snapshot"},
+      {"name": "doers.finance.idempotency_conflicts", "type": "counter", "labels": ["signal"], "source": "finance conflict recorder"}
+    ],
+    "providers": [
+      {"name": "doers.provider.requests", "type": "counter", "labels": ["provider", "operation", "outcome"], "source": "bounded provider adapters"},
+      {"name": "doers.provider.errors", "type": "counter", "labels": ["provider", "operation", "outcome"], "source": "bounded provider adapters"},
+      {"name": "doers.provider.latency", "type": "histogram", "labels": ["provider", "operation", "outcome"], "source": "bounded provider adapters"},
+      {"name": "doers.provider.timeouts", "type": "counter", "labels": ["provider", "operation", "outcome"], "source": "bounded provider adapters"},
+      {"name": "doers.provider.rate_limits", "type": "counter", "labels": ["provider", "operation", "outcome"], "source": "bounded provider adapters"},
+      {"name": "doers.provider.circuit_open", "type": "gauge", "labels": ["provider"], "source": "provider circuit state recorder"}
+    ],
+    "platform": [
+      {"name": "doers.platform.redis.health", "type": "gauge", "labels": ["role"], "source": "API/broker/result-backend probes"},
+      {"name": "doers.platform.scheduler.ownership", "type": "gauge", "labels": ["state"], "source": "P6 Beat ownership lease"},
+      {"name": "doers.platform.backup.age", "type": "gauge", "labels": ["backup_class"], "source": "external infrastructure backup monitor ingress"},
+      {"name": "doers.platform.backup.failures", "type": "counter", "labels": ["backup_class"], "source": "external infrastructure backup monitor ingress"},
+      {"name": "doers.platform.observability.heartbeat", "type": "gauge", "labels": ["profile"], "source": "P8 process metrics bootstrap"}
+    ]
+  },
+  "truth_boundaries": {
+    "api_database_pool": "process_local_runtime_probe",
+    "broker_queue_depth_and_age": "Redis delivery coordination evidence",
+    "durable_dead_letters": "PostgreSQL",
+    "lifecycle_state": "PostgreSQL",
+    "finance_refund_and_reconciliation": "PostgreSQL SECURITY DEFINER aggregate snapshot",
+    "provider_result": "provider adapter plus durable acknowledgement evidence",
+    "scheduler_owner": "P6 Redis ownership lease",
+    "backup_status": "external infrastructure backup system",
+    "observability_heartbeat": "process_local_metric_provider",
+    "observability_is_business_authority": false
+  },
+  "non_goals": [
+    "public_prometheus_endpoint",
+    "tenant_or_branch_metric_labels",
+    "raw_entity_identifiers_in_metric_labels",
+    "new_business_state",
+    "refund_provider_activation",
+    "release",
+    "deployment"
+  ]
+}

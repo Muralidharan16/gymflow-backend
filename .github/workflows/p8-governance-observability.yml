@@ -1,0 +1,84 @@
+name: P8 Governance Observability
+
+on:
+  push:
+    branches:
+      - hardening/p8-observability-operational-response
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p8-governance-observability-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  governance:
+    name: Frozen P8 observability and operational-response contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      P7_MERGE_BASE: c0e18944b15bee2ae7b37b9ede86a7832a232c59
+      P7_CERTIFIED_TREE: 0edf7e8f997bfe8ca44af474f5f8b93b30a748ea
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Prove exact merged P7 ancestry and tree
+        run: |
+          set -euo pipefail
+          git cat-file -e "${P7_MERGE_BASE}^{commit}"
+          test "$(git rev-parse "${P7_MERGE_BASE}^{tree}")" = "${P7_CERTIFIED_TREE}"
+          git merge-base --is-ancestor "${P7_MERGE_BASE}" HEAD
+
+      - name: Validate P8 governance artifacts
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/p8_observability_matrix.json >/dev/null
+          python -m py_compile tests/test_p8_governance_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8_governance_contracts.py
+
+      - name: Reprove inherited P7 final-certification contract
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p7_governance_contracts.py \
+            tests/test_p7f_final_certification_contracts.py
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/verify_head_workflow_bootstrap.py
+
+      - name: Emit P8 governance markers
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P8_GOVERNANCE_OBSERVABILITY=PASS'
+          echo 'P8_EVERY_CRITICAL_FAILURE_VISIBLE_ACTIONABLE=GOVERNANCE_FROZEN'
+          echo 'P8_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'

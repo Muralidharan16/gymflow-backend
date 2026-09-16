@@ -1,0 +1,286 @@
+{
+  "schema_version": 1,
+  "phase": "P8-A",
+  "parent_certified_head": "5ef26cd1698e12589b586596b60641bbeba507bd",
+  "parent_certified_tree": "4c6eb08ba4b93352c45ee302910f37c2d37d2006",
+  "rule_backend": {
+    "dialect": "promql",
+    "evaluation_interval_seconds": 30,
+    "source_protocol": "otlp_http",
+    "public_rule_or_metrics_endpoint": false,
+    "observability_is_business_authority": false,
+    "metric_name_normalization": "OpenTelemetry Prometheus-compatible translation; canonical P8 names are frozen below"
+  },
+  "metric_adapter": {
+    "doers.api.requests": "doers_api_requests_total",
+    "doers.api.errors": "doers_api_errors_total",
+    "doers.api.request.duration": "doers_api_request_duration_milliseconds",
+    "doers.database.pool.utilization": "doers_database_pool_utilization",
+    "doers.database.pool.timeouts": "doers_database_pool_timeouts_total",
+    "doers.database.disconnects": "doers_database_disconnects_total",
+    "doers.queue.oldest_message_age": "doers_queue_oldest_message_age_seconds",
+    "doers.queue.redeliveries": "doers_queue_redeliveries_total",
+    "doers.queue.dead_letters": "doers_queue_dead_letters",
+    "doers.queue.worker.available": "doers_queue_worker_available",
+    "doers.lifecycle.state.depth": "doers_lifecycle_state_depth",
+    "doers.finance.signal.depth": "doers_finance_signal_depth",
+    "doers.provider.requests": "doers_provider_requests_total",
+    "doers.provider.errors": "doers_provider_errors_total",
+    "doers.provider.circuit_open": "doers_provider_circuit_open",
+    "doers.platform.redis.health": "doers_platform_redis_health",
+    "doers.platform.scheduler.ownership": "doers_platform_scheduler_ownership",
+    "doers.platform.backup.age": "doers_platform_backup_age_seconds",
+    "doers.platform.backup.failures": "doers_platform_backup_failures_total",
+    "doers.platform.observability.heartbeat": "doers_platform_observability_heartbeat"
+  },
+  "critical_alerts": {
+    "dead_letter_present": {
+      "alert": "DoersDeadLetterPresent",
+      "owner": "platform-runtime",
+      "severity": "critical",
+      "query": "max(doers_queue_dead_letters) > 0",
+      "threshold": "> 0 durable dead letters",
+      "sustain_window": "1m",
+      "deduplication_key": "p8/dead-letter/{queue}",
+      "customer_impact": "Durable business work has exhausted automated recovery and may not complete without operator action.",
+      "runbook": "docs/runbooks/p8/dead-letter-present.md",
+      "safe_first_actions": ["Identify the durable PostgreSQL dead-letter row and owning workflow.", "Do not delete or manually mark the row delivered; preserve evidence and inspect retry history."],
+      "escalation_condition": "Any dead letter remains unresolved for 10 minutes, repeats after replay, or involves Finance/refund state."
+    },
+    "stuck_saga_or_lifecycle": {
+      "alert": "DoersLifecycleStuck",
+      "owner": "platform-runtime",
+      "severity": "critical",
+      "query": "max(doers_lifecycle_state_depth{state=\"stuck\"}) > 0",
+      "threshold": "> 0 lifecycle transitions already classified stuck by the 15-minute watchdog boundary",
+      "sustain_window": "2m",
+      "deduplication_key": "p8/lifecycle-stuck",
+      "customer_impact": "Branch lifecycle state may remain transitional and block dependent member or branch operations.",
+      "runbook": "docs/runbooks/p8/stuck-lifecycle.md",
+      "safe_first_actions": ["Inspect authoritative branch state and parent outbox lease before any replay.", "Confirm no live worker owns the lease before using an admitted repair path."],
+      "escalation_condition": "A stuck transition survives one maintenance sweep or exceeds 45 minutes."
+    },
+    "queue_oldest_age_breach": {
+      "alert": "DoersQueueOldestAgeBreach",
+      "owner": "platform-runtime",
+      "severity": "critical",
+      "query": "max(doers_queue_oldest_message_age_seconds) > 300",
+      "threshold": "> 300 seconds oldest actionable work",
+      "sustain_window": "5m",
+      "deduplication_key": "p8/queue-age/{queue}",
+      "customer_impact": "Asynchronous customer-visible work is falling behind its five-minute freshness objective.",
+      "runbook": "docs/runbooks/p8/queue-age-breach.md",
+      "safe_first_actions": ["Identify the bounded queue with the oldest age and verify worker availability.", "Check durable PostgreSQL work before scaling or replaying delivery coordination."],
+      "escalation_condition": "Oldest age exceeds 900 seconds, continues rising for 10 minutes, or affects Finance/provider reconciliation."
+    },
+    "finance_reconciliation_mismatch": {
+      "alert": "DoersFinanceReconciliationMismatch",
+      "owner": "finance-reliability",
+      "severity": "critical",
+      "query": "max(doers_finance_signal_depth{signal=\"reconciliation_mismatch\"}) > 0",
+      "threshold": "> 0 authoritative reconciliation mismatches",
+      "sustain_window": "1m",
+      "deduplication_key": "p8/finance-reconciliation",
+      "customer_impact": "Recorded Finance state disagrees with expected provider/evidence state and must not be auto-corrected blindly.",
+      "runbook": "docs/runbooks/p8/finance-reconciliation-mismatch.md",
+      "safe_first_actions": ["Preserve Finance and provider evidence and identify the exact reconciliation class.", "Stop automated mutation for the affected obligation until authoritative state is understood."],
+      "escalation_condition": "Any mismatch persists for 5 minutes, grows, or touches issued invoices, payments, credits, or refund obligations."
+    },
+    "provider_success_db_ack_ambiguity": {
+      "alert": "DoersProviderAckAmbiguity",
+      "owner": "finance-reliability",
+      "severity": "critical",
+      "query": "max(doers_finance_signal_depth{signal=\"provider_ack_ambiguity\"}) > 0",
+      "threshold": "> 0 provider-success / DB-ack ambiguous effects",
+      "sustain_window": "1m",
+      "deduplication_key": "p8/provider-ack-ambiguity",
+      "customer_impact": "An external provider may have succeeded while local acknowledgement is uncertain; blind retry could duplicate an external effect.",
+      "runbook": "docs/runbooks/p8/provider-ack-ambiguity.md",
+      "safe_first_actions": ["Do not blindly repeat the provider mutation.", "Reconcile using provider evidence plus the fenced durable command before deciding on replay."],
+      "escalation_condition": "Ambiguity remains after one reconciliation attempt or involves a monetary provider effect."
+    },
+    "database_pool_exhaustion": {
+      "alert": "DoersDatabasePoolExhaustion",
+      "owner": "platform-runtime",
+      "severity": "critical",
+      "query": "max(doers_database_pool_utilization) >= 0.90 or sum(increase(doers_database_pool_timeouts_total[5m])) > 0",
+      "threshold": ">= 90% utilization or any pool timeout in 5 minutes",
+      "sustain_window": "5m",
+      "deduplication_key": "p8/db-pool/{pool}",
+      "customer_impact": "Requests or workers may be unable to acquire database connections within bounded operational budgets.",
+      "runbook": "docs/runbooks/p8/database-pool-exhaustion.md",
+      "safe_first_actions": ["Identify the saturated runtime pool and compare checked-out connections with request/worker concurrency.", "Look for long transactions and dependency stalls before increasing pool size."],
+      "escalation_condition": "Timeouts continue for 5 minutes, utilization reaches 98%, or API readiness becomes dependency-unavailable."
+    },
+    "database_disconnect_storm": {
+      "alert": "DoersDatabaseDisconnectStorm",
+      "owner": "platform-runtime",
+      "severity": "critical",
+      "query": "sum(increase(doers_database_disconnects_total[5m])) >= 5",
+      "threshold": ">= 5 disconnects in 5 minutes",
+      "sustain_window": "2m",
+      "deduplication_key": "p8/db-disconnect-storm",
+      "customer_impact": "Repeated database connection loss can interrupt requests and delay durable workers even when individual retries recover.",
+      "runbook": "docs/runbooks/p8/database-disconnect-storm.md",
+      "safe_first_actions": ["Check database reachability/TLS and pool health before restarting application processes.", "Correlate disconnects with database failover, networking, and statement timeout evidence."],
+      "escalation_condition": "Disconnect count doubles in the next 5 minutes or any production profile cannot reconnect."
+    },
+    "redis_or_broker_unavailable": {
+      "alert": "DoersRedisOrBrokerUnavailable",
+      "owner": "platform-runtime",
+      "severity": "critical",
+      "query": "min(doers_platform_redis_health{role=~\"application|broker|result_backend\"}) < 1",
+      "threshold": "any required Redis role reports unhealthy",
+      "sustain_window": "1m",
+      "deduplication_key": "p8/redis/{role}",
+      "customer_impact": "Rate-limit/session coordination or Celery delivery may degrade; PostgreSQL durable business authority must remain intact.",
+      "runbook": "docs/runbooks/p8/redis-broker-unavailable.md",
+      "safe_first_actions": ["Confirm the affected Redis role and TLS/auth/topology health.", "Do not mutate durable PostgreSQL work to compensate for a delivery-coordination outage."],
+      "escalation_condition": "Broker remains unavailable for 5 minutes, workers cannot reconnect, or queue age starts breaching."
+    },
+    "worker_unavailable_or_redelivery_storm": {
+      "alert": "DoersWorkerUnavailableOrRedeliveryStorm",
+      "owner": "platform-runtime",
+      "severity": "critical",
+      "query": "min(max by (profile) (doers_queue_worker_available{profile=~\"worker|maintenance\"})) < 1 or sum(increase(doers_queue_redeliveries_total[5m])) >= 20",
+      "threshold": "required worker profile unavailable or >= 20 redeliveries in 5 minutes",
+      "sustain_window": "2m",
+      "deduplication_key": "p8/worker-redelivery",
+      "customer_impact": "Durable asynchronous work may stop progressing or repeatedly replay after worker loss.",
+      "runbook": "docs/runbooks/p8/worker-unavailable-redelivery.md",
+      "safe_first_actions": ["Identify whether worker or maintenance capacity is missing and inspect broker connectivity.", "Preserve late-ack/redelivery semantics; do not force-ack durable work."],
+      "escalation_condition": "No healthy replacement worker appears within 5 minutes or redeliveries continue rising."
+    },
+    "duplicate_scheduler_effect_risk": {
+      "alert": "DoersDuplicateSchedulerEffectRisk",
+      "owner": "platform-runtime",
+      "severity": "critical",
+      "query": "sum(count_over_time(doers_platform_scheduler_ownership{state=~\"contended|unavailable\"}[2m])) > 0",
+      "threshold": "any contended or unavailable Beat ownership evidence in 2 minutes",
+      "sustain_window": "0m",
+      "deduplication_key": "p8/scheduler-ownership",
+      "customer_impact": "Scheduler ownership uncertainty can create duplicate dispatch risk; durable idempotency still prevents duplicate business authority.",
+      "runbook": "docs/runbooks/p8/scheduler-ownership-risk.md",
+      "safe_first_actions": ["Identify all Beat processes and current Redis lease ownership.", "Keep duplicate schedulers fail-closed; never disable ownership fencing to restore schedules."],
+      "escalation_condition": "Contention lasts more than one lease TTL or duplicate dispatch is observed."
+    },
+    "backup_failure_or_stale_backup": {
+      "alert": "DoersBackupFailureOrStale",
+      "owner": "data-reliability",
+      "severity": "critical",
+      "query": "max(doers_platform_backup_age_seconds) > 90000 or sum(increase(doers_platform_backup_failures_total[24h])) > 0 or absent_over_time(doers_platform_backup_age_seconds{backup_class=\"database\"}[30m])",
+      "threshold": "> 25 hours backup age, any failure in 24 hours, or no database backup signal for 30 minutes",
+      "sustain_window": "10m",
+      "deduplication_key": "p8/backup/{backup_class}",
+      "customer_impact": "Recovery point objectives may no longer be trustworthy if current backups fail or become stale.",
+      "runbook": "docs/runbooks/p8/backup-failure-stale.md",
+      "safe_first_actions": ["Verify backup-system evidence outside the application before declaring a successful recovery point.", "Do not fabricate application-side backup success; trigger only the infrastructure-owned backup path."],
+      "escalation_condition": "Database backup age exceeds 30 hours, two consecutive backup attempts fail, or restore verification is unavailable."
+    },
+    "api_availability_or_latency_slo_breach": {
+      "alert": "DoersApiSloBurn",
+      "owner": "api-runtime",
+      "severity": "critical",
+      "query": "(doers:p8:api_availability_burn_rate:5m > 14.4 and doers:p8:api_availability_burn_rate:1h > 14.4) or (doers:p8:api_availability_burn_rate:30m > 6 and doers:p8:api_availability_burn_rate:6h > 6) or (doers:p8:api_latency_burn_rate:5m > 14.4 and doers:p8:api_latency_burn_rate:1h > 14.4) or (doers:p8:api_latency_burn_rate:30m > 6 and doers:p8:api_latency_burn_rate:6h > 6)",
+      "threshold": "multi-window 14.4x fast burn or 6x slow burn against API availability/latency budgets",
+      "sustain_window": "0m",
+      "deduplication_key": "p8/api-slo-burn",
+      "customer_impact": "API reliability is consuming the monthly error budget too quickly through 5xx errors or requests slower than one second.",
+      "runbook": "docs/runbooks/p8/api-slo-burn.md",
+      "safe_first_actions": ["Separate availability burn from latency burn and identify the bounded route/status class driving it.", "Correlate with readiness, drain, DB pool, Redis and provider signals before changing capacity."],
+      "escalation_condition": "Fast burn survives 5 minutes, slow burn survives 30 minutes, or remaining monthly API budget falls below 25%."
+    },
+    "provider_error_or_timeout_slo_breach": {
+      "alert": "DoersProviderSloBurn",
+      "owner": "external-integrations",
+      "severity": "critical",
+      "query": "(doers:p8:provider_error_burn_rate:5m > 14.4 and doers:p8:provider_error_burn_rate:1h > 14.4) or (doers:p8:provider_error_burn_rate:30m > 6 and doers:p8:provider_error_burn_rate:6h > 6) or max(doers_provider_circuit_open) > 0",
+      "threshold": "multi-window burn against 99.5% provider success or any open provider circuit",
+      "sustain_window": "0m",
+      "deduplication_key": "p8/provider-slo/{provider}",
+      "customer_impact": "External search/notification/storage/security integrations are failing faster than the allowed provider error budget.",
+      "runbook": "docs/runbooks/p8/provider-slo-burn.md",
+      "safe_first_actions": ["Identify provider/operation/outcome without exposing request or tenant identifiers in metrics.", "Use durable acknowledgement/reconciliation paths; do not repeat ambiguous external effects blindly."],
+      "escalation_condition": "Fast burn persists for 5 minutes, a circuit stays open for 10 minutes, or a monetary/provider-ack ambiguity appears."
+    },
+    "observability_pipeline_failure": {
+      "alert": "DoersObservabilityPipelineFailure",
+      "owner": "platform-runtime",
+      "severity": "critical",
+      "query": "absent_over_time(doers_platform_observability_heartbeat{profile=\"api\"}[5m]) or absent_over_time(doers_platform_observability_heartbeat{profile=\"worker\"}[5m]) or absent_over_time(doers_platform_observability_heartbeat{profile=\"maintenance\"}[5m]) or absent_over_time(doers_platform_observability_heartbeat{profile=\"beat\"}[5m])",
+      "threshold": "missing heartbeat from any required production runtime profile for 5 minutes",
+      "sustain_window": "0m",
+      "deduplication_key": "p8/observability-pipeline/{profile}",
+      "customer_impact": "Operators may be blind to critical failures even if business processing continues, so reliability decisions cannot rely on telemetry until restored.",
+      "runbook": "docs/runbooks/p8/observability-pipeline-failure.md",
+      "safe_first_actions": ["Verify runtime process health separately from collector/backend ingestion.", "Keep business authority unchanged; restore telemetry without modifying durable PostgreSQL state."],
+      "escalation_condition": "Any required profile is invisible for 10 minutes or another critical incident is active while telemetry is incomplete."
+    }
+  },
+  "slos": {
+    "api_availability": {
+      "objective": 0.999,
+      "window": "30d",
+      "sli": "non-5xx business API requests / all business API requests",
+      "error_budget_fraction": 0.001,
+      "recording_rules": ["doers:p8:api_availability_burn_rate:5m", "doers:p8:api_availability_burn_rate:1h", "doers:p8:api_availability_burn_rate:30m", "doers:p8:api_availability_burn_rate:6h"]
+    },
+    "api_latency": {
+      "objective": 0.99,
+      "window": "30d",
+      "sli": "business API requests completed in <= 1000 ms / all business API requests",
+      "threshold_ms": 1000,
+      "error_budget_fraction": 0.01,
+      "recording_rules": ["doers:p8:api_latency_burn_rate:5m", "doers:p8:api_latency_burn_rate:1h", "doers:p8:api_latency_burn_rate:30m", "doers:p8:api_latency_burn_rate:6h"]
+    },
+    "durable_queue_freshness": {
+      "objective": 0.999,
+      "window": "30d",
+      "sli": "one-minute observations with oldest actionable queue age <= 300 seconds",
+      "threshold_seconds": 300,
+      "error_budget_fraction": 0.001
+    },
+    "lifecycle_completion": {
+      "objective": 0.999,
+      "window": "30d",
+      "sli": "one-minute observations with zero lifecycle transitions classified stuck after 900 seconds",
+      "threshold_seconds": 900,
+      "error_budget_fraction": 0.001
+    },
+    "finance_reconciliation": {
+      "objective": 0.9999,
+      "window": "30d",
+      "sli": "one-minute observations with zero authoritative Finance reconciliation mismatches",
+      "error_budget_fraction": 0.0001
+    },
+    "provider_success_rate": {
+      "objective": 0.995,
+      "window": "30d",
+      "sli": "successful bounded provider calls / all classified provider calls",
+      "error_budget_fraction": 0.005,
+      "recording_rules": ["doers:p8:provider_error_burn_rate:5m", "doers:p8:provider_error_burn_rate:1h", "doers:p8:provider_error_burn_rate:30m", "doers:p8:provider_error_burn_rate:6h"]
+    },
+    "backup_freshness": {
+      "objective": 0.999,
+      "window": "30d",
+      "sli": "one-minute observations with verified database backup age <= 86400 seconds and no failed backup evidence",
+      "threshold_seconds": 86400,
+      "error_budget_fraction": 0.001
+    }
+  },
+  "error_budget_policy": {
+    "fast_burn": {"burn_rate": 14.4, "short_window": "5m", "long_window": "1h", "severity": "critical"},
+    "slow_burn": {"burn_rate": 6.0, "short_window": "30m", "long_window": "6h", "severity": "critical"},
+    "remaining_budget_warning_fraction": 0.25,
+    "exhausted_budget_action": "incident escalation and nonessential change freeze; never mutate business authority automatically",
+    "automatic_business_state_change": false
+  },
+  "hard_stops": [
+    "refund_provider_activation",
+    "live_money_movement",
+    "release",
+    "deployment",
+    "observability_rule_changes_business_authority",
+    "alert_query_uses_high_cardinality_identity_labels"
+  ]
+}

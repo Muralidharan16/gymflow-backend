@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "phase": "P8-R",
+  "parent_certified_head": "b19714b6c0a0d2b50ca862e35bf096d822014b71",
+  "parent_certified_tree": "104621750b126c302f890adbf27c13460df5f3a4",
+  "required_sections": [
+    "Alert and ownership",
+    "Customer impact",
+    "Evidence to preserve",
+    "Diagnosis",
+    "Safe first actions",
+    "Forbidden actions",
+    "Escalation",
+    "Recovery verification"
+  ],
+  "runbooks": {
+    "dead_letter_present": "docs/runbooks/p8/dead-letter-present.md",
+    "stuck_saga_or_lifecycle": "docs/runbooks/p8/stuck-lifecycle.md",
+    "queue_oldest_age_breach": "docs/runbooks/p8/queue-age-breach.md",
+    "finance_reconciliation_mismatch": "docs/runbooks/p8/finance-reconciliation-mismatch.md",
+    "provider_success_db_ack_ambiguity": "docs/runbooks/p8/provider-ack-ambiguity.md",
+    "database_pool_exhaustion": "docs/runbooks/p8/database-pool-exhaustion.md",
+    "database_disconnect_storm": "docs/runbooks/p8/database-disconnect-storm.md",
+    "redis_or_broker_unavailable": "docs/runbooks/p8/redis-broker-unavailable.md",
+    "worker_unavailable_or_redelivery_storm": "docs/runbooks/p8/worker-unavailable-redelivery.md",
+    "duplicate_scheduler_effect_risk": "docs/runbooks/p8/scheduler-ownership-risk.md",
+    "backup_failure_or_stale_backup": "docs/runbooks/p8/backup-failure-stale.md",
+    "api_availability_or_latency_slo_breach": "docs/runbooks/p8/api-slo-burn.md",
+    "provider_error_or_timeout_slo_breach": "docs/runbooks/p8/provider-slo-burn.md",
+    "observability_pipeline_failure": "docs/runbooks/p8/observability-pipeline-failure.md"
+  },
+  "global_safety": {
+    "postgresql_remains_business_authority": true,
+    "observability_never_authorizes_business_mutation": true,
+    "preserve_incident_evidence_before_repair": true,
+    "use_certified_replay_or_reconciliation_paths_only": true,
+    "manual_terminal_success_without_authoritative_evidence_forbidden": true,
+    "blind_external_effect_retry_forbidden": true,
+    "disable_fencing_or_idempotency_forbidden": true,
+    "refund_provider_execution": "deferred_fail_closed"
+  },
+  "recovery_verification": {
+    "alert_condition_cleared": true,
+    "authoritative_state_rechecked": true,
+    "backlog_or_error_rate_is_not_regressing": true,
+    "no_duplicate_business_effect_created": true,
+    "incident_evidence_and_operator_action_recorded": true
+  },
+  "hard_stops": [
+    "refund_provider_activation",
+    "live_money_movement",
+    "release",
+    "deployment",
+    "manual_database_terminal_success_without_authoritative_evidence",
+    "blind_provider_retry_after_ambiguous_outcome",
+    "disable_worker_scheduler_or_idempotency_fencing_to_clear_alert",
+    "delete_dead_letter_or_incident_evidence_to_make_metric_green"
+  ]
+}

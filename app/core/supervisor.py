@@ -203,11 +203,14 @@ async def _attest_fastapi_database_bindings() -> None:
 
 @asynccontextmanager
 async def platform_lifespan():
+    from app.observability.runtime_probes import api_runtime_probe_loop
+
     await _attest_fastapi_database_bindings()
     await _dek_registry_startup()
     await supervisor.start_worker("lock_registry_sweep", _lock_registry_sweep_loop)
     await supervisor.start_worker("kms_bulkhead_sweep", _kms_bulkhead_sweep_loop)
     await supervisor.start_worker("wfq_dispatcher", _wfq_start_loop)
+    await supervisor.start_worker("p8_runtime_probe", api_runtime_probe_loop)
     logger.info("Platform supervisor: API-local workers started.")
     try:
         yield

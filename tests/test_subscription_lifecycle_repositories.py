@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import timedelta
 from uuid import UUID
 
 from sqlalchemy import text
@@ -22,8 +22,6 @@ from test_subscription_lifecycle_migrations import (
     run_alembic,
 )
 
-
-BUSINESS_DATE = date(2026, 6, 20)
 
 # Repository semantics must be exercised through the reduced application
 # runtime identity, but against the dedicated database that owns the migration
@@ -101,8 +99,29 @@ async def _seed_phase3_read_overlays(seed: LifecycleSeed):
     any reduced-runtime repository read is exercised.
     """
     async with MigrationTestSessionLocal() as session:
-        term_a_id = await _term_id_for_legacy(session, seed.sub_a)
-        series_a_id = await _series_id_for_legacy(session, seed.sub_a)
+        term_a = (
+            await session.execute(
+                text(
+                    """
+                    SELECT id, series_id, starts_on, effective_ends_on
+                    FROM subscription_terms
+                    WHERE legacy_member_subscription_v2_id = :legacy_id
+                    """
+                ),
+                {"legacy_id": seed.sub_a},
+            )
+        ).mappings().one()
+        term_a_id = term_a["id"]
+        series_a_id = term_a["series_id"]
+
+        # Derive every overlay date from the migrated term itself. This keeps
+        # the repository fixture valid across calendar rollovers while still
+        # exercising a current term, an active freeze and an upcoming term.
+        business_date = term_a["starts_on"] + timedelta(days=15)
+        assert business_date <= term_a["effective_ends_on"]
+        freeze_start = business_date - timedelta(days=2)
+        freeze_end = business_date + timedelta(days=5)
+        archive_date = business_date - timedelta(days=1)
 
         await session.execute(
             text(
@@ -113,12 +132,18 @@ async def _seed_phase3_read_overlays(seed: LifecycleSeed):
                 )
                 VALUES (
                     gen_random_uuid(), :org_id, :series_id, :term_id,
-                    'active'::subscription_freeze_status, DATE '2026-06-18',
-                    DATE '2026-06-25', 7, 'Medical hold'
+                    'active'::subscription_freeze_status, :freeze_start,
+                    :freeze_end, 7, 'Medical hold'
                 )
                 """
             ),
-            {"org_id": seed.org_1, "series_id": series_a_id, "term_id": term_a_id},
+            {
+                "org_id": seed.org_1,
+                "series_id": series_a_id,
+                "term_id": term_a_id,
+                "freeze_start": freeze_start,
+                "freeze_end": freeze_end,
+            },
         )
         await session.execute(
             text(
@@ -130,7 +155,7 @@ async def _seed_phase3_read_overlays(seed: LifecycleSeed):
                 VALUES (
                     gen_random_uuid(), :org_id, :branch_id, :series_id,
                     :term_id, 'freeze_started'::subscription_event_type,
-                    TIMESTAMPTZ '2026-06-18 10:00:00+00', 'test',
+                    CAST(:freeze_start AS date) + TIME '10:00:00', 'test',
                     '{"reason":"Medical hold"}'::jsonb
                 )
                 """
@@ -140,6 +165,7 @@ async def _seed_phase3_read_overlays(seed: LifecycleSeed):
                 "branch_id": seed.branch_1,
                 "series_id": series_a_id,
                 "term_id": term_a_id,
+                "freeze_start": freeze_start,
             },
         )
         await session.execute(
@@ -147,7 +173,7 @@ async def _seed_phase3_read_overlays(seed: LifecycleSeed):
                 """
                 UPDATE subscription_series
                 SET lifecycle_status = 'archived'::subscription_series_status,
-                    archived_at = TIMESTAMPTZ '2026-06-19 10:00:00+00'
+                    archived_at = CAST(:archive_date AS date) + TIME '10:00:00'
                 WHERE id = (
                     SELECT series_id
                     FROM subscription_terms
@@ -155,27 +181,27 @@ async def _seed_phase3_read_overlays(seed: LifecycleSeed):
                 )
                 """
             ),
-            {"sub_family": seed.sub_family},
+            {"sub_family": seed.sub_family, "archive_date": archive_date},
         )
         await session.commit()
-        return term_a_id, series_a_id
+        return term_a_id, series_a_id, business_date
 
 
-async def _prepare_repository_state() -> tuple[LifecycleSeed, UUID, UUID]:
+async def _prepare_repository_state():
     """Stage fixtures at the constraint revision, then verify reads at HEAD."""
     seed = await prepare_migrated_lifecycle(CONSTRAINT_REVISION)
     try:
-        term_a_id, series_a_id = await _seed_phase3_read_overlays(seed)
+        term_a_id, series_a_id, business_date = await _seed_phase3_read_overlays(seed)
     finally:
         # Restore current HEAD even when fixture staging fails.  Later runtime
         # hardening remains part of every repository-read test and is never
         # bypassed by the migration identity.
         run_alembic("upgrade", "head")
-    return seed, term_a_id, series_a_id
+    return seed, term_a_id, series_a_id, business_date
 
 
 async def test_series_summaries_are_tenant_scoped_and_derive_current_status():
-    seed, term_a_id, series_a_id = await _prepare_repository_state()
+    seed, term_a_id, series_a_id, business_date = await _prepare_repository_state()
     code_a, code_b, code_family = _term_codes(seed)
 
     async with LifecycleRuntimeSessionLocal() as session:
@@ -183,7 +209,7 @@ async def test_series_summaries_are_tenant_scoped_and_derive_current_status():
         repo = SubscriptionLifecycleRepository(session)
         summaries, total = await repo.list_series_summaries(
             UUID(seed.org_1),
-            business_date=BUSINESS_DATE,
+            business_date=business_date,
             include_archived=True,
         )
 
@@ -201,7 +227,7 @@ async def test_series_summaries_are_tenant_scoped_and_derive_current_status():
         assert by_term_code[code_b].scheduled_next_term.derived_status == SubscriptionOperationalStatus.scheduled
         assert by_term_code[code_family].lifecycle_status == SubscriptionSeriesStatus.archived
 
-        detail = await repo.get_series_detail(UUID(seed.org_1), series_a_id, business_date=BUSINESS_DATE)
+        detail = await repo.get_series_detail(UUID(seed.org_1), series_a_id, business_date=business_date)
         assert detail.series_code == f"SER-{code_a}"
         assert detail.current_term.term_code == code_a
 
@@ -217,21 +243,21 @@ async def test_series_summaries_are_tenant_scoped_and_derive_current_status():
         repo = SubscriptionLifecycleRepository(session)
         org2_summaries, org2_total = await repo.list_series_summaries(
             UUID(seed.org_2),
-            business_date=BUSINESS_DATE,
+            business_date=business_date,
         )
         assert org2_total == 1
         assert {summary.org_id for summary in org2_summaries} == {UUID(seed.org_2)}
 
 
 async def test_repository_reads_slots_timeline_upcoming_history_and_projection():
-    seed, term_a_id, series_a_id = await _prepare_repository_state()
+    seed, term_a_id, series_a_id, business_date = await _prepare_repository_state()
     code_a, code_b, _ = _term_codes(seed)
 
     async with LifecycleRuntimeSessionLocal() as session:
         await _install_runtime_context(session, seed)
         repo = SubscriptionLifecycleRepository(session)
 
-        slots = await repo.list_slots(UUID(seed.org_1), term_a_id, business_date=BUSINESS_DATE)
+        slots = await repo.list_slots(UUID(seed.org_1), term_a_id, business_date=business_date)
         assert len(slots) == 1
         assert slots[0].current_member.id == UUID(seed.member_100)
         assert not slots[0].is_vacant
@@ -243,7 +269,7 @@ async def test_repository_reads_slots_timeline_upcoming_history_and_projection()
 
         upcoming, upcoming_total = await repo.list_upcoming_terms(
             UUID(seed.org_1),
-            business_date=BUSINESS_DATE,
+            business_date=business_date,
         )
         assert upcoming_total == 1
         assert upcoming[0].term_code == code_b
@@ -251,13 +277,13 @@ async def test_repository_reads_slots_timeline_upcoming_history_and_projection()
 
         history, history_total = await repo.list_history_terms(
             UUID(seed.org_1),
-            business_date=date(2027, 1, 1),
+            business_date=business_date + timedelta(days=365),
             member_id=UUID(seed.member_100),
         )
         assert history_total >= 2
         assert {code_a, code_b}.issubset({term.term_code for term in history})
 
-        projection = await repo.get_v2_projection(UUID(seed.org_1), series_a_id, business_date=BUSINESS_DATE)
+        projection = await repo.get_v2_projection(UUID(seed.org_1), series_a_id, business_date=business_date)
         assert projection is not None
         assert projection.subscription_code == code_a
         assert projection.status == SubscriptionOperationalStatus.frozen

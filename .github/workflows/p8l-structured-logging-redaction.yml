@@ -1,0 +1,107 @@
+name: P8-L Structured Logging Redaction
+
+on:
+  push:
+    branches:
+      - hardening/p8-observability-operational-response
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p8l-structured-logging-redaction-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  logging_redaction:
+    name: P8-L authoritative context and pre-sink redaction
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      P8_GOVERNANCE_BASE: 053939f360120b175f8efa21396db30d4c28076b
+      P8_GOVERNANCE_TREE: 46e0def182dac1aac59a27c534d943e33235677c
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_p8l_contract
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p8l-structured-logging-not-production
+      AWS_ACCESS_KEY_ID: ci-p8l-structured-logging
+      AWS_SECRET_ACCESS_KEY: ci-p8l-structured-logging
+      S3_BUCKET_NAME: gymflow-p8l-contract
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Guard certified P8-G governance boundary
+        run: |
+          set -euo pipefail
+          git cat-file -e "${P8_GOVERNANCE_BASE}^{commit}"
+          test "$(git rev-parse "${P8_GOVERNANCE_BASE}^{tree}")" = "${P8_GOVERNANCE_TREE}"
+          git merge-base --is-ancestor "${P8_GOVERNANCE_BASE}" HEAD
+
+      - name: Compile P8-L runtime surface
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            app/observability/context.py \
+            app/observability/redaction.py \
+            app/observability/structured_logging.py \
+            app/observability/request_context.py \
+            app/observability/celery_context.py \
+            app/core/telemetry.py \
+            app/core/celery_app.py \
+            app/main.py \
+            tests/test_p8_logging_redaction_contracts.py
+
+      - name: Prove structured context redaction and Celery propagation
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8_logging_redaction_contracts.py \
+            tests/address_regression_baseline.py::test_track_event_safe_scrubs_pii_but_keeps_city \
+            tests/address_regression_baseline.py::test_sentry_before_send_scrubs_nested_pii
+
+      - name: Reprove governance and inherited P6 P7 boundaries
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8_governance_contracts.py \
+            tests/test_p7_system_drain_contracts.py \
+            tests/test_celery_single_app_boundary.py
+
+      - name: Emit P8-L decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P8_STRUCTURED_LOG_CONTEXT=PASS'
+          echo 'P8_SENSITIVE_REDACTION=PASS'
+          echo 'P8_OBSERVABILITY_NON_AUTHORITATIVE=PASS'
+          echo 'P8_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'

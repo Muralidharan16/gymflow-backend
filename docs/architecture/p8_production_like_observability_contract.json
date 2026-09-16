@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "phase": "P8-O",
+  "parent_certified_head": "ecec7c21aa5f70331124796d81aab18b779e64b8",
+  "parent_certified_tree": "8de69d66087da6fda721479a029078d102cf4437",
+  "proof_environment": {
+    "postgresql_major": 16,
+    "redis_image": "redis:7-alpine",
+    "otlp_transport": "http/protobuf",
+    "celery_pool": "prefork",
+    "disposable_only": true,
+    "localhost_only_destructive_faults": true,
+    "mock_only_proof_forbidden": true
+  },
+  "real_runtime_scenarios": {
+    "postgresql_authoritative_snapshots": {
+      "kind": "real_postgresql_persisted_fault_state",
+      "evidence": [
+        "tests/test_p4e_operational_snapshots_runtime.py",
+        "tests/test_p8_production_like_observability_runtime.py"
+      ],
+      "proves": [
+        "durable dead letters are read from PostgreSQL",
+        "Finance reconciliation and provider-ack ambiguity are read through the certified SECURITY DEFINER aggregate snapshot",
+        "P8 exports the resulting bounded metrics to a real local OTLP/HTTP receiver"
+      ]
+    },
+    "postgresql_stuck_lifecycle": {
+      "kind": "real_postgresql_stuck_transition",
+      "evidence": ["tests/test_p8_production_like_observability_runtime.py"],
+      "proves": [
+        "a persisted transition older than the 15-minute watchdog boundary produces lifecycle stuck evidence",
+        "the snapshot is read by the maintenance identity without changing the transition merely to clear telemetry"
+      ]
+    },
+    "redis_queue_age": {
+      "kind": "real_redis_delivery_backlog",
+      "evidence": ["tests/test_p8_production_like_observability_runtime.py"],
+      "proves": [
+        "real Redis list depth and Celery publish timestamps produce queue age greater than the five-minute threshold"
+      ]
+    },
+    "sqlalchemy_real_pool_timeout": {
+      "kind": "real_postgresql_pool_exhaustion",
+      "evidence": ["tests/test_p8_production_like_observability_runtime.py"],
+      "proves": [
+        "a real async SQLAlchemy QueuePool with no free slot reaches its timeout boundary and records a database pool timeout"
+      ]
+    },
+    "postgresql_service_outage": {
+      "kind": "real_postgresql_service_stop_start",
+      "evidence": [
+        "tests/test_p5d_dependency_loss_runtime.py",
+        "tests/test_p8_production_like_observability_runtime.py"
+      ],
+      "proves": [
+        "real database disconnects are visible",
+        "durable work remains recoverable after dependency restoration"
+      ]
+    },
+    "redis_service_outage": {
+      "kind": "real_redis_container_stop_start",
+      "evidence": [
+        "tests/test_p5d_dependency_loss_runtime.py",
+        "tests/test_p8_production_like_observability_runtime.py"
+      ],
+      "proves": [
+        "broker Redis loss is exported unhealthy",
+        "PostgreSQL remains durable business authority during delivery-coordination loss"
+      ]
+    },
+    "p5w2_prefork_death_redelivery": {
+      "kind": "real_celery_prefork_process_death",
+      "evidence": ["tests/test_p5w2_worker_crash_redelivery_runtime.py"],
+      "proves": [
+        "real child death before and after DB commit causes broker redelivery",
+        "P8 task-prerun redelivery evidence is emitted without changing late-ack or worker-lost semantics",
+        "duplicate business effects still converge"
+      ]
+    },
+    "p5d_provider_ack_disconnect": {
+      "kind": "real_provider_effect_plus_database_ack_disconnect",
+      "evidence": ["tests/test_p5d_dependency_loss_runtime.py"],
+      "proves": [
+        "provider success followed by DB acknowledgement disconnect does not blindly repeat the external effect",
+        "replacement processing converges from durable evidence"
+      ]
+    },
+    "redis_scheduler_contention": {
+      "kind": "real_redis_ownership_contention",
+      "evidence": ["tests/test_p8_production_like_observability_runtime.py"],
+      "proves": [
+        "two distinct Beat ownership identities contend on the real Redis lease and the second fails closed"
+      ]
+    },
+    "external_backup_monitor_ingress": {
+      "kind": "infrastructure_monitor_signal_ingress",
+      "evidence": ["tests/test_p8_production_like_observability_runtime.py"],
+      "proves": [
+        "stale/failed backup evidence enters only through the explicitly external infrastructure-owned metric boundary",
+        "the application does not fabricate backup success"
+      ]
+    },
+    "asgi_failure_and_latency": {
+      "kind": "real_asgi_middleware_request",
+      "evidence": ["tests/test_p8_production_like_observability_runtime.py"],
+      "proves": [
+        "an actual request through RequestObservabilityMiddleware produces 5xx and greater-than-one-second latency evidence"
+      ]
+    },
+    "local_provider_timeout": {
+      "kind": "real_loopback_http_timeout",
+      "evidence": ["tests/test_p8_production_like_observability_runtime.py"],
+      "proves": [
+        "a real HTTP timeout is classified by the bounded provider metric bridge without tenant/request labels"
+      ]
+    },
+    "otlp_sink_outage_authority_survival": {
+      "kind": "real_otlp_connection_failure",
+      "evidence": ["tests/test_p8_production_like_observability_runtime.py"],
+      "proves": [
+        "metrics export loss is observable as missing heartbeat evidence",
+        "a durable PostgreSQL commit succeeds while the telemetry sink is unreachable",
+        "telemetry delivery never becomes business authority"
+      ]
+    }
+  },
+  "critical_failure_mode_proof": {
+    "dead_letter_present": {
+      "scenario": "postgresql_authoritative_snapshots",
+      "metric": "doers.queue.dead_letters",
+      "alert": "DoersDeadLetterPresent",
+      "runbook": "docs/runbooks/p8/dead-letter-present.md"
+    },
+    "stuck_saga_or_lifecycle": {
+      "scenario": "postgresql_stuck_lifecycle",
+      "metric": "doers.lifecycle.state.depth",
+      "alert": "DoersLifecycleStuck",
+      "runbook": "docs/runbooks/p8/stuck-lifecycle.md"
+    },
+    "queue_oldest_age_breach": {
+      "scenario": "redis_queue_age",
+      "metric": "doers.queue.oldest_message_age",
+      "alert": "DoersQueueOldestAgeBreach",
+      "runbook": "docs/runbooks/p8/queue-age-breach.md"
+    },
+    "finance_reconciliation_mismatch": {
+      "scenario": "postgresql_authoritative_snapshots",
+      "metric": "doers.finance.signal.depth",
+      "alert": "DoersFinanceReconciliationMismatch",
+      "runbook": "docs/runbooks/p8/finance-reconciliation-mismatch.md"
+    },
+    "provider_success_db_ack_ambiguity": {
+      "scenario": "p5d_provider_ack_disconnect",
+      "metric": "doers.finance.signal.depth",
+      "alert": "DoersProviderAckAmbiguity",
+      "runbook": "docs/runbooks/p8/provider-ack-ambiguity.md"
+    },
+    "database_pool_exhaustion": {
+      "scenario": "sqlalchemy_real_pool_timeout",
+      "metric": "doers.database.pool.timeouts",
+      "alert": "DoersDatabasePoolExhaustion",
+      "runbook": "docs/runbooks/p8/database-pool-exhaustion.md"
+    },
+    "database_disconnect_storm": {
+      "scenario": "postgresql_service_outage",
+      "metric": "doers.database.disconnects",
+      "alert": "DoersDatabaseDisconnectStorm",
+      "runbook": "docs/runbooks/p8/database-disconnect-storm.md"
+    },
+    "redis_or_broker_unavailable": {
+      "scenario": "redis_service_outage",
+      "metric": "doers.platform.redis.health",
+      "alert": "DoersRedisOrBrokerUnavailable",
+      "runbook": "docs/runbooks/p8/redis-broker-unavailable.md"
+    },
+    "worker_unavailable_or_redelivery_storm": {
+      "scenario": "p5w2_prefork_death_redelivery",
+      "metric": "doers.queue.redeliveries",
+      "alert": "DoersWorkerUnavailableOrRedeliveryStorm",
+      "runbook": "docs/runbooks/p8/worker-unavailable-redelivery.md"
+    },
+    "duplicate_scheduler_effect_risk": {
+      "scenario": "redis_scheduler_contention",
+      "metric": "doers.platform.scheduler.ownership",
+      "alert": "DoersDuplicateSchedulerEffectRisk",
+      "runbook": "docs/runbooks/p8/scheduler-ownership-risk.md"
+    },
+    "backup_failure_or_stale_backup": {
+      "scenario": "external_backup_monitor_ingress",
+      "metric": "doers.platform.backup.age",
+      "alert": "DoersBackupFailureOrStale",
+      "runbook": "docs/runbooks/p8/backup-failure-stale.md"
+    },
+    "api_availability_or_latency_slo_breach": {
+      "scenario": "asgi_failure_and_latency",
+      "metric": "doers.api.errors",
+      "alert": "DoersApiSloBurn",
+      "runbook": "docs/runbooks/p8/api-slo-burn.md"
+    },
+    "provider_error_or_timeout_slo_breach": {
+      "scenario": "local_provider_timeout",
+      "metric": "doers.provider.timeouts",
+      "alert": "DoersProviderSloBurn",
+      "runbook": "docs/runbooks/p8/provider-slo-burn.md"
+    },
+    "observability_pipeline_failure": {
+      "scenario": "otlp_sink_outage_authority_survival",
+      "metric": "doers.platform.observability.heartbeat",
+      "alert": "DoersObservabilityPipelineFailure",
+      "runbook": "docs/runbooks/p8/observability-pipeline-failure.md"
+    }
+  },
+  "authority_assertions": {
+    "postgresql_remains_durable_business_authority": true,
+    "redis_is_delivery_coordination_only": true,
+    "observability_is_evidence_only": true,
+    "provider_ambiguity_never_authorizes_blind_retry": true,
+    "telemetry_outage_never_rolls_back_or_blocks_durable_commit": true,
+    "refund_provider_execution": "deferred_fail_closed"
+  },
+  "hard_stops": [
+    "non_disposable_destructive_fault_target",
+    "mock_only_failure_injection",
+    "observability_signal_used_to_mutate_business_state",
+    "blind_provider_retry_after_ambiguous_outcome",
+    "refund_provider_activation",
+    "live_money_movement",
+    "release",
+    "deployment"
+  ]
+}

@@ -41,6 +41,7 @@ jobs:
       ENVIRONMENT: test
       P7O_SLOW_STARTED_FILE: /tmp/p7o-slow-started
       P7O_SLOW_SECONDS: '20'
+      P8_METRICS_OTLP_ENDPOINT: http://127.0.0.1:4318/v1/metrics
 
     steps:
       - name: Checkout exact candidate

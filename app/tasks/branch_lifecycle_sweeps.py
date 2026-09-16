@@ -1,18 +1,21 @@
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 
 from celery import shared_task
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 
 from app.core.config import settings
 from app.core.database import (
     maintenance_async_session_maker,
     update_session_context,
 )
+from app.models.org_branch import OrgBranchState
 from app.observability.notification_metrics import (
     configure_notification_metrics,
     record_operational_snapshot,
 )
+from app.observability.runtime_metrics import runtime_metrics
 from app.services.branch_lifecycle_service import BranchLifecycleService
 
 logger = logging.getLogger(__name__)
@@ -30,12 +33,57 @@ async def _prepare_maintenance_session(session) -> None:
     )
 
 
+async def _record_lifecycle_snapshot(session) -> None:
+    now = datetime.now(timezone.utc)
+    stuck_before = now - timedelta(minutes=15)
+
+    pending = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(OrgBranchState)
+            .where(
+                OrgBranchState.lifecycle_transition_in_progress.is_(True),
+                OrgBranchState.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
+    stuck = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(OrgBranchState)
+            .where(
+                OrgBranchState.lifecycle_transition_in_progress.is_(True),
+                OrgBranchState.deleted_at.is_(None),
+                OrgBranchState.status_changed_at.is_not(None),
+                OrgBranchState.status_changed_at <= stuck_before,
+            )
+        )
+        or 0
+    )
+    # Maintenance deliberately has no direct branch_outbox_events SELECT.  The
+    # P8 aggregate capability exposes only the bounded dead-letter count while
+    # preserving the raw durable queue boundary.
+    failed = int(
+        await session.scalar(
+            text("SELECT app_secure.lifecycle_saga_dead_letter_count()")
+        )
+        or 0
+    )
+    runtime_metrics().lifecycle_snapshot(
+        pending=pending,
+        stuck=stuck,
+        failed=failed,
+    )
+
+
 async def _run_watchdog_sweep() -> None:
     async with maintenance_async_session_maker() as session:
         await _prepare_maintenance_session(session)
         service = BranchLifecycleService(session)
         try:
             await service.run_watchdog_sweep()
+            await _record_lifecycle_snapshot(session)
             await session.commit()
         except Exception:
             await session.rollback()
@@ -102,6 +150,12 @@ async def _run_notification_reconciliation_sweep(batch_size: int = 100) -> int:
             logger.exception("Notification reconciliation sweep failed")
             raise
 
+    pending = int(snapshot["pending_count"] or 0) + int(
+        snapshot["provider_accepted_count"] or 0
+    )
+    dead_lettered = int(snapshot["dead_letter_count"] or 0)
+    oldest_age = float(snapshot["oldest_pending_age_seconds"] or 0.0)
+
     if settings.NOTIFICATION_METRICS_OTLP_ENDPOINT.strip():
         configure_notification_metrics(
             endpoint=settings.NOTIFICATION_METRICS_OTLP_ENDPOINT,
@@ -111,10 +165,17 @@ async def _run_notification_reconciliation_sweep(batch_size: int = 100) -> int:
             service_name="doers-notification-maintenance",
         )
         record_operational_snapshot(
-            pending=int(snapshot["pending_count"] or 0) + int(snapshot["provider_accepted_count"] or 0),
-            dead_lettered=int(snapshot["dead_letter_count"] or 0),
-            oldest_age_seconds=float(snapshot["oldest_pending_age_seconds"] or 0.0),
+            pending=pending,
+            dead_lettered=dead_lettered,
+            oldest_age_seconds=oldest_age,
         )
+
+    runtime_metrics().queue_snapshot(
+        queue="notification",
+        depth=pending,
+        oldest_age_seconds=oldest_age,
+        dead_letters=dead_lettered,
+    )
 
     if enqueued_count:
         logger.info(

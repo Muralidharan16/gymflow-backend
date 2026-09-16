@@ -91,6 +91,7 @@ _P4D_REFUND_OBLIGATION_MIGRATION = "zd07d8e9f0a3e_p4d_refund_obligation_resoluti
 _P4D_AUDIT_PARTITION_MIGRATION = "ze07d8e9f0a3f_audit_partition_lifecycle.py"
 _P4E_OPERATIONAL_SNAPSHOTS_MIGRATION = "zf07d8e9f0a40_p4e_operational_snapshots.py"
 _P5E_PROVIDER_FENCE_MIGRATION = "zi07d8e9f0a43_p5e_provider_capability_fences.py"
+_P8_LIFECYCLE_SNAPSHOT_MIGRATION = "zk07d8e9f0a45_p8_lifecycle_dead_letter_snapshot.py"
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -128,6 +129,7 @@ APP_SECURE_FILES.update(
         _P4D_AUDIT_PARTITION_MIGRATION,
         _P4E_OPERATIONAL_SNAPSHOTS_MIGRATION,
         _P5E_PROVIDER_FENCE_MIGRATION,
+        _P8_LIFECYCLE_SNAPSHOT_MIGRATION,
     }
 )
 
@@ -260,6 +262,10 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # own the function bodies, owners and EXECUTE partition; this closed
         # inventory records the new sensitive migration explicitly.
         _P5E_PROVIDER_FENCE_MIGRATION: set(),
+        # P8 adds one aggregate-only lifecycle dead-letter count function. The
+        # migration references app_secure but does not add schema/view/policy DDL;
+        # dedicated P8 contracts own the SECURITY DEFINER body and EXECUTE ACL.
+        _P8_LIFECYCLE_SNAPSHOT_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {

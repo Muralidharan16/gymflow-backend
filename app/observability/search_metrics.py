@@ -1,7 +1,7 @@
 """Low-cardinality, exportable P4B search provider metrics.
 
 P4B uses a dedicated OTLP/HTTP metric reader instead of assuming that importing
-the OpenTelemetry API makes metrics observable.  The recorder is initialized in
+the OpenTelemetry API makes metrics observable. The recorder is initialized in
 the process that performs search work, which is safe for Celery prefork workers.
 No tenant, branch, document, URL or request identifiers are metric attributes.
 """
@@ -18,6 +18,8 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExp
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
+
+from app.observability.runtime_metrics import runtime_metrics
 
 
 logger = logging.getLogger("doers.search_metrics")
@@ -49,9 +51,6 @@ def _instrument_set(meter):
     )
 
 
-# Safe no-op/proxy instruments until an enabled production worker installs its
-# dedicated SDK MeterProvider. Tests that construct the provider directly do not
-# need an external collector merely to exercise provider semantics.
 _PROVIDER_REQUESTS, _PROVIDER_LATENCY_MS, _DRIFT_REPAIRS = _instrument_set(
     metrics.get_meter(_METER_NAME, _METER_VERSION)
 )
@@ -116,8 +115,6 @@ def configure_search_metrics(
                 )
             return
 
-        # Never call shutdown on a MeterProvider inherited from a parent after
-        # fork. P4B configures lazily in the process that performs provider work.
         exporter = OTLPMetricExporter(
             endpoint=endpoint,
             timeout=float(export_timeout_seconds),
@@ -155,8 +152,6 @@ def force_flush_search_metrics(*, timeout_millis: int = 5000) -> bool:
 
 
 def shutdown_search_metrics(*, timeout_millis: int = 5000) -> None:
-    """Flush/shutdown the process-local provider; primarily useful for tests."""
-
     global _PROVIDER, _PROVIDER_PID, _PROVIDER_CONFIG
     global _PROVIDER_REQUESTS, _PROVIDER_LATENCY_MS, _DRIFT_REPAIRS
 
@@ -174,6 +169,21 @@ def shutdown_search_metrics(*, timeout_millis: int = 5000) -> None:
         provider.shutdown(timeout_millis=timeout_millis)
 
 
+def _p8_outcome(outcome: str) -> str:
+    value = str(outcome or "").strip().lower()
+    if value in {"success", "verified", "delivered", "superseded"}:
+        return "success"
+    if "timeout" in value:
+        return "timeout"
+    if "rate" in value and "limit" in value:
+        return "rate_limited"
+    if "circuit" in value:
+        return "circuit_open"
+    if "reject" in value or "permanent" in value:
+        return "rejected"
+    return "error"
+
+
 def record_provider_call(*, operation: str, outcome: str, duration_ms: float) -> None:
     attributes = {
         "provider": "opensearch",
@@ -182,6 +192,12 @@ def record_provider_call(*, operation: str, outcome: str, duration_ms: float) ->
     }
     _PROVIDER_REQUESTS.add(1, attributes)
     _PROVIDER_LATENCY_MS.record(max(0.0, float(duration_ms)), attributes)
+    runtime_metrics().provider_call(
+        provider="opensearch",
+        operation=operation,
+        outcome=_p8_outcome(outcome),
+        duration_ms=duration_ms,
+    )
 
 
 def record_drift_repair(*, operation: str, result: str) -> None:
