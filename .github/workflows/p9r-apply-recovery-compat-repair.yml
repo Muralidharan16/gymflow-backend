@@ -22,7 +22,7 @@ jobs:
 
       - name: Guard parent and apply exact P9-R repair
         env:
-          EXPECTED_PARENT: 2824e457e1a6610eedb5997f332d79379f5b6753
+          EXPECTED_PARENT: f125f2f9725f0e65c11c8efde43cd5b2e4482ae8
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD^)" = "$EXPECTED_PARENT"
