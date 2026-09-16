@@ -259,6 +259,10 @@ def test_p9r_uses_certified_api_login_overlay_not_nologin_capability_role() -> N
     assert "GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;" in source
     assert "GRANT CONNECT ON DATABASE ${P9R_SOURCE_DB} TO app_test_runtime;" in source
     assert source.count('APP_DB_URL="postgresql+asyncpg://${P9R_API_LOGIN}@/${P9R_SOURCE_DB}?host=') == 2
+    assert 'APP_DB_URL="postgresql+asyncpg://${P9R_API_LOGIN}@/${P9R_SOURCE_DB}?host=${P9R_FULL_SOCKET}&port=${P9R_FULL_PORT}"' in source
+    assert 'APP_DB_URL="postgresql+asyncpg://${P9R_API_LOGIN}@/${P9R_SOURCE_DB}?host=${P9R_PITR_SOCKET}&port=${P9R_PITR_PORT}"' in source
+    assert '?host=${P9R_FULL_SOCKET}"' not in source
+    assert '?host=${P9R_PITR_SOCKET}"' not in source
     assert "postgresql+asyncpg://app_runtime@" not in source
     assert "ALTER ROLE app_runtime LOGIN" not in source
     assert source.count("full-runtime-login-preflight.txt") >= 1
