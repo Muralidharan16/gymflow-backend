@@ -218,6 +218,15 @@ def test_p9r_provider_isolation_is_process_allowlist_plus_owner_firewall() -> No
     assert "PLATFORM_BILLING_PROVIDER_MODE=disabled" in block
 
 
+def test_p9r_app_workdir_is_entered_only_after_switching_to_p9rapp() -> None:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    assert "sudo install -d -m 0750 -o p9rapp -g p9rapp /tmp/p9r-app-work /tmp/p9r-app-home" in source
+    safe_launcher = "/bin/bash -c 'cd /tmp/p9r-app-work && exec \"$PYTHON_BIN\" -m uvicorn app.main:app --host 127.0.0.1 --port \"$P9R_APP_PORT\"'"
+    assert source.count(safe_launcher) == 2
+    assert "\n            cd /tmp/p9r-app-work\n            exec sudo -u p9rapp env -i" not in source
+    assert source.count("exec sudo -u p9rapp env -i") == 2
+
+
 def test_p9r_decision_and_artifact_keep_backup_bytes_ephemeral() -> None:
     workflow = _workflow()
     source = WORKFLOW.read_text(encoding="utf-8")
