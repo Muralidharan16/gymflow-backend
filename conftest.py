@@ -35,6 +35,18 @@ _DEDICATED_PROCESS_FAULT_RUNTIME_MODULES = {
         "P8-O production-like observability faults",
         "P8O_PROCESS_FAULTS",
     ),
+    "tests/test_p8o_stuck_lifecycle_runtime.py": (
+        "P8-O stuck lifecycle observability faults",
+        "P8O_PROCESS_FAULTS",
+    ),
+    "tests/test_p8o_otlp_sink_loss_runtime.py": (
+        "P8-O OTLP sink-loss observability faults",
+        "P8O_PROCESS_FAULTS",
+    ),
+    "tests/test_p8o_database_disconnect_runtime.py": (
+        "P8-O database-disconnect observability faults",
+        "P8O_PROCESS_FAULTS",
+    ),
 }
 
 
