@@ -227,6 +227,23 @@ def test_p9r_app_workdir_is_entered_only_after_switching_to_p9rapp() -> None:
     assert source.count("exec sudo -u p9rapp env -i") == 2
 
 
+def test_p9r_app_runtime_is_staged_privately_instead_of_exposing_workspace() -> None:
+    workflow = _workflow()
+    source = WORKFLOW.read_text(encoding="utf-8")
+    env = workflow["jobs"]["recovery_rehearsal"]["env"]
+    assert env["P9R_APP_RUNTIME"] == "/tmp/p9r-app-runtime"
+    assert 'sudo install -d -m 0750 -o p9rapp -g p9rapp "$P9R_APP_RUNTIME"' in source
+    assert 'sudo cp -a "$GITHUB_WORKSPACE/app" "$GITHUB_WORKSPACE/security" "$P9R_APP_RUNTIME/"' in source
+    assert 'sudo chown -R p9rapp:p9rapp "$P9R_APP_RUNTIME"' in source
+    assert 'sudo chmod -R u=rwX,g=rX,o= "$P9R_APP_RUNTIME"' in source
+    assert 'security/runtime_identity/process_profiles.v1.json' in source
+    assert 'security/cluster_role_bootstrap/roles.v1.json' in source
+    assert source.count('PYTHONPATH="$P9R_APP_RUNTIME"') == 2
+    assert 'PYTHONPATH="$GITHUB_WORKSPACE"' not in source
+    assert "chmod 0755" not in source
+    assert "chmod -R 0755" not in source
+
+
 def test_p9r_decision_and_artifact_keep_backup_bytes_ephemeral() -> None:
     workflow = _workflow()
     source = WORKFLOW.read_text(encoding="utf-8")

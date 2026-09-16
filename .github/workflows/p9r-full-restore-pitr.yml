@@ -41,6 +41,7 @@ jobs:
       P9R_REDIS_PORT: '16380'
       P9R_APP_PORT: '18081'
       P9R_METRICS_PORT: '4319'
+      P9R_APP_RUNTIME: /tmp/p9r-app-runtime
       MIGRATION_PASSWORD: ci-p9r-migration-owner
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p9r-migration-owner@127.0.0.1:5432/gymflow_p9r_source
       EVIDENCE_DIR: p9r-evidence
@@ -292,6 +293,14 @@ jobs:
           P9R_APP_UID="$(id -u p9rapp)"
           echo "$P9R_APP_UID" > "$EVIDENCE_DIR/p9r-app-uid.txt"
           sudo install -d -m 0750 -o p9rapp -g p9rapp /tmp/p9r-app-work /tmp/p9r-app-home
+          sudo rm -rf "$P9R_APP_RUNTIME"
+          sudo install -d -m 0750 -o p9rapp -g p9rapp "$P9R_APP_RUNTIME"
+          sudo cp -a "$GITHUB_WORKSPACE/app" "$GITHUB_WORKSPACE/security" "$P9R_APP_RUNTIME/"
+          sudo chown -R p9rapp:p9rapp "$P9R_APP_RUNTIME"
+          sudo chmod -R u=rwX,g=rX,o= "$P9R_APP_RUNTIME"
+          sudo -u p9rapp test -r "$P9R_APP_RUNTIME/app/main.py"
+          sudo -u p9rapp test -r "$P9R_APP_RUNTIME/security/runtime_identity/process_profiles.v1.json"
+          sudo -u p9rapp test -r "$P9R_APP_RUNTIME/security/cluster_role_bootstrap/roles.v1.json"
 
           redis-server \
             --port "$P9R_REDIS_PORT" \
@@ -335,7 +344,7 @@ jobs:
             exec sudo -u p9rapp env -i \
               HOME=/tmp/p9r-app-home \
               PATH="$PATH" \
-              PYTHONPATH="$GITHUB_WORKSPACE" \
+              PYTHONPATH="$P9R_APP_RUNTIME" \
               PYTHONDONTWRITEBYTECODE=1 \
               ENVIRONMENT=test \
               DATABASE_URL="$APP_DB_URL" \
@@ -534,7 +543,7 @@ jobs:
             exec sudo -u p9rapp env -i \
               HOME=/tmp/p9r-app-home \
               PATH="$PATH" \
-              PYTHONPATH="$GITHUB_WORKSPACE" \
+              PYTHONPATH="$P9R_APP_RUNTIME" \
               PYTHONDONTWRITEBYTECODE=1 \
               ENVIRONMENT=test \
               DATABASE_URL="$APP_DB_URL" \
