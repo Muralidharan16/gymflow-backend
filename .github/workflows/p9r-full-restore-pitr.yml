@@ -332,7 +332,6 @@ jobs:
           PYTHON_BIN="$(command -v python)"
           APP_DB_URL="postgresql+asyncpg://app_runtime@/${P9R_SOURCE_DB}?host=${P9R_FULL_SOCKET}"
           (
-            cd /tmp/p9r-app-work
             exec sudo -u p9rapp env -i \
               HOME=/tmp/p9r-app-home \
               PATH="$PATH" \
@@ -357,7 +356,9 @@ jobs:
               PLATFORM_BILLING_WEBHOOK_PROCESSING=false \
               PLATFORM_BILLING_DUNNING_TRANSITIONS=false \
               PLATFORM_BILLING_NOTIFICATIONS=false \
-              "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port "$P9R_APP_PORT"
+              PYTHON_BIN="$PYTHON_BIN" \
+              P9R_APP_PORT="$P9R_APP_PORT" \
+              /bin/bash -c 'cd /tmp/p9r-app-work && exec "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port "$P9R_APP_PORT"'
           ) > "$EVIDENCE_DIR/full-app.log" 2>&1 &
           echo "$!" > /tmp/p9r-full-app-launcher.pid
 
@@ -530,7 +531,6 @@ jobs:
           PYTHON_BIN="$(command -v python)"
           APP_DB_URL="postgresql+asyncpg://app_runtime@/${P9R_SOURCE_DB}?host=${P9R_PITR_SOCKET}"
           (
-            cd /tmp/p9r-app-work
             exec sudo -u p9rapp env -i \
               HOME=/tmp/p9r-app-home \
               PATH="$PATH" \
@@ -555,7 +555,9 @@ jobs:
               PLATFORM_BILLING_WEBHOOK_PROCESSING=false \
               PLATFORM_BILLING_DUNNING_TRANSITIONS=false \
               PLATFORM_BILLING_NOTIFICATIONS=false \
-              "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port "$P9R_APP_PORT"
+              PYTHON_BIN="$PYTHON_BIN" \
+              P9R_APP_PORT="$P9R_APP_PORT" \
+              /bin/bash -c 'cd /tmp/p9r-app-work && exec "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port "$P9R_APP_PORT"'
           ) > "$EVIDENCE_DIR/pitr-app.log" 2>&1 &
           echo "$!" > /tmp/p9r-pitr-app-launcher.pid
 
