@@ -24,6 +24,27 @@ P9 certifies only when every marker below is emitted by same-head evidence and a
 | Refund boundary | Provider execution remains disabled/fail-closed | `P9_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED` |
 | Final | All inherited and P9 gates pass on one immutable SHA | `P9F_FINAL_SAME_HEAD_CERTIFICATION=PASS` |
 
+## P9-L frozen runtime budgets
+
+P9-L must certify the exact `zj07d8e9f0a44` → `zk07d8e9f0a45`
+migration with the following unchanged limits:
+
+- PostgreSQL `lock_timeout`: **1,500 ms**.
+- PostgreSQL `statement_timeout`: **15,000 ms**.
+- Maximum observed migration lock wait: **750 ms**.
+- Maximum migration wall-clock duration: **10,000 ms**.
+- Controlled `alembic_version` metadata-block hold: **200 ms**.
+- Lock-observation sampling interval: **5 ms**.
+- A granted `AccessExclusiveLock` on `organizations`, `org_branches`, or
+  `branch_outbox_events` is a hard failure.
+- A changed effective `relfilenode` on those relations is a table-rewrite hard
+  failure; before/after relation sizes must also be recorded.
+
+The short `alembic_version` blocker exists only to prove that real lock waiting
+and blocker attribution are observable. Ordinary `AccessShareLock` and
+`RowExclusiveLock` activity remains held on the populated durable outbox and
+must stay compatible with the migration.
+
 ## Final hard gate
 
 `P9_UPGRADE_AND_RECOVERY_PROVEN=PASS`

@@ -6,7 +6,16 @@
   "branch": "hardening/p9-data-protection-disaster-recovery",
   "alembic_head": "zk07d8e9f0a45",
   "alembic_predecessor": "zj07d8e9f0a44",
-  "slices": ["P9-G", "P9-M", "P9-L", "P9-B", "P9-R", "P9-C", "P9-D", "P9-F"],
+  "slices": [
+    "P9-G",
+    "P9-M",
+    "P9-L",
+    "P9-B",
+    "P9-R",
+    "P9-C",
+    "P9-D",
+    "P9-F"
+  ],
   "hard_gate": "upgrade_and_recovery_from_bad_deployment_or_data_loss_proven",
   "migration_rehearsal": {
     "production_shaped_populated_predecessor_required": true,
@@ -26,7 +35,19 @@
     "table_rewrite_detection_required": true,
     "relation_size_before_after_required": true,
     "unexpected_access_exclusive_lock_is_hard_stop": true,
-    "unbounded_lock_wait_is_hard_stop": true
+    "unbounded_lock_wait_is_hard_stop": true,
+    "database_lock_timeout_ms": 1500,
+    "database_statement_timeout_ms": 15000,
+    "observed_lock_wait_budget_ms": 750,
+    "migration_wall_clock_budget_ms": 10000,
+    "controlled_metadata_block_hold_ms": 200,
+    "sample_interval_ms": 5,
+    "critical_relations": [
+      "organizations",
+      "org_branches",
+      "branch_outbox_events"
+    ],
+    "controlled_metadata_blocker_relation": "alembic_version"
   },
   "backup_integrity": {
     "logical_backup_required": true,

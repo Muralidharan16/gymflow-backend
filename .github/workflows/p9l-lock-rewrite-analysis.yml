@@ -1,0 +1,232 @@
+name: P9-L Lock Rewrite and Duration Analysis
+
+on:
+  push:
+    branches:
+      - hardening/p9-data-protection-disaster-recovery
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p9l-lock-rewrite-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lock_rewrite_analysis:
+    name: Real PG16 lock, rewrite and duration rehearsal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      P9L_PREDECESSOR: zj07d8e9f0a44
+      P9L_HEAD: zk07d8e9f0a45
+      P9L_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      MIGRATION_PASSWORD: ci-p9l-migration-owner
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p9l-migration-owner@127.0.0.1:5432/gymflow_p9l_test
+      EVIDENCE_DIR: p9l-evidence
+      P9L_LOCK_TIMEOUT_MS: '1500'
+      P9L_STATEMENT_TIMEOUT_MS: '15000'
+      P9L_LOCK_WAIT_BUDGET_MS: '750'
+      P9L_MIGRATION_DURATION_BUDGET_MS: '10000'
+      P9L_CONTROLLED_BLOCK_HOLD_MS: '200'
+      P9L_SAMPLE_INTERVAL_MS: '5'
+      PYTHONDONTWRITEBYTECODE: '1'
+      ENVIRONMENT: test
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked test environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/p9l-resolved.txt
+          diff -u requirements-test.lock /tmp/p9l-resolved.txt
+
+      - name: Validate exact candidate and P9-L static contracts
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9L_CANDIDATE_SHA}"
+          python -m py_compile \
+            scripts/p9l_lock_rewrite_probe.py \
+            tests/test_p9_governance_contracts.py \
+            tests/test_p9m_populated_migration_contracts.py \
+            tests/test_p9l_lock_rewrite_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p9_governance_contracts.py \
+            tests/test_p9m_populated_migration_contracts.py \
+            tests/test_p9l_lock_rewrite_contracts.py
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9L_HEAD}"
+
+      - name: Install PostgreSQL 16 and required extensions
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();'
+          test -f /usr/share/postgresql/16/extension/pg_partman.control
+
+      - name: Bootstrap reduced roles and freeze lock budgets
+        run: |
+          set -euo pipefail
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-p9l-migration-owner';
+          CREATE DATABASE gymflow_p9l_test OWNER migration_owner;
+          ALTER ROLE migration_owner IN DATABASE gymflow_p9l_test SET lock_timeout = '1500ms';
+          ALTER ROLE migration_owner IN DATABASE gymflow_p9l_test SET statement_timeout = '15000ms';
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+
+      - name: Provision infrastructure-owned extension boundary
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_p9l_test <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Build exact populated zj07 predecessor
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          set -o pipefail
+          python -s -m alembic -c alembic.ini upgrade "${P9L_PREDECESSOR}" 2>&1 \
+            | tee "$EVIDENCE_DIR/upgrade-to-predecessor.log"
+          python -s -m alembic -c alembic.ini current 2>&1 \
+            | tee "$EVIDENCE_DIR/current-predecessor.log"
+          grep -q "${P9L_PREDECESSOR}" "$EVIDENCE_DIR/current-predecessor.log"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
+            -d gymflow_p9l_test \
+            -f scripts/ci/p9m_seed_populated_predecessor.sql \
+            | tee "$EVIDENCE_DIR/seed.log"
+          grep -q 'P9M_SYNTHETIC_PRODUCTION_SHAPE=PASS' "$EVIDENCE_DIR/seed.log"
+
+      - name: Capture predecessor stable business and security fingerprint
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
+            -d gymflow_p9l_test \
+            -f scripts/ci/p9m_stable_snapshot.sql \
+            > "$EVIDENCE_DIR/predecessor-stable.txt"
+          grep -qx 'dead_lifecycle_count|204' "$EVIDENCE_DIR/predecessor-stable.txt"
+          grep -qx 'lifecycle_maintenance_raw_outbox_select|false' "$EVIDENCE_DIR/predecessor-stable.txt"
+          echo 'P9L_PREDECESSOR_FINGERPRINT=PASS'
+
+      - name: Run concurrent lock, rewrite and duration probe
+        run: |
+          set -euo pipefail
+          python -s scripts/p9l_lock_rewrite_probe.py \
+            --evidence "$EVIDENCE_DIR/lock-rewrite-evidence.json" \
+            --migration-log "$EVIDENCE_DIR/upgrade-zj07-to-zk07.log" \
+            --lock-wait-budget-ms "$P9L_LOCK_WAIT_BUDGET_MS" \
+            --migration-duration-budget-ms "$P9L_MIGRATION_DURATION_BUDGET_MS" \
+            --controlled-block-hold-ms "$P9L_CONTROLLED_BLOCK_HOLD_MS" \
+            --sample-interval-ms "$P9L_SAMPLE_INTERVAL_MS" \
+            --expected-lock-timeout-ms "$P9L_LOCK_TIMEOUT_MS" \
+            --expected-statement-timeout-ms "$P9L_STATEMENT_TIMEOUT_MS" \
+            | tee "$EVIDENCE_DIR/p9l-probe-output.log"
+          grep -q 'P9L_CONTROLLED_CONTENTION_OBSERVED=PASS' "$EVIDENCE_DIR/p9l-probe-output.log"
+          grep -q 'P9L_ACQUIRED_LOCK_MODES_CAPTURED=PASS' "$EVIDENCE_DIR/p9l-probe-output.log"
+          grep -q 'P9L_NO_UNEXPECTED_ACCESS_EXCLUSIVE=PASS' "$EVIDENCE_DIR/p9l-probe-output.log"
+          grep -q 'P9L_LOCK_WAIT_BOUNDED=PASS' "$EVIDENCE_DIR/p9l-probe-output.log"
+          grep -q 'P9_LOCK_BUDGET=PASS' "$EVIDENCE_DIR/p9l-probe-output.log"
+          grep -q 'P9_TABLE_REWRITE_ANALYSIS=PASS' "$EVIDENCE_DIR/p9l-probe-output.log"
+          grep -q 'P9_MIGRATION_DURATION_MEASURED=PASS' "$EVIDENCE_DIR/p9l-probe-output.log"
+
+      - name: Prove post-upgrade business security and bounded capability
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini current 2>&1 \
+            | tee "$EVIDENCE_DIR/current-head.log"
+          grep -q "${P9L_HEAD}" "$EVIDENCE_DIR/current-head.log"
+
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
+            -d gymflow_p9l_test \
+            -f scripts/ci/p9m_stable_snapshot.sql \
+            > "$EVIDENCE_DIR/head-stable.txt"
+          cmp "$EVIDENCE_DIR/predecessor-stable.txt" "$EVIDENCE_DIR/head-stable.txt" || {
+            diff -u "$EVIDENCE_DIR/predecessor-stable.txt" "$EVIDENCE_DIR/head-stable.txt" || true
+            exit 1
+          }
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
+            -d gymflow_p9l_test \
+            -f scripts/ci/p9m_verify_head_capability.sql \
+            | tee "$EVIDENCE_DIR/head-capability.log"
+          grep -q 'P9M_EXPECTED_CAPABILITY_DELTA=PASS' "$EVIDENCE_DIR/head-capability.log"
+          echo 'P9L_POST_UPGRADE_INTEGRITY=PASS'
+
+      - name: Reprove inherited P8 P9-M and migration boundaries
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p9_governance_contracts.py \
+            tests/test_p9m_populated_migration_contracts.py \
+            tests/test_p9l_lock_rewrite_contracts.py \
+            tests/test_p8_governance_contracts.py \
+            tests/test_migration_app_secure_owner_context_boundary.py \
+            tests/test_pg_dump_normalizer.py
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9L_HEAD}"
+
+      - name: Emit P9-L decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9L_CANDIDATE_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          grep -q '"no_table_rewrite": true' "$EVIDENCE_DIR/lock-rewrite-evidence.json"
+          grep -q '"no_unexpected_access_exclusive": true' "$EVIDENCE_DIR/lock-rewrite-evidence.json"
+          grep -q '"lock_wait_within_budget": true' "$EVIDENCE_DIR/lock-rewrite-evidence.json"
+          grep -q '"migration_within_budget": true' "$EVIDENCE_DIR/lock-rewrite-evidence.json"
+          echo 'P9_LOCK_BUDGET=PASS'
+          echo 'P9_TABLE_REWRITE_ANALYSIS=PASS'
+          echo 'P9_MIGRATION_DURATION_MEASURED=PASS'
+          echo 'P9_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+
+      - name: Upload P9-L lock rewrite evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p9l-lock-rewrite-${{ github.event.pull_request.head.sha || github.sha }}
+          path: p9l-evidence/
+          if-no-files-found: error
+          retention-days: 14
