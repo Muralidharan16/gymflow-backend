@@ -26,6 +26,7 @@ jobs:
     env:
       P9M_PREDECESSOR: zj07d8e9f0a44
       P9M_HEAD: zk07d8e9f0a45
+      P9M_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       MIGRATION_PASSWORD: ci-p9m-migration-owner
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p9m-migration-owner@127.0.0.1:5432/gymflow_p9m_test
       EVIDENCE_DIR: p9m-evidence
@@ -37,6 +38,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
@@ -54,9 +56,10 @@ jobs:
           python -m pip freeze | LC_ALL=C sort > /tmp/p9m-resolved.txt
           diff -u requirements-test.lock /tmp/p9m-resolved.txt
 
-      - name: Validate P9-M static contracts before runtime
+      - name: Validate exact candidate and P9-M static contracts before runtime
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9M_CANDIDATE_SHA}"
           python -m py_compile \
             scripts/p9m_upgrade_timer.py \
             tests/test_p9_governance_contracts.py \
@@ -214,7 +217,7 @@ jobs:
       - name: Emit P9-M decision
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${P9M_CANDIDATE_SHA}"
           git diff --exit-code
           git diff --cached --exit-code
           echo 'P9_POPULATED_PREDECESSOR_TO_HEAD=PASS'
