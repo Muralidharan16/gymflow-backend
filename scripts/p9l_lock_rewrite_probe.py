@@ -15,17 +15,12 @@ from psycopg.rows import dict_row
 
 EXPECTED_PREDECESSOR = "zj07d8e9f0a44"
 EXPECTED_HEAD = "zk07d8e9f0a45"
+EXPECTED_MIGRATION_APP = "p9l_alembic_migration"
 CRITICAL_RELATIONS = (
     "organizations",
     "org_branches",
     "branch_outbox_events",
 )
-CONTROL_APPS = {
-    "p9l_observer",
-    "p9l_reader",
-    "p9l_writer",
-    "p9l_version_blocker",
-}
 
 
 def _dsn() -> str:
@@ -72,24 +67,6 @@ def _relation_snapshot(conn) -> dict[str, dict[str, int | str]]:
     result = {str(row["relname"]): dict(row) for row in rows}
     if set(result) != set(CRITICAL_RELATIONS):
         raise SystemExit(f"P9-L critical relation set mismatch: {sorted(result)}")
-    return result
-
-
-def _role_timeout_settings(conn) -> dict[str, dict[str, str | int]]:
-    rows = conn.execute(
-        """
-        SELECT name, setting, unit
-        FROM pg_catalog.pg_settings
-        WHERE name IN ('lock_timeout', 'statement_timeout')
-        ORDER BY name
-        """
-    ).fetchall()
-    result = {}
-    for row in rows:
-        result[str(row["name"])] = {
-            "setting": int(row["setting"]),
-            "unit": str(row["unit"]),
-        }
     return result
 
 
@@ -143,16 +120,12 @@ def _migration_sessions(conn) -> list[dict[str, object]]:
                pg_catalog.pg_blocking_pids(pid) AS blocking_pids
         FROM pg_catalog.pg_stat_activity
         WHERE datname = current_database()
-          AND usename = current_user
-          AND pid <> pg_backend_pid()
+          AND application_name = %s
         ORDER BY pid
-        """
+        """,
+        (EXPECTED_MIGRATION_APP,),
     ).fetchall()
-    return [
-        dict(row)
-        for row in rows
-        if str(row["application_name"] or "") not in CONTROL_APPS
-    ]
+    return [dict(row) for row in rows]
 
 
 def _dedupe_lock_key(lock: dict[str, object]) -> str:
@@ -195,19 +168,6 @@ def main() -> int:
             raise SystemExit("P9-L lock probe requires exact zj07 predecessor")
 
         before = _relation_snapshot(observer)
-        timeouts = _role_timeout_settings(observer)
-        lock_timeout = timeouts.get("lock_timeout", {})
-        statement_timeout = timeouts.get("statement_timeout", {})
-        if (
-            lock_timeout.get("unit") != "ms"
-            or lock_timeout.get("setting") != ns.expected_lock_timeout_ms
-        ):
-            raise SystemExit(f"P9-L lock_timeout mismatch: {lock_timeout}")
-        if (
-            statement_timeout.get("unit") != "ms"
-            or statement_timeout.get("setting") != ns.expected_statement_timeout_ms
-        ):
-            raise SystemExit(f"P9-L statement_timeout mismatch: {statement_timeout}")
 
         reader.execute("LOCK TABLE public.branch_outbox_events IN ACCESS SHARE MODE")
         reader.execute(
@@ -382,6 +342,12 @@ def main() -> int:
             and controlled_release_ns is not None
             else 0.0
         )
+        timeout_marker = (
+            "P9L_ALEMBIC_SESSION_TIMEOUTS=PASS "
+            f"lock_timeout_ms={ns.expected_lock_timeout_ms} "
+            f"statement_timeout_ms={ns.expected_statement_timeout_ms}"
+        )
+        timeout_marker_observed = timeout_marker in migration_output
 
         after_revision = _current_revision(observer)
         after = _relation_snapshot(observer)
@@ -416,7 +382,8 @@ def main() -> int:
         )
         migration_within_budget = duration_ms <= ns.migration_duration_budget_ms
         lock_mode_proof = (
-            controlled_block_observed
+            timeout_marker_observed
+            and controlled_block_observed
             and pending_version_rowexclusive_observed
             and critical_outbox_access_share_observed
             and blocked_sample_count > 0
@@ -432,14 +399,17 @@ def main() -> int:
             "predecessor": EXPECTED_PREDECESSOR,
             "target": EXPECTED_HEAD,
             "budgets": {
-                "database_lock_timeout_ms": ns.expected_lock_timeout_ms,
-                "database_statement_timeout_ms": ns.expected_statement_timeout_ms,
+                "migration_session_lock_timeout_ms": ns.expected_lock_timeout_ms,
+                "migration_session_statement_timeout_ms": ns.expected_statement_timeout_ms,
                 "observed_lock_wait_budget_ms": ns.lock_wait_budget_ms,
                 "migration_wall_clock_budget_ms": ns.migration_duration_budget_ms,
                 "controlled_metadata_block_hold_ms": ns.controlled_block_hold_ms,
                 "sample_interval_ms": ns.sample_interval_ms,
             },
-            "postgres_settings": timeouts,
+            "migration_session": {
+                "application_name": EXPECTED_MIGRATION_APP,
+                "timeout_marker_observed": timeout_marker_observed,
+            },
             "control_sessions": {
                 "reader_pid": reader_pid,
                 "reader_lock": "AccessShareLock",
@@ -479,6 +449,7 @@ def main() -> int:
                 "changed_heap_sizes": changed_heap_sizes,
             },
             "decisions": {
+                "migration_session_timeouts_proven": timeout_marker_observed,
                 "lock_wait_within_budget": lock_wait_within_budget,
                 "migration_within_budget": migration_within_budget,
                 "lock_mode_proof": lock_mode_proof,
@@ -496,6 +467,8 @@ def main() -> int:
             failures.append(f"migration return code {process.returncode}")
         if after_revision != EXPECTED_HEAD:
             failures.append(f"post revision is {after_revision}")
+        if not timeout_marker_observed:
+            failures.append("migration session did not prove exact timeout ceilings")
         if not migration_pids:
             failures.append("no migration backend PID was observed")
         if not controlled_block_observed:

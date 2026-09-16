@@ -12,6 +12,7 @@ SCOPE = ROOT / "docs/architecture/P9L_LOCK_REWRITE_ANALYSIS.md"
 ACCEPTANCE = ROOT / "docs/architecture/P9_ACCEPTANCE_MATRIX.md"
 WORKFLOW = ROOT / ".github/workflows/p9l-lock-rewrite-analysis.yml"
 PROBE = ROOT / "scripts/p9l_lock_rewrite_probe.py"
+ALEMBIC_ENV = ROOT / "alembic/env.py"
 
 P9_BRANCH = "hardening/p9-data-protection-disaster-recovery"
 PREDECESSOR = "zj07d8e9f0a44"
@@ -45,16 +46,17 @@ def _matrix() -> dict:
 
 
 def test_p9l_files_exist_and_freeze_exact_runtime_budget() -> None:
-    for path in (MATRIX, SCOPE, ACCEPTANCE, WORKFLOW, PROBE):
+    for path in (MATRIX, SCOPE, ACCEPTANCE, WORKFLOW, PROBE, ALEMBIC_ENV):
         assert path.is_file(), path
 
     contract = _matrix()["lock_and_rewrite_analysis"]
-    assert contract["database_lock_timeout_ms"] == LOCK_TIMEOUT_MS
-    assert contract["database_statement_timeout_ms"] == STATEMENT_TIMEOUT_MS
+    assert contract["migration_session_lock_timeout_ms"] == LOCK_TIMEOUT_MS
+    assert contract["migration_session_statement_timeout_ms"] == STATEMENT_TIMEOUT_MS
     assert contract["observed_lock_wait_budget_ms"] == LOCK_WAIT_BUDGET_MS
     assert contract["migration_wall_clock_budget_ms"] == MIGRATION_DURATION_BUDGET_MS
     assert contract["controlled_metadata_block_hold_ms"] == CONTROLLED_BLOCK_HOLD_MS
     assert contract["sample_interval_ms"] == SAMPLE_INTERVAL_MS
+    assert contract["persistent_managed_role_or_database_timeout_settings_forbidden"] is True
     assert contract["critical_relations"] == [
         "organizations",
         "org_branches",
@@ -77,15 +79,35 @@ def test_p9l_files_exist_and_freeze_exact_runtime_budget() -> None:
         assert marker in scope
 
 
+def test_p9l_alembic_session_bounds_are_startup_only_test_only_and_self_proving() -> None:
+    source = ALEMBIC_ENV.read_text(encoding="utf-8")
+    for token in (
+        "P9L_BOUNDED_MIGRATION_SESSION",
+        "P9L_LOCK_TIMEOUT_MS",
+        "P9L_STATEMENT_TIMEOUT_MS",
+        "P9-L bounded migration session is test-only",
+        '"server_settings": server_settings',
+        '"application_name": _P9L_APPLICATION_NAME',
+        '"p9l_alembic_migration"',
+        "P9L_ALEMBIC_SESSION_TIMEOUTS=PASS",
+        "pg_catalog.pg_settings",
+    ):
+        assert token in source
+    assert "ALTER ROLE" not in source
+    assert "ALTER SYSTEM" not in source
+
+
 def test_p9l_probe_observes_real_locks_blockers_and_monotonic_duration() -> None:
     source = PROBE.read_text(encoding="utf-8")
     for token in (
         'EXPECTED_PREDECESSOR = "zj07d8e9f0a44"',
         'EXPECTED_HEAD = "zk07d8e9f0a45"',
+        'EXPECTED_MIGRATION_APP = "p9l_alembic_migration"',
         "time.monotonic_ns()",
         "pg_catalog.pg_stat_activity",
         "pg_catalog.pg_locks",
         "pg_catalog.pg_blocking_pids(pid)",
+        "P9L_ALEMBIC_SESSION_TIMEOUTS=PASS",
         "p9l_observer",
         "p9l_reader",
         "p9l_writer",
@@ -138,6 +160,7 @@ def test_p9l_workflow_is_exact_head_real_pg16_and_bounded() -> None:
     env = job["env"]
     assert env["P9L_PREDECESSOR"] == PREDECESSOR
     assert env["P9L_HEAD"] == HEAD
+    assert env["P9L_BOUNDED_MIGRATION_SESSION"] == "1"
     assert int(env["P9L_LOCK_TIMEOUT_MS"]) == LOCK_TIMEOUT_MS
     assert int(env["P9L_STATEMENT_TIMEOUT_MS"]) == STATEMENT_TIMEOUT_MS
     assert int(env["P9L_LOCK_WAIT_BUDGET_MS"]) == LOCK_WAIT_BUDGET_MS
@@ -149,8 +172,7 @@ def test_p9l_workflow_is_exact_head_real_pg16_and_bounded() -> None:
         "ref: ${{ github.event.pull_request.head.sha || github.sha }}",
         "postgresql-16",
         "scripts/ci/bootstrap_cluster_roles.sh",
-        "lock_timeout = '1500ms'",
-        "statement_timeout = '15000ms'",
+        "scripts/ci/verify_cluster_roles.sh",
         'upgrade "${P9L_PREDECESSOR}"',
         "p9m_seed_populated_predecessor.sql",
         "p9m_stable_snapshot.sql",
@@ -171,6 +193,7 @@ def test_p9l_workflow_is_exact_head_real_pg16_and_bounded() -> None:
     ):
         assert marker in source
 
+    assert "ALTER ROLE migration_owner IN DATABASE" not in source
     assert "alembic downgrade" not in source
     assert "ALLOW_DESTRUCTIVE_MIGRATIONS" not in source
     assert "production deployment" not in source.lower()
@@ -186,6 +209,7 @@ def test_p9l_acceptance_matrix_exposes_frozen_runtime_limits() -> None:
         "10,000 ms",
         "200 ms",
         "5 ms",
+        "Persistent managed-role or database-role timeout settings are forbidden",
         "AccessExclusiveLock",
         "relfilenode",
     ):

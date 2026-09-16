@@ -29,12 +29,15 @@ P9 certifies only when every marker below is emitted by same-head evidence and a
 P9-L must certify the exact `zj07d8e9f0a44` → `zk07d8e9f0a45`
 migration with the following unchanged limits:
 
-- PostgreSQL `lock_timeout`: **1,500 ms**.
-- PostgreSQL `statement_timeout`: **15,000 ms**.
+- Alembic migration-session `lock_timeout`: **1,500 ms**.
+- Alembic migration-session `statement_timeout`: **15,000 ms**.
 - Maximum observed migration lock wait: **750 ms**.
 - Maximum migration wall-clock duration: **10,000 ms**.
 - Controlled `alembic_version` metadata-block hold: **200 ms**.
 - Lock-observation sampling interval: **5 ms**.
+- Persistent managed-role or database-role timeout settings are forbidden; the
+  timeout limits are test-only connection startup settings on the exact Alembic
+  session and must be re-proved by that session before HEAD migration starts.
 - A granted `AccessExclusiveLock` on `organizations`, `org_branches`, or
   `branch_outbox_events` is a hard failure.
 - A changed effective `relfilenode` on those relations is a table-rewrite hard

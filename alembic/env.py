@@ -37,6 +37,98 @@ config.set_main_option(
 
 import sys
 
+_P9L_BOUNDED_SESSION_FLAG = "P9L_BOUNDED_MIGRATION_SESSION"
+_P9L_EXPECTED_LOCK_TIMEOUT_MS = 1500
+_P9L_EXPECTED_STATEMENT_TIMEOUT_MS = 15000
+_P9L_APPLICATION_NAME = "p9l_alembic_migration"
+
+
+def _p9l_bounded_session_enabled() -> bool:
+    return os.environ.get(_P9L_BOUNDED_SESSION_FLAG) == "1"
+
+
+def _p9l_server_settings() -> dict[str, str]:
+    """Return test-only startup settings for the P9-L migration rehearsal.
+
+    The production role graph forbids persistent managed-role/database settings.
+    P9-L therefore injects the frozen timeout ceilings only into the exact
+    Alembic connection used by the rehearsal. Nothing is written to
+    pg_db_role_setting and the canonical role verifier remains authoritative.
+    """
+
+    if not _p9l_bounded_session_enabled():
+        return {}
+    if os.environ.get("ENVIRONMENT") != "test":
+        raise RuntimeError("P9-L bounded migration session is test-only")
+
+    raw_lock = os.environ.get("P9L_LOCK_TIMEOUT_MS", "")
+    raw_statement = os.environ.get("P9L_STATEMENT_TIMEOUT_MS", "")
+    try:
+        lock_timeout_ms = int(raw_lock)
+        statement_timeout_ms = int(raw_statement)
+    except ValueError as exc:
+        raise RuntimeError("P9-L timeout values must be exact integers") from exc
+
+    if lock_timeout_ms != _P9L_EXPECTED_LOCK_TIMEOUT_MS:
+        raise RuntimeError(
+            "P9-L lock timeout drift: "
+            f"expected {_P9L_EXPECTED_LOCK_TIMEOUT_MS}ms, got {lock_timeout_ms}ms"
+        )
+    if statement_timeout_ms != _P9L_EXPECTED_STATEMENT_TIMEOUT_MS:
+        raise RuntimeError(
+            "P9-L statement timeout drift: "
+            f"expected {_P9L_EXPECTED_STATEMENT_TIMEOUT_MS}ms, "
+            f"got {statement_timeout_ms}ms"
+        )
+
+    return {
+        "lock_timeout": f"{lock_timeout_ms}ms",
+        "statement_timeout": f"{statement_timeout_ms}ms",
+        "application_name": _P9L_APPLICATION_NAME,
+    }
+
+
+def _assert_p9l_session_timeouts(connection) -> None:
+    if not _p9l_bounded_session_enabled():
+        return
+
+    rows = connection.exec_driver_sql(
+        """
+        SELECT name, setting::bigint AS setting_ms, unit
+        FROM pg_catalog.pg_settings
+        WHERE name IN ('lock_timeout', 'statement_timeout')
+        ORDER BY name
+        """
+    ).mappings().all()
+    observed = {
+        row["name"]: (int(row["setting_ms"]), row["unit"])
+        for row in rows
+    }
+    expected = {
+        "lock_timeout": (_P9L_EXPECTED_LOCK_TIMEOUT_MS, "ms"),
+        "statement_timeout": (_P9L_EXPECTED_STATEMENT_TIMEOUT_MS, "ms"),
+    }
+    if observed != expected:
+        raise RuntimeError(
+            f"P9-L Alembic session timeout mismatch: {observed!r}"
+        )
+
+    app_name = connection.exec_driver_sql(
+        "SELECT current_setting('application_name')"
+    ).scalar_one()
+    if app_name != _P9L_APPLICATION_NAME:
+        raise RuntimeError(
+            "P9-L Alembic application_name mismatch: "
+            f"expected {_P9L_APPLICATION_NAME!r}, got {app_name!r}"
+        )
+
+    print(
+        "P9L_ALEMBIC_SESSION_TIMEOUTS=PASS "
+        f"lock_timeout_ms={_P9L_EXPECTED_LOCK_TIMEOUT_MS} "
+        f"statement_timeout_ms={_P9L_EXPECTED_STATEMENT_TIMEOUT_MS}"
+    )
+
+
 def check_destructive_migrations() -> None:
     """
     Zero-Downtime Expand/Contract schema validation:
@@ -133,6 +225,9 @@ def run_migrations_offline() -> None:
 
 def do_run_migrations(connection) -> None:
     if _destination_targets_head():
+        # P9-L uses test-only connection startup settings. Prove the exact
+        # migration backend received them without persisting role/database GUCs.
+        _assert_p9l_session_timeouts(connection)
         # This is deliberately before context.configure()/begin_transaction():
         # HEAD may not mutate database state until the externally managed
         # PostgreSQL role/settings/membership contract has been proven live.
@@ -156,10 +251,13 @@ def do_run_migrations(connection) -> None:
 
 async def run_async_migrations() -> None:
     """Run migrations in 'online' mode with async engine."""
+    server_settings = _p9l_server_settings()
+    connect_args = {"server_settings": server_settings} if server_settings else {}
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
 
     async with connectable.connect() as connection:

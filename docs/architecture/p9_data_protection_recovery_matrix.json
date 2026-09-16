@@ -36,8 +36,8 @@
     "relation_size_before_after_required": true,
     "unexpected_access_exclusive_lock_is_hard_stop": true,
     "unbounded_lock_wait_is_hard_stop": true,
-    "database_lock_timeout_ms": 1500,
-    "database_statement_timeout_ms": 15000,
+    "migration_session_lock_timeout_ms": 1500,
+    "migration_session_statement_timeout_ms": 15000,
     "observed_lock_wait_budget_ms": 750,
     "migration_wall_clock_budget_ms": 10000,
     "controlled_metadata_block_hold_ms": 200,
@@ -47,7 +47,8 @@
       "org_branches",
       "branch_outbox_events"
     ],
-    "controlled_metadata_blocker_relation": "alembic_version"
+    "controlled_metadata_blocker_relation": "alembic_version",
+    "persistent_managed_role_or_database_timeout_settings_forbidden": true
   },
   "backup_integrity": {
     "logical_backup_required": true,

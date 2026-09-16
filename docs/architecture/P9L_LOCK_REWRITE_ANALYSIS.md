@@ -32,8 +32,8 @@ The budgets below are phase contract, not advisory values:
 
 | Control | Frozen value |
 |---|---:|
-| PostgreSQL `lock_timeout` | 1500 ms |
-| PostgreSQL `statement_timeout` | 15000 ms |
+| Alembic migration-session `lock_timeout` | 1500 ms |
+| Alembic migration-session `statement_timeout` | 15000 ms |
 | Maximum observed migration lock wait | 750 ms |
 | Maximum migration wall-clock duration | 10000 ms |
 | Controlled Alembic metadata block hold | 200 ms |
@@ -41,6 +41,13 @@ The budgets below are phase contract, not advisory values:
 
 A budget increase is a governance change and requires explicit review rather
 than an automatic CI relaxation.
+
+The timeout ceilings are applied only as asyncpg connection startup settings on
+the P9-L Alembic session. Persistent `ALTER ROLE`, `ALTER ROLE ... IN DATABASE`,
+or other `pg_db_role_setting` changes to managed identities are forbidden. The
+canonical cluster-role verifier runs unchanged, and the HEAD migration itself
+must read back and prove both timeout values before it may mutate the database.
+The bounded-session feature is explicitly rejected outside `ENVIRONMENT=test`.
 
 ## Concurrent-lock model
 
@@ -62,7 +69,7 @@ Second, a synthetic control transaction holds `ShareLock` on
 short, known metadata blocker used only to make a real PostgreSQL lock wait and
 `pg_blocking_pids()` edge observable. Once the migration is observed waiting for
 its real `RowExclusiveLock` on `alembic_version`, the blocker is held for only
-200 ms and then released. The database-level 1500 ms `lock_timeout` remains a
+200 ms and then released. The Alembic-session 1500 ms `lock_timeout` remains a
 second fail-closed ceiling.
 
 This design proves the measurement path itself rather than declaring a
@@ -70,13 +77,15 @@ zero-wait migration from absence of evidence.
 
 ## Required lock evidence
 
-The probe samples the actual migration backend through
+The probe samples the actual `p9l_alembic_migration` backend through
 `pg_catalog.pg_stat_activity`, `pg_catalog.pg_locks`, and
 `pg_catalog.pg_blocking_pids()` using a monotonic clock.
 
 Certification requires all of the following:
 
 - at least one actual migration backend PID is observed;
+- the exact migration session emits
+  `P9L_ALEMBIC_SESSION_TIMEOUTS=PASS` after validating its live startup GUCs;
 - the controlled `alembic_version` blocker is observed;
 - the pending migration `RowExclusiveLock` on `alembic_version` is observed;
 - the migration's granted `AccessShareLock` on
