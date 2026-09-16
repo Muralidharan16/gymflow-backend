@@ -362,7 +362,7 @@ jobs:
           echo 'P9R_LIVE_PROVIDER_EGRESS_BLOCKED=PASS'
 
           PYTHON_BIN="$(command -v python)"
-          APP_DB_URL="postgresql+asyncpg://${P9R_API_LOGIN}@/${P9R_SOURCE_DB}?host=${P9R_FULL_SOCKET}"
+          APP_DB_URL="postgresql+asyncpg://${P9R_API_LOGIN}@/${P9R_SOURCE_DB}?host=${P9R_FULL_SOCKET}&port=${P9R_FULL_PORT}"
           (
             exec sudo -u p9rapp env -i \
               HOME=/tmp/p9r-app-home \
@@ -573,7 +573,7 @@ jobs:
           grep -qx 'PONG' "$EVIDENCE_DIR/pitr-p9rapp-redis-ready.txt"
 
           PYTHON_BIN="$(command -v python)"
-          APP_DB_URL="postgresql+asyncpg://${P9R_API_LOGIN}@/${P9R_SOURCE_DB}?host=${P9R_PITR_SOCKET}"
+          APP_DB_URL="postgresql+asyncpg://${P9R_API_LOGIN}@/${P9R_SOURCE_DB}?host=${P9R_PITR_SOCKET}&port=${P9R_PITR_PORT}"
           (
             exec sudo -u p9rapp env -i \
               HOME=/tmp/p9r-app-home \
