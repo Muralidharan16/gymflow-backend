@@ -68,7 +68,9 @@
     "point_in_time_recovery_required": true,
     "pre_loss_durable_record_must_survive": true,
     "post_target_record_must_not_survive": true,
-    "recovery_timeline_evidence_required": true
+    "recovery_timeline_evidence_required": true,
+    "restored_application_readiness_required": true,
+    "restored_live_provider_egress_must_be_blocked": true
   },
   "recovery_objectives": {
     "rpo_must_be_measured": true,
@@ -77,7 +79,10 @@
     "rpo_definition": "difference_between_recovery_target_or_last_recovered_durable_change_and_failure_boundary",
     "rto_definition": "recovery_start_until_database_and_application_readiness_plus_integrity_validation",
     "targets_must_be_frozen_before_p9_r_certification": true,
-    "measured_values_must_be_recorded_as_evidence": true
+    "measured_values_must_be_recorded_as_evidence": true,
+    "synthetic_ci_rpo_target_ms": 10000,
+    "synthetic_ci_rto_target_ms": 120000,
+    "target_scope": "p9_r_synthetic_ci_certification_only_not_production_sla"
   },
   "rolling_schema_compatibility": {
     "old_application_on_upgraded_schema_required": true,
