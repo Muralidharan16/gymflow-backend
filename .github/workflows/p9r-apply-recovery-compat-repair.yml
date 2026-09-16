@@ -20,151 +20,103 @@ jobs:
           fetch-depth: 0
           ref: hardening/p9-data-protection-disaster-recovery
 
-      - name: Guard parent and apply exact P9-R repair
+      - name: Guard exact parent and apply P9-R recovery compatibility repair
         env:
-          EXPECTED_PARENT: f125f2f9725f0e65c11c8efde43cd5b2e4482ae8
+          EXPECTED_PARENT: 184036e135cda9d4c686e3f940f5151c9dd26ee1
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD^)" = "$EXPECTED_PARENT"
           test "$(git branch --show-current)" = 'hardening/p9-data-protection-disaster-recovery'
-
           python - <<'PY'
           from pathlib import Path
 
-          workflow_path = Path('.github/workflows/p9r-full-restore-pitr.yml')
-          workflow = workflow_path.read_text(encoding='utf-8')
+          wf_path = Path('.github/workflows/p9r-full-restore-pitr.yml')
+          wf = wf_path.read_text(encoding='utf-8')
 
-          old = '''          sha256sum "$EVIDENCE_DIR/source-stable.txt" > "$EVIDENCE_DIR/source-stable.sha256"
-          echo 'P9R_SOURCE_RECOVERY_BASELINE=PASS'
-'''
-          new = '''          sha256sum "$EVIDENCE_DIR/source-stable.txt" > "$EVIDENCE_DIR/source-stable.sha256"
+          def replace_once(old: str, new: str) -> None:
+              global wf
+              count = wf.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one workflow replacement, found {count}: {old[:100]!r}')
+              wf = wf.replace(old, new, 1)
 
-          recovery_compat="$(sudo -u postgres psql -X -qAt -F '|' -v ON_ERROR_STOP=1 -d postgres \\
-            -c "SELECT current_setting('max_connections'), current_setting('max_prepared_transactions'), current_setting('max_locks_per_transaction'), current_setting('max_wal_senders'), current_setting('max_worker_processes')")"
-          IFS='|' read -r source_max_connections source_max_prepared source_max_locks source_max_wal_senders source_max_workers <<< "$recovery_compat"
-          printf '%s\\n' "$recovery_compat" > "$EVIDENCE_DIR/source-recovery-compatible-settings.txt"
-          {
-            printf 'P9R_SOURCE_MAX_CONNECTIONS=%s\\n' "$source_max_connections"
-            printf 'P9R_SOURCE_MAX_PREPARED_TRANSACTIONS=%s\\n' "$source_max_prepared"
-            printf 'P9R_SOURCE_MAX_LOCKS_PER_TRANSACTION=%s\\n' "$source_max_locks"
-            printf 'P9R_SOURCE_MAX_WAL_SENDERS=%s\\n' "$source_max_wal_senders"
-            printf 'P9R_SOURCE_MAX_WORKER_PROCESSES=%s\\n' "$source_max_workers"
-          } >> "$GITHUB_ENV"
-          echo 'P9R_SOURCE_RECOVERY_COMPATIBILITY_CAPTURE=PASS'
-          echo 'P9R_SOURCE_RECOVERY_BASELINE=PASS'
-'''
-          assert workflow.count(old) == 1, workflow.count(old)
-          workflow = workflow.replace(old, new, 1)
+          old = '          sha256sum "$EVIDENCE_DIR/source-stable.txt" > "$EVIDENCE_DIR/source-stable.sha256"\n          echo \'P9R_SOURCE_RECOVERY_BASELINE=PASS\'\n'
+          new = '          sha256sum "$EVIDENCE_DIR/source-stable.txt" > "$EVIDENCE_DIR/source-stable.sha256"\n\n          recovery_compat="$(sudo -u postgres psql -X -qAt -F \'|\' -v ON_ERROR_STOP=1 -d postgres \\\n            -c "SELECT current_setting(\'max_connections\'), current_setting(\'max_prepared_transactions\'), current_setting(\'max_locks_per_transaction\'), current_setting(\'max_wal_senders\'), current_setting(\'max_worker_processes\')")"\n          IFS=\'|\' read -r source_max_connections source_max_prepared source_max_locks source_max_wal_senders source_max_workers <<< "$recovery_compat"\n          printf \'%s\\n\' "$recovery_compat" > "$EVIDENCE_DIR/source-recovery-compatible-settings.txt"\n          {\n            printf \'P9R_SOURCE_MAX_CONNECTIONS=%s\\n\' "$source_max_connections"\n            printf \'P9R_SOURCE_MAX_PREPARED_TRANSACTIONS=%s\\n\' "$source_max_prepared"\n            printf \'P9R_SOURCE_MAX_LOCKS_PER_TRANSACTION=%s\\n\' "$source_max_locks"\n            printf \'P9R_SOURCE_MAX_WAL_SENDERS=%s\\n\' "$source_max_wal_senders"\n            printf \'P9R_SOURCE_MAX_WORKER_PROCESSES=%s\\n\' "$source_max_workers"\n          } >> "$GITHUB_ENV"\n          echo \'P9R_SOURCE_RECOVERY_COMPATIBILITY_CAPTURE=PASS\'\n          echo \'P9R_SOURCE_RECOVERY_BASELINE=PASS\'\n'
+          replace_once(old, new)
 
-          old = '''          shared_buffers = '128MB'
-          max_connections = 50
-          EOF
-'''
-          new = '''          shared_buffers = '128MB'
-          max_connections = ${P9R_SOURCE_MAX_CONNECTIONS}
-          max_prepared_transactions = ${P9R_SOURCE_MAX_PREPARED_TRANSACTIONS}
-          max_locks_per_transaction = ${P9R_SOURCE_MAX_LOCKS_PER_TRANSACTION}
-          max_wal_senders = ${P9R_SOURCE_MAX_WAL_SENDERS}
-          max_worker_processes = ${P9R_SOURCE_MAX_WORKER_PROCESSES}
-          EOF
-'''
-          assert workflow.count(old) == 1, workflow.count(old)
-          workflow = workflow.replace(old, new, 1)
+          old = "          shared_buffers = '128MB'\n          max_connections = 50\n          EOF\n"
+          new = "          shared_buffers = '128MB'\n          max_connections = ${P9R_SOURCE_MAX_CONNECTIONS}\n          max_prepared_transactions = ${P9R_SOURCE_MAX_PREPARED_TRANSACTIONS}\n          max_locks_per_transaction = ${P9R_SOURCE_MAX_LOCKS_PER_TRANSACTION}\n          max_wal_senders = ${P9R_SOURCE_MAX_WAL_SENDERS}\n          max_worker_processes = ${P9R_SOURCE_MAX_WORKER_PROCESSES}\n          EOF\n"
+          replace_once(old, new)
 
-          old = '''          shared_buffers = '128MB'
-          max_connections = 50
-          restore_command = 'cp /tmp/p9r-wal-archive/%f %p'
-'''
-          new = '''          shared_buffers = '128MB'
-          max_connections = ${P9R_SOURCE_MAX_CONNECTIONS}
-          max_prepared_transactions = ${P9R_SOURCE_MAX_PREPARED_TRANSACTIONS}
-          max_locks_per_transaction = ${P9R_SOURCE_MAX_LOCKS_PER_TRANSACTION}
-          max_wal_senders = ${P9R_SOURCE_MAX_WAL_SENDERS}
-          max_worker_processes = ${P9R_SOURCE_MAX_WORKER_PROCESSES}
-          restore_command = 'cp /tmp/p9r-wal-archive/%f %p'
-'''
-          assert workflow.count(old) == 1, workflow.count(old)
-          workflow = workflow.replace(old, new, 1)
+          old = "          shared_buffers = '128MB'\n          max_connections = 50\n          restore_command = 'cp /tmp/p9r-wal-archive/%f %p'\n"
+          new = "          shared_buffers = '128MB'\n          max_connections = ${P9R_SOURCE_MAX_CONNECTIONS}\n          max_prepared_transactions = ${P9R_SOURCE_MAX_PREPARED_TRANSACTIONS}\n          max_locks_per_transaction = ${P9R_SOURCE_MAX_LOCKS_PER_TRANSACTION}\n          max_wal_senders = ${P9R_SOURCE_MAX_WAL_SENDERS}\n          max_worker_processes = ${P9R_SOURCE_MAX_WORKER_PROCESSES}\n          restore_command = 'cp /tmp/p9r-wal-archive/%f %p'\n"
+          replace_once(old, new)
 
-          old = '''          sudo -u postgres /usr/lib/postgresql/16/bin/pg_isready \\
-            -h "$P9R_FULL_SOCKET" -p "$P9R_FULL_PORT" \\
-            | tee "$EVIDENCE_DIR/full-restore-ready.txt"
-'''
-          new = '''          sudo -u postgres /usr/lib/postgresql/16/bin/pg_isready \\
-            -h "$P9R_FULL_SOCKET" -p "$P9R_FULL_PORT" \\
-            | tee "$EVIDENCE_DIR/full-restore-ready.txt"
-          sudo -u postgres psql -X -qAt -F '|' -v ON_ERROR_STOP=1 \\
-            -h "$P9R_FULL_SOCKET" -p "$P9R_FULL_PORT" -d postgres \\
-            -c "SELECT current_setting('max_connections'), current_setting('max_prepared_transactions'), current_setting('max_locks_per_transaction'), current_setting('max_wal_senders'), current_setting('max_worker_processes')" \\
-            > "$EVIDENCE_DIR/full-recovery-compatible-settings.txt"
-          cmp "$EVIDENCE_DIR/source-recovery-compatible-settings.txt" "$EVIDENCE_DIR/full-recovery-compatible-settings.txt"
-          echo 'P9R_FULL_RECOVERY_COMPATIBLE_SETTINGS=PASS'
-'''
-          assert workflow.count(old) == 1, workflow.count(old)
-          workflow = workflow.replace(old, new, 1)
+          old = '          sudo -u postgres /usr/lib/postgresql/16/bin/pg_isready \\\n            -h "$P9R_FULL_SOCKET" -p "$P9R_FULL_PORT" \\\n            | tee "$EVIDENCE_DIR/full-restore-ready.txt"\n'
+          new = old + '          sudo -u postgres psql -X -qAt -F \'|\' -v ON_ERROR_STOP=1 \\\n            -h "$P9R_FULL_SOCKET" -p "$P9R_FULL_PORT" -d postgres \\\n            -c "SELECT current_setting(\'max_connections\'), current_setting(\'max_prepared_transactions\'), current_setting(\'max_locks_per_transaction\'), current_setting(\'max_wal_senders\'), current_setting(\'max_worker_processes\')" \\\n            > "$EVIDENCE_DIR/full-recovery-compatible-settings.txt"\n          cmp "$EVIDENCE_DIR/source-recovery-compatible-settings.txt" "$EVIDENCE_DIR/full-recovery-compatible-settings.txt"\n          echo \'P9R_FULL_RECOVERY_COMPATIBLE_SETTINGS=PASS\'\n'
+          replace_once(old, new)
 
-          old = '''          sudo -u postgres rm -f /tmp/p9r-pitr-postgres.log
-          sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \\
-            -D "$P9R_PITR_RESTORE" \\
-            -l /tmp/p9r-pitr-postgres.log \\
-            -o "-c config_file=/tmp/p9r-pitr-postgresql.conf -c hba_file=/tmp/p9r-pitr-hba.conf -c archive_mode=off" \\
-            -w start
-          sudo -u postgres test -s /tmp/p9r-pitr-postgres.log
-          sudo cat /tmp/p9r-pitr-postgres.log > "$EVIDENCE_DIR/pitr-start.log"
-'''
-          new = '''          sudo -u postgres rm -f /tmp/p9r-pitr-postgres.log
-          if ! sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \\
-              -D "$P9R_PITR_RESTORE" \\
-              -l /tmp/p9r-pitr-postgres.log \\
-              -o "-c config_file=/tmp/p9r-pitr-postgresql.conf -c hba_file=/tmp/p9r-pitr-hba.conf -c archive_mode=off" \\
-              -w start; then
-            if sudo test -s /tmp/p9r-pitr-postgres.log; then
-              sudo cat /tmp/p9r-pitr-postgres.log | tee "$EVIDENCE_DIR/pitr-start-failure.log" >&2
-            fi
-            exit 1
-          fi
-          sudo -u postgres test -s /tmp/p9r-pitr-postgres.log
-          sudo cat /tmp/p9r-pitr-postgres.log > "$EVIDENCE_DIR/pitr-start.log"
-'''
-          assert workflow.count(old) == 1, workflow.count(old)
-          workflow = workflow.replace(old, new, 1)
+          old = '          sudo -u postgres rm -f /tmp/p9r-pitr-postgres.log\n          sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \\\n            -D "$P9R_PITR_RESTORE" \\\n            -l /tmp/p9r-pitr-postgres.log \\\n            -o "-c config_file=/tmp/p9r-pitr-postgresql.conf -c hba_file=/tmp/p9r-pitr-hba.conf -c archive_mode=off" \\\n            -w start\n          sudo -u postgres test -s /tmp/p9r-pitr-postgres.log\n          sudo cat /tmp/p9r-pitr-postgres.log > "$EVIDENCE_DIR/pitr-start.log"\n'
+          new = '          sudo -u postgres rm -f /tmp/p9r-pitr-postgres.log\n          if ! sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \\\n              -D "$P9R_PITR_RESTORE" \\\n              -l /tmp/p9r-pitr-postgres.log \\\n              -o "-c config_file=/tmp/p9r-pitr-postgresql.conf -c hba_file=/tmp/p9r-pitr-hba.conf -c archive_mode=off" \\\n              -w start; then\n            if sudo test -s /tmp/p9r-pitr-postgres.log; then\n              sudo cat /tmp/p9r-pitr-postgres.log | tee "$EVIDENCE_DIR/pitr-start-failure.log" >&2\n            fi\n            exit 1\n          fi\n          sudo -u postgres test -s /tmp/p9r-pitr-postgres.log\n          sudo cat /tmp/p9r-pitr-postgres.log > "$EVIDENCE_DIR/pitr-start.log"\n'
+          replace_once(old, new)
 
-          old = '''          sudo -u postgres /usr/lib/postgresql/16/bin/pg_isready \\
-            -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" \\
-            | tee "$EVIDENCE_DIR/pitr-ready.txt"
-'''
-          new = '''          sudo -u postgres /usr/lib/postgresql/16/bin/pg_isready \\
-            -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" \\
-            | tee "$EVIDENCE_DIR/pitr-ready.txt"
-          sudo -u postgres psql -X -qAt -F '|' -v ON_ERROR_STOP=1 \\
-            -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" -d postgres \\
-            -c "SELECT current_setting('max_connections'), current_setting('max_prepared_transactions'), current_setting('max_locks_per_transaction'), current_setting('max_wal_senders'), current_setting('max_worker_processes')" \\
-            > "$EVIDENCE_DIR/pitr-recovery-compatible-settings.txt"
-          cmp "$EVIDENCE_DIR/source-recovery-compatible-settings.txt" "$EVIDENCE_DIR/pitr-recovery-compatible-settings.txt"
-          echo 'P9R_PITR_RECOVERY_COMPATIBLE_SETTINGS=PASS'
-'''
-          assert workflow.count(old) == 1, workflow.count(old)
-          workflow = workflow.replace(old, new, 1)
-
-          workflow_path.write_text(workflow, encoding='utf-8')
+          old = '          sudo -u postgres /usr/lib/postgresql/16/bin/pg_isready \\\n            -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" \\\n            | tee "$EVIDENCE_DIR/pitr-ready.txt"\n'
+          new = old + '          sudo -u postgres psql -X -qAt -F \'|\' -v ON_ERROR_STOP=1 \\\n            -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" -d postgres \\\n            -c "SELECT current_setting(\'max_connections\'), current_setting(\'max_prepared_transactions\'), current_setting(\'max_locks_per_transaction\'), current_setting(\'max_wal_senders\'), current_setting(\'max_worker_processes\')" \\\n            > "$EVIDENCE_DIR/pitr-recovery-compatible-settings.txt"\n          cmp "$EVIDENCE_DIR/source-recovery-compatible-settings.txt" "$EVIDENCE_DIR/pitr-recovery-compatible-settings.txt"\n          echo \'P9R_PITR_RECOVERY_COMPATIBLE_SETTINGS=PASS\'\n'
+          replace_once(old, new)
+          wf_path.write_text(wf, encoding='utf-8')
 
           test_path = Path('tests/test_p9r_full_restore_pitr_contracts.py')
           tests = test_path.read_text(encoding='utf-8')
           marker = 'def test_p9r_recovery_uses_source_compatible_settings_and_preserves_startup_diagnostics() -> None:'
-          assert marker not in tests
-          tests += '''\n\ndef test_p9r_recovery_uses_source_compatible_settings_and_preserves_startup_diagnostics() -> None:\n    source = WORKFLOW.read_text(encoding="utf-8")\n    full = source.split("- name: Boot isolated full restore", 1)[1].split(\n        "- name: Prove full restore business security and application readiness", 1\n    )[0]\n    recovery = source.split("- name: Recover to named PITR target and measure RTO", 1)[1].split(\n        "- name: Produce machine-readable P9-R decision", 1\n    )[0]\n\n    assert "P9R_SOURCE_RECOVERY_COMPATIBILITY_CAPTURE=PASS" in source\n    assert "source-recovery-compatible-settings.txt" in source\n    for token in (\n        "P9R_SOURCE_MAX_CONNECTIONS",\n        "P9R_SOURCE_MAX_PREPARED_TRANSACTIONS",\n        "P9R_SOURCE_MAX_LOCKS_PER_TRANSACTION",\n        "P9R_SOURCE_MAX_WAL_SENDERS",\n        "P9R_SOURCE_MAX_WORKER_PROCESSES",\n    ):\n        assert token in source\n        assert token in full\n        assert token in recovery\n\n    assert "max_connections = 50" not in recovery\n    assert "full-recovery-compatible-settings.txt" in full\n    assert "P9R_FULL_RECOVERY_COMPATIBLE_SETTINGS=PASS" in full\n    assert "pitr-recovery-compatible-settings.txt" in recovery\n    assert "P9R_PITR_RECOVERY_COMPATIBLE_SETTINGS=PASS" in recovery\n    assert 'cmp "$EVIDENCE_DIR/source-recovery-compatible-settings.txt" "$EVIDENCE_DIR/pitr-recovery-compatible-settings.txt"' in recovery\n    assert "if ! sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl" in recovery\n    assert "pitr-start-failure.log" in recovery\n    assert "sudo cat /tmp/p9r-pitr-postgres.log" in recovery\n    assert "recovery_target_name = 'p9r_target'" in recovery\n    assert "recovery_target_action = 'promote'" in recovery\n    assert "restore_command = 'cp /tmp/p9r-wal-archive/%f %p'" in recovery\n'''
-          test_path.write_text(tests, encoding='utf-8')
+          if marker in tests:
+              raise SystemExit('recovery compatibility regression test already exists')
+          lines = [
+              '', '', marker,
+              '    source = WORKFLOW.read_text(encoding="utf-8")',
+              '    full = source.split("- name: Boot isolated full restore", 1)[1].split(',
+              '        "- name: Prove full restore business security and application readiness", 1',
+              '    )[0]',
+              '    recovery = source.split("- name: Recover to named PITR target and measure RTO", 1)[1].split(',
+              '        "- name: Produce machine-readable P9-R decision", 1',
+              '    )[0]',
+              '',
+              '    assert "P9R_SOURCE_RECOVERY_COMPATIBILITY_CAPTURE=PASS" in source',
+              '    assert "source-recovery-compatible-settings.txt" in source',
+              '    for token in (',
+              '        "P9R_SOURCE_MAX_CONNECTIONS",',
+              '        "P9R_SOURCE_MAX_PREPARED_TRANSACTIONS",',
+              '        "P9R_SOURCE_MAX_LOCKS_PER_TRANSACTION",',
+              '        "P9R_SOURCE_MAX_WAL_SENDERS",',
+              '        "P9R_SOURCE_MAX_WORKER_PROCESSES",',
+              '    ):',
+              '        assert token in source',
+              '        assert token in full',
+              '        assert token in recovery',
+              '',
+              '    assert "max_connections = 50" not in recovery',
+              '    assert "full-recovery-compatible-settings.txt" in full',
+              '    assert "P9R_FULL_RECOVERY_COMPATIBLE_SETTINGS=PASS" in full',
+              '    assert "pitr-recovery-compatible-settings.txt" in recovery',
+              '    assert "P9R_PITR_RECOVERY_COMPATIBLE_SETTINGS=PASS" in recovery',
+              '    assert \'cmp "$EVIDENCE_DIR/source-recovery-compatible-settings.txt" "$EVIDENCE_DIR/pitr-recovery-compatible-settings.txt"\' in recovery',
+              '    assert "if ! sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl" in recovery',
+              '    assert "pitr-start-failure.log" in recovery',
+              '    assert "sudo cat /tmp/p9r-pitr-postgres.log" in recovery',
+              '    assert "recovery_target_name = \'p9r_target\'" in recovery',
+              '    assert "recovery_target_action = \'promote\'" in recovery',
+              '    assert "restore_command = \'cp /tmp/p9r-wal-archive/%f %p\'" in recovery',
+          ]
+          test_path.write_text(tests + '\n'.join(lines) + '\n', encoding='utf-8')
 
           doc_path = Path('docs/architecture/P9R_FULL_RESTORE_PITR.md')
           doc = doc_path.read_text(encoding='utf-8')
-          doc_marker = '## Recovery-compatible PostgreSQL settings'
-          assert doc_marker not in doc
-          doc += '''\n\n## Recovery-compatible PostgreSQL settings\n\nP9-R captures the source primary values for PostgreSQL recovery-sensitive shared-memory settings (`max_connections`, `max_prepared_transactions`, `max_locks_per_transaction`, `max_wal_senders`, and `max_worker_processes`) and applies those exact values to both isolated restore instances. This prevents targeted recovery from starting with a lower capacity than the primary recorded in WAL. The full-restore and PITR instances must re-read those settings and match the captured source vector before recovery evidence is accepted. PITR startup failures preserve the PostgreSQL server log as certification evidence.\n'''
+          if '## Recovery-compatible PostgreSQL settings' in doc:
+              raise SystemExit('recovery compatibility documentation already exists')
+          doc += '\n\n## Recovery-compatible PostgreSQL settings\n\nP9-R captures the source primary values for PostgreSQL recovery-sensitive shared-memory settings (`max_connections`, `max_prepared_transactions`, `max_locks_per_transaction`, `max_wal_senders`, and `max_worker_processes`) and applies those exact values to both isolated restore instances. This prevents targeted recovery from starting with a lower capacity than the primary recorded in WAL. The full-restore and PITR instances must re-read those settings and match the captured source vector before recovery evidence is accepted. PITR startup failures preserve the PostgreSQL server log as certification evidence.\n'
           doc_path.write_text(doc, encoding='utf-8')
           PY
 
           git diff --check
-          git diff -- .github/workflows/p9r-full-restore-pitr.yml tests/test_p9r_full_restore_pitr_contracts.py docs/architecture/P9R_FULL_RESTORE_PITR.md
           test "$(git status --short | wc -l)" = '3'
           python -m py_compile tests/test_p9r_full_restore_pitr_contracts.py
           git config user.name 'github-actions[bot]'
