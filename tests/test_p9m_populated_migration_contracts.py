@@ -51,17 +51,22 @@ def test_p9m_files_and_scope_freeze_exact_migration_boundary() -> None:
         assert marker in scope
 
 
-def test_p9m_seed_is_large_deterministic_and_synthetic_only() -> None:
+def test_p9m_seed_is_large_deterministic_tenant_bound_and_synthetic_only() -> None:
     source = SEED.read_text(encoding="utf-8")
     assert "generate_series(1, 64)" in source
-    assert "generate_series(1, 3)" in source
+    assert "FOR org_sequence IN 1..64 LOOP" in source
+    assert "FOR branch_sequence IN 1..3 LOOP" in source
+    assert "pg_catalog.set_config('app.current_org_id', org_id::text, true)" in source
     assert "generate_series(1, 4096)" in source
     assert "p9m_synthetic" in source
     assert "branch.lifecycle_saga" in source
     assert "dead_lettered" in source
+    assert "'delivered'" in source
     assert "dead_lifecycle_count <> 204" in source
     assert "P9M_SYNTHETIC_PRODUCTION_SHAPE=PASS" in source
     lowered = source.lower()
+    assert "disable trigger" not in lowered
+    assert "session_replication_role" not in lowered
     assert "pg_restore" not in lowered
     assert "aws s3" not in lowered
     assert "production backup" not in lowered
