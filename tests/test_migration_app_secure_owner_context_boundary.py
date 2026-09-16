@@ -45,7 +45,7 @@ def _app_secure_ddl_categories(path: pathlib.Path) -> set[str]:
 
 
 _P2D_MIGRATION = "9e4f5a6b7c8d_worker_geocoding_runtime_boundary.py"
-_P2F_REMEDIATION_MIGRATION = "af5b6c7d8e9f0a_platform_maintenance_control_plane.py"
+_P2F_REMEDIATION_MIGRATION = "af5b6c7d8e9f_platform_maintenance_control_plane.py"
 _P2F_DEK_MIGRATION = "b06c7d8e9f0a_tenant_dek_lookup_boundary.py"
 _P3A_PROFILE_MIGRATION = "c17d8e9f0a1b_organization_profile_authorization.py"
 _P3A_ONBOARDING_MIGRATION = "c27d8e9f0a1c_organization_onboarding_authorization.py"
