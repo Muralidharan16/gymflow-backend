@@ -42,6 +42,7 @@ jobs:
       P9R_APP_PORT: '18081'
       P9R_METRICS_PORT: '4319'
       P9R_APP_RUNTIME: /tmp/p9r-app-runtime
+      P9R_API_LOGIN: app_test_runtime
       MIGRATION_PASSWORD: ci-p9r-migration-owner
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p9r-migration-owner@127.0.0.1:5432/gymflow_p9r_source
       EVIDENCE_DIR: p9r-evidence
@@ -136,7 +137,15 @@ jobs:
           bash scripts/ci/bootstrap_cluster_roles.sh
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<SQL
           ALTER ROLE migration_owner PASSWORD 'ci-p9r-migration-owner';
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-p9r-app-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE app_test_runtime SET row_security = 'on';
+          ALTER ROLE app_test_runtime SET statement_timeout = '5s';
+          ALTER ROLE app_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE app_test_runtime SET idle_in_transaction_session_timeout = '15s';
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           CREATE DATABASE ${P9R_SOURCE_DB} OWNER migration_owner;
+          GRANT CONNECT ON DATABASE ${P9R_SOURCE_DB} TO app_test_runtime;
           SQL
           bash scripts/ci/verify_cluster_roles.sh
 
@@ -302,6 +311,17 @@ jobs:
           sudo -u p9rapp test -r "$P9R_APP_RUNTIME/security/runtime_identity/process_profiles.v1.json"
           sudo -u p9rapp test -r "$P9R_APP_RUNTIME/security/cluster_role_bootstrap/roles.v1.json"
 
+          sudo -u postgres psql -X -qAt -F '|' -v ON_ERROR_STOP=1 \
+            -h "$P9R_FULL_SOCKET" -p "$P9R_FULL_PORT" -d postgres \
+            -c "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls FROM pg_roles WHERE rolname = '${P9R_API_LOGIN}'" \
+            > "$EVIDENCE_DIR/full-runtime-role-attributes.txt"
+          grep -qx 't|f|f|f|f|f' "$EVIDENCE_DIR/full-runtime-role-attributes.txt"
+          sudo -u p9rapp /usr/bin/psql -X -qAt -F '|' -v ON_ERROR_STOP=1 \
+            -h "$P9R_FULL_SOCKET" -p "$P9R_FULL_PORT" -U "$P9R_API_LOGIN" -d "$P9R_SOURCE_DB" \
+            -c "SELECT session_user, current_user, current_setting('row_security'), current_setting('statement_timeout'), current_setting('lock_timeout'), current_setting('idle_in_transaction_session_timeout'), pg_has_role(current_user, 'app_runtime', 'USAGE'), pg_has_role(current_user, 'app_user', 'USAGE'), pg_has_role(current_user, 'app_runtime', 'SET'), pg_has_role(current_user, 'app_user', 'SET'), 1" \
+            > "$EVIDENCE_DIR/full-runtime-login-preflight.txt"
+          grep -qx 'app_test_runtime|app_test_runtime|on|5s|2s|15s|t|t|f|f|1' "$EVIDENCE_DIR/full-runtime-login-preflight.txt"
+
           redis-server \
             --port "$P9R_REDIS_PORT" \
             --bind 127.0.0.1 \
@@ -312,6 +332,9 @@ jobs:
           redis-cli -h 127.0.0.1 -p "$P9R_REDIS_PORT" ping \
             | tee "$EVIDENCE_DIR/redis-ready.txt"
           grep -qx 'PONG' "$EVIDENCE_DIR/redis-ready.txt"
+          sudo -u p9rapp redis-cli -h 127.0.0.1 -p "$P9R_REDIS_PORT" ping \
+            | tee "$EVIDENCE_DIR/p9rapp-redis-ready.txt"
+          grep -qx 'PONG' "$EVIDENCE_DIR/p9rapp-redis-ready.txt"
 
           python -s scripts/ci/p8o_otlp_collector.py \
             --host 127.0.0.1 \
@@ -339,7 +362,7 @@ jobs:
           echo 'P9R_LIVE_PROVIDER_EGRESS_BLOCKED=PASS'
 
           PYTHON_BIN="$(command -v python)"
-          APP_DB_URL="postgresql+asyncpg://app_runtime@/${P9R_SOURCE_DB}?host=${P9R_FULL_SOCKET}"
+          APP_DB_URL="postgresql+asyncpg://${P9R_API_LOGIN}@/${P9R_SOURCE_DB}?host=${P9R_FULL_SOCKET}"
           (
             exec sudo -u p9rapp env -i \
               HOME=/tmp/p9r-app-home \
@@ -381,6 +404,9 @@ jobs:
             sleep 0.5
           done
           if [ "$full_ready" -ne 1 ]; then
+            curl --silent --show-error "http://127.0.0.1:${P9R_APP_PORT}/_system/ready" \
+              > "$EVIDENCE_DIR/full-app-ready-failure.json" || true
+            cat "$EVIDENCE_DIR/full-app-ready-failure.json" >&2 || true
             cat "$EVIDENCE_DIR/full-app.log" >&2 || true
             exit 1
           fi
@@ -537,8 +563,17 @@ jobs:
             exit 1
           fi
 
+          sudo -u p9rapp /usr/bin/psql -X -qAt -F '|' -v ON_ERROR_STOP=1 \
+            -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" -U "$P9R_API_LOGIN" -d "$P9R_SOURCE_DB" \
+            -c "SELECT session_user, current_user, current_setting('row_security'), current_setting('statement_timeout'), current_setting('lock_timeout'), current_setting('idle_in_transaction_session_timeout'), pg_has_role(current_user, 'app_runtime', 'USAGE'), pg_has_role(current_user, 'app_user', 'USAGE'), pg_has_role(current_user, 'app_runtime', 'SET'), pg_has_role(current_user, 'app_user', 'SET'), 1" \
+            > "$EVIDENCE_DIR/pitr-runtime-login-preflight.txt"
+          grep -qx 'app_test_runtime|app_test_runtime|on|5s|2s|15s|t|t|f|f|1' "$EVIDENCE_DIR/pitr-runtime-login-preflight.txt"
+          sudo -u p9rapp redis-cli -h 127.0.0.1 -p "$P9R_REDIS_PORT" ping \
+            | tee "$EVIDENCE_DIR/pitr-p9rapp-redis-ready.txt"
+          grep -qx 'PONG' "$EVIDENCE_DIR/pitr-p9rapp-redis-ready.txt"
+
           PYTHON_BIN="$(command -v python)"
-          APP_DB_URL="postgresql+asyncpg://app_runtime@/${P9R_SOURCE_DB}?host=${P9R_PITR_SOCKET}"
+          APP_DB_URL="postgresql+asyncpg://${P9R_API_LOGIN}@/${P9R_SOURCE_DB}?host=${P9R_PITR_SOCKET}"
           (
             exec sudo -u p9rapp env -i \
               HOME=/tmp/p9r-app-home \
@@ -580,6 +615,9 @@ jobs:
             sleep 0.5
           done
           if [ "$pitr_ready" -ne 1 ]; then
+            curl --silent --show-error "http://127.0.0.1:${P9R_APP_PORT}/_system/ready" \
+              > "$EVIDENCE_DIR/pitr-app-ready-failure.json" || true
+            cat "$EVIDENCE_DIR/pitr-app-ready-failure.json" >&2 || true
             cat "$EVIDENCE_DIR/pitr-app.log" >&2 || true
             exit 1
           fi
