@@ -182,6 +182,18 @@ def test_p9b_physical_backup_requires_wal_manifest_verifybackup_and_private_clon
         assert token in source
 
 
+def test_p9b_wal_evidence_keeps_archive_private_and_reads_it_as_postgres() -> None:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    wal_block = source.split("- name: Prove WAL archive evidence", 1)[1].split(
+        "- name: Create and verify physical base backup", 1
+    )[0]
+    assert 'sudo install -d -m 0700 -o postgres -g postgres "$P9B_WAL_ARCHIVE"' in source
+    assert 'sudo -u postgres find "$P9B_WAL_ARCHIVE"' in wal_block
+    assert "sudo -u postgres bash -c" in wal_block
+    assert 'find "$1" -maxdepth 1 -type f -print0' in wal_block
+    assert '| xargs -0 sha256sum' not in wal_block
+
+
 def test_p9b_evidence_upload_excludes_backup_bytes_and_retains_machine_readable_decision() -> None:
     workflow = _workflow()
     source = WORKFLOW.read_text(encoding="utf-8")

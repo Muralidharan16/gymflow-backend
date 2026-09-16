@@ -237,7 +237,7 @@ jobs:
             | tee "$EVIDENCE_DIR/wal-switch.txt"
           archived='0'
           for attempt in $(seq 1 30); do
-            archived="$(find "$P9B_WAL_ARCHIVE" -maxdepth 1 -type f | wc -l)"
+            archived="$(sudo -u postgres find "$P9B_WAL_ARCHIVE" -maxdepth 1 -type f -printf '.' | wc -c)"
             if [ "$archived" -gt 0 ]; then
               break
             fi
@@ -247,11 +247,14 @@ jobs:
           sudo -u postgres psql -X -qAt -d postgres \
             -c "SELECT archived_count || '|' || COALESCE(last_archived_wal, '') || '|' || COALESCE(last_archived_time::text, '') FROM pg_stat_archiver" \
             > "$EVIDENCE_DIR/pg-stat-archiver.txt"
-          find "$P9B_WAL_ARCHIVE" -maxdepth 1 -type f -printf '%f\n' \
+          sudo -u postgres find "$P9B_WAL_ARCHIVE" -maxdepth 1 -type f -printf '%f\n' \
             | LC_ALL=C sort > "$EVIDENCE_DIR/wal-archive-files.txt"
-          find "$P9B_WAL_ARCHIVE" -maxdepth 1 -type f -print0 \
-            | LC_ALL=C sort -z \
-            | xargs -0 sha256sum > "$EVIDENCE_DIR/wal-archive.sha256"
+          sudo -u postgres bash -c '
+            set -euo pipefail
+            while IFS= read -r -d "" path; do
+              sha256sum "$path"
+            done < <(find "$1" -maxdepth 1 -type f -print0 | LC_ALL=C sort -z)
+          ' _ "$P9B_WAL_ARCHIVE" > "$EVIDENCE_DIR/wal-archive.sha256"
           test -s "$EVIDENCE_DIR/wal-archive.sha256"
           echo 'P9B_WAL_ARCHIVE=PASS'
 
