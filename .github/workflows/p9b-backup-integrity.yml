@@ -311,11 +311,15 @@ jobs:
           }
           trap cleanup_clone EXIT
 
+          sudo -u postgres rm -f /tmp/p9b-physical-clone-postgres.log
           sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \
             -D "$P9B_PHYSICAL_RESTORE" \
+            -l /tmp/p9b-physical-clone-postgres.log \
             -o "-c config_file=/tmp/p9b-physical-postgresql.conf -c hba_file=/tmp/p9b-physical-hba.conf -c archive_mode=off" \
-            -w start \
-            2>&1 | tee "$EVIDENCE_DIR/physical-clone-start.log"
+            -w start
+          sudo -u postgres test -s /tmp/p9b-physical-clone-postgres.log
+          sudo cat /tmp/p9b-physical-clone-postgres.log \
+            > "$EVIDENCE_DIR/physical-clone-start.log"
           sudo -u postgres /usr/lib/postgresql/16/bin/pg_isready \
             -h "$P9B_PHYSICAL_SOCKET" -p "$P9B_PHYSICAL_PORT" \
             | tee "$EVIDENCE_DIR/physical-clone-ready.txt"

@@ -194,6 +194,18 @@ def test_p9b_wal_evidence_keeps_archive_private_and_reads_it_as_postgres() -> No
     assert '| xargs -0 sha256sum' not in wal_block
 
 
+def test_p9b_physical_clone_detaches_server_log_from_workflow_pipe() -> None:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    clone_block = source.split("- name: Boot private physical clone and prove restore fingerprint", 1)[1].split(
+        "- name: Produce machine-readable P9-B evidence", 1
+    )[0]
+    assert "-l /tmp/p9b-physical-clone-postgres.log" in clone_block
+    assert "sudo -u postgres test -s /tmp/p9b-physical-clone-postgres.log" in clone_block
+    assert "sudo cat /tmp/p9b-physical-clone-postgres.log" in clone_block
+    assert '> "$EVIDENCE_DIR/physical-clone-start.log"' in clone_block
+    assert '2>&1 | tee "$EVIDENCE_DIR/physical-clone-start.log"' not in clone_block
+
+
 def test_p9b_evidence_upload_excludes_backup_bytes_and_retains_machine_readable_decision() -> None:
     workflow = _workflow()
     source = WORKFLOW.read_text(encoding="utf-8")
