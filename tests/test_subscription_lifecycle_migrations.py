@@ -225,13 +225,13 @@ async def seed_v2_source_data(seed: LifecycleSeed) -> None:
               duration_unit_snapshot, max_members_snapshot, created_by, updated_by, created_at, updated_at
             ) VALUES
               (:subA, :org1, :branch1, :planIndividual, :member100, 'SUB-ADJ-A-' || :suffix,
-               DATE '2026-06-15', DATE '2026-09-15', 'active'::modern_subscription_status,
+               CURRENT_DATE + 30, CURRENT_DATE + 120, 'active'::modern_subscription_status,
                3500.00, 'INR', 3, 'months'::duration_unit, 1, :owner1, :owner1, now(), now()),
               (:subB, :org1, :branch1, :planIndividual, :member100, 'SUB-ADJ-B-' || :suffix,
-               DATE '2026-09-16', DATE '2026-12-16', 'active'::modern_subscription_status,
+               CURRENT_DATE + 121, CURRENT_DATE + 211, 'active'::modern_subscription_status,
                3500.00, 'INR', 3, 'months'::duration_unit, 1, :owner1, :owner1, now(), now()),
               (:subFamily, :org1, :branch1, :planFamily, :member101, 'SUB-FAM-' || :suffix,
-               DATE '2026-06-15', DATE '2026-09-15', 'active'::modern_subscription_status,
+               CURRENT_DATE + 30, CURRENT_DATE + 120, 'active'::modern_subscription_status,
                4000.00, 'INR', 3, 'months'::duration_unit, 3, :owner1, :owner1, now(), now())
             """,
             """
@@ -268,7 +268,7 @@ async def seed_v2_source_data(seed: LifecycleSeed) -> None:
               duration_unit_snapshot, max_members_snapshot, created_by, updated_by, created_at, updated_at
             ) VALUES (
               :subExpired, :org2, :branch3, :planOther, :member200, 'SUB-EXP-' || :suffix,
-              DATE '2025-01-01', DATE '2025-02-01', 'expired'::modern_subscription_status,
+              CURRENT_DATE - 120, CURRENT_DATE - 90, 'expired'::modern_subscription_status,
               1200.00, 'INR', 1, 'months'::duration_unit, 1, :owner2, :owner2, now(), now()
             )
             """,
@@ -487,7 +487,7 @@ async def _assert_lifecycle_constraints(seed: LifecycleSeed) -> None:
             await session.execute(
                 text(
                     """
-                    SELECT id, org_id, branch_id, series_id, plan_id
+                    SELECT id, org_id, branch_id, series_id, plan_id, starts_on, effective_ends_on
                     FROM subscription_terms WHERE legacy_member_subscription_v2_id=:sub_a
                     """
                 ),
@@ -517,6 +517,8 @@ async def _assert_lifecycle_constraints(seed: LifecycleSeed) -> None:
         "slot_id": slot_id,
         "member100": seed.member_100,
         "owner1": seed.owner_1,
+        "starts_on": term["starts_on"],
+        "effective_ends_on": term["effective_ends_on"],
     }
     term_prefix = """
         INSERT INTO subscription_terms (
@@ -530,7 +532,8 @@ async def _assert_lifecycle_constraints(seed: LifecycleSeed) -> None:
         term_prefix + """
         (gen_random_uuid(), :org_id, :branch_id, :series_id, 99, 'BAD-DATES', 'admin_adjustment'::subscription_term_source,
          :plan_id, 'IND-QUARTER', 'Individual Quarterly', 'months'::duration_unit, 3, 1, 'INR', 3500,0,0,3500,
-         DATE '2026-10-01', DATE '2026-09-01', DATE '2026-09-01', 'scheduled'::subscription_term_status)
+         CAST(:effective_ends_on AS date) + 30, CAST(:effective_ends_on AS date) + 10,
+         CAST(:effective_ends_on AS date) + 10, 'scheduled'::subscription_term_status)
         """,
         base,
         "chk_subscription_terms_dates_order",
@@ -539,7 +542,8 @@ async def _assert_lifecycle_constraints(seed: LifecycleSeed) -> None:
         term_prefix + """
         (gen_random_uuid(), :org_id, :branch_id, :series_id, 99, 'BAD-AMOUNT', 'admin_adjustment'::subscription_term_source,
          :plan_id, 'IND-QUARTER', 'Individual Quarterly', 'months'::duration_unit, 3, 1, 'INR', -1,0,0,3500,
-         DATE '2026-10-01', DATE '2026-12-01', DATE '2026-12-01', 'scheduled'::subscription_term_status)
+         CAST(:effective_ends_on AS date) + 1, CAST(:effective_ends_on AS date) + 90,
+         CAST(:effective_ends_on AS date) + 90, 'scheduled'::subscription_term_status)
         """,
         base,
         "chk_subscription_terms_amounts_nonnegative",
@@ -548,7 +552,8 @@ async def _assert_lifecycle_constraints(seed: LifecycleSeed) -> None:
         term_prefix + """
         (gen_random_uuid(), :org_id, :branch_id, :series_id, 99, 'OVERLAP', 'admin_adjustment'::subscription_term_source,
          :plan_id, 'IND-QUARTER', 'Individual Quarterly', 'months'::duration_unit, 3, 1, 'INR', 3500,0,0,3500,
-         DATE '2026-07-01', DATE '2026-08-01', DATE '2026-08-01', 'scheduled'::subscription_term_status)
+         CAST(:starts_on AS date) + 15, CAST(:starts_on AS date) + 45,
+         CAST(:starts_on AS date) + 45, 'scheduled'::subscription_term_status)
         """,
         base,
         "ex_subscription_terms_series_reserving_overlap",
@@ -563,7 +568,8 @@ async def _assert_lifecycle_constraints(seed: LifecycleSeed) -> None:
         ) VALUES (
           gen_random_uuid(), :org_id, :branch_id, :other_series_id, 99, 'CROSS-LINEAGE', :parent_term_id,
           'renewal'::subscription_term_source, :plan_id, 'IND-QUARTER', 'Individual Quarterly', 'months'::duration_unit,
-          3,1,'INR',3500,0,0,3500, DATE '2026-10-01', DATE '2026-12-01', DATE '2026-12-01',
+          3,1,'INR',3500,0,0,3500, CAST(:effective_ends_on AS date) + 1,
+          CAST(:effective_ends_on AS date) + 90, CAST(:effective_ends_on AS date) + 90,
           'scheduled'::subscription_term_status)
         """,
         base,
@@ -577,7 +583,8 @@ async def _assert_lifecycle_constraints(seed: LifecycleSeed) -> None:
     await expect_db_error(
         assignment_prefix + """
         (gen_random_uuid(), :org_id, :parent_term_id, :slot_id, :member100,
-         DATE '2026-06-20', DATE '2026-07-01', 'active'::subscription_assignment_state, :owner1)
+         CAST(:starts_on AS date) + 5, CAST(:starts_on AS date) + 20,
+         'active'::subscription_assignment_state, :owner1)
         """,
         base,
         "ex_subscription_slot_assignments_slot_overlap",
@@ -585,7 +592,8 @@ async def _assert_lifecycle_constraints(seed: LifecycleSeed) -> None:
     await expect_db_error(
         assignment_prefix + """
         (gen_random_uuid(), :org_id, :parent_term_id, :slot_id, :member100,
-         DATE '2026-05-01', DATE '2026-05-31', 'active'::subscription_assignment_state, :owner1)
+         CAST(:starts_on AS date) - 30, CAST(:starts_on AS date) - 1,
+         'active'::subscription_assignment_state, :owner1)
         """,
         base,
         "subscription_slot_assignments dates must fit within subscription term",
@@ -604,7 +612,8 @@ async def _assert_lifecycle_constraints(seed: LifecycleSeed) -> None:
                 ) VALUES (
                   gen_random_uuid(), :org_id, :branch_id, :series_id, 99, :adjacent_code, :parent_term_id,
                   'renewal'::subscription_term_source, :plan_id, 'IND-QUARTER', 'Individual Quarterly', 'months'::duration_unit,
-                  3,1,'INR',3500,0,0,3500, DATE '2026-09-16', DATE '2026-12-16', DATE '2026-12-16',
+                  3,1,'INR',3500,0,0,3500, CAST(:effective_ends_on AS date) + 1,
+                  CAST(:effective_ends_on AS date) + 90, CAST(:effective_ends_on AS date) + 90,
                   'scheduled'::subscription_term_status)
                 """
             ),
