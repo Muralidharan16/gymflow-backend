@@ -1,0 +1,116 @@
+{
+  "alembic_head": "zk07d8e9f0a45",
+  "budgets": {
+    "durable_queue": {
+      "max_broker_remaining": 0,
+      "max_external_provider_effects": 0,
+      "min_durable_items_per_second": 40.0,
+      "min_exact_terminal_ratio": 1.0
+    },
+    "redis_transport": {
+      "max_remaining_items": 0,
+      "max_round_trip_seconds": 0.1,
+      "min_drain_items_per_second": 125000.0,
+      "min_enqueue_items_per_second": 100000.0
+    },
+    "representative_http": {
+      "max_cpu_percent": 125.0,
+      "max_http_errors": 0,
+      "max_overall_p95_ms": 850.0,
+      "max_overall_p99_ms": 1200.0,
+      "max_rss_bytes": 268435456,
+      "max_server_errors_5xx": 0,
+      "max_write_p95_ms": 1100.0,
+      "max_write_p99_ms": 1350.0,
+      "min_throughput_rps": 45.0
+    }
+  },
+  "calibrations": {
+    "durable_queue": {
+      "artifact_id": 10506815274,
+      "artifact_zip_sha256": "1f8cb9a07224592b05dee0aa809c116313702ad48fa319ce6ceb66b8f9575336",
+      "candidate_sha": "2c35d9c777f038b195f1191ffcaeeffbf14dc6e2",
+      "job_id": 105274785468,
+      "observed": {
+        "broker_remaining": 0,
+        "durable_items_per_second": 60.454,
+        "exact_terminal_items": 400,
+        "external_provider_effects": 0,
+        "items": 400,
+        "poller_batch_size": 20,
+        "worker_concurrency": 4
+      },
+      "run_id": 35242615247,
+      "workflow": "P10-B Durable Queue Calibration"
+    },
+    "redis_transport": {
+      "artifact_id": 10506132559,
+      "artifact_zip_sha256": "d18d9b3928ac0c14583782639a823f2d9eef9937aa2414342e1cf567ff3bb5e2",
+      "candidate_sha": "2c35d9c777f038b195f1191ffcaeeffbf14dc6e2",
+      "job_id": 105274621590,
+      "observed": {
+        "drain_items_per_second": 257920.999,
+        "durable_business_authority": "postgresql",
+        "enqueue_items_per_second": 198593.576,
+        "items": 5000,
+        "payload_bytes": 264,
+        "remaining_items": 0,
+        "round_trip_seconds": 0.044563
+      },
+      "run_id": 35242615307,
+      "workflow": "P10-B Queue Calibration"
+    },
+    "representative_http": {
+      "artifact_id": 10505868726,
+      "artifact_zip_sha256": "dc92bb5a31677d6f915ee170cdfd3f292fd584ca79be34090954123d8330e9bb",
+      "candidate_sha": "2c35d9c777f038b195f1191ffcaeeffbf14dc6e2",
+      "job_id": 105274898803,
+      "observed": {
+        "concurrency": 24,
+        "cpu_percent_avg": 98.882,
+        "cpu_percent_max": 101.27,
+        "duration_seconds": 60.179,
+        "http_errors": 0,
+        "overall_p50_ms": 337.827,
+        "overall_p95_ms": 659.189,
+        "overall_p99_ms": 935.374,
+        "page_size": 50,
+        "read_p95_ms": 639.454,
+        "read_p99_ms": 743.744,
+        "read_write_mix": "9:1",
+        "requests_total": 3587,
+        "rss_bytes_max": 185568211,
+        "seed_members_per_tenant": 500,
+        "server_errors_5xx": 0,
+        "tenants": 8,
+        "throughput_rps": 59.606,
+        "write_p95_ms": 850.557,
+        "write_p99_ms": 1028.746
+      },
+      "run_id": 35242615083,
+      "workflow": "P10-B Representative Baseline Calibration"
+    }
+  },
+  "change_policy": {
+    "budget_loosening": "forbidden_after_freeze",
+    "budget_tightening": "requires_recertification",
+    "calibration_replacement": "requires_new_evidence_and_recertification"
+  },
+  "p9_base": {
+    "sha": "33abd2bad81c65ac998b91726cc314ab54080010",
+    "tree": "a6a0a87ebbaa251482c67f1bc4cbd9dc8ab7d1e0"
+  },
+  "phase": "P10-B",
+  "schema_version": 1,
+  "scope": {
+    "live_provider_credentials": false,
+    "postgresql_major": 16,
+    "production_container": true,
+    "production_process_profile": "api",
+    "real_redis": true,
+    "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+    "synthetic_only": true
+  },
+  "source_candidate_sha": "2c35d9c777f038b195f1191ffcaeeffbf14dc6e2",
+  "status": "frozen"
+}
