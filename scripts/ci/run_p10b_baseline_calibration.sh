@@ -130,10 +130,19 @@ assert json.loads(Path(sys.argv[1]).read_text()) == {'status': 'ready'}
 PY
 echo 'P10B_PRODUCTION_CONTAINER_READY=PASS'
 
-# Live process evidence before calibration.
+# Live process evidence before calibration. Use the locked Python Redis client
+# instead of relying on a mutable host redis-cli package.
 docker top p10b-api -eo pid,user,comm,args > "$EVIDENCE_DIR/container-processes.txt"
 docker logs p10b-api > "$EVIDENCE_DIR/container-startup.log" 2>&1 || true
-redis-cli -h 127.0.0.1 -p 6379 ping > "$EVIDENCE_DIR/redis-ping.txt"
+python -s - "$EVIDENCE_DIR/redis-ping.txt" <<'PY'
+import os, sys
+from pathlib import Path
+import redis
+
+client = redis.Redis.from_url(os.environ['REDIS_URL'], decode_responses=True)
+assert client.ping() is True
+Path(sys.argv[1]).write_text('PONG\n')
+PY
 grep -qx 'PONG' "$EVIDENCE_DIR/redis-ping.txt"
 sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d "$P10B_DB" \
   -c "SELECT version(); SELECT count(*) FROM pg_stat_activity WHERE datname='${P10B_DB}';" \
@@ -219,8 +228,15 @@ PY
 sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d "$P10B_DB" \
   -c "SELECT count(*) FROM pg_stat_activity WHERE datname='${P10B_DB}'; SELECT xact_commit, xact_rollback, blks_read, blks_hit FROM pg_stat_database WHERE datname='${P10B_DB}';" \
   > "$EVIDENCE_DIR/postgres-after.txt"
-redis-cli -h 127.0.0.1 -p 6379 info stats > "$EVIDENCE_DIR/redis-stats.txt"
-redis-cli -h 127.0.0.1 -p 6379 info memory > "$EVIDENCE_DIR/redis-memory.txt"
+python -s - "$EVIDENCE_DIR/redis-stats.txt" "$EVIDENCE_DIR/redis-memory.txt" <<'PY'
+import json, os, sys
+from pathlib import Path
+import redis
+
+client = redis.Redis.from_url(os.environ['REDIS_URL'], decode_responses=True)
+Path(sys.argv[1]).write_text(json.dumps(client.info('stats'), indent=2, sort_keys=True) + '\n')
+Path(sys.argv[2]).write_text(json.dumps(client.info('memory'), indent=2, sort_keys=True) + '\n')
+PY
 
 # The real write path must have advanced synchronized tenant counters without
 # duplicate member numbers.
