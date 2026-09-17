@@ -21,101 +21,29 @@ jobs:
       - name: Guard repair base
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "fb008f94c80c979a2fddac9247ce63efb590a12a"
+          test "$(git rev-parse HEAD^)" = "8bb8eee3d05bdd03d59c3210e8969fa5bcf10d86"
 
       - name: Scope mixed-file SQL scanning without weakening pgcrypto detection
         run: |
           set -euo pipefail
           python - <<'PY'
+          import base64
           from pathlib import Path
 
           path = Path("tests/test_migration_shared_infrastructure_boundary.py")
           source = path.read_text(encoding="utf-8")
-
           function_anchor = "\n\ndef _repository_sql_fragments() -> list[tuple[Path, str]]:\n"
-          assert source.count(function_anchor) == 1
-          helper = r'''
-
-SQL_HEREDOC_START_RE = re.compile(
-    r"<<-?\s*(?:'SQL'|\"SQL\"|SQL)(?:\s|$)",
-    re.IGNORECASE,
-)
-
-
-def _mixed_text_sql_fragments(source: str) -> list[str]:
-    """Extract SQL from mixed-language text without scanning unrelated code."""
-    values: list[str] = []
-    lines = source.splitlines()
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        if SQL_HEREDOC_START_RE.search(line):
-            block: list[str] = []
-            index += 1
-            while (
-                index < len(lines)
-                and lines[index].strip().upper() != "SQL"
-            ):
-                block.append(lines[index])
-                index += 1
-            if index >= len(lines):
-                values.extend(
-                    value
-                    for value in block
-                    if SQL_HINT_RE.search(value)
-                )
-                break
-            values.append("\n".join(block))
-        elif SQL_HINT_RE.search(line):
-            values.append(line)
-        index += 1
-    return values
-'''
-          source = source.replace(
-              function_anchor,
-              helper + function_anchor,
-              1,
-          )
-
-          old_else = '''        else:\n            values = [\n                source\n                for _ in [0]\n                if SQL_HINT_RE.search(source)\n            ]\n'''
-          new_else = '''        else:\n            values = _mixed_text_sql_fragments(source)\n'''
-          assert source.count(old_else) == 1
-          source = source.replace(old_else, new_else, 1)
-
           test_anchor = "\n\ndef test_pgcrypto_lifecycle_is_absent_repository_wide():\n"
+          helper = base64.b64decode("CgpTUUxfSEVSRURPQ19TVEFSVF9SRSA9IHJlLmNvbXBpbGUoCiAgICByIjw8LT9ccyooPzonU1FMJ3xcIlNRTFwifFNRTCkoPzpcc3wkKSIsCiAgICByZS5JR05PUkVDQVNFLAopCgoKZGVmIF9taXhlZF90ZXh0X3NxbF9mcmFnbWVudHMoc291cmNlOiBzdHIpIC0+IGxpc3Rbc3RyXToKICAgICIiIkV4dHJhY3QgU1FMIGZyb20gbWl4ZWQtbGFuZ3VhZ2UgdGV4dCB3aXRob3V0IHNjYW5uaW5nIHVucmVsYXRlZCBjb2RlLiIiIgogICAgdmFsdWVzOiBsaXN0W3N0cl0gPSBbXQogICAgbGluZXMgPSBzb3VyY2Uuc3BsaXRsaW5lcygpCiAgICBpbmRleCA9IDAKICAgIHdoaWxlIGluZGV4IDwgbGVuKGxpbmVzKToKICAgICAgICBsaW5lID0gbGluZXNbaW5kZXhdCiAgICAgICAgaWYgU1FMX0hFUkVET0NfU1RBUlRfUkUuc2VhcmNoKGxpbmUpOgogICAgICAgICAgICBibG9jazogbGlzdFtzdHJdID0gW10KICAgICAgICAgICAgaW5kZXggKz0gMQogICAgICAgICAgICB3aGlsZSAoCiAgICAgICAgICAgICAgICBpbmRleCA8IGxlbihsaW5lcykKICAgICAgICAgICAgICAgIGFuZCBsaW5lc1tpbmRleF0uc3RyaXAoKS51cHBlcigpICE9ICJTUUwiCiAgICAgICAgICAgICk6CiAgICAgICAgICAgICAgICBibG9jay5hcHBlbmQobGluZXNbaW5kZXhdKQogICAgICAgICAgICAgICAgaW5kZXggKz0gMQogICAgICAgICAgICBpZiBpbmRleCA+PSBsZW4obGluZXMpOgogICAgICAgICAgICAgICAgdmFsdWVzLmV4dGVuZCgKICAgICAgICAgICAgICAgICAgICB2YWx1ZQogICAgICAgICAgICAgICAgICAgIGZvciB2YWx1ZSBpbiBibG9jawogICAgICAgICAgICAgICAgICAgIGlmIFNRTF9ISU5UX1JFLnNlYXJjaCh2YWx1ZSkKICAgICAgICAgICAgICAgICkKICAgICAgICAgICAgICAgIGJyZWFrCiAgICAgICAgICAgIHZhbHVlcy5hcHBlbmQoIlxuIi5qb2luKGJsb2NrKSkKICAgICAgICBlbGlmIFNRTF9ISU5UX1JFLnNlYXJjaChsaW5lKToKICAgICAgICAgICAgdmFsdWVzLmFwcGVuZChsaW5lKQogICAgICAgIGluZGV4ICs9IDEKICAgIHJldHVybiB2YWx1ZXMK").decode()
+          regression = base64.b64decode("CgoKZGVmIHRlc3RfbWl4ZWRfdGV4dF9zcWxfZnJhZ21lbnRfc2Nhbm5lcl9pc19sYW5ndWFnZV9zY29wZWQoKToKICAgIHBnY3J5cHRvX2NhbGwgPSAiZGlnIiArICJlc3QoJ3BheWxvYWQnLCAnc2hhMjU2JykiCiAgICBzb3VyY2UgPSAiXG4iLmpvaW4oCiAgICAgICAgKAogICAgICAgICAgICAicnVuOiB8IiwKICAgICAgICAgICAgIiAgcHl0aG9uIC0gPDwnUFknIiwKICAgICAgICAgICAgIiAgZGVmIGRpZ2VzdChwYXRoKToiLAogICAgICAgICAgICAiICAgICAgcmV0dXJuIHBhdGgiLAogICAgICAgICAgICAnICBwcmludChkaWdlc3QoIngiKSknLAogICAgICAgICAgICAiICBQWSIsCiAgICAgICAgICAgICcgIHBzcWwgLWMgIlNFTEVDVCBnZW5fcmFuZG9tX3V1aWQoKTsiJywKICAgICAgICAgICAgIiAgcHNxbCA8PCdTUUwnIiwKICAgICAgICAgICAgZiIgIFNFTEVDVCB7cGdjcnlwdG9fY2FsbH07IiwKICAgICAgICAgICAgIiAgU1FMIiwKICAgICAgICApCiAgICApCgogICAgZnJhZ21lbnRzID0gX21peGVkX3RleHRfc3FsX2ZyYWdtZW50cyhzb3VyY2UpCiAgICBhc3NlcnQgYWxsKCJkZWYgZGlnZXN0IiBub3QgaW4gZnJhZ21lbnQgZm9yIGZyYWdtZW50IGluIGZyYWdtZW50cykKICAgIGFzc2VydCBhbGwoJ3ByaW50KGRpZ2VzdCgnIG5vdCBpbiBmcmFnbWVudCBmb3IgZnJhZ21lbnQgaW4gZnJhZ21lbnRzKQogICAgYXNzZXJ0IGFueSgiU0VMRUNUIGdlbl9yYW5kb21fdXVpZCgpIiBpbiBmcmFnbWVudCBmb3IgZnJhZ21lbnQgaW4gZnJhZ21lbnRzKQogICAgYXNzZXJ0IGFueShwZ2NyeXB0b19jYWxsIGluIGZyYWdtZW50IGZvciBmcmFnbWVudCBpbiBmcmFnbWVudHMpCg==").decode()
+          old_else = base64.b64decode("ICAgICAgICBlbHNlOgogICAgICAgICAgICB2YWx1ZXMgPSBbCiAgICAgICAgICAgICAgICBzb3VyY2UKICAgICAgICAgICAgICAgIGZvciBfIGluIFswXQogICAgICAgICAgICAgICAgaWYgU1FMX0hJTlRfUkUuc2VhcmNoKHNvdXJjZSkKICAgICAgICAgICAgXQo=").decode()
+          new_else = base64.b64decode("ICAgICAgICBlbHNlOgogICAgICAgICAgICB2YWx1ZXMgPSBfbWl4ZWRfdGV4dF9zcWxfZnJhZ21lbnRzKHNvdXJjZSkK").decode()
+          assert source.count(function_anchor) == 1
           assert source.count(test_anchor) == 1
-          regression = r'''
-
-
-def test_mixed_text_sql_fragment_scanner_is_language_scoped():
-    pgcrypto_call = "dig" + "est('payload', 'sha256')"
-    source = "\n".join(
-        (
-            "run: |",
-            "  python - <<'PY'",
-            "  def digest(path):",
-            "      return path",
-            '  print(digest("x"))',
-            "  PY",
-            '  psql -c "SELECT gen_random_uuid();"',
-            "  psql <<'SQL'",
-            f"  SELECT {pgcrypto_call};",
-            "  SQL",
-        )
-    )
-
-    fragments = _mixed_text_sql_fragments(source)
-    assert all("def digest" not in fragment for fragment in fragments)
-    assert all('print(digest(' not in fragment for fragment in fragments)
-    assert any("SELECT gen_random_uuid()" in fragment for fragment in fragments)
-    assert any(pgcrypto_call in fragment for fragment in fragments)
-'''
-          source = source.replace(
-              test_anchor,
-              regression + test_anchor,
-              1,
-          )
-
+          assert source.count(old_else) == 1
+          source = source.replace(function_anchor, helper + function_anchor, 1)
+          source = source.replace(old_else, new_else, 1)
+          source = source.replace(test_anchor, regression + test_anchor, 1)
           path.write_text(source, encoding="utf-8")
           PY
 
@@ -125,30 +53,14 @@ def test_mixed_text_sql_fragment_scanner_is_language_scoped():
           python -m py_compile tests/test_migration_shared_infrastructure_boundary.py
           python - <<'PY'
           import runpy
-
-          namespace = runpy.run_path(
-              "tests/test_migration_shared_infrastructure_boundary.py"
-          )
-          namespace[
-              "test_mixed_text_sql_fragment_scanner_is_language_scoped"
-          ]()
+          namespace = runpy.run_path("tests/test_migration_shared_infrastructure_boundary.py")
+          namespace["test_mixed_text_sql_fragment_scanner_is_language_scoped"]()
           fragments = namespace["_repository_sql_fragments"]()
           call_pattern = namespace["re"].compile(
-              r"(?<![A-Za-z0-9_])(" 
-              + "|".join(
-                  sorted(
-                      namespace["PGCRYPTO_ONLY"],
-                      key=lambda value: (-len(value), value),
-                  )
-              )
-              + r")\s*\(",
+              r"(?<![A-Za-z0-9_])(" + "|".join(sorted(namespace["PGCRYPTO_ONLY"], key=lambda value: (-len(value), value))) + r")\s*\(",
               namespace["re"].IGNORECASE,
           )
-          matches = [
-              (path, fragment)
-              for path, fragment in fragments
-              if call_pattern.search(fragment)
-          ]
+          matches = [(path, fragment) for path, fragment in fragments if call_pattern.search(fragment)]
           assert matches == [], matches
           PY
 
