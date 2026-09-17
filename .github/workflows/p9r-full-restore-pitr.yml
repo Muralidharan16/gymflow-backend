@@ -1,6 +1,9 @@
 name: P9-R Full Restore PITR and Recovery Objectives
 
 on:
+  push:
+    branches:
+      - hardening/p9-data-protection-disaster-recovery
   pull_request:
     branches:
       - main
