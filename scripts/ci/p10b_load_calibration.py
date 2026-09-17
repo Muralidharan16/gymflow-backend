@@ -169,7 +169,7 @@ async def main() -> int:
                             "name": f"P10-B Live Member {tenant_number}-{seq}",
                             "phone": phone,
                             "date_of_birth": "1992-01-01",
-                            "emergency_contact_name": "9111111111",
+                            "emergency_contact_name": "8111111111",
                             "emergency_contact_phone": "9222222222",
                             "home_branch_id": branch_id,
                         }
