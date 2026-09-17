@@ -63,3 +63,18 @@ def test_p9r_recovery_uses_source_compatible_settings_and_preserves_startup_diag
     assert "restore_command = 'cp /tmp/p9r-wal-archive/%f %p'" in recovery
     assert '"recovery_compatible_settings": True' in decision
     assert '"recovery_compatible_settings": true' in decision
+
+
+def test_p9r_waits_for_promotion_within_rto_before_state_assertions() -> None:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    recovery = source.split("- name: Recover to named PITR target and measure RTO", 1)[1].split(
+        "- name: Produce machine-readable P9-R decision", 1
+    )[0]
+
+    deadline = 'promotion_wait_deadline_ns="$((rto_start_ns + P9R_RTO_TARGET_MS * 1000000))"'
+    assert deadline in recovery
+    assert "P9R_PITR_PROMOTION_WAIT=PASS" in recovery
+    assert "pitr-promotion-timeout.log" in recovery
+    assert recovery.count("SELECT pg_is_in_recovery()") >= 2
+    assert recovery.index(deadline) < recovery.index("pre_count=")
+    assert recovery.index("P9R_PITR_PROMOTION_WAIT=PASS") < recovery.index("pre_count=")
