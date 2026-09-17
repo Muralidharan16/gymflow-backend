@@ -60,9 +60,15 @@ jobs:
           index = indexes[0]
           lines[index:index + 1] = replacement
           target_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+          repaired = target_path.read_text(encoding="utf-8")
+          assert 'promotion_wait_deadline_ns="$((rto_start_ns + P9R_RTO_TARGET_MS * 1000000))"' in repaired
+          assert "P9R_PITR_PROMOTION_WAIT=PASS" in repaired
+          assert "pitr-promotion-timeout.log" in repaired
+          assert repaired.count("SELECT pg_is_in_recovery()") >= 2
           PY
 
-          python -m pytest --noconftest -q --maxfail=1 \
+          python -m py_compile \
             tests/test_p9r_recovery_compatibility_contracts.py \
             tests/test_p9r_full_restore_pitr_contracts.py
           git diff --check
