@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "phase": "P10",
+  "base_commit": "33abd2bad81c65ac998b91726cc314ab54080010",
+  "base_tree": "a6a0a87ebbaa251482c67f1bc4cbd9dc8ab7d1e0",
+  "branch": "hardening/p10-performance-security-final-production-certification",
+  "alembic_head": "zk07d8e9f0a45",
+  "slices": [
+    "P10-G",
+    "P10-B",
+    "P10-L",
+    "P10-Q",
+    "P10-D",
+    "P10-S",
+    "P10-X",
+    "P10-H",
+    "P10-F"
+  ],
+  "hard_gate": "representative_performance_security_container_and_soak_certified_on_one_immutable_head",
+  "budget_freeze": {
+    "production_shaped_synthetic_baseline_required": true,
+    "real_postgresql_16_required": true,
+    "real_redis_required": true,
+    "production_container_required": true,
+    "numeric_budgets_must_be_frozen_before_load_queue_or_soak_certification": true,
+    "budget_loosening_to_make_candidate_pass_forbidden": true,
+    "budget_tightening_requires_recertification": true,
+    "baseline_and_budget_artifact_sha_bound": true
+  },
+  "representative_load": {
+    "representative_api_mix_required": true,
+    "multi_tenant_mix_required": true,
+    "read_and_write_paths_required": true,
+    "p50_p95_p99_latency_required": true,
+    "throughput_required": true,
+    "error_rate_required": true,
+    "cpu_and_rss_required": true,
+    "database_pool_and_redis_health_required": true,
+    "five_xx_without_fault_injection_forbidden": true,
+    "no_security_or_consistency_weakening_for_performance": true
+  },
+  "concurrency_stress": {
+    "simultaneous_client_stress_required": true,
+    "same_entity_contention_required": true,
+    "cross_tenant_contention_required": true,
+    "finance_and_lifecycle_race_invariants_inherited": true,
+    "no_lost_updates_required": true,
+    "no_duplicate_financial_effects_required": true,
+    "no_stuck_transitions_required": true,
+    "database_deadlock_or_serialization_recovery_must_be_bounded": true
+  },
+  "queue_backlog_recovery": {
+    "measured_enqueue_and_drain_throughput_required": true,
+    "bounded_backlog_seed_required": true,
+    "worker_replacement_during_backlog_required": true,
+    "backlog_drain_deadline_required": true,
+    "queue_depth_time_series_required": true,
+    "no_lost_durable_work_required": true,
+    "no_duplicate_terminal_effects_required": true,
+    "postgresql_remains_durable_authority": true
+  },
+  "database_and_api_efficiency": {
+    "explain_analyze_buffers_for_critical_queries_required": true,
+    "critical_query_plan_regression_budget_required": true,
+    "index_inventory_and_unused_or_duplicate_index_review_required": true,
+    "n_plus_one_detection_required": true,
+    "bounded_pagination_required": true,
+    "maximum_page_size_contract_required": true,
+    "unbounded_collection_endpoint_forbidden": true,
+    "query_count_evidence_for_representative_endpoints_required": true
+  },
+  "soak": {
+    "long_running_test_required": true,
+    "production_container_and_real_dependencies_required": true,
+    "mixed_api_and_worker_activity_required": true,
+    "rss_cpu_db_pool_queue_depth_time_series_required": true,
+    "memory_or_connection_growth_budget_required": true,
+    "no_progressive_latency_regression_required": true,
+    "no_stuck_backlog_or_resource_exhaustion_required": true,
+    "no_restart_as_success_strategy": true
+  },
+  "security_scans": {
+    "locked_dependency_vulnerability_scan_required": true,
+    "container_image_vulnerability_scan_required": true,
+    "static_security_scan_required": true,
+    "secret_scan_required": true,
+    "sbom_required": true,
+    "critical_or_high_unresolved_runtime_vulnerability_is_hard_stop": true,
+    "verified_secret_is_hard_stop": true,
+    "scan_suppressions_require_explicit_machine_readable_justification": true
+  },
+  "secrets_and_config": {
+    "mandatory_secret_absence_must_fail_closed": true,
+    "production_default_credentials_forbidden": true,
+    "debug_or_reload_in_production_forbidden": true,
+    "provider_execution_remains_fail_closed": true,
+    "security_sensitive_config_must_be_validated_at_startup": true,
+    "live_credentials_in_ci_forbidden": true
+  },
+  "production_container": {
+    "non_root_runtime_required": true,
+    "multi_stage_or_equivalent_build_tool_exclusion_required": true,
+    "healthcheck_required": true,
+    "exec_form_entrypoint_or_cmd_required": true,
+    "reload_forbidden": true,
+    "graceful_sigterm_required": true,
+    "read_only_root_filesystem_runtime_test_required": true,
+    "no_new_privileges_required": true,
+    "drop_all_linux_capabilities_required": true,
+    "cpu_memory_and_pid_resource_controls_required": true,
+    "minimal_exposed_ports_required": true,
+    "privileged_container_forbidden": true
+  },
+  "final_certification": {
+    "one_commit_acceptance_matrix_required": true,
+    "all_p1_p9_inherited_gates_required": true,
+    "all_p10_slice_gates_required": true,
+    "same_head_sha_required": true,
+    "same_tree_required": true,
+    "machine_readable_evidence_required": true,
+    "no_post_certification_mutation_allowed": true
+  },
+  "authority": {
+    "durable_business_work": "postgresql",
+    "redis_celery_beat": "delivery_coordination_only",
+    "refund_provider_execution": "deferred_fail_closed",
+    "production_data_copy_to_ci": "forbidden",
+    "live_load_test_against_production": "forbidden"
+  },
+  "hard_stops": [
+    "p1_p9_security_finance_lifecycle_worker_recovery_or_observability_semantic_weakening",
+    "performance_budget_loosened_after_freeze_to_make_candidate_pass",
+    "real_customer_data_used_for_load_soak_or_security_certification",
+    "live_provider_or_live_money_movement_during_certification",
+    "lost_update_duplicate_financial_effect_or_stuck_lifecycle_under_stress",
+    "durable_queue_work_lost_or_terminal_effect_duplicated",
+    "unbounded_collection_endpoint_or_pagination_bypass",
+    "critical_query_plan_regression_without_explicit_review_and_reproof",
+    "unresolved_critical_or_high_runtime_dependency_or_container_vulnerability",
+    "verified_secret_or_live_credential_present_in_repository_or_ci_evidence",
+    "production_config_fails_open_when_mandatory_secret_or_security_config_is_missing",
+    "production_container_runs_as_root_or_privileged",
+    "production_reload_or_debug_mode_enabled",
+    "production_container_missing_healthcheck_or_graceful_sigterm_proof",
+    "production_runtime_missing_cpu_memory_or_pid_controls",
+    "soak_exhibits_unbounded_memory_connection_latency_or_backlog_growth",
+    "refund_provider_activation",
+    "release",
+    "production_deployment"
+  ]
+}
