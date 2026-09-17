@@ -98,7 +98,8 @@ test "$(sudo -u postgres psql -X -qAt -d "$P9D_DB" -c 'SELECT version_num FROM a
 sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d "$P9D_DB" -f scripts/ci/p9m_stable_snapshot.sql > "$EVIDENCE_DIR/pre-rollback-stable.txt"
 sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$P9D_DB" -f scripts/ci/p9m_verify_head_capability.sql | tee "$EVIDENCE_DIR/head-capability-before.log"
 grep -q 'P9M_EXPECTED_CAPABILITY_DELTA=PASS' "$EVIDENCE_DIR/head-capability-before.log"
-sudo -u postgres pg_dump --data-only --schema=finance --no-owner --no-privileges --column-inserts --dbname="$P9D_DB" > "$EVIDENCE_DIR/finance-before-rollback.sql"
+P9D_FINANCE_DUMP_RESTRICT_KEY='P9DFinanceStateProof'
+sudo -u postgres pg_dump --data-only --schema=finance --no-owner --no-privileges --column-inserts --restrict-key="$P9D_FINANCE_DUMP_RESTRICT_KEY" --dbname="$P9D_DB" > "$EVIDENCE_DIR/finance-before-rollback.sql"
 
 if ! id p9dapp >/dev/null 2>&1; then
   sudo useradd --system --no-create-home --shell /usr/sbin/nologin p9dapp
@@ -269,7 +270,7 @@ sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d "$P9D_DB" -f scripts/ci/p9m_
 cmp "$EVIDENCE_DIR/pre-rollback-stable.txt" "$EVIDENCE_DIR/post-rollback-stable.txt"
 sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$P9D_DB" -f scripts/ci/p9m_verify_head_capability.sql | tee "$EVIDENCE_DIR/head-capability-after.log"
 grep -q 'P9M_EXPECTED_CAPABILITY_DELTA=PASS' "$EVIDENCE_DIR/head-capability-after.log"
-sudo -u postgres pg_dump --data-only --schema=finance --no-owner --no-privileges --column-inserts --dbname="$P9D_DB" > "$EVIDENCE_DIR/finance-after-rollback.sql"
+sudo -u postgres pg_dump --data-only --schema=finance --no-owner --no-privileges --column-inserts --restrict-key="$P9D_FINANCE_DUMP_RESTRICT_KEY" --dbname="$P9D_DB" > "$EVIDENCE_DIR/finance-after-rollback.sql"
 cmp "$EVIDENCE_DIR/finance-before-rollback.sql" "$EVIDENCE_DIR/finance-after-rollback.sql"
 echo 'P9D_POST_ROLLBACK_INTEGRITY=PASS'
 echo 'P9D_NO_FINANCIAL_STATE_CHANGE=PASS'
