@@ -84,7 +84,12 @@ def test_p9d_recovers_candidate_claim_with_exact_lkg_worker_and_single_effect() 
     assert "P9D_DURABLE_WORK_RECOVERED_BY_LAST_KNOWN_GOOD=PASS" in source
     assert "P9D_NO_LOST_DURABLE_WORK=PASS" in source
     assert "P9D_SINGLE_TERMINAL_EFFECT=PASS" in source
-    assert 'module.ROOT = Path(os.environ["P9D_LKG_SOURCE"]).resolve()' in source
+    assert 'lkg_source = _bind_app_source(Path(os.environ["P9D_LKG_SOURCE"]))' in source
+    assert "candidate_source = _bind_app_source(Path.cwd())" in source
+    assert "sys.path.insert(0, source_text)" in source
+    assert 'os.environ["PYTHONPATH"] =' not in source
+    assert "module.ROOT = lkg_source" in source
+    assert "module.ROOT = candidate_source" in source
     assert 'assert duplicate["claimed"] == 0' in source
     assert 'module._assert_single_terminal_effect(seed, fence=2)' in source
 

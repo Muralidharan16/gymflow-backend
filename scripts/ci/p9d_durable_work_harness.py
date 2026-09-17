@@ -13,6 +13,18 @@ STATE_PATH = EVIDENCE / "durable-work-state.json"
 RECOVERY_PATH = EVIDENCE / "durable-recovery.json"
 
 
+def _bind_app_source(source: Path) -> Path:
+    """Bind controller-side app imports without replacing P6 startup PYTHONPATH."""
+    resolved = source.resolve()
+    if not (resolved / "app" / "main.py").is_file():
+        raise RuntimeError(f"P9-D app source is incomplete: {resolved}")
+    source_text = str(resolved)
+    if source_text in sys.path:
+        sys.path.remove(source_text)
+    sys.path.insert(0, source_text)
+    return resolved
+
+
 def _load_p5w2():
     path = Path.cwd() / "tests" / "test_p5w2_worker_crash_redelivery_runtime.py"
     spec = importlib.util.spec_from_file_location("p9d_p5w2_runtime", path)
@@ -29,7 +41,9 @@ def _surface(module):
 
 
 def prepare() -> None:
+    candidate_source = _bind_app_source(Path.cwd())
     module = _load_p5w2()
+    module.ROOT = candidate_source
     client = module._safe_broker()
     surface = _surface(module)
     tmp = Path("/tmp/p9d-candidate-worker")
@@ -69,6 +83,7 @@ def prepare() -> None:
             "reader_user_id": str(seed.reader_user_id),
             "branch_id": str(seed.branch_id),
             "event_id": str(seed.event_id),
+            "candidate_source": str(candidate_source),
             "candidate_worker_hostname": crashed_worker.hostname,
             "killed_child_pid": killed_pid,
             "claim_state": list(module._state(seed)),
@@ -79,7 +94,9 @@ def prepare() -> None:
 
 
 def recover() -> None:
+    lkg_source = _bind_app_source(Path(os.environ["P9D_LKG_SOURCE"]))
     module = _load_p5w2()
+    module.ROOT = lkg_source
     client = module._safe_broker()
     state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     surface = _surface(module)
@@ -92,7 +109,6 @@ def recover() -> None:
         event_id=uuid.UUID(state["event_id"]),
     )
     module._expire_claim(seed)
-    module.ROOT = Path(os.environ["P9D_LKG_SOURCE"]).resolve()
     tmp = Path("/tmp/p9d-lkg-worker")
     tmp.mkdir(parents=True, exist_ok=True)
     with module._running_worker(tmp) as replacement_worker:
