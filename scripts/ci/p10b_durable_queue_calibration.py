@@ -220,6 +220,11 @@ def worker_environment() -> dict[str, str]:
             "ENVIRONMENT": "test",
             "DOERS_PROCESS_PROFILE": "worker",
             "CELERY_WORKER_PROFILE": "worker",
+            # Non-production Settings requires an API URL even for a worker.
+            # Supply no usable credential or authority: accidental use of the
+            # API engine fails immediately on the closed local TCP port, while
+            # all intended queue work uses the reduced WORKER_DATABASE_URL.
+            "DATABASE_URL": "postgresql+asyncpg://disabled:disabled@127.0.0.1:1/doers_disabled",
             "NOTIFICATION_EMAIL_PROVIDER_MODE": "disabled",
             "P4C_RESEND_API_KEY": "",
             "RESEND_WEBHOOK_SECRET": "",
