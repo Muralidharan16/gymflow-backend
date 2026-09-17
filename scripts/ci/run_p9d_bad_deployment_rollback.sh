@@ -20,6 +20,9 @@ set -euo pipefail
 : "${P9D_API_LOGIN:?}"
 : "${EVIDENCE_DIR:?}"
 : "${GITHUB_WORKSPACE:?}"
+: "${REDIS_URL:?}"
+: "${CELERY_BROKER_URL:?}"
+: "${CELERY_RESULT_BACKEND:?}"
 
 mkdir -p "$EVIDENCE_DIR"
 test "$(git rev-parse HEAD)" = "$P9D_CANDIDATE_SHA"
@@ -152,15 +155,15 @@ PY
 }
 
 launch_app() {
-  local runtime="$1" work="$2" port="$3" redis_port="$4" log="$5" pidfile="$6" python_bin
+  local runtime="$1" work="$2" port="$3" redis_url="$4" broker_url="$5" result_url="$6" log="$7" pidfile="$8" python_bin
   python_bin="$(command -v python)"
   (
     exec sudo -u p9dapp env -i \
       HOME="$P9D_HOME" PATH="$PATH" PYTHONPATH="$runtime" PYTHONDONTWRITEBYTECODE=1 ENVIRONMENT=test \
       DATABASE_URL="postgresql+asyncpg://${P9D_API_LOGIN}:${APP_RUNTIME_PASSWORD}@127.0.0.1:5432/${P9D_DB}" \
-      REDIS_URL="redis://127.0.0.1:${redis_port}/0" \
-      CELERY_BROKER_URL="redis://127.0.0.1:${redis_port}/1" \
-      CELERY_RESULT_BACKEND="redis://127.0.0.1:${redis_port}/2" \
+      REDIS_URL="$redis_url" \
+      CELERY_BROKER_URL="$broker_url" \
+      CELERY_RESULT_BACKEND="$result_url" \
       SECRET_KEY=p9d-synthetic-ci-secret AWS_ACCESS_KEY_ID=p9d-synthetic AWS_SECRET_ACCESS_KEY=p9d-synthetic S3_BUCKET_NAME=p9d-synthetic \
       P8_METRICS_OTLP_ENDPOINT="http://127.0.0.1:${P9D_METRICS_PORT}/v1/metrics" P8_METRICS_EXPORT_INTERVAL_SECONDS=1 P8_METRICS_EXPORT_TIMEOUT_SECONDS=2 \
       NOTIFICATION_EMAIL_PROVIDER_MODE=disabled SEARCH_PROVIDER_MODE=disabled PLATFORM_BILLING_PROVIDER_MODE=disabled \
@@ -206,6 +209,14 @@ echo "$!" > /tmp/p9d-metrics.pid
 for _ in $(seq 1 30); do curl --fail --silent "http://127.0.0.1:${P9D_METRICS_PORT}/healthz" >/dev/null && break; sleep 0.2; done
 curl --fail --silent "http://127.0.0.1:${P9D_METRICS_PORT}/healthz" > "$EVIDENCE_DIR/metrics-health.txt"
 
+python - <<'PY'
+import os
+import redis
+client = redis.Redis.from_url(os.environ['REDIS_URL'], decode_responses=True)
+assert client.ping() is True
+PY
+echo 'P9D_HEALTHY_REDIS_AUTHENTICATED=PASS'
+
 sudo iptables -I OUTPUT 1 -m owner --uid-owner "$P9D_APP_UID" ! -d 127.0.0.0/8 -j REJECT
 if sudo -u p9dapp /usr/bin/curl --fail --silent --show-error --connect-timeout 2 http://1.1.1.1 > "$EVIDENCE_DIR/provider-egress.stdout" 2> "$EVIDENCE_DIR/provider-egress.stderr"; then
   echo 'P9-D runtime identity unexpectedly reached non-loopback network.' >&2
@@ -213,14 +224,17 @@ if sudo -u p9dapp /usr/bin/curl --fail --silent --show-error --connect-timeout 2
 fi
 echo 'P9D_LIVE_PROVIDER_EGRESS_BLOCKED=PASS'
 
-launch_app "$P9D_LKG_RUNTIME" "$P9D_LKG_WORK" "$P9D_LKG_PORT" 6379 "$EVIDENCE_DIR/lkg-app.log" /tmp/p9d-lkg.pid
+launch_app "$P9D_LKG_RUNTIME" "$P9D_LKG_WORK" "$P9D_LKG_PORT" "$REDIS_URL" "$CELERY_BROKER_URL" "$CELERY_RESULT_BACKEND" "$EVIDENCE_DIR/lkg-app.log" /tmp/p9d-lkg.pid
 wait_live "$P9D_LKG_PORT" "$EVIDENCE_DIR/lkg-live.json" "$EVIDENCE_DIR/lkg-app.log"
 wait_ready "$P9D_LKG_PORT" "$EVIDENCE_DIR/lkg-ready.json" "$EVIDENCE_DIR/lkg-app.log"
 write_nginx_target "$P9D_LKG_PORT"
 wait_ready "$P9D_ROUTER_PORT" "$EVIDENCE_DIR/router-lkg-ready.json" "$P9D_NGINX_DIR/error.log"
 echo 'P9D_LAST_KNOWN_GOOD_TRAFFIC_READY=PASS'
 
-launch_app "$P9D_CANDIDATE_RUNTIME" "$P9D_CANDIDATE_WORK" "$P9D_CANDIDATE_PORT" "$P9D_BAD_REDIS_PORT" "$EVIDENCE_DIR/bad-candidate.log" /tmp/p9d-candidate.pid
+P9D_BAD_REDIS_URL="redis://127.0.0.1:${P9D_BAD_REDIS_PORT}/0"
+P9D_BAD_BROKER_URL="redis://127.0.0.1:${P9D_BAD_REDIS_PORT}/1"
+P9D_BAD_RESULT_URL="redis://127.0.0.1:${P9D_BAD_REDIS_PORT}/2"
+launch_app "$P9D_CANDIDATE_RUNTIME" "$P9D_CANDIDATE_WORK" "$P9D_CANDIDATE_PORT" "$P9D_BAD_REDIS_URL" "$P9D_BAD_BROKER_URL" "$P9D_BAD_RESULT_URL" "$EVIDENCE_DIR/bad-candidate.log" /tmp/p9d-candidate.pid
 wait_live "$P9D_CANDIDATE_PORT" "$EVIDENCE_DIR/bad-candidate-live.json" "$EVIDENCE_DIR/bad-candidate.log"
 status="$(curl --silent --output "$EVIDENCE_DIR/bad-candidate-ready-body.json" --write-out '%{http_code}' "http://127.0.0.1:${P9D_CANDIDATE_PORT}/_system/ready")"
 test "$status" = '503'
