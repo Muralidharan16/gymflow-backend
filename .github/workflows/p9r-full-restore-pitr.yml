@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   recovery_rehearsal:
-    name: Apply exact P9-R promotion-wait repair
+    name: Export exact repaired P9-R workflow blob
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -24,7 +24,7 @@ jobs:
           fetch-depth: 0
           ref: hardening/p9-data-protection-disaster-recovery
 
-      - name: Restore full workflow and patch promotion wait
+      - name: Generate repaired full workflow as non-workflow file
         shell: bash
         run: |
           set -euo pipefail
@@ -32,7 +32,7 @@ jobs:
           from pathlib import Path
 
           source_path = Path("scripts/ci/p9r-full-restore-pitr.base.yml")
-          target_path = Path(".github/workflows/p9r-full-restore-pitr.yml")
+          target_path = Path("scripts/ci/p9r-full-restore-pitr.patched.yml")
           source = source_path.read_text(encoding="utf-8")
           target = "          test \"$(sudo -u postgres psql -X -qAt -h \"$P9R_PITR_SOCKET\" -p \"$P9R_PITR_PORT\" -d postgres -c 'SELECT pg_is_in_recovery()')\" = 'f'"
           lines = source.splitlines()
@@ -62,25 +62,25 @@ jobs:
           target_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
           repaired = target_path.read_text(encoding="utf-8")
+          assert "permissions:\n  contents: read" in repaired
+          assert "workflow_call:" in repaired
           assert 'promotion_wait_deadline_ns="$((rto_start_ns + P9R_RTO_TARGET_MS * 1000000))"' in repaired
           assert "P9R_PITR_PROMOTION_WAIT=PASS" in repaired
           assert "pitr-promotion-timeout.log" in repaired
           assert repaired.count("SELECT pg_is_in_recovery()") >= 2
           PY
-
           python -m py_compile \
             tests/test_p9r_recovery_compatibility_contracts.py \
             tests/test_p9r_full_restore_pitr_contracts.py
-          git diff --check
+          git diff --check -- scripts/ci/p9r-full-restore-pitr.patched.yml
 
-      - name: Commit real repair and delete bootstrap
+      - name: Push patched blob only
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .github/workflows/p9r-full-restore-pitr.yml
-          git rm -- scripts/ci/p9r-full-restore-pitr.base.yml
+          git add scripts/ci/p9r-full-restore-pitr.patched.yml
           git diff --cached --check
-          git commit -m 'fix(p9r): wait for PITR promotion before recovery assertions'
+          git commit -m 'chore(p9r): stage repaired workflow blob'
           git push origin HEAD:hardening/p9-data-protection-disaster-recovery
