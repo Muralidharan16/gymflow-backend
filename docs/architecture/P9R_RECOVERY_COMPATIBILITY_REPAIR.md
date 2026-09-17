@@ -29,3 +29,9 @@ If PITR startup fails, P9-R now preserves and prints PostgreSQL's server startup
 `tests/test_p9r_recovery_compatibility_contracts.py` statically requires source-setting capture, propagation to both restore configurations, exact source/restore comparisons, removal of the hard-coded lower `max_connections` value, preservation of PITR startup diagnostics, and preservation of the named-target recovery semantics.
 
 The runtime workflow remains the decisive proof: P9-R certifies only if full restore, PITR, sentinel boundary, fingerprint equality, application readiness, provider isolation, and measured RPO/RTO all pass on the same exact candidate SHA.
+
+## PITR promotion readiness race repair
+
+The recovery-compatibility repair allowed the PITR instance to start, exposing a second deterministic CI race in run `35173799592`. PostgreSQL reported that it was ready to accept read-only connections at `02:19:47.014`, reached restore point `p9r_target` at `02:19:47.017`, and selected timeline 2 at `02:19:47.073`. The workflow asserted `pg_is_in_recovery() = false` immediately after `pg_ctl -w start`, so it could fail during the short hot-standby window even though recovery was proceeding correctly.
+
+The repaired gate polls `pg_is_in_recovery()` until promotion completes, using the original monotonic RTO start and the existing 120000 ms RTO budget as its hard deadline. On timeout it preserves the PostgreSQL recovery log. All existing post-promotion migration-head, socket isolation, restore-point sentinel, fingerprint, capability, RPO and RTO assertions remain unchanged. The failed run had already measured RPO at 247 ms against the 10000 ms target.
