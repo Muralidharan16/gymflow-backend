@@ -7,13 +7,13 @@ DO $$
 DECLARE
     org_sequence integer;
     member_sequence integer;
-    org_id uuid;
+    v_org_id uuid;
     owner_id uuid;
     branch_id uuid;
     phone_value text;
 BEGIN
     FOR org_sequence IN 1..8 LOOP
-        org_id := md5('p9m-org-' || org_sequence::text)::uuid;
+        v_org_id := md5('p9m-org-' || org_sequence::text)::uuid;
         owner_id := md5('p10b-owner-' || org_sequence::text)::uuid;
 
         INSERT INTO public.owners (
@@ -26,7 +26,7 @@ BEGIN
             onboarding_completed
         ) VALUES (
             owner_id,
-            org_id,
+            v_org_id,
             format('P10-B Synthetic Owner %s', org_sequence),
             format('p10b-owner-%s@example.invalid', org_sequence),
             'p10b-synthetic-no-login',
@@ -69,7 +69,7 @@ BEGIN
                 updated_by
             ) VALUES (
                 md5(format('p10b-member-%s-%s', org_sequence, member_sequence))::uuid,
-                org_id,
+                v_org_id,
                 branch_id,
                 format('p10b%02s%04s', org_sequence, member_sequence),
                 99 + member_sequence,
@@ -96,7 +96,7 @@ BEGIN
             current_value
         ) VALUES (
             md5('p10b-member-counter-' || org_sequence::text)::uuid,
-            org_id,
+            v_org_id,
             'member',
             599
         )
