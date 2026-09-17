@@ -1,0 +1,104 @@
+name: P9-R Apply Promotion Wait Repair
+
+on:
+  push:
+    branches:
+      - hardening/p9-data-protection-disaster-recovery
+
+permissions:
+  contents: write
+
+concurrency:
+  group: p9r-apply-promotion-wait-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Apply and freeze PITR promotion-wait repair
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: hardening/p9-data-protection-disaster-recovery
+
+      - name: Apply exact repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow_path = Path('.github/workflows/p9r-full-restore-pitr.yml')
+          workflow = workflow_path.read_text(encoding='utf-8')
+          old = '''          test "$(sudo -u postgres psql -X -qAt -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" -d postgres -c 'SELECT pg_is_in_recovery()')" = 'f'
+'''
+          new = '''          promotion_wait_deadline_ns="$((rto_start_ns + P9R_RTO_TARGET_MS * 1000000))"
+          pitr_promoted=0
+          while [ "$(python -c 'import time; print(time.monotonic_ns())')" -le "$promotion_wait_deadline_ns" ]; do
+            recovery_state="$(sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \\
+              -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" -d postgres \\
+              -c 'SELECT pg_is_in_recovery()' 2>/dev/null || true)"
+            if [ "$recovery_state" = 'f' ]; then
+              pitr_promoted=1
+              break
+            fi
+            sleep 0.1
+          done
+          if [ "$pitr_promoted" -ne 1 ]; then
+            sudo cat /tmp/p9r-pitr-postgres.log \\
+              | tee "$EVIDENCE_DIR/pitr-promotion-timeout.log" >&2
+            exit 1
+          fi
+          sudo cat /tmp/p9r-pitr-postgres.log > "$EVIDENCE_DIR/pitr-start.log"
+          echo 'P9R_PITR_PROMOTION_WAIT=PASS'
+          test "$(sudo -u postgres psql -X -qAt -h "$P9R_PITR_SOCKET" -p "$P9R_PITR_PORT" -d postgres -c 'SELECT pg_is_in_recovery()')" = 'f'
+'''
+          marker = 'P9R_PITR_PROMOTION_WAIT=PASS'
+          if marker not in workflow:
+              if workflow.count(old) != 1:
+                  raise SystemExit('expected exactly one pre-repair pg_is_in_recovery assertion')
+              workflow = workflow.replace(old, new, 1)
+              workflow_path.write_text(workflow, encoding='utf-8')
+
+          test_path = Path('tests/test_p9r_recovery_compatibility_contracts.py')
+          tests = test_path.read_text(encoding='utf-8')
+          test_marker = 'test_p9r_waits_for_promotion_within_rto_before_state_assertions'
+          if test_marker not in tests:
+              tests += '''\n\ndef test_p9r_waits_for_promotion_within_rto_before_state_assertions() -> None:\n    source = WORKFLOW.read_text(encoding="utf-8")\n    recovery = source.split("- name: Recover to named PITR target and measure RTO", 1)[1].split(\n        "- name: Produce machine-readable P9-R decision", 1\n    )[0]\n\n    deadline = 'promotion_wait_deadline_ns="$((rto_start_ns + P9R_RTO_TARGET_MS * 1000000))"'\n    assert deadline in recovery\n    assert "P9R_PITR_PROMOTION_WAIT=PASS" in recovery\n    assert "pitr-promotion-timeout.log" in recovery\n    assert recovery.count("SELECT pg_is_in_recovery()") >= 2\n    assert recovery.index(deadline) < recovery.index("pre_count=")\n    assert recovery.index("P9R_PITR_PROMOTION_WAIT=PASS") < recovery.index("pre_count=")\n'''
+              test_path.write_text(tests, encoding='utf-8')
+
+          doc_path = Path('docs/architecture/P9R_RECOVERY_COMPATIBILITY_REPAIR.md')
+          doc = doc_path.read_text(encoding='utf-8')
+          doc_marker = '## PITR promotion readiness race repair'
+          if doc_marker not in doc:
+              doc += '''\n\n## PITR promotion readiness race repair\n\nThe recovery-compatibility repair allowed the PITR instance to start, exposing a second deterministic CI race in run `35173799592`. PostgreSQL reported that it was ready to accept read-only connections at `02:19:47.014`, reached restore point `p9r_target` at `02:19:47.017`, and selected timeline 2 at `02:19:47.073`. The workflow asserted `pg_is_in_recovery() = false` immediately after `pg_ctl -w start`, so it could fail during the short hot-standby window even though recovery was proceeding correctly.\n\nThe repaired gate polls `pg_is_in_recovery()` until promotion completes, using the original monotonic RTO start and the existing 120000 ms RTO budget as its hard deadline. On timeout it preserves the PostgreSQL recovery log. All existing post-promotion migration-head, socket isolation, restore-point sentinel, fingerprint, capability, RPO and RTO assertions remain unchanged. The failed run had already measured RPO at 247 ms against the 10000 ms target.\n'''
+              doc_path.write_text(doc, encoding='utf-8')
+          PY
+
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p9r_recovery_compatibility_contracts.py \
+            tests/test_p9r_full_restore_pitr_contracts.py
+          git diff --check
+
+      - name: Commit repair if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- \
+              .github/workflows/p9r-full-restore-pitr.yml \
+              tests/test_p9r_recovery_compatibility_contracts.py \
+              docs/architecture/P9R_RECOVERY_COMPATIBILITY_REPAIR.md; then
+            echo 'P9R_PROMOTION_WAIT_REPAIR_ALREADY_APPLIED=PASS'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            .github/workflows/p9r-full-restore-pitr.yml \
+            tests/test_p9r_recovery_compatibility_contracts.py \
+            docs/architecture/P9R_RECOVERY_COMPATIBILITY_REPAIR.md
+          git commit -m 'fix(p9r): wait for PITR promotion before recovery assertions'
+          git push origin HEAD:hardening/p9-data-protection-disaster-recovery
