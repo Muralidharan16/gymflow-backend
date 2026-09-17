@@ -1,0 +1,164 @@
+name: P9F Temporary SQL Scanner Repair
+
+on:
+  push:
+    branches:
+      - repair/p9f-sql-scanner-fb008
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact temporary repair head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Guard repair base
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "fb008f94c80c979a2fddac9247ce63efb590a12a"
+
+      - name: Scope mixed-file SQL scanning without weakening pgcrypto detection
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/test_migration_shared_infrastructure_boundary.py")
+          source = path.read_text(encoding="utf-8")
+
+          function_anchor = "\n\ndef _repository_sql_fragments() -> list[tuple[Path, str]]:\n"
+          assert source.count(function_anchor) == 1
+          helper = r'''
+
+SQL_HEREDOC_START_RE = re.compile(
+    r"<<-?\s*(?:'SQL'|\"SQL\"|SQL)(?:\s|$)",
+    re.IGNORECASE,
+)
+
+
+def _mixed_text_sql_fragments(source: str) -> list[str]:
+    """Extract SQL from mixed-language text without scanning unrelated code."""
+    values: list[str] = []
+    lines = source.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if SQL_HEREDOC_START_RE.search(line):
+            block: list[str] = []
+            index += 1
+            while (
+                index < len(lines)
+                and lines[index].strip().upper() != "SQL"
+            ):
+                block.append(lines[index])
+                index += 1
+            if index >= len(lines):
+                values.extend(
+                    value
+                    for value in block
+                    if SQL_HINT_RE.search(value)
+                )
+                break
+            values.append("\n".join(block))
+        elif SQL_HINT_RE.search(line):
+            values.append(line)
+        index += 1
+    return values
+'''
+          source = source.replace(
+              function_anchor,
+              helper + function_anchor,
+              1,
+          )
+
+          old_else = '''        else:\n            values = [\n                source\n                for _ in [0]\n                if SQL_HINT_RE.search(source)\n            ]\n'''
+          new_else = '''        else:\n            values = _mixed_text_sql_fragments(source)\n'''
+          assert source.count(old_else) == 1
+          source = source.replace(old_else, new_else, 1)
+
+          test_anchor = "\n\ndef test_pgcrypto_lifecycle_is_absent_repository_wide():\n"
+          assert source.count(test_anchor) == 1
+          regression = r'''
+
+
+def test_mixed_text_sql_fragment_scanner_is_language_scoped():
+    pgcrypto_call = "dig" + "est('payload', 'sha256')"
+    source = "\n".join(
+        (
+            "run: |",
+            "  python - <<'PY'",
+            "  def digest(path):",
+            "      return path",
+            '  print(digest("x"))',
+            "  PY",
+            '  psql -c "SELECT gen_random_uuid();"',
+            "  psql <<'SQL'",
+            f"  SELECT {pgcrypto_call};",
+            "  SQL",
+        )
+    )
+
+    fragments = _mixed_text_sql_fragments(source)
+    assert all("def digest" not in fragment for fragment in fragments)
+    assert all('print(digest(' not in fragment for fragment in fragments)
+    assert any("SELECT gen_random_uuid()" in fragment for fragment in fragments)
+    assert any(pgcrypto_call in fragment for fragment in fragments)
+'''
+          source = source.replace(
+              test_anchor,
+              regression + test_anchor,
+              1,
+          )
+
+          path.write_text(source, encoding="utf-8")
+          PY
+
+      - name: Validate focused scanner repair
+        run: |
+          set -euo pipefail
+          python -m py_compile tests/test_migration_shared_infrastructure_boundary.py
+          python - <<'PY'
+          import runpy
+
+          namespace = runpy.run_path(
+              "tests/test_migration_shared_infrastructure_boundary.py"
+          )
+          namespace[
+              "test_mixed_text_sql_fragment_scanner_is_language_scoped"
+          ]()
+          fragments = namespace["_repository_sql_fragments"]()
+          call_pattern = namespace["re"].compile(
+              r"(?<![A-Za-z0-9_])(" 
+              + "|".join(
+                  sorted(
+                      namespace["PGCRYPTO_ONLY"],
+                      key=lambda value: (-len(value), value),
+                  )
+              )
+              + r")\s*\(",
+              namespace["re"].IGNORECASE,
+          )
+          matches = [
+              (path, fragment)
+              for path, fragment in fragments
+              if call_pattern.search(fragment)
+          ]
+          assert matches == [], matches
+          PY
+
+      - name: Commit repair on temporary branch
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only)" = "tests/test_migration_shared_infrastructure_boundary.py"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/test_migration_shared_infrastructure_boundary.py
+          git diff --cached --check
+          git commit -m "fix(p9f): scope mixed-file SQL scanning"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
