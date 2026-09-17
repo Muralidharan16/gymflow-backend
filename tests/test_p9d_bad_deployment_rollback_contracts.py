@@ -10,6 +10,7 @@ MATRIX_PATH = ROOT / "docs/architecture/p9_data_protection_recovery_matrix.json"
 WORKFLOW_PATH = ROOT / ".github/workflows/p9d-bad-deployment-rollback.yml"
 SCRIPT_PATH = ROOT / "scripts/ci/run_p9d_bad_deployment_rollback.sh"
 HARNESS_PATH = ROOT / "scripts/ci/p9d_durable_work_harness.py"
+PG16_INSTALLER_PATH = ROOT / "scripts/ci/install_pg16_test_stack.sh"
 
 BRANCH = "hardening/p9-data-protection-disaster-recovery"
 LAST_KNOWN_GOOD_SHA = "d8e422aafe061e179bd15cb22aeb8eacf110b5be"
@@ -51,7 +52,10 @@ def test_p9d_workflow_is_exact_lkg_real_pg16_and_read_only_permission_bound() ->
     assert job["runs-on"] == "ubuntu-24.04"
     assert job["env"]["P9D_LAST_KNOWN_GOOD_SHA"] == LAST_KNOWN_GOOD_SHA
     assert job["env"]["P9D_HEAD"] == HEAD
-    assert "postgresql-16" in source
+    assert "scripts/ci/install_pg16_test_stack.sh" in source
+    pg16_installer = PG16_INSTALLER_PATH.read_text(encoding="utf-8")
+    assert "postgresql-16" in pg16_installer
+    assert "postgresql-client-16" in pg16_installer
     assert "nginx" in source.lower()
     assert "git worktree add --detach" in source
     assert "/_system/live" in source
