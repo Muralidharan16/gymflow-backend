@@ -144,6 +144,54 @@ def _fenced_sql_blocks(source: str) -> list[str]:
     )
 
 
+def _shell_sql_heredoc_blocks(source: str) -> list[str]:
+    opener = re.compile(
+        r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?"
+    )
+    lines = source.splitlines()
+    blocks: list[str] = []
+    index = 0
+    while index < len(lines):
+        opener_line = lines[index]
+        match = opener.search(opener_line)
+        if match is None:
+            index += 1
+            continue
+        delimiter = match.group(1)
+        sql_target = (
+            "sql" in delimiter.lower()
+            or re.search(r"\bpsql\b", opener_line, re.IGNORECASE)
+            is not None
+        )
+        index += 1
+        body: list[str] = []
+        while index < len(lines) and lines[index].strip() != delimiter:
+            body.append(lines[index])
+            index += 1
+        if sql_target:
+            fragment = "\n".join(body)
+            if SQL_HINT_RE.search(fragment):
+                blocks.append(fragment)
+        if index < len(lines):
+            index += 1
+    return blocks
+
+
+def _mixed_text_sql_fragments(source: str) -> list[str]:
+    strong_sql_hint = re.compile(
+        r"\b(?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|"
+        r"GRANT|REVOKE)\b",
+        re.IGNORECASE,
+    )
+    fragments = _shell_sql_heredoc_blocks(source)
+    fragments.extend(
+        line
+        for line in source.splitlines()
+        if strong_sql_hint.search(line)
+    )
+    return fragments
+
+
 def _repository_sql_fragments() -> list[tuple[Path, str]]:
     fragments = []
     for path, source in _repository_text_entries():
@@ -155,11 +203,7 @@ def _repository_sql_fragments() -> list[tuple[Path, str]]:
         elif suffix in {".md", ".rst", ".txt"}:
             values = _fenced_sql_blocks(source)
         else:
-            values = [
-                source
-                for _ in [0]
-                if SQL_HINT_RE.search(source)
-            ]
+            values = _mixed_text_sql_fragments(source)
         fragments.extend((path, value) for value in values)
     return fragments
 

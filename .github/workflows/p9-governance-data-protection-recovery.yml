@@ -1,0 +1,107 @@
+name: P9 Governance Data Protection and Recovery
+
+on:
+  push:
+    branches:
+      - hardening/p9-data-protection-disaster-recovery
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p9-governance-data-protection-recovery-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  governance:
+    name: Frozen P9 upgrade and disaster-recovery contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      P8_MERGE_BASE: 8e0d6b66278e187209e6b029e11f24e475c6a24f
+      P8_CERTIFIED_TREE: 199b87b7dd8f65ed4c4f3303a01450ef9f8ec604
+      P9_ALEMBIC_HEAD: zk07d8e9f0a45
+      P9_ALEMBIC_PREDECESSOR: zj07d8e9f0a44
+      P9_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Prove exact merged P8 ancestry and tree
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9_CANDIDATE_SHA}"
+          git cat-file -e "${P8_MERGE_BASE}^{commit}"
+          test "$(git rev-parse "${P8_MERGE_BASE}^{tree}")" = "${P8_CERTIFIED_TREE}"
+          git merge-base --is-ancestor "${P8_MERGE_BASE}" HEAD
+
+      - name: Validate P9 governance artifacts
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/p9_data_protection_recovery_matrix.json >/dev/null
+          python -m py_compile tests/test_p9_governance_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p9_governance_contracts.py
+
+      - name: Guard current Alembic predecessor and head
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9_ALEMBIC_HEAD}"
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          path = Path('alembic/versions/zk07d8e9f0a45_p8_lifecycle_dead_letter_snapshot.py')
+          tree = ast.parse(path.read_text(encoding='utf-8'))
+          values = {}
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                  if node.targets[0].id in {'revision', 'down_revision'}:
+                      values[node.targets[0].id] = ast.literal_eval(node.value)
+          assert values == {'revision': 'zk07d8e9f0a45', 'down_revision': 'zj07d8e9f0a44'}, values
+          PY
+
+      - name: Reprove inherited P8 governance and final-certification contracts
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8_governance_contracts.py \
+            tests/test_p8f_final_certification_contracts.py
+          python -s scripts/verify_head_workflow_bootstrap.py
+
+      - name: Emit P9 governance markers
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9_CANDIDATE_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P9_GOVERNANCE_DATA_PROTECTION=PASS'
+          echo 'P9_UPGRADE_AND_RECOVERY_PROVEN=GOVERNANCE_FROZEN'
+          echo 'P9_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'

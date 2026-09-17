@@ -1,0 +1,454 @@
+name: P9-B Backup Integrity and Restoreability
+
+on:
+  push:
+    branches:
+      - hardening/p9-data-protection-disaster-recovery
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p9b-backup-integrity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backup_integrity:
+    name: Real PG16 logical and physical backup integrity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      P9B_PREDECESSOR: zj07d8e9f0a44
+      P9B_HEAD: zk07d8e9f0a45
+      P9B_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      P9B_SOURCE_DB: gymflow_p9b_source
+      P9B_LOGICAL_RESTORE_DB: gymflow_p9b_logical_restore
+      P9B_LOGICAL_BACKUP: /tmp/p9b-logical.dump
+      P9B_CORRUPT_LOGICAL_BACKUP: /tmp/p9b-logical-corrupt.dump
+      P9B_WAL_ARCHIVE: /tmp/p9b-wal-archive
+      P9B_PHYSICAL_BASE: /tmp/p9b-physical-base
+      P9B_PHYSICAL_RESTORE: /tmp/p9b-physical-restore
+      P9B_PHYSICAL_SOCKET: /tmp/p9b-physical-socket
+      P9B_PHYSICAL_PORT: '55433'
+      MIGRATION_PASSWORD: ci-p9b-migration-owner
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p9b-migration-owner@127.0.0.1:5432/gymflow_p9b_source
+      EVIDENCE_DIR: p9b-evidence
+      PYTHONDONTWRITEBYTECODE: '1'
+      ENVIRONMENT: test
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked test environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/p9b-resolved.txt
+          diff -u requirements-test.lock /tmp/p9b-resolved.txt
+
+      - name: Validate exact candidate and P9-B static contracts
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9B_CANDIDATE_SHA}"
+          mkdir -p "$EVIDENCE_DIR"
+          printf 'candidate_sha=%s\n' "$P9B_CANDIDATE_SHA" > "$EVIDENCE_DIR/candidate.txt"
+          python -m py_compile \
+            tests/test_p9_governance_contracts.py \
+            tests/test_p9m_populated_migration_contracts.py \
+            tests/test_p9l_lock_rewrite_contracts.py \
+            tests/test_p9b_backup_integrity_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p9_governance_contracts.py \
+            tests/test_p9m_populated_migration_contracts.py \
+            tests/test_p9l_lock_rewrite_contracts.py \
+            tests/test_p9b_backup_integrity_contracts.py
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9B_HEAD}"
+
+      - name: Install PostgreSQL 16 and backup utilities
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version | tee "$EVIDENCE_DIR/postgresql-version.txt"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();' \
+            | tee -a "$EVIDENCE_DIR/postgresql-version.txt"
+          test -x /usr/lib/postgresql/16/bin/pg_basebackup
+          test -x /usr/lib/postgresql/16/bin/pg_verifybackup
+
+      - name: Enable disposable WAL archive before source construction
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0700 -o postgres -g postgres "$P9B_WAL_ARCHIVE"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres \
+            -c "ALTER SYSTEM SET archive_mode = 'on';"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres \
+            -c "ALTER SYSTEM SET archive_command = 'test -f /tmp/p9b-wal-archive/%f || cp %p /tmp/p9b-wal-archive/%f';"
+          sudo systemctl restart postgresql
+          test "$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW archive_mode')" = 'on'
+          test "$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW wal_level')" = 'replica'
+          sudo -u postgres psql -X -qAt -d postgres \
+            -c "SELECT current_setting('archive_command')" \
+            > "$EVIDENCE_DIR/archive-command.txt"
+          grep -q '/tmp/p9b-wal-archive' "$EVIDENCE_DIR/archive-command.txt"
+
+      - name: Bootstrap canonical reduced roles and source database
+        run: |
+          set -euo pipefail
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<SQL
+          ALTER ROLE migration_owner PASSWORD 'ci-p9b-migration-owner';
+          CREATE DATABASE ${P9B_SOURCE_DB} OWNER migration_owner;
+          SQL
+          bash scripts/ci/verify_cluster_roles.sh
+
+      - name: Provision infrastructure-owned extension boundary
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$P9B_SOURCE_DB" <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA partman TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA partman TO migration_owner;
+          GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA partman TO migration_owner;
+          SQL
+
+      - name: Build exact populated predecessor and upgrade to HEAD
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          python -s -m alembic -c alembic.ini upgrade "${P9B_PREDECESSOR}" 2>&1 \
+            | tee "$EVIDENCE_DIR/upgrade-to-predecessor.log"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
+            -d "$P9B_SOURCE_DB" \
+            -f scripts/ci/p9m_seed_populated_predecessor.sql \
+            | tee "$EVIDENCE_DIR/seed.log"
+          grep -q 'P9M_SYNTHETIC_PRODUCTION_SHAPE=PASS' "$EVIDENCE_DIR/seed.log"
+          python -s -m alembic -c alembic.ini upgrade "${P9B_HEAD}" 2>&1 \
+            | tee "$EVIDENCE_DIR/upgrade-to-head.log"
+          python -s -m alembic -c alembic.ini current 2>&1 \
+            | tee "$EVIDENCE_DIR/current-source-head.log"
+          grep -q "${P9B_HEAD}" "$EVIDENCE_DIR/current-source-head.log"
+
+      - name: Capture exact source business and security fingerprint
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
+            -d "$P9B_SOURCE_DB" \
+            -f scripts/ci/p9m_stable_snapshot.sql \
+            > "$EVIDENCE_DIR/source-stable.txt"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
+            -d "$P9B_SOURCE_DB" \
+            -f scripts/ci/p9m_verify_head_capability.sql \
+            | tee "$EVIDENCE_DIR/source-head-capability.log"
+          grep -q 'P9M_EXPECTED_CAPABILITY_DELTA=PASS' "$EVIDENCE_DIR/source-head-capability.log"
+          sha256sum "$EVIDENCE_DIR/source-stable.txt" > "$EVIDENCE_DIR/source-stable.sha256"
+
+      - name: Create checksum and validate logical backup catalog
+        run: |
+          set -euo pipefail
+          sudo -u postgres pg_dump --format=custom \
+            --dbname="$P9B_SOURCE_DB" \
+            --file="$P9B_LOGICAL_BACKUP"
+          sudo -u postgres test -s "$P9B_LOGICAL_BACKUP"
+          sudo -u postgres sha256sum "$P9B_LOGICAL_BACKUP" \
+            > "$EVIDENCE_DIR/logical-backup.sha256"
+          sudo -u postgres stat -c '%s' "$P9B_LOGICAL_BACKUP" \
+            > "$EVIDENCE_DIR/logical-backup-size.txt"
+          sudo -u postgres pg_restore --list "$P9B_LOGICAL_BACKUP" \
+            > "$EVIDENCE_DIR/logical-backup-toc.txt"
+          test -s "$EVIDENCE_DIR/logical-backup-toc.txt"
+          grep -q 'branch_outbox_events' "$EVIDENCE_DIR/logical-backup-toc.txt"
+          echo 'P9B_LOGICAL_CATALOG_READABLE=PASS'
+
+          sudo -u postgres cp "$P9B_LOGICAL_BACKUP" "$P9B_CORRUPT_LOGICAL_BACKUP"
+          sudo -u postgres truncate -s 128 "$P9B_CORRUPT_LOGICAL_BACKUP"
+          if sudo -u postgres pg_restore --list "$P9B_CORRUPT_LOGICAL_BACKUP" \
+              > "$EVIDENCE_DIR/corrupt-logical-list.stdout" \
+              2> "$EVIDENCE_DIR/corrupt-logical-list.stderr"; then
+            echo 'Truncated logical backup was unexpectedly accepted.' >&2
+            exit 1
+          fi
+          echo 'P9B_CORRUPT_LOGICAL_BACKUP_REJECTED=PASS'
+
+      - name: Restore logical backup into fresh isolated database
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<SQL
+          CREATE DATABASE ${P9B_LOGICAL_RESTORE_DB} OWNER migration_owner TEMPLATE template0;
+          SQL
+          sudo -u postgres pg_restore --exit-on-error \
+            --dbname="$P9B_LOGICAL_RESTORE_DB" \
+            "$P9B_LOGICAL_BACKUP" \
+            | tee "$EVIDENCE_DIR/logical-restore.log"
+          test "$(sudo -u postgres psql -X -qAt -d "$P9B_LOGICAL_RESTORE_DB" -c 'SELECT version_num FROM alembic_version')" = "${P9B_HEAD}"
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
+            -d "$P9B_LOGICAL_RESTORE_DB" \
+            -f scripts/ci/p9m_stable_snapshot.sql \
+            > "$EVIDENCE_DIR/logical-restore-stable.txt"
+          cmp "$EVIDENCE_DIR/source-stable.txt" "$EVIDENCE_DIR/logical-restore-stable.txt"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
+            -d "$P9B_LOGICAL_RESTORE_DB" \
+            -f scripts/ci/p9m_verify_head_capability.sql \
+            | tee "$EVIDENCE_DIR/logical-restore-capability.log"
+          grep -q 'P9M_EXPECTED_CAPABILITY_DELTA=PASS' "$EVIDENCE_DIR/logical-restore-capability.log"
+          sha256sum "$EVIDENCE_DIR/logical-restore-stable.txt" \
+            > "$EVIDENCE_DIR/logical-restore-stable.sha256"
+          echo 'P9B_LOGICAL_RESTORE_FINGERPRINT=PASS'
+          echo 'P9_LOGICAL_BACKUP_INTEGRITY=PASS'
+
+      - name: Prove WAL archive evidence
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres \
+            -c 'SELECT pg_switch_wal();' \
+            | tee "$EVIDENCE_DIR/wal-switch.txt"
+          archived='0'
+          for attempt in $(seq 1 30); do
+            archived="$(sudo -u postgres find "$P9B_WAL_ARCHIVE" -maxdepth 1 -type f -printf '.' | wc -c)"
+            if [ "$archived" -gt 0 ]; then
+              break
+            fi
+            sleep 1
+          done
+          test "$archived" -gt 0
+          sudo -u postgres psql -X -qAt -d postgres \
+            -c "SELECT archived_count || '|' || COALESCE(last_archived_wal, '') || '|' || COALESCE(last_archived_time::text, '') FROM pg_stat_archiver" \
+            > "$EVIDENCE_DIR/pg-stat-archiver.txt"
+          sudo -u postgres find "$P9B_WAL_ARCHIVE" -maxdepth 1 -type f -printf '%f\n' \
+            | LC_ALL=C sort > "$EVIDENCE_DIR/wal-archive-files.txt"
+          sudo -u postgres bash -c '
+            set -euo pipefail
+            while IFS= read -r -d "" path; do
+              sha256sum "$path"
+            done < <(find "$1" -maxdepth 1 -type f -print0 | LC_ALL=C sort -z)
+          ' _ "$P9B_WAL_ARCHIVE" > "$EVIDENCE_DIR/wal-archive.sha256"
+          test -s "$EVIDENCE_DIR/wal-archive.sha256"
+          echo 'P9B_WAL_ARCHIVE=PASS'
+
+      - name: Create and verify physical base backup
+        run: |
+          set -euo pipefail
+          sudo -u postgres rm -rf "$P9B_PHYSICAL_BASE"
+          sudo -u postgres /usr/lib/postgresql/16/bin/pg_basebackup \
+            --pgdata="$P9B_PHYSICAL_BASE" \
+            --format=plain \
+            --wal-method=stream \
+            --checkpoint=fast \
+            --manifest-checksums=SHA256 \
+            --dbname='dbname=postgres' \
+            --verbose \
+            2>&1 | tee "$EVIDENCE_DIR/pg-basebackup.log"
+          sudo -u postgres /usr/lib/postgresql/16/bin/pg_verifybackup \
+            "$P9B_PHYSICAL_BASE" \
+            2>&1 | tee "$EVIDENCE_DIR/pg-verifybackup.log"
+          grep -q 'backup successfully verified' "$EVIDENCE_DIR/pg-verifybackup.log"
+          sudo -u postgres test -s "$P9B_PHYSICAL_BASE/backup_manifest"
+          sudo -u postgres sha256sum "$P9B_PHYSICAL_BASE/backup_manifest" \
+            > "$EVIDENCE_DIR/physical-backup-manifest.sha256"
+          sudo -u postgres du -sb "$P9B_PHYSICAL_BASE" \
+            > "$EVIDENCE_DIR/physical-backup-size.txt"
+          echo 'P9B_PHYSICAL_MANIFEST_VERIFIED=PASS'
+
+      - name: Boot private physical clone and prove restore fingerprint
+        run: |
+          set -euo pipefail
+          sudo -u postgres rm -rf "$P9B_PHYSICAL_RESTORE" "$P9B_PHYSICAL_SOCKET"
+          sudo -u postgres cp -a "$P9B_PHYSICAL_BASE" "$P9B_PHYSICAL_RESTORE"
+          sudo install -d -m 0700 -o postgres -g postgres "$P9B_PHYSICAL_SOCKET"
+          sudo tee /tmp/p9b-physical-postgresql.conf >/dev/null <<EOF
+          port = ${P9B_PHYSICAL_PORT}
+          listen_addresses = ''
+          unix_socket_directories = '${P9B_PHYSICAL_SOCKET}'
+          shared_buffers = '128MB'
+          max_connections = 50
+          EOF
+          sudo tee /tmp/p9b-physical-hba.conf >/dev/null <<'EOF'
+          local all all trust
+          EOF
+          sudo chown postgres:postgres \
+            /tmp/p9b-physical-postgresql.conf \
+            /tmp/p9b-physical-hba.conf
+          sudo chmod 0600 \
+            /tmp/p9b-physical-postgresql.conf \
+            /tmp/p9b-physical-hba.conf
+
+          cleanup_clone() {
+            sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \
+              -D "$P9B_PHYSICAL_RESTORE" -m fast -w stop >/dev/null 2>&1 || true
+          }
+          trap cleanup_clone EXIT
+
+          sudo -u postgres rm -f /tmp/p9b-physical-clone-postgres.log
+          sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \
+            -D "$P9B_PHYSICAL_RESTORE" \
+            -l /tmp/p9b-physical-clone-postgres.log \
+            -o "-c config_file=/tmp/p9b-physical-postgresql.conf -c hba_file=/tmp/p9b-physical-hba.conf -c archive_mode=off" \
+            -w start
+          sudo -u postgres test -s /tmp/p9b-physical-clone-postgres.log
+          sudo cat /tmp/p9b-physical-clone-postgres.log \
+            > "$EVIDENCE_DIR/physical-clone-start.log"
+          sudo -u postgres /usr/lib/postgresql/16/bin/pg_isready \
+            -h "$P9B_PHYSICAL_SOCKET" -p "$P9B_PHYSICAL_PORT" \
+            | tee "$EVIDENCE_DIR/physical-clone-ready.txt"
+          test "$(sudo -u postgres psql -X -qAt -h "$P9B_PHYSICAL_SOCKET" -p "$P9B_PHYSICAL_PORT" -d "$P9B_SOURCE_DB" -c 'SELECT version_num FROM alembic_version')" = "${P9B_HEAD}"
+          test "$(sudo -u postgres psql -X -qAt -h "$P9B_PHYSICAL_SOCKET" -p "$P9B_PHYSICAL_PORT" -d postgres -c 'SHOW listen_addresses')" = ''
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
+            -h "$P9B_PHYSICAL_SOCKET" \
+            -p "$P9B_PHYSICAL_PORT" \
+            -d "$P9B_SOURCE_DB" \
+            -f scripts/ci/p9m_stable_snapshot.sql \
+            > "$EVIDENCE_DIR/physical-restore-stable.txt"
+          cmp "$EVIDENCE_DIR/source-stable.txt" "$EVIDENCE_DIR/physical-restore-stable.txt"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
+            -h "$P9B_PHYSICAL_SOCKET" \
+            -p "$P9B_PHYSICAL_PORT" \
+            -d "$P9B_SOURCE_DB" \
+            -f scripts/ci/p9m_verify_head_capability.sql \
+            | tee "$EVIDENCE_DIR/physical-restore-capability.log"
+          grep -q 'P9M_EXPECTED_CAPABILITY_DELTA=PASS' "$EVIDENCE_DIR/physical-restore-capability.log"
+          sha256sum "$EVIDENCE_DIR/physical-restore-stable.txt" \
+            > "$EVIDENCE_DIR/physical-restore-stable.sha256"
+          echo 'P9B_PHYSICAL_CLONE_STARTUP=PASS'
+          echo 'P9B_PHYSICAL_RESTORE_FINGERPRINT=PASS'
+          echo 'P9_PHYSICAL_BASE_BACKUP=PASS'
+          cleanup_clone
+          trap - EXIT
+
+      - name: Produce machine-readable P9-B evidence
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          evidence = Path(os.environ["EVIDENCE_DIR"])
+
+          def digest(path: Path) -> str:
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          def first_field(path: Path) -> str:
+              return path.read_text(encoding="utf-8").strip().split()[0]
+
+          wal_files = [
+              line for line in (evidence / "wal-archive-files.txt").read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+          payload = {
+              "candidate_sha": os.environ["P9B_CANDIDATE_SHA"],
+              "postgresql_major": 16,
+              "alembic_head": os.environ["P9B_HEAD"],
+              "logical_format": "custom",
+              "logical_backup_sha256": first_field(evidence / "logical-backup.sha256"),
+              "logical_backup_size_bytes": int((evidence / "logical-backup-size.txt").read_text().strip()),
+              "logical_catalog_sha256": digest(evidence / "logical-backup-toc.txt"),
+              "corrupt_logical_backup_rejected": True,
+              "logical_restore_fingerprint_equal": True,
+              "physical_manifest_sha256": first_field(evidence / "physical-backup-manifest.sha256"),
+              "physical_backup_size_bytes": int((evidence / "physical-backup-size.txt").read_text().split()[0]),
+              "pg_verifybackup": True,
+              "wal_archive_file_count": len(wal_files),
+              "wal_archive_inventory_sha256": digest(evidence / "wal-archive.sha256"),
+              "physical_clone_private_socket_only": True,
+              "physical_restore_fingerprint_equal": True,
+              "source_fingerprint_sha256": digest(evidence / "source-stable.txt"),
+              "logical_restore_fingerprint_sha256": digest(evidence / "logical-restore-stable.txt"),
+              "physical_restore_fingerprint_sha256": digest(evidence / "physical-restore-stable.txt"),
+              "logical_backup_integrity": True,
+              "physical_base_backup": True,
+              "refund_provider_execution": "deferred_fail_closed",
+          }
+          if payload["wal_archive_file_count"] < 1:
+              raise SystemExit("P9-B WAL archive inventory is empty")
+          if len({
+              payload["source_fingerprint_sha256"],
+              payload["logical_restore_fingerprint_sha256"],
+              payload["physical_restore_fingerprint_sha256"],
+          }) != 1:
+              raise SystemExit("P9-B stable fingerprint digest mismatch")
+          (evidence / "p9b-decision.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          cat "$EVIDENCE_DIR/p9b-decision.json"
+          grep -q '"logical_backup_integrity": true' "$EVIDENCE_DIR/p9b-decision.json"
+          grep -q '"physical_base_backup": true' "$EVIDENCE_DIR/p9b-decision.json"
+          grep -q '"refund_provider_execution": "deferred_fail_closed"' "$EVIDENCE_DIR/p9b-decision.json"
+
+      - name: Reprove inherited P9 and P8 boundaries
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p9_governance_contracts.py \
+            tests/test_p9m_populated_migration_contracts.py \
+            tests/test_p9l_lock_rewrite_contracts.py \
+            tests/test_p9b_backup_integrity_contracts.py \
+            tests/test_p8_governance_contracts.py \
+            tests/test_migration_app_secure_owner_context_boundary.py \
+            tests/test_pg_dump_normalizer.py
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9B_HEAD}"
+
+      - name: Emit P9-B decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9B_CANDIDATE_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          grep -q '"logical_backup_integrity": true' "$EVIDENCE_DIR/p9b-decision.json"
+          grep -q '"physical_base_backup": true' "$EVIDENCE_DIR/p9b-decision.json"
+          echo 'P9B_LOGICAL_CATALOG_READABLE=PASS'
+          echo 'P9B_CORRUPT_LOGICAL_BACKUP_REJECTED=PASS'
+          echo 'P9B_LOGICAL_RESTORE_FINGERPRINT=PASS'
+          echo 'P9_LOGICAL_BACKUP_INTEGRITY=PASS'
+          echo 'P9B_WAL_ARCHIVE=PASS'
+          echo 'P9B_PHYSICAL_MANIFEST_VERIFIED=PASS'
+          echo 'P9B_PHYSICAL_CLONE_STARTUP=PASS'
+          echo 'P9B_PHYSICAL_RESTORE_FINGERPRINT=PASS'
+          echo 'P9_PHYSICAL_BASE_BACKUP=PASS'
+          echo 'P9_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+
+      - name: Upload P9-B backup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p9b-backup-integrity-${{ github.event.pull_request.head.sha || github.sha }}
+          path: p9b-evidence/
+          if-no-files-found: error
+          retention-days: 14

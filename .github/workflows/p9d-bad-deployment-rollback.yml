@@ -1,0 +1,175 @@
+name: P9-D Bad Deployment Rollback Recovery
+
+on:
+  push:
+    branches:
+      - hardening/p9-data-protection-disaster-recovery
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p9d-bad-deployment-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bad_deployment_rollback:
+    name: Real PG16 bad release traffic rollback and durable work recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      P9D_LAST_KNOWN_GOOD_SHA: d8e422aafe061e179bd15cb22aeb8eacf110b5be
+      P9D_PREDECESSOR: zj07d8e9f0a44
+      P9D_HEAD: zk07d8e9f0a45
+      P9D_DB: gymflow_p5w2_test
+      P9D_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      P9D_LKG_SOURCE: /tmp/p9d-lkg-source
+      P9D_LKG_RUNTIME: /tmp/p9d-lkg-runtime
+      P9D_CANDIDATE_RUNTIME: /tmp/p9d-candidate-runtime
+      P9D_LKG_WORK: /tmp/p9d-lkg-work
+      P9D_CANDIDATE_WORK: /tmp/p9d-candidate-work
+      P9D_HOME: /tmp/p9d-app-home
+      P9D_LKG_PORT: '18182'
+      P9D_CANDIDATE_PORT: '18183'
+      P9D_ROUTER_PORT: '18180'
+      P9D_BAD_REDIS_PORT: '16399'
+      P9D_METRICS_PORT: '4321'
+      P9D_API_LOGIN: app_test_runtime
+      EVIDENCE_DIR: p9d-evidence
+      MIGRATION_PASSWORD: ci-p9d-migration
+      AUTH_RUNTIME_PASSWORD: ci-p9d-auth
+      APP_RUNTIME_PASSWORD: ci-p9d-app
+      WORKER_RUNTIME_PASSWORD: ci-p9d-worker
+      MAINTENANCE_RUNTIME_PASSWORD: ci-p9d-maintenance
+      FINANCE_CONFIG_RUNTIME_PASSWORD: ci-p9d-finance-config
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p9d-migration@127.0.0.1:5432/gymflow_p5w2_test
+      TEST_DATABASE_URL: postgresql+psycopg://app_test_runtime:ci-p9d-app@127.0.0.1:5432/gymflow_p5w2_test
+      TEST_ADMIN_DATABASE_URL: postgresql+psycopg://migration_owner:ci-p9d-migration@127.0.0.1:5432/gymflow_p5w2_test
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-p9d-worker@127.0.0.1:5432/gymflow_p5w2_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: p9d-ci-only-secret
+      AWS_ACCESS_KEY_ID: p9d-synthetic
+      AWS_SECRET_ACCESS_KEY: p9d-synthetic
+      S3_BUCKET_NAME: p9d-synthetic
+      ENVIRONMENT: test
+      P5W2_PROCESS_FAULTS: '1'
+      P5W2_DISPOSABLE_DATABASE: gymflow_p5w2_test
+      P5W2_DISPOSABLE_BROKER: redis-db-1
+      P4D_REFUND_ALLOW_DEFAULT_PORT_FOR_CI: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+
+    steps:
+      - name: Checkout exact candidate and P9-C last-known-good history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/p9d-resolved.txt
+          diff -u requirements-test.lock /tmp/p9d-resolved.txt
+
+      - name: Prove P9-D static contracts
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9D_CANDIDATE_SHA}"
+          python -m py_compile scripts/ci/p9d_durable_work_harness.py tests/test_p9d_bad_deployment_rollback_contracts.py
+          bash -n scripts/ci/run_p9d_bad_deployment_rollback.sh
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p9_governance_contracts.py \
+            tests/test_p9c_rolling_schema_compatibility_contracts.py \
+            tests/test_p9d_bad_deployment_rollback_contracts.py \
+            tests/test_p5w2_worker_crash_static_contracts.py \
+            tests/test_p4d_refund_authority_static_contracts.py
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9D_HEAD}"
+
+      - name: Install PostgreSQL 16 Nginx and isolation utilities
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          sudo apt-get update
+          sudo apt-get install -y nginx iptables
+          sudo systemctl stop nginx || true
+          pg_config --version
+          pg_config --version | grep -q 'PostgreSQL 16'
+
+      - name: Run production-grade bad deployment rollback proof
+        run: bash scripts/ci/run_p9d_bad_deployment_rollback.sh
+
+      - name: Reprove inherited same-head governance and recovery contracts
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9D_CANDIDATE_SHA}"
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p9_governance_contracts.py \
+            tests/test_p9c_rolling_schema_compatibility_contracts.py \
+            tests/test_p9d_bad_deployment_rollback_contracts.py \
+            tests/test_p8_governance_contracts.py \
+            tests/test_p5w2_worker_crash_static_contracts.py \
+            tests/test_p5e_provider_ack_ambiguity_static_contracts.py \
+            tests/test_p4d_refund_authority_static_contracts.py \
+            tests/test_migration_app_secure_owner_context_boundary.py
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9D_HEAD}"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+      - name: Emit P9-D decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9D_CANDIDATE_SHA}"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          decision = json.loads(Path('p9d-evidence/decision.json').read_text(encoding='utf-8'))
+          assert decision['decision'] == 'PASS'
+          assert decision['traffic_returned_to_last_known_good'] is True
+          assert decision['database_downgrade_used'] is False
+          assert decision['durable_work_recovered_by_last_known_good'] is True
+          assert decision['durable_terminal_projection_count'] == 1
+          assert decision['duplicate_durable_claim_after_recovery'] == 0
+          assert decision['finance_fingerprint_before'] == decision['finance_fingerprint_after']
+          PY
+          echo 'P9_DEPLOYMENT_ROLLBACK=PASS'
+          echo 'P9_BAD_DEPLOYMENT_RECOVERY=PASS'
+          echo 'P9_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+
+      - name: Upload P9-D bad deployment recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p9d-bad-deployment-${{ github.event.pull_request.head.sha || github.sha }}
+          path: p9d-evidence/
+          if-no-files-found: error
+          retention-days: 14

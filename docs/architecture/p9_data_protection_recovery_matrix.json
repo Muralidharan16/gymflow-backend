@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "phase": "P9",
+  "base_commit": "8e0d6b66278e187209e6b029e11f24e475c6a24f",
+  "base_tree": "199b87b7dd8f65ed4c4f3303a01450ef9f8ec604",
+  "branch": "hardening/p9-data-protection-disaster-recovery",
+  "alembic_head": "zk07d8e9f0a45",
+  "alembic_predecessor": "zj07d8e9f0a44",
+  "slices": [
+    "P9-G",
+    "P9-M",
+    "P9-L",
+    "P9-B",
+    "P9-R",
+    "P9-C",
+    "P9-D",
+    "P9-F"
+  ],
+  "hard_gate": "upgrade_and_recovery_from_bad_deployment_or_data_loss_proven",
+  "migration_rehearsal": {
+    "production_shaped_populated_predecessor_required": true,
+    "predecessor_to_head_required": true,
+    "row_and_business_invariant_preservation_required": true,
+    "security_rls_acl_preservation_required": true,
+    "schema_and_data_post_upgrade_validation_required": true,
+    "repeatability_required": true,
+    "real_postgresql_16_required": true,
+    "mock_only_proof_forbidden": true
+  },
+  "lock_and_rewrite_analysis": {
+    "migration_wall_clock_duration_required": true,
+    "lock_wait_duration_required": true,
+    "blocked_session_observation_required": true,
+    "acquired_lock_modes_required": true,
+    "table_rewrite_detection_required": true,
+    "relation_size_before_after_required": true,
+    "unexpected_access_exclusive_lock_is_hard_stop": true,
+    "unbounded_lock_wait_is_hard_stop": true,
+    "migration_session_lock_timeout_ms": 1500,
+    "migration_session_statement_timeout_ms": 15000,
+    "observed_lock_wait_budget_ms": 750,
+    "migration_wall_clock_budget_ms": 10000,
+    "controlled_metadata_block_hold_ms": 200,
+    "sample_interval_ms": 5,
+    "critical_relations": [
+      "organizations",
+      "org_branches",
+      "branch_outbox_events"
+    ],
+    "controlled_metadata_blocker_relation": "alembic_version",
+    "persistent_managed_role_or_database_timeout_settings_forbidden": true
+  },
+  "backup_integrity": {
+    "logical_backup_required": true,
+    "logical_backup_checksum_required": true,
+    "logical_backup_catalog_validation_required": true,
+    "physical_base_backup_required_for_pitr": true,
+    "wal_archive_required_for_pitr": true,
+    "backup_restoreability_is_required_for_success": true,
+    "backup_creation_alone_is_not_success": true,
+    "real_customer_data_in_ci_forbidden": true
+  },
+  "restore_and_pitr": {
+    "full_restore_into_isolated_cluster_required": true,
+    "restored_schema_validation_required": true,
+    "restored_business_invariant_validation_required": true,
+    "restored_security_rls_acl_validation_required": true,
+    "point_in_time_recovery_required": true,
+    "pre_loss_durable_record_must_survive": true,
+    "post_target_record_must_not_survive": true,
+    "recovery_timeline_evidence_required": true,
+    "restored_application_readiness_required": true,
+    "restored_live_provider_egress_must_be_blocked": true
+  },
+  "recovery_objectives": {
+    "rpo_must_be_measured": true,
+    "rto_must_be_measured": true,
+    "measurement_clock_must_be_monotonic_for_duration": true,
+    "rpo_definition": "difference_between_recovery_target_or_last_recovered_durable_change_and_failure_boundary",
+    "rto_definition": "recovery_start_until_database_and_application_readiness_plus_integrity_validation",
+    "targets_must_be_frozen_before_p9_r_certification": true,
+    "measured_values_must_be_recorded_as_evidence": true,
+    "synthetic_ci_rpo_target_ms": 10000,
+    "synthetic_ci_rto_target_ms": 120000,
+    "target_scope": "p9_r_synthetic_ci_certification_only_not_production_sla"
+  },
+  "rolling_schema_compatibility": {
+    "old_application_on_upgraded_schema_required": true,
+    "new_application_on_upgraded_schema_required": true,
+    "old_and_new_application_overlap_required": true,
+    "rollback_application_on_upgraded_schema_required": true,
+    "destructive_contract_migration_during_overlap_forbidden": true,
+    "expand_migrate_contract_discipline_required": true
+  },
+  "deployment_rollback": {
+    "bad_release_injection_required": true,
+    "readiness_failure_or_runtime_failure_detection_required": true,
+    "traffic_return_to_last_known_good_required": true,
+    "database_downgrade_must_not_be_first_line_rollback": true,
+    "inflight_and_durable_work_recovery_required": true,
+    "post_rollback_integrity_validation_required": true,
+    "no_duplicate_financial_effects_required": true,
+    "no_lost_durable_work_required": true
+  },
+  "authority": {
+    "durable_business_work": "postgresql",
+    "redis_celery_beat": "delivery_coordination_only",
+    "refund_provider_execution": "deferred_fail_closed",
+    "backup_or_restore_artifact_is_not_live_business_authority": true,
+    "production_data_copy_to_ci": "forbidden"
+  },
+  "hard_stops": [
+    "p1_p8_security_finance_runtime_or_observability_semantic_weakening",
+    "real_customer_data_copied_into_ci_or_uncontrolled_rehearsal",
+    "backup_reported_success_without_restoreability_proof",
+    "pitr_without_pre_and_post_target_data_boundary_proof",
+    "unbounded_or_unexplained_migration_lock_wait",
+    "unexpected_table_rewrite_without_explicit_review",
+    "rolling_deploy_requires_destructive_schema_change_before_old_version_drains",
+    "rollback_depends_on_immediate_destructive_database_downgrade",
+    "recovery_loses_committed_data_outside_frozen_rpo",
+    "recovery_exceeds_frozen_rto",
+    "restored_environment_can_accidentally_contact_live_providers",
+    "database_credential_or_runtime_privilege_broadening",
+    "refund_provider_activation",
+    "live_money_movement",
+    "release",
+    "production_deployment"
+  ]
+}
