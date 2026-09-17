@@ -66,10 +66,11 @@ def test_p9d_injects_readiness_failure_and_returns_real_router_to_lkg() -> None:
         "P9D_TRAFFIC_RETURNED_TO_LAST_KNOWN_GOOD=PASS",
         "candidate-router-ready-body.json",
         "rollback-router-ready.json",
-        "nginx -s reload",
         "P9D_BAD_REDIS_PORT",
     ):
         assert required in source
+    assert "nginx -p" in source
+    assert "-s reload" in source
 
 
 def test_p9d_recovers_candidate_claim_with_exact_lkg_worker_and_single_effect() -> None:
@@ -110,6 +111,7 @@ def test_p9d_proves_integrity_finance_immutability_and_provider_fail_closed() ->
         "iptables",
     ):
         assert required in source
+    assert "P9D_RUNNER_UID" not in source
 
 
 def test_p9d_emits_machine_readable_evidence_and_terminal_markers() -> None:

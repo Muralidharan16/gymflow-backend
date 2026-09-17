@@ -101,8 +101,7 @@ if ! id p9dapp >/dev/null 2>&1; then
   sudo useradd --system --no-create-home --shell /usr/sbin/nologin p9dapp
 fi
 P9D_APP_UID="$(id -u p9dapp)"
-P9D_RUNNER_UID="$(id -u)"
-export P9D_APP_UID P9D_RUNNER_UID
+export P9D_APP_UID
 sudo rm -rf "$P9D_LKG_RUNTIME" "$P9D_CANDIDATE_RUNTIME" "$P9D_LKG_WORK" "$P9D_CANDIDATE_WORK" "$P9D_HOME"
 sudo install -d -m 0750 -o p9dapp -g p9dapp "$P9D_LKG_RUNTIME" "$P9D_CANDIDATE_RUNTIME" "$P9D_LKG_WORK" "$P9D_CANDIDATE_WORK" "$P9D_HOME"
 sudo cp -a "$P9D_LKG_SOURCE/app" "$P9D_LKG_SOURCE/security" "$P9D_LKG_RUNTIME/"
@@ -121,7 +120,6 @@ cleanup() {
   if [ -s /tmp/p9d-metrics.pid ]; then kill "$(cat /tmp/p9d-metrics.pid)" >/dev/null 2>&1 || true; fi
   if [ -s "$P9D_NGINX_PID" ]; then sudo nginx -p "$P9D_NGINX_DIR/" -c "$P9D_NGINX_CONF" -s quit >/dev/null 2>&1 || true; fi
   sudo iptables -D OUTPUT -m owner --uid-owner "$P9D_APP_UID" ! -d 127.0.0.0/8 -j REJECT >/dev/null 2>&1 || true
-  sudo iptables -D OUTPUT -m owner --uid-owner "$P9D_RUNNER_UID" ! -d 127.0.0.0/8 -j REJECT >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -209,7 +207,6 @@ for _ in $(seq 1 30); do curl --fail --silent "http://127.0.0.1:${P9D_METRICS_PO
 curl --fail --silent "http://127.0.0.1:${P9D_METRICS_PORT}/healthz" > "$EVIDENCE_DIR/metrics-health.txt"
 
 sudo iptables -I OUTPUT 1 -m owner --uid-owner "$P9D_APP_UID" ! -d 127.0.0.0/8 -j REJECT
-sudo iptables -I OUTPUT 1 -m owner --uid-owner "$P9D_RUNNER_UID" ! -d 127.0.0.0/8 -j REJECT
 if sudo -u p9dapp /usr/bin/curl --fail --silent --show-error --connect-timeout 2 http://1.1.1.1 > "$EVIDENCE_DIR/provider-egress.stdout" 2> "$EVIDENCE_DIR/provider-egress.stderr"; then
   echo 'P9-D runtime identity unexpectedly reached non-loopback network.' >&2
   exit 1
