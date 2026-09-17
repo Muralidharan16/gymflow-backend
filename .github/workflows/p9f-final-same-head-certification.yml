@@ -1,0 +1,523 @@
+name: P9-F Final Same-Head Certification
+
+on:
+  push:
+    branches:
+      - hardening/p9-data-protection-disaster-recovery
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: p9f-final-same-head-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  P9D_CERTIFIED_HEAD: 63f927bef51c167d995d47ae6a65c458e38f0762
+  P9D_CERTIFIED_TREE: ce88550621b94e2ecdcae12e4143cae92ff19647
+  P9_CURRENT_ALEMBIC_HEAD: zk07d8e9f0a45
+  P9_HARD_GATE: upgrade_and_recovery_from_bad_deployment_or_data_loss_proven
+
+jobs:
+  contract:
+    name: Frozen Final P9 scope and 53-gate topology
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_p9f_contract_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p9f-contract-not-production
+      AWS_ACCESS_KEY_ID: ci-p9f-contract
+      AWS_SECRET_ACCESS_KEY: ci-p9f-contract
+      S3_BUCKET_NAME: gymflow-p9f-contract-test
+      ENVIRONMENT: test
+      P8_METRICS_OTLP_ENDPOINT: http://127.0.0.1:4318/v1/metrics
+      P8_METRICS_EXPORT_INTERVAL_SECONDS: '1'
+      P8_METRICS_EXPORT_TIMEOUT_SECONDS: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/p9f-resolved.txt
+          diff -u requirements-test.lock /tmp/p9f-resolved.txt
+
+      - name: Guard certified P9-D parent boundary
+        run: |
+          set -euo pipefail
+          git cat-file -e "${P9D_CERTIFIED_HEAD}^{commit}"
+          test "$(git rev-parse "${P9D_CERTIFIED_HEAD}^{tree}")" = "${P9D_CERTIFIED_TREE}"
+          git merge-base --is-ancestor "${P9D_CERTIFIED_HEAD}" HEAD
+
+      - name: Validate immutable Final P9 contract
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/verify_head_workflow_bootstrap.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9_CURRENT_ALEMBIC_HEAD}"
+          python -m json.tool docs/architecture/p9_data_protection_recovery_matrix.json >/dev/null
+          python -m py_compile tests/test_p9f_final_certification_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8f_final_certification_contracts.py \
+            tests/test_p9_governance_contracts.py \
+            tests/test_p9m_populated_migration_contracts.py \
+            tests/test_p9l_lock_rewrite_contracts.py \
+            tests/test_p9b_backup_integrity_contracts.py \
+            tests/test_p9r_full_restore_pitr_contracts.py \
+            tests/test_p9r_recovery_compatibility_contracts.py \
+            tests/test_p9c_rolling_schema_compatibility_contracts.py \
+            tests/test_p9d_bad_deployment_rollback_contracts.py \
+            tests/test_p9f_final_certification_contracts.py
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+  architecture:
+    name: Inherited architecture contracts
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+  migration_hardening:
+    name: General, Platform Billing, and fresh-lineage regression
+    uses: ./.github/workflows/hardening-ci.yml
+  finance:
+    name: Finance Core regression
+    uses: ./.github/workflows/finance-hardening-ci.yml
+  migration_lifecycle:
+    name: Full migration lifecycle
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+  migration_preservation:
+    name: Populated migration data preservation
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+  migration_adversarial:
+    name: Adversarial migration recovery
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+  migration_contracts:
+    name: Migration lifecycle contracts
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+  migration_semantics:
+    name: Migration semantics inventory
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+  p3:
+    name: Inherited P1, P2, and P3 certification
+    uses: ./.github/workflows/p3e-certification.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p3a_general:
+    name: P3A broad inherited regression
+    uses: ./.github/workflows/p3a-general-regressions.yml
+  lifecycle_maintenance:
+    name: Lifecycle maintenance production boundary
+    uses: ./.github/workflows/lifecycle-maintenance-production-boundary.yml
+  platform_maintenance:
+    name: Platform maintenance production boundary
+    uses: ./.github/workflows/platform-maintenance-production-boundary.yml
+  p4b_opensearch:
+    name: Real local OpenSearch behavior
+    uses: ./.github/workflows/p4b-opensearch-live.yml
+  p4b_evidence:
+    name: P4B provider evidence compatibility on current P9 schema
+    uses: ./.github/workflows/p5f-current-head-p4b-evidence.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4b_drift:
+    name: P4B drift repair compatibility on current P9 schema
+    uses: ./.github/workflows/p5f-current-head-p4b-drift.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4c_general:
+    name: P4C broad inherited regression
+    uses: ./.github/workflows/p4c-general-regression.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4c_notification:
+    name: P4C notification compatibility on current P9 schema
+    uses: ./.github/workflows/p5f-current-head-p4c-notification.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4d_refund:
+    name: P4D refund-obligation authority without provider execution
+    uses: ./.github/workflows/p4d-refund-authority-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4e_contract:
+    name: P4E current-head external-effect contract
+    uses: ./.github/workflows/p5f-inherited-p4e-contract.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4e_operational:
+    name: P4E current-head operational observability
+    uses: ./.github/workflows/p5f-inherited-p4e-operational-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+
+  p5_governance:
+    name: P5 governance and frozen fault matrix
+    uses: ./.github/workflows/p5-governance-fault-matrix.yml
+  p5_worker_fencing:
+    name: P5-W1 current-head fencing compatibility
+    uses: ./.github/workflows/p5f-current-head-p5w1.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p5_worker_crash_redelivery:
+    name: P5-W2 real worker crash and redelivery
+    uses: ./.github/workflows/p5w2-worker-crash-redelivery-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p5_provider_ack:
+    name: P5-E provider success and DB-ack ambiguity
+    uses: ./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p5_dependency_loss:
+    name: P5-D dependency and database loss
+    uses: ./.github/workflows/p5d-dependency-loss-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p5_race_deadlock:
+    name: P5-R race and deadlock interleavings
+    uses: ./.github/workflows/p5r-race-deadlock-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p5_compensation:
+    name: P5-C compensation crash and replay
+    uses: ./.github/workflows/p5c-compensation-crash-replay-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+
+  p6_governance:
+    name: P6 governance and production-readiness contract
+    uses: ./.github/workflows/p6-governance-production-readiness.yml
+  p6_redis:
+    name: P6-R real Redis production contract
+    uses: ./.github/workflows/p6r-redis-production-contract.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_broker:
+    name: P6-B broker restart and reconnect recovery
+    uses: ./.github/workflows/p6b-broker-reconnect-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_worker:
+    name: P6-W graceful shutdown and late-ack redelivery
+    uses: ./.github/workflows/p6w-worker-shutdown-redelivery-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_poison:
+    name: P6-P poison-message containment
+    uses: ./.github/workflows/p6p-poison-message-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_scheduler:
+    name: P6-S Beat ownership and duplicate scheduler protection
+    uses: ./.github/workflows/p6s-scheduler-ownership-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+
+  p7_governance:
+    name: P7 governance API runtime contract
+    uses: ./.github/workflows/p7-governance-api-runtime.yml
+  p7_system:
+    name: P7 system control and probes
+    uses: ./.github/workflows/p7s-system-control.yml
+  p7_drain:
+    name: P7 request drain
+    uses: ./.github/workflows/p7d-request-drain.yml
+  p7_resource:
+    name: P7 API resource shutdown
+    uses: ./.github/workflows/p7r-api-resource-shutdown.yml
+  p7_worker:
+    name: P7 worker termination inheritance
+    needs: p6_worker
+    uses: ./.github/workflows/p7w-worker-termination-inheritance.yml
+  p7_orchestration:
+    name: P7 real production-like API orchestration
+    uses: ./.github/workflows/p7o-production-like-orchestration.yml
+    with:
+      certification_head: ${{ github.sha }}
+
+  p8_governance:
+    name: P8-G governance and observability contract
+    uses: ./.github/workflows/p8-governance-observability.yml
+  p8_logging:
+    name: P8-L structured logging and redaction
+    uses: ./.github/workflows/p8l-structured-logging-redaction.yml
+  p8_metrics:
+    name: P8-M runtime metrics
+    uses: ./.github/workflows/p8m-runtime-metrics.yml
+  p8_alerts:
+    name: P8-A alerts and SLOs
+    uses: ./.github/workflows/p8a-alerts-slos.yml
+  p8_runbooks:
+    name: P8-R operational runbooks
+    uses: ./.github/workflows/p8r-operational-runbooks.yml
+  p8_production_like:
+    name: P8-O real production-like observability
+    uses: ./.github/workflows/p8o-production-like-observability.yml
+
+  certify:
+    name: Terminal immutable Final P9 decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - architecture
+      - migration_hardening
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+      - p3
+      - p3a_general
+      - lifecycle_maintenance
+      - platform_maintenance
+      - p4b_opensearch
+      - p4b_evidence
+      - p4b_drift
+      - p4c_general
+      - p4c_notification
+      - p4d_refund
+      - p4e_contract
+      - p4e_operational
+      - p5_governance
+      - p5_worker_fencing
+      - p5_worker_crash_redelivery
+      - p5_provider_ack
+      - p5_dependency_loss
+      - p5_race_deadlock
+      - p5_compensation
+      - p6_governance
+      - p6_redis
+      - p6_broker
+      - p6_worker
+      - p6_poison
+      - p6_scheduler
+      - p7_governance
+      - p7_system
+      - p7_drain
+      - p7_resource
+      - p7_worker
+      - p7_orchestration
+      - p8_governance
+      - p8_logging
+      - p8_metrics
+      - p8_alerts
+      - p8_runbooks
+      - p8_production_like
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact final candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Require every inherited P1-P8 same-head gate
+        env:
+          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          mkdir -p p9f-evidence
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          results = json.loads(os.environ["REQUIRED_RESULTS_JSON"])
+          failures = {
+              name: details["result"]
+              for name, details in results.items()
+              if details["result"] != "success"
+          }
+          if failures:
+              raise SystemExit(f"Final P9 inherited same-head gates failed: {failures}")
+          if len(results) != 46:
+              raise SystemExit(f"Final P9 inherited prerequisite topology changed: {len(results)}")
+          Path("p9f-evidence/inherited-needs.json").write_text(
+              json.dumps(results, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(f"Final P9 inherited prerequisite gates passed: {len(results)}")
+          PY
+
+      - name: Require seven P9 push workflows on this exact SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+          from pathlib import Path
+
+          api = os.environ["GITHUB_API_URL"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["GITHUB_SHA"]
+          token = os.environ["GH_TOKEN"]
+          expected = {
+              ".github/workflows/p9-governance-data-protection-recovery.yml": "P9-G",
+              ".github/workflows/p9m-populated-predecessor-head.yml": "P9-M",
+              ".github/workflows/p9l-lock-rewrite-analysis.yml": "P9-L",
+              ".github/workflows/p9b-backup-integrity.yml": "P9-B",
+              ".github/workflows/p9r-full-restore-pitr.yml": "P9-R",
+              ".github/workflows/p9c-rolling-schema-compatibility.yml": "P9-C",
+              ".github/workflows/p9d-bad-deployment-rollback.yml": "P9-D",
+          }
+          if len(expected) != 7:
+              raise SystemExit(f"Final P9 sibling topology changed: {len(expected)}")
+
+          url = f"{api}/repos/{repo}/actions/runs?head_sha={sha}&event=push&per_page=100"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          final = None
+          for _ in range(20):
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  payload = json.load(response)
+              runs = payload.get("workflow_runs", [])
+              selected = {}
+              missing = []
+              pending = []
+              failed = {}
+              for path, label in expected.items():
+                  candidates = [
+                      run for run in runs
+                      if run.get("path") == path
+                      and run.get("head_sha") == sha
+                      and run.get("event") == "push"
+                  ]
+                  if not candidates:
+                      missing.append(label)
+                      continue
+                  run = max(candidates, key=lambda item: item["id"])
+                  selected[label] = {
+                      "id": run["id"],
+                      "name": run["name"],
+                      "path": run["path"],
+                      "head_sha": run["head_sha"],
+                      "event": run["event"],
+                      "status": run["status"],
+                      "conclusion": run["conclusion"],
+                  }
+                  if run["status"] != "completed":
+                      pending.append(label)
+                  elif run["conclusion"] != "success":
+                      failed[label] = run["conclusion"]
+
+              if failed:
+                  raise SystemExit(f"Final P9 same-head slice failures: {failed}")
+              if not missing and not pending and len(selected) == 7:
+                  final = selected
+                  break
+              time.sleep(15)
+
+          if final is None:
+              raise SystemExit(
+                  f"Final P9 same-head slice evidence incomplete; missing={missing}, pending={pending}"
+              )
+          Path("p9f-evidence/p9-same-head-runs.json").write_text(
+              json.dumps(final, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print("Final P9 same-head slice workflows passed: 7")
+          PY
+
+      - name: Emit terminal P9 same-head certification
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git rev-parse "${P9D_CERTIFIED_HEAD}^{tree}")" = "${P9D_CERTIFIED_TREE}"
+          git merge-base --is-ancestor "${P9D_CERTIFIED_HEAD}" HEAD
+          test "$(git rev-parse HEAD^{tree})" = "$(git write-tree)"
+          test -z "$(git status --porcelain)"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          matrix = json.loads(
+              Path("docs/architecture/p9_data_protection_recovery_matrix.json").read_text(encoding="utf-8")
+          )
+          assert matrix["hard_gate"] == "upgrade_and_recovery_from_bad_deployment_or_data_loss_proven"
+          sibling = json.loads(Path("p9f-evidence/p9-same-head-runs.json").read_text(encoding="utf-8"))
+          inherited = json.loads(Path("p9f-evidence/inherited-needs.json").read_text(encoding="utf-8"))
+          decision = {
+              "candidate_sha": os.environ["GITHUB_SHA"],
+              "candidate_tree": os.popen("git rev-parse HEAD^{tree}").read().strip(),
+              "p9d_certified_parent": os.environ["P9D_CERTIFIED_HEAD"],
+              "p9d_certified_tree": os.environ["P9D_CERTIFIED_TREE"],
+              "alembic_head": os.environ["P9_CURRENT_ALEMBIC_HEAD"],
+              "hard_gate": matrix["hard_gate"],
+              "inherited_same_head_gate_count": len(inherited),
+              "p9_same_head_slice_count": len(sibling),
+              "total_prerequisite_gate_count": len(inherited) + len(sibling),
+              "refund_provider_execution": matrix["authority"]["refund_provider_execution"],
+              "durable_business_work_authority": matrix["authority"]["durable_business_work"],
+              "production_data_copy_to_ci": matrix["authority"]["production_data_copy_to_ci"],
+              "decision": "PASS",
+          }
+          assert decision["inherited_same_head_gate_count"] == 46
+          assert decision["p9_same_head_slice_count"] == 7
+          assert decision["total_prerequisite_gate_count"] == 53
+          assert decision["refund_provider_execution"] == "deferred_fail_closed"
+          assert decision["durable_business_work_authority"] == "postgresql"
+          assert decision["production_data_copy_to_ci"] == "forbidden"
+          Path("p9f-evidence/decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          cat p9f-evidence/decision.json
+          echo "P9_GOVERNANCE_DATA_PROTECTION=PASS"
+          echo "P9_POPULATED_PREDECESSOR_TO_HEAD=PASS"
+          echo "P9_MIGRATION_DATA_INTEGRITY=PASS"
+          echo "P9_LOCK_BUDGET=PASS"
+          echo "P9_TABLE_REWRITE_ANALYSIS=PASS"
+          echo "P9_MIGRATION_DURATION_MEASURED=PASS"
+          echo "P9_LOGICAL_BACKUP_INTEGRITY=PASS"
+          echo "P9_PHYSICAL_BASE_BACKUP=PASS"
+          echo "P9_FULL_RESTORE=PASS"
+          echo "P9_PITR=PASS"
+          echo "P9_RPO_MEASURED=PASS"
+          echo "P9_RTO_MEASURED=PASS"
+          echo "P9_ROLLING_SCHEMA_COMPATIBILITY=PASS"
+          echo "P9_DEPLOYMENT_ROLLBACK=PASS"
+          echo "P9_BAD_DEPLOYMENT_RECOVERY=PASS"
+          echo "P9_DATA_LOSS_RECOVERY=PASS"
+          echo "P9_P1_P8_INHERITED=PASS"
+          echo "P9_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED"
+          echo "P9_UPGRADE_AND_RECOVERY_PROVEN=PASS"
+          echo "P9F_FINAL_SAME_HEAD_CERTIFICATION=PASS"
+
+      - name: Upload P9-F terminal evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p9f-final-${{ github.sha }}
+          path: p9f-evidence/
+          if-no-files-found: error
+          retention-days: 14
