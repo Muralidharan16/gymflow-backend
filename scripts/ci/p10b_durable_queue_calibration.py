@@ -123,7 +123,11 @@ def seed_authority(item_count: int) -> list[uuid.UUID]:
 
 
 def terminal_snapshot(ids: list[uuid.UUID]) -> dict[str, int]:
-    with connect_url("TEST_ADMIN_DATABASE_URL") as connection:
+    # Observe the durable queue through the same reduced worker authority that
+    # owns cross-tenant queue claim/read semantics. migration_owner deliberately
+    # has NOBYPASSRLS and therefore cannot be used as an "admin" observer for
+    # FORCE-RLS queue rows.
+    with connect_url("WORKER_DATABASE_URL") as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
