@@ -45,7 +45,7 @@ def percentile(values: list[float], fraction: float) -> float:
 def token_for_tenant(secret_key: str, tenant_number: int) -> tuple[str, str, str]:
     org_id = deterministic_uuid(f"p9m-org-{tenant_number}")
     owner_id = deterministic_uuid(f"p10b-owner-{tenant_number}")
-    email = f"p10b-owner-{tenant_number}@example.invalid"
+    email = f"p10b-owner-{tenant_number}@example.com"
     now = datetime.now(timezone.utc)
     payload = {
         "sub": owner_id,

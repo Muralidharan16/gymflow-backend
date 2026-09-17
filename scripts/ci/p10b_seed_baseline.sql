@@ -28,7 +28,7 @@ BEGIN
             owner_id,
             v_org_id,
             format('P10-B Synthetic Owner %s', org_sequence),
-            format('p10b-owner-%s@example.invalid', org_sequence),
+            format('p10b-owner-%s@example.com', org_sequence),
             'p10b-synthetic-no-login',
             TRUE,
             TRUE
@@ -75,7 +75,7 @@ BEGIN
                 99 + member_sequence,
                 format('P10-B Member %s-%s', org_sequence, member_sequence),
                 phone_value,
-                format('p10b-member-%s-%s@example.invalid', org_sequence, member_sequence),
+                format('p10b-member-%s-%s@example.com', org_sequence, member_sequence),
                 DATE '1990-01-01' + ((member_sequence % 365) * INTERVAL '1 day'),
                 '9000000001',
                 '9000000002',
@@ -114,7 +114,7 @@ DECLARE
 BEGIN
     SELECT count(*) INTO owner_count
     FROM public.owners
-    WHERE email LIKE 'p10b-owner-%@example.invalid';
+    WHERE email LIKE 'p10b-owner-%@example.com';
 
     SELECT count(*) INTO member_count
     FROM public.members
