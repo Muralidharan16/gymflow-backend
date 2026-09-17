@@ -1,0 +1,129 @@
+name: P9-C Rolling Schema Application Compatibility
+
+on:
+  push:
+    branches:
+      - hardening/p9-data-protection-disaster-recovery
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p9c-rolling-schema-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rolling_compatibility:
+    name: Real PG16 old new overlap and application rollback
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      P9C_OLD_APP_SHA: 14c05f7afaccebde0c6975c7c9c41dc70b41c805
+      P9C_PREDECESSOR: zj07d8e9f0a44
+      P9C_HEAD: zk07d8e9f0a45
+      P9C_DB: gymflow_p9c_test
+      P9C_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      P9C_OLD_SOURCE: /tmp/p9c-old-source
+      P9C_OLD_RUNTIME: /tmp/p9c-old-runtime
+      P9C_NEW_RUNTIME: /tmp/p9c-new-runtime
+      P9C_OLD_WORK: /tmp/p9c-old-work
+      P9C_NEW_WORK: /tmp/p9c-new-work
+      P9C_HOME: /tmp/p9c-app-home
+      P9C_REDIS_PORT: '16381'
+      P9C_METRICS_PORT: '4320'
+      P9C_OLD_PORT: '18082'
+      P9C_NEW_PORT: '18083'
+      P9C_API_LOGIN: app_test_runtime
+      MIGRATION_PASSWORD: ci-p9c-migration-owner
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-p9c-migration-owner@127.0.0.1:5432/gymflow_p9c_test
+      EVIDENCE_DIR: p9c-evidence
+      PYTHONDONTWRITEBYTECODE: '1'
+      ENVIRONMENT: test
+
+    steps:
+      - name: Checkout exact candidate with old application history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/p9c-resolved.txt
+          diff -u requirements-test.lock /tmp/p9c-resolved.txt
+
+      - name: Validate exact P9-C static contracts
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9C_CANDIDATE_SHA}"
+          python -m json.tool docs/architecture/p9_data_protection_recovery_matrix.json >/dev/null
+          python -m py_compile tests/test_p9_governance_contracts.py tests/test_p9m_populated_migration_contracts.py tests/test_p9c_rolling_schema_compatibility_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p9_governance_contracts.py tests/test_p9m_populated_migration_contracts.py tests/test_p9c_rolling_schema_compatibility_contracts.py
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9C_HEAD}"
+          bash -n scripts/ci/run_p9c_rolling_schema_compatibility.sh
+
+      - name: Install PostgreSQL 16 Redis and isolation utilities
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16 postgresql-client-16 postgresql-contrib postgresql-16-partman postgresql-16-postgis-3 redis-server iptables curl
+          sudo systemctl start postgresql
+          mkdir -p "$EVIDENCE_DIR"
+          pg_config --version | tee "$EVIDENCE_DIR/postgresql-version.txt"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c 'SELECT version();' | tee -a "$EVIDENCE_DIR/postgresql-version.txt"
+          grep -q 'PostgreSQL 16' "$EVIDENCE_DIR/postgresql-version.txt"
+
+      - name: Run production-grade rolling compatibility proof
+        run: bash scripts/ci/run_p9c_rolling_schema_compatibility.sh
+
+      - name: Reprove inherited governance migration and security boundaries
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9C_CANDIDATE_SHA}"
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p9_governance_contracts.py tests/test_p9m_populated_migration_contracts.py tests/test_p9c_rolling_schema_compatibility_contracts.py tests/test_p8_governance_contracts.py tests/test_migration_app_secure_owner_context_boundary.py tests/test_pg_dump_normalizer.py
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9C_HEAD}"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+      - name: Emit P9-C decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P9C_CANDIDATE_SHA}"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          decision = json.loads(Path('p9c-evidence/decision.json').read_text(encoding='utf-8'))
+          assert decision['decision'] == 'PASS'
+          assert decision['database_downgrade_used'] is False
+          assert decision['old_new_overlap_probe_count'] == 20
+          PY
+          echo 'P9_ROLLING_SCHEMA_COMPATIBILITY=PASS'
+          echo 'P9_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+
+      - name: Upload P9-C rolling compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p9c-rolling-schema-${{ github.event.pull_request.head.sha || github.sha }}
+          path: p9c-evidence/
+          if-no-files-found: error
+          retention-days: 14
