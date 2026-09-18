@@ -23,7 +23,10 @@ def main():
     try:
         wait(lambda: p.poll() is None and worker_ping(host),"worker readiness",45)
         while time.monotonic()-started < a.duration_seconds:
-            cycle=time.monotonic(); ids=seed_authority(20); total+=20; ctl=controller()
+            cycle=time.monotonic(); ids=seed_authority(
+                20,
+                process_after="2000-01-01T00:00:00+00:00",
+            ); total+=20; ctl=controller()
             try:
                 ctl.send_task("app.tasks.branch_outbox_poller.run",queue=queue)
                 ctl.send_task("app.tasks.branch_outbox_poller.run",queue=queue)
@@ -36,6 +39,7 @@ def main():
             if remaining>0: time.sleep(min(remaining,max(0,a.duration_seconds-(time.monotonic()-started))))
         if p.poll() is not None: raise RuntimeError("soak worker exited")
         rec={"schema_version":1,"phase":"P10-S","worker_hostname":host,"continuous_worker":True,"items_processed":total,
+             "synthetic_process_after_priority":"2000-01-01T00:00:00+00:00",
              "samples":samples,"final_broker_depth":queue_depth(queue),"external_provider_effects":0,"durable_business_authority":"postgresql"}
         Path(a.output).write_text(json.dumps(rec,indent=2,sort_keys=True)+"\n"); print("P10S_WORKER_ACTIVITY=PASS"); return 0
     finally:
