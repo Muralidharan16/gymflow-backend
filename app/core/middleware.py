@@ -171,41 +171,58 @@ class OpenTelemetryTraceMiddleware(BaseHTTPMiddleware):
 # 4. Redis Token-Bucket Rate Limiter (integer microtokens, Redis TIME)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_LUA_RATE_LIMITER = """
-local key         = KEYS[1]
-local capacity_us = tonumber(ARGV[1])
-local fill_rate   = tonumber(ARGV[2])
+_LUA_TENANT_ADMISSION = """
+local sem_key  = KEYS[1]
+local rate_key = KEYS[2]
+local tier_key = KEYS[3]
 
-local now_data  = redis.call('TIME')
-local now_us    = tonumber(now_data[1]) * 1000000 + tonumber(now_data[2])
+local limit = tonumber(ARGV[1])
+local token = ARGV[2]
+local ttl   = tonumber(ARGV[3])
 
-local bucket    = redis.call('HMGET', key, 'tokens_us', 'last_us')
+-- One Redis-server clock drives both the semaphore lease and token bucket.
+local now_data = redis.call('TIME')
+local now_us   = tonumber(now_data[1]) * 1000000 + tonumber(now_data[2])
+local now_s    = now_us / 1000000
+
+-- Concurrency admission. Return code 0 retains the existing concurrency 429.
+redis.call('ZREMRANGEBYSCORE', sem_key, '-inf', now_s - ttl)
+local count = redis.call('ZCARD', sem_key)
+if count >= limit then
+    return 0
+end
+redis.call('ZADD', sem_key, now_s, token)
+
+-- Resolve the live tenant tier inside the same atomic script, avoiding a
+-- separate network round trip while keeping Redis as the source of truth.
+local tier = redis.call('GET', tier_key)
+local capacity_us
+local fill_rate
+if tier == 'ENTERPRISE' then
+    capacity_us = tonumber(ARGV[6])
+    fill_rate   = tonumber(ARGV[7])
+else
+    capacity_us = tonumber(ARGV[4])
+    fill_rate   = tonumber(ARGV[5])
+end
+
+local bucket    = redis.call('HMGET', rate_key, 'tokens_us', 'last_us')
 local tokens_us = tonumber(bucket[1] or capacity_us)
 local last_us   = tonumber(bucket[2] or now_us)
 
-local elapsed   = now_us - last_us
-local refill    = math.floor(elapsed * fill_rate)
-tokens_us       = math.min(capacity_us, tokens_us + refill)
+local elapsed = now_us - last_us
+local refill  = math.floor(elapsed * fill_rate)
+tokens_us     = math.min(capacity_us, tokens_us + refill)
 
-local cost_us   = 1000000
+local cost_us = 1000000
 if tokens_us < cost_us then
-    return 0
+    -- Do not leak a concurrency lease when rate admission is denied.
+    redis.call('ZREM', sem_key, token)
+    return 2
 end
-redis.call('HMSET', key, 'tokens_us', tokens_us - cost_us, 'last_us', now_us)
-redis.call('EXPIRE', key, 3600)
-return 1
-"""
 
-_LUA_SEMAPHORE = """
-local key   = KEYS[1]
-local limit = tonumber(ARGV[1])
-local now   = tonumber(ARGV[2])
-local token = ARGV[3]
-local ttl   = tonumber(ARGV[4])
-redis.call('ZREMRANGEBYSCORE', key, '-inf', now - ttl)
-local count = redis.call('ZCARD', key)
-if count >= limit then return 0 end
-redis.call('ZADD', key, now, token)
+redis.call('HMSET', rate_key, 'tokens_us', tokens_us - cost_us, 'last_us', now_us)
+redis.call('EXPIRE', rate_key, 3600)
 return 1
 """
 
@@ -232,49 +249,40 @@ class RedisRateLimiterMiddleware(BaseHTTPMiddleware):
         if not tenant_id:
             return await call_next(request)
 
-        # --- Concurrency semaphore (sorted-set lease) ---
+        # Concurrency + live-tier token-bucket admission share one atomic
+        # Redis script. This preserves the distributed lease/rate-limit authority
+        # while removing two loopback round trips from every authenticated request.
         sem_key = f"concurrency_lease:{tenant_id}"
-        token   = str(uuid.uuid4())
-        now_s   = time.time()
+        rate_key = f"rate_limit:{tenant_id}"
+        tier_key = f"tenant_tier:{tenant_id}"
+        token = str(uuid.uuid4())
+
+        decision = await redis_client.eval(
+            _LUA_TENANT_ADMISSION,
+            3,
+            sem_key,
+            rate_key,
+            tier_key,
+            self._BURST_LIMIT,
+            token,
+            self._LEASE_TTL,
+            600_000_000,
+            60_000,
+            5_000_000_000,
+            500_000,
+        )
+        if decision == 2:
+            return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded."})
+        if decision != 1:
+            # ResilientRedis returns None when Redis admission cannot be evaluated.
+            # Retain the pre-existing effective behavior: fail closed at the
+            # concurrency boundary rather than silently bypass distributed limits.
+            return JSONResponse(status_code=429, content={"detail": "Concurrency limit reached."})
 
         try:
-            acquired = await redis_client.eval(
-                _LUA_SEMAPHORE, 1, sem_key,
-                self._BURST_LIMIT, now_s, token, self._LEASE_TTL
-            )
-            if not acquired:
-                return JSONResponse(status_code=429, content={"detail": "Concurrency limit reached."})
-        except Exception:
-            acquired = True   # Redis unavailable — allow through
-
-        try:
-            # --- Token-bucket rate limit ---
-            tier     = await self._get_tier(tenant_id)
-            cap, fill = (5_000_000_000, 500_000) if tier == b"ENTERPRISE" else (600_000_000, 60_000)
-
-            try:
-                allowed = await redis_client.eval(
-                    _LUA_RATE_LIMITER, 1,
-                    f"rate_limit:{tenant_id}",
-                    cap, fill,
-                )
-                if not allowed:
-                    return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded."})
-            except Exception:
-                pass  # Redis unavailable — allow through
-
             return await call_next(request)
         finally:
-            try:
-                await redis_client.eval(_LUA_SEM_RELEASE, 1, sem_key, token)
-            except Exception:
-                pass
-
-    async def _get_tier(self, tenant_id: str):
-        try:
-            return await redis_client.get(f"tenant_tier:{tenant_id}")
-        except Exception:
-            return None
+            await redis_client.eval(_LUA_SEM_RELEASE, 1, sem_key, token)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

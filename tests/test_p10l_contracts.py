@@ -68,3 +68,20 @@ def test_p10l_artifact_binding_strips_github_auth_before_blob_download():
     assert "class _NoRedirect" in transport
     assert '"Authorization": f"Bearer {token}"' in transport
     assert 'headers={"User-Agent": "doers-p10-certification"}' in transport
+
+
+def test_p10l_authenticated_admission_is_single_atomic_redis_round_trip():
+    middleware = (ROOT / "app/core/middleware.py").read_text(encoding="utf-8")
+    assert '_LUA_TENANT_ADMISSION = """' in middleware
+    assert "redis.call('TIME')" in middleware
+    assert "redis.call('GET', tier_key)" in middleware
+    assert "redis.call('ZREMRANGEBYSCORE', sem_key" in middleware
+    assert "redis.call('ZADD', sem_key, now_s, token)" in middleware
+    assert "redis.call('HMGET', rate_key" in middleware
+    assert "redis.call('ZREM', sem_key, token)" in middleware
+    assert "_LUA_RATE_LIMITER" not in middleware
+    assert "_LUA_SEMAPHORE" not in middleware
+    assert "async def _get_tier" not in middleware
+    assert "_LUA_TENANT_ADMISSION,\n            3," in middleware
+    assert "if decision == 2:" in middleware
+    assert "if decision != 1:" in middleware

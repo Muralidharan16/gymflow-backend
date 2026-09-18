@@ -52,8 +52,8 @@ def test_graceful_shutdown_cleanup_happens_after_sigterm_proof():
 
 
 
-def test_p10h_base_image_matches_frozen_glibc_calibration_and_runtime_has_no_pip():
-    assert "python:3.12.14-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea" in D
+def test_p10h_base_image_is_exact_low_vulnerability_alpine_and_runtime_has_no_pip():
+    assert "python:3.12.14-alpine3.24@sha256:c4634f578a412db396771b61b064c6e546c9d6414c7fb5b1b05d5871f1885f7b" in D
     assert "/usr/local/lib/python3.12/site-packages/pip" in D
     assert '"$VIRTUAL_ENV/lib/python3.12/site-packages/pip"' in D
     assert "USER 10001:10001" in D
