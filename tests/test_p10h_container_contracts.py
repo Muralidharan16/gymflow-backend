@@ -36,3 +36,13 @@ def test_hardened_runtime_keeps_required_metrics_fail_closed_boundary():
     assert "scripts/ci/p8o_otlp_collector.py" in workflow
     assert "P8_METRICS_OTLP_ENDPOINT=http://127.0.0.1:4324/v1/metrics" in workflow
     assert "p10h-runtime-metrics.jsonl" in workflow
+
+
+
+def test_graceful_shutdown_cleanup_happens_after_sigterm_proof():
+    workflow = (ROOT / ".github/workflows/p10h-container-hardening.yml").read_text(encoding="utf-8")
+    graceful = workflow.split("- name: Prove graceful SIGTERM", 1)[1]
+    assert "docker stop --timeout 15 p10h-api" in graceful
+    assert "trap 'docker rm -f p10h-api" in graceful
+    runtime = workflow.split("- name: Run with mandatory runtime restrictions", 1)[1].split("- name: Prove graceful SIGTERM", 1)[0]
+    assert "docker rm -f p10h-api" not in runtime
