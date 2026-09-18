@@ -11,6 +11,8 @@ def test_p10h_image_is_multistage_locked_and_nonroot():
     assert "apt-get" not in D and "build-essential" not in D
 def test_p10h_image_has_exec_cmd_healthcheck_and_no_reload():
     assert 'HEALTHCHECK' in D and "/_system/ready" in D
+    assert 'CMD ["wget","-q","-T","2","-O","/dev/null","http://127.0.0.1:8000/_system/ready"]' in D
+    assert "urllib.request" not in D
     assert 'CMD ["uvicorn","app.main:app"' in D
     assert "--reload" not in D
     assert D.count("EXPOSE ") == 1 and "EXPOSE 8000" in D

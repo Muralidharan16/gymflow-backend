@@ -35,5 +35,5 @@ COPY . /app
 USER 10001:10001
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
-  CMD ["python","-c","import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/_system/ready',timeout=2); raise SystemExit(0 if r.status == 200 else 1)"]
+  CMD ["wget","-q","-T","2","-O","/dev/null","http://127.0.0.1:8000/_system/ready"]
 CMD ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000"]
