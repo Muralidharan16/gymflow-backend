@@ -286,20 +286,23 @@ class RedisRateLimiterMiddleware:
         tier_key = f"tenant_tier:{tenant_id}"
         token = str(uuid.uuid4())
 
-        decision = await redis_client.eval(
-            _LUA_TENANT_ADMISSION,
-            3,
-            sem_key,
-            rate_key,
-            tier_key,
-            self._BURST_LIMIT,
-            token,
-            self._LEASE_TTL,
-            600_000_000,
-            60_000,
-            5_000_000_000,
-            500_000,
-        )
+        try:
+            decision = await redis_client.eval(
+                _LUA_TENANT_ADMISSION,
+                3,
+                sem_key,
+                rate_key,
+                tier_key,
+                self._BURST_LIMIT,
+                token,
+                self._LEASE_TTL,
+                600_000_000,
+                60_000,
+                5_000_000_000,
+                500_000,
+            )
+        except Exception:
+            decision = None
         if decision is None:
             # Preserve the certified degraded mode: readiness reports Redis loss,
             # while otherwise-authorized application traffic remains available.
