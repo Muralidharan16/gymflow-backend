@@ -83,6 +83,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          mkdir -p "${EVIDENCE_DIR}"
           python -s scripts/ci/p10l_bind_same_head_baseline.py \
             --repo "${GITHUB_REPOSITORY}" \
             --sha "${P10L_CANDIDATE_SHA}" \
