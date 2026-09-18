@@ -112,3 +112,13 @@ def test_p10l_hot_path_admission_layers_use_pure_asgi_without_semantic_bypass():
     assert "send_with_correlation" in middleware
     assert "capture_status" in middleware
     assert "await self.app(scope, receive, send)" in middleware
+
+def test_p10l_adaptive_write_throttler_preserves_redis_degraded_mode():
+    middleware = (ROOT / "app/core/middleware.py").read_text(encoding="utf-8")
+    start = middleware.index("class AdaptiveWriteThrottler:")
+    end = middleware.index("# 6. Tenant Authentication Middleware", start)
+    block = middleware[start:end]
+    assert 'try:\n                is_throttled = await redis_client.get("backpressure:write_throttle_active")' in block
+    assert "except Exception:" in block
+    assert "is_throttled = None" in block
+

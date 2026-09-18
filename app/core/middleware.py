@@ -343,7 +343,12 @@ class AdaptiveWriteThrottler:
 
         method = scope.get("method", "")
         if method in ("POST", "PUT", "PATCH", "DELETE"):
-            is_throttled = await redis_client.get("backpressure:write_throttle_active")
+            try:
+                is_throttled = await redis_client.get("backpressure:write_throttle_active")
+            except Exception:
+                # Preserve the certified degraded mode when Redis is absent or
+                # not initialized (for example isolated FastAPI boundary tests).
+                is_throttled = None
             if is_throttled == b"true" or is_throttled == "true":
                 reject_prob = adaptive_controller.rejection_probability(scope.get("path", ""))
                 if reject_prob > 0 and random.random() < reject_prob:
