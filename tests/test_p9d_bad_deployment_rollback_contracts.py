@@ -134,3 +134,14 @@ def test_p9d_emits_machine_readable_evidence_and_terminal_markers() -> None:
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in source
     assert "P9_DEPLOYMENT_ROLLBACK=PASS" in source
     assert "P9_BAD_DEPLOYMENT_RECOVERY=PASS" in source
+
+
+def test_p9d_router_switch_waits_for_nginx_reload_convergence() -> None:
+    source = (ROOT / "scripts/ci/run_p9d_bad_deployment_rollback.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "wait_not_ready()" in source
+    assert "for _ in $(seq 1 40)" in source
+    assert "last_status=" in source
+    assert 'router_bad_status="$(wait_not_ready "$P9D_ROUTER_PORT"' in source
+    assert "P9D_BAD_RELEASE_ROUTER_CONVERGED=PASS" in source

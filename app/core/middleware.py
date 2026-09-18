@@ -271,12 +271,15 @@ class RedisRateLimiterMiddleware(BaseHTTPMiddleware):
             5_000_000_000,
             500_000,
         )
+        if decision is None:
+            # ResilientRedis returns None when Redis admission cannot be evaluated.
+            # Preserve the established degraded mode: Redis coordinates admission,
+            # but an application-Redis outage must not suspend otherwise-authorized
+            # traffic. Readiness still reports the dependency outage separately.
+            return await call_next(request)
         if decision == 2:
             return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded."})
         if decision != 1:
-            # ResilientRedis returns None when Redis admission cannot be evaluated.
-            # Retain the pre-existing effective behavior: fail closed at the
-            # concurrency boundary rather than silently bypass distributed limits.
             return JSONResponse(status_code=429, content={"detail": "Concurrency limit reached."})
 
         try:

@@ -166,6 +166,22 @@ assert json.loads(Path(sys.argv[1]).read_text()) == {"status": "ready"}
 PY
 }
 
+wait_not_ready() {
+  local port="$1" output="$2" log="$3" status=""
+  for _ in $(seq 1 40); do
+    status="$(curl --silent --output "$output" --write-out '%{http_code}' "http://127.0.0.1:${port}/_system/ready" || true)"
+    if [ "$status" = '503' ] && grep -q 'dependencies_unavailable' "$output"; then
+      printf '%s\n' "$status"
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "P9-D router did not converge to the bad candidate readiness failure; last_status=${status}" >&2
+  cat "$output" >&2 || true
+  cat "$log" >&2 || true
+  return 1
+}
+
 launch_app() {
   local runtime="$1" work="$2" port="$3" redis_url="$4" broker_url="$5" result_url="$6" log="$7" pidfile="$8" python_bin
   if [[ "$runtime" == "$P9D_LKG_RUNTIME" ]]; then
@@ -262,10 +278,11 @@ python -s scripts/ci/p9d_durable_work_harness.py prepare | tee "$EVIDENCE_DIR/du
 grep -q 'P9D_DURABLE_WORK_CLAIM_SURVIVED_BAD_RELEASE=PASS' "$EVIDENCE_DIR/durable-prepare.log"
 
 write_nginx_target "$P9D_CANDIDATE_PORT"
-router_bad_status="$(curl --silent --output "$EVIDENCE_DIR/candidate-router-ready-body.json" --write-out '%{http_code}' "http://127.0.0.1:${P9D_ROUTER_PORT}/_system/ready")"
+router_bad_status="$(wait_not_ready "$P9D_ROUTER_PORT" "$EVIDENCE_DIR/candidate-router-ready-body.json" "$P9D_NGINX_DIR/error.log")"
 test "$router_bad_status" = '503'
 printf '%s\n' "$router_bad_status" > "$EVIDENCE_DIR/candidate-router-status.txt"
 grep -q 'dependencies_unavailable' "$EVIDENCE_DIR/candidate-router-ready-body.json"
+echo 'P9D_BAD_RELEASE_ROUTER_CONVERGED=PASS'
 
 write_nginx_target "$P9D_LKG_PORT"
 wait_ready "$P9D_ROUTER_PORT" "$EVIDENCE_DIR/rollback-router-ready.json" "$P9D_NGINX_DIR/error.log"
