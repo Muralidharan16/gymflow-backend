@@ -14,7 +14,7 @@ import zipfile
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 
-from scripts.ci.github_artifact_transport import download_github_artifact
+from github_artifact_transport import download_github_artifact
 
 WORKFLOW_PATH = ".github/workflows/p10b-baseline-calibration.yml"
 REQUIRED_FILES = (
