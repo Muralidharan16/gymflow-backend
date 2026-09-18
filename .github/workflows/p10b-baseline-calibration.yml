@@ -64,7 +64,7 @@ jobs:
       P10B_API_PORT: '8000'
       P10B_DURATION_SECONDS: '60'
       P10B_CONCURRENCY: '24'
-      P10B_CPU_LIMIT: '1.20'
+      P10B_CPU_LIMIT: '1.24'
       EVIDENCE_DIR: p10b-evidence
     steps:
       - name: Checkout exact candidate

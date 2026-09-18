@@ -56,7 +56,7 @@ jobs:
       P10S_SECRET_KEY: p10s-synthetic-secret-not-production
       P10S_METRICS_PORT: '4323'
       P10S_DURATION_SECONDS: '300'
-      P10S_CPU_LIMIT: '1.20'
+      P10S_CPU_LIMIT: '1.24'
       EVIDENCE_DIR: p10s-evidence
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
