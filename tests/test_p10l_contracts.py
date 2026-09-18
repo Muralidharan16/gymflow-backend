@@ -83,7 +83,7 @@ def test_p10l_authenticated_admission_is_single_atomic_redis_round_trip():
     assert "_LUA_RATE_LIMITER" not in middleware
     assert "_LUA_SEMAPHORE" not in middleware
     assert "async def _get_tier" not in middleware
-    assert re.search(r"_LUA_TENANT_ADMISSION,\\s+3,\\s+sem_key", middleware)
+    assert re.search(r"_LUA_TENANT_ADMISSION,\s+3,\s+sem_key", middleware)
     assert "try:\n            decision = await redis_client.eval(" in middleware
     assert "except Exception:\n            decision = None" in middleware
     assert "if decision is None:" in middleware
