@@ -14,7 +14,8 @@ re-proving every inherited P1-P9 boundary.
 - merged P9 base tree: `a6a0a87ebbaa251482c67f1bc4cbd9dc8ab7d1e0`
 - Alembic head: `zk07d8e9f0a45`
 - frozen P10 budget digest:
-  `88705c91dfefc80d835e3c0faed55a0d8becfa46e0df710d82b3baf14f919008`
+  `b8613f5deab4d1dba77ba41d86b4cb4d8e8dab6b85fa5630a6206105951b8520`
+- P10-B recertification note: the soak-stability limits were added before the accepted P10-S run; no previously frozen threshold was loosened, and all downstream P10 gates must re-certify on the resulting exact SHA.
 
 ## Inherited same-head proof
 
