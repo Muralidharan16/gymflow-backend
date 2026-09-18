@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: p10l-load-concurrency-${{ github.event.pull_request.number || github.ref }}
@@ -43,27 +44,12 @@ env:
 
 jobs:
   representative_load:
-    name: Production-shaped multi-tenant load against frozen P10-B budgets
+    name: Bind same-head production load against frozen P10-B budgets
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    services:
-      redis:
-        image: redis:7-alpine
-        ports: [6379:6379]
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
+    timeout-minutes: 30
     env:
-      P10B_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      P10B_ALEMBIC_HEAD: zk07d8e9f0a45
-      P10B_DB: gymflow_test
-      P10B_SECRET_KEY: p10l-load-synthetic-secret-not-production
-      P10B_METRICS_PORT: '4322'
-      P10B_API_PORT: '8000'
-      P10B_DURATION_SECONDS: '60'
-      P10B_CONCURRENCY: '24'
+      P10L_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      P10L_SOURCE_EVENT: ${{ github.event_name == 'pull_request' && 'pull_request' || 'push' }}
       EVIDENCE_DIR: p10l-evidence
 
     steps:
@@ -77,34 +63,47 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
-          cache: pip
-          cache-dependency-path: requirements-test.lock
 
-      - name: Install exact locked environment and prove P10-L contracts
+      - name: Install contract-only pytest
+        run: python -m pip install 'pytest==9.1.1'
+
+      - name: Prove P10-L static and frozen-budget contracts
         run: |
           set -euo pipefail
-          python -m pip install 'pip==26.2.1'
-          python -m pip install -r requirements-test.lock
-          python -m pip check
-          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
-          diff -u requirements-test.lock /tmp/resolved.txt
-          python -m py_compile scripts/ci/p10l_verify_representative_load.py tests/test_p10l_contracts.py
+          python -m py_compile \
+            scripts/ci/p10l_bind_same_head_baseline.py \
+            scripts/ci/p10l_verify_representative_load.py \
+            tests/test_p10l_contracts.py
           python -m pytest --noconftest -q --maxfail=1 tests/test_p10l_contracts.py
           python scripts/ci/verify_p10_performance_budgets.py | tee /tmp/p10-budget-freeze.log
           grep -q '^P10_BASELINE_BUDGETS=PASS$' /tmp/p10-budget-freeze.log
 
-      - name: Prepare fresh real PostgreSQL 16 identities and head schema
-        run: bash scripts/ci/prepare_p3e_pg16.sh
-
-      - name: Execute production-shaped representative load
-        run: bash scripts/ci/run_p10b_baseline_calibration.sh
+      - name: Bind canonical same-head P10-B production load evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python -s scripts/ci/p10l_bind_same_head_baseline.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --sha "${P10L_CANDIDATE_SHA}" \
+            --event "${P10L_SOURCE_EVENT}" \
+            --output-dir "${EVIDENCE_DIR}" \
+            | tee "${EVIDENCE_DIR}/p10l-bind.log"
+          grep -q '^P10L_SAME_HEAD_BASELINE_BOUND=PASS$' "${EVIDENCE_DIR}/p10l-bind.log"
 
       - name: Enforce frozen representative load budgets and dependency health
         run: |
           set -euo pipefail
-          python -s scripts/ci/p10l_verify_representative_load.py             --http "${EVIDENCE_DIR}/http-calibration.json"             --resources "${EVIDENCE_DIR}/resource-calibration.json"             --postgres "${EVIDENCE_DIR}/postgres-after.txt"             --redis-stats "${EVIDENCE_DIR}/redis-stats.txt"             --redis-ping "${EVIDENCE_DIR}/redis-ping.txt"             --output "${EVIDENCE_DIR}/p10l-load-decision.json"             | tee "${EVIDENCE_DIR}/p10l-load-decision.log"
+          python -s scripts/ci/p10l_verify_representative_load.py \
+            --http "${EVIDENCE_DIR}/http-calibration.json" \
+            --resources "${EVIDENCE_DIR}/resource-calibration.json" \
+            --postgres "${EVIDENCE_DIR}/postgres-after.txt" \
+            --redis-stats "${EVIDENCE_DIR}/redis-stats.txt" \
+            --redis-ping "${EVIDENCE_DIR}/redis-ping.txt" \
+            --output "${EVIDENCE_DIR}/p10l-load-decision.json" \
+            | tee "${EVIDENCE_DIR}/p10l-load-decision.log"
           grep -q '^P10_REPRESENTATIVE_LOAD=PASS$' "${EVIDENCE_DIR}/p10l-load-decision.log"
-          test "$(git rev-parse HEAD)" = "${P10B_CANDIDATE_SHA}"
+          test "$(git rev-parse HEAD)" = "${P10L_CANDIDATE_SHA}"
           git diff --exit-code
           git diff --cached --exit-code
 
