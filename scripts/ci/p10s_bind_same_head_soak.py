@@ -14,7 +14,7 @@ import zipfile
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 
-from scripts.ci.github_artifact_transport import download_github_artifact
+from github_artifact_transport import download_github_artifact
 
 WORKFLOW_PATH = ".github/workflows/p10s-long-soak.yml"
 SOURCE_EVENT = "pull_request"
