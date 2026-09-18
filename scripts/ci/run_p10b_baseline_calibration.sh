@@ -82,7 +82,18 @@ Path(sys.argv[2]).write_text(json.dumps(posture, indent=2, sort_keys=True) + '\n
 PY
 
 docker rm -f p10b-api >/dev/null 2>&1 || true
+DOCKER_RESOURCE_ARGS=()
+if [[ -n "${P10B_CPU_LIMIT:-}" ]]; then
+  python - "${P10B_CPU_LIMIT}" <<'PY'
+import sys
+value = float(sys.argv[1])
+if not 0 < value <= 1.25:
+    raise SystemExit("P10B_CPU_LIMIT must be in (0, 1.25] cores")
+PY
+  DOCKER_RESOURCE_ARGS+=(--cpus "${P10B_CPU_LIMIT}")
+fi
 docker run --detach --name p10b-api --network host \
+  "${DOCKER_RESOURCE_ARGS[@]}" \
   --env ENVIRONMENT=production \
   --env DOERS_PROCESS_PROFILE=api \
   --env DATABASE_URL="postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/${P10B_DB}" \
@@ -178,7 +189,7 @@ fi
 grep -q 'P10B_CALIBRATION_HTTP=PASS' "$EVIDENCE_DIR/http-calibration.log"
 
 python - "$EVIDENCE_DIR/docker-stats.jsonl" "$EVIDENCE_DIR/resource-calibration.json" <<'PY'
-import json, re, statistics, sys
+import json, os, re, statistics, sys
 from pathlib import Path
 
 def bytes_value(raw: str) -> float:
@@ -209,6 +220,10 @@ if not cpus:
 summary = {
     'schema_version': 1,
     'samples': len(cpus),
+    'cpu_limit_cores': (
+        float(os.environ['P10B_CPU_LIMIT'])
+        if os.environ.get('P10B_CPU_LIMIT') else None
+    ),
     'cpu_percent': {
         'avg': round(statistics.fmean(cpus), 3),
         'max': round(max(cpus), 3),

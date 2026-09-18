@@ -21,3 +21,11 @@ def test_p10s_worker_prioritizes_only_its_synthetic_cycle_over_old_fixture_backl
     assert "synthetic_process_after_priority" in worker
     assert "process_after: str | None = None" in durable
     assert "COALESCE(%s::timestamptz, pg_catalog.clock_timestamp())" in durable
+
+
+def test_p10s_worker_smooths_the_same_two_items_per_second_without_reducing_rate():
+    worker=(ROOT/"scripts/ci/p10s_worker_activity.py").read_text()
+    assert "BATCH_SIZE=10" in worker
+    assert 'default=5' in worker
+    assert '"target_worker_items_per_second":BATCH_SIZE/a.interval_seconds' in worker
+    assert '"worker_batch_size":BATCH_SIZE' in worker
