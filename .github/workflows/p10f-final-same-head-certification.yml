@@ -23,7 +23,8 @@ env:
   P9_CERTIFIED_TREE: a6a0a87ebbaa251482c67f1bc4cbd9dc8ab7d1e0
   P10_ALEMBIC_HEAD: zk07d8e9f0a45
   P10_PERFORMANCE_BUDGET_DIGEST: 88705c91dfefc80d835e3c0faed55a0d8becfa46e0df710d82b3baf14f919008
-  P10F_INHERITED_JOB_COUNT: '53'
+  P10F_INHERITED_JOB_COUNT: '46'
+  P10F_P9_SLICE_COUNT: '7'
 
 jobs:
   contract:
@@ -299,34 +300,6 @@ jobs:
     name: P8-O real production-like observability
     uses: ./.github/workflows/p8o-production-like-observability.yml
 
-  p9_governance:
-    name: P9 governance
-    uses: ./.github/workflows/p9-governance-data-protection-recovery.yml
-
-  p9_migration:
-    name: P9 populated predecessor rehearsal
-    uses: ./.github/workflows/p9m-populated-predecessor-head.yml
-
-  p9_lock:
-    name: P9 lock rewrite analysis
-    uses: ./.github/workflows/p9l-lock-rewrite-analysis.yml
-
-  p9_backup:
-    name: P9 backup integrity
-    uses: ./.github/workflows/p9b-backup-integrity.yml
-
-  p9_recovery:
-    name: P9 full restore and PITR
-    uses: ./.github/workflows/p9r-full-restore-pitr.yml
-
-  p9_rolling:
-    name: P9 rolling schema compatibility
-    uses: ./.github/workflows/p9c-rolling-schema-compatibility.yml
-
-  p9_rollback:
-    name: P9 bad deployment rollback
-    uses: ./.github/workflows/p9d-bad-deployment-rollback.yml
-
   certify:
     name: Terminal immutable Final P10 decision
     if: ${{ always() }}
@@ -377,19 +350,12 @@ jobs:
       - p8_alerts
       - p8_runbooks
       - p8_production_like
-      - p9_governance
-      - p9_migration
-      - p9_lock
-      - p9_backup
-      - p9_recovery
-      - p9_rolling
-      - p9_rollback
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
     env:
       P10F_CANDIDATE_SHA: ${{ github.sha }}
     steps:
-      - name: Require all 53 inherited P1-P9 same-head gates
+      - name: Require 46 inherited P1-P8 and P9 contract jobs
         env:
           REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
         run: |
@@ -403,9 +369,12 @@ jobs:
           if len(results)!=expected:
               raise SystemExit(f"P10-F inherited topology changed: {len(results)} != {expected}")
           failures={name:details["result"] for name,details in results.items() if details["result"]!="success"}
-          if failures: raise SystemExit(f"P10-F inherited P1-P9 gates failed: {failures}")
-          Path("p10f-evidence/inherited-needs.json").write_text(json.dumps(results,indent=2,sort_keys=True)+"\n",encoding="utf-8")
-          print(f"P10-F inherited P1-P9 gates passed: {len(results)}")
+          if failures:
+              raise SystemExit(f"P10-F inherited P1-P8/P9-contract gates failed: {failures}")
+          Path("p10f-evidence/inherited-needs.json").write_text(
+              json.dumps(results,indent=2,sort_keys=True)+"\n",encoding="utf-8"
+          )
+          print(f"P10-F direct inherited gates passed: {len(results)}")
           PY
 
       - name: Checkout exact final P10 candidate
@@ -413,6 +382,53 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
+
+      - name: Bind seven exact-head P9 slice workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          api=os.environ["GITHUB_API_URL"]; repo=os.environ["GITHUB_REPOSITORY"]
+          sha=os.environ["GITHUB_SHA"]; token=os.environ["GH_TOKEN"]
+          expected={
+              ".github/workflows/p9-governance-data-protection-recovery.yml":"P9-G",
+              ".github/workflows/p9m-populated-predecessor-head.yml":"P9-M",
+              ".github/workflows/p9l-lock-rewrite-analysis.yml":"P9-L",
+              ".github/workflows/p9b-backup-integrity.yml":"P9-B",
+              ".github/workflows/p9r-full-restore-pitr.yml":"P9-R",
+              ".github/workflows/p9c-rolling-schema-compatibility.yml":"P9-C",
+              ".github/workflows/p9d-bad-deployment-rollback.yml":"P9-D",
+          }
+          headers={"Accept":"application/vnd.github+json","Authorization":f"Bearer {token}","X-GitHub-Api-Version":"2022-11-28"}
+          def get_json(url):
+              request=urllib.request.Request(url,headers=headers)
+              with urllib.request.urlopen(request,timeout=60) as response: return json.load(response)
+          final=None; last_missing=[]; last_pending=[]
+          for _ in range(100):
+              runs=get_json(f"{api}/repos/{repo}/actions/runs?head_sha={sha}&per_page=100").get("workflow_runs",[])
+              selected={}; missing=[]; pending=[]; failed={}
+              for path,label in expected.items():
+                  candidates=[r for r in runs if r.get("path")==path and r.get("head_sha")==sha and r.get("event")=="pull_request"]
+                  if not candidates:
+                      missing.append(label); continue
+                  run=max(candidates,key=lambda item:item["id"])
+                  selected[label]={k:run.get(k) for k in ("id","name","path","event","head_sha","status","conclusion")}
+                  if run["status"]!="completed": pending.append(label)
+                  elif run["conclusion"]!="success": failed[label]=run["conclusion"]
+              if failed: raise SystemExit(f"P10-F exact-head P9 slice failures: {failed}")
+              if not missing and not pending and len(selected)==int(os.environ["P10F_P9_SLICE_COUNT"]):
+                  final=selected; break
+              last_missing,last_pending=missing,pending; time.sleep(15)
+          if final is None:
+              raise SystemExit(f"P10-F P9 slice evidence incomplete; missing={last_missing}, pending={last_pending}")
+          Path("p10f-evidence/p9-same-head-runs.json").write_text(
+              json.dumps(final,indent=2,sort_keys=True)+"\n",encoding="utf-8"
+          )
+          print("P10-F exact-head P9 slice workflows passed: 7")
+          PY
 
       - name: Bind eight canonical P10 slice runs and evidence archives
         env:
@@ -439,7 +455,7 @@ jobs:
               req=urllib.request.Request(url,headers=headers)
               with urllib.request.urlopen(req,timeout=60) as response: return json.load(response)
           selected=None; last_missing=[]; last_pending=[]
-          for _ in range(80):
+          for _ in range(100):
               runs=get_json(f"{api}/repos/{repo}/actions/runs?head_sha={sha}&event=push&per_page=100").get("workflow_runs",[])
               current={}; missing=[]; pending=[]; failed={}
               for path,label in expected.items():
@@ -452,7 +468,8 @@ jobs:
               if failed: raise SystemExit(f"P10-F exact-head P10 slice failures: {failed}")
               if not missing and not pending and len(current)==8: selected=current; break
               last_missing,last_pending=missing,pending; time.sleep(15)
-          if selected is None: raise SystemExit(f"P10-F P10 slice evidence incomplete; missing={last_missing}, pending={last_pending}")
+          if selected is None:
+              raise SystemExit(f"P10-F P10 slice evidence incomplete; missing={last_missing}, pending={last_pending}")
           artifact_evidence={}
           for label in sorted(artifact_required):
               run=selected[label]; payload=get_json(run["artifacts_url"]+"?per_page=100")
@@ -460,7 +477,8 @@ jobs:
               if not artifacts: raise SystemExit(f"{label} produced no retained evidence artifact")
               rows=[]
               for artifact in artifacts:
-                  req=urllib.request.Request(artifact["archive_download_url"],headers=headers); digest=hashlib.sha256(); count=0
+                  req=urllib.request.Request(artifact["archive_download_url"],headers=headers)
+                  digest=hashlib.sha256(); count=0
                   with urllib.request.urlopen(req,timeout=120) as response:
                       while True:
                           chunk=response.read(1024*1024)
@@ -487,10 +505,13 @@ jobs:
           import json, os, subprocess
           from pathlib import Path
           inherited=json.loads(Path("p10f-evidence/inherited-needs.json").read_text())
+          p9_runs=json.loads(Path("p10f-evidence/p9-same-head-runs.json").read_text())
           slices=json.loads(Path("p10f-evidence/p10-same-head-runs.json").read_text())
           artifact_evidence=json.loads(Path("p10f-evidence/p10-artifacts.json").read_text())
-          decision={"schema_version":1,"phase":"P10-F","candidate_sha":os.environ["P10F_CANDIDATE_SHA"],"candidate_tree":subprocess.check_output(["git","rev-parse","HEAD^{tree}"],text=True).strip(),"p9_merged_base_sha":os.environ["P9_MERGE_BASE"],"p9_merged_base_tree":os.environ["P9_CERTIFIED_TREE"],"alembic_head":os.environ["P10_ALEMBIC_HEAD"],"budget_digest":os.environ["P10_PERFORMANCE_BUDGET_DIGEST"],"inherited_p1_p9_gate_count":len(inherited),"p10_slice_gate_count":len(slices),"p10_runs":slices,"artifact_evidence":artifact_evidence,"refund_provider_execution":"DEFERRED_FAIL_CLOSED","release_authorized":False,"deployment_authorized":False,"decision":"PASS"}
-          assert decision["inherited_p1_p9_gate_count"]==53; assert decision["p10_slice_gate_count"]==8; assert decision["candidate_sha"]==os.environ["GITHUB_SHA"]
+          decision={"schema_version":1,"phase":"P10-F","candidate_sha":os.environ["P10F_CANDIDATE_SHA"],"candidate_tree":subprocess.check_output(["git","rev-parse","HEAD^{tree}"],text=True).strip(),"p9_merged_base_sha":os.environ["P9_MERGE_BASE"],"p9_merged_base_tree":os.environ["P9_CERTIFIED_TREE"],"alembic_head":os.environ["P10_ALEMBIC_HEAD"],"budget_digest":os.environ["P10_PERFORMANCE_BUDGET_DIGEST"],"inherited_p1_p9_gate_count":len(inherited)+len(p9_runs),"p10_slice_gate_count":len(slices),"p9_runs":p9_runs,"p10_runs":slices,"artifact_evidence":artifact_evidence,"refund_provider_execution":"DEFERRED_FAIL_CLOSED","release_authorized":False,"deployment_authorized":False,"decision":"PASS"}
+          assert decision["inherited_p1_p9_gate_count"]==53
+          assert decision["p10_slice_gate_count"]==8
+          assert decision["candidate_sha"]==os.environ["GITHUB_SHA"]
           Path("p10f-evidence/decision.json").write_text(json.dumps(decision,indent=2,sort_keys=True)+"\n")
           PY
           cat p10f-evidence/decision.json
