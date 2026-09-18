@@ -58,3 +58,13 @@ def test_p10l_binds_canonical_same_head_load_instead_of_retrying_or_loosened_bud
     assert "P10L_SAME_HEAD_BASELINE_BOUND=PASS" in binder
     assert "retry" not in workflow.lower()
     assert "min_throughput_rps" in VERIFIER.read_text(encoding="utf-8")
+
+
+def test_p10l_artifact_binding_strips_github_auth_before_blob_download():
+    binder = (ROOT / "scripts/ci/p10l_bind_same_head_baseline.py").read_text(encoding="utf-8")
+    transport = (ROOT / "scripts/ci/github_artifact_transport.py").read_text(encoding="utf-8")
+    assert "download_github_artifact" in binder
+    assert "_download(" not in binder
+    assert "class _NoRedirect" in transport
+    assert '"Authorization": f"Bearer {token}"' in transport
+    assert 'headers={"User-Agent": "doers-p10-certification"}' in transport
