@@ -6,11 +6,11 @@
       "scanner": "gitleaks",
       "rule_or_advisory_id": "generic-api-key",
       "exact_scope": {
-        "finding_count": 129,
-        "unique_fingerprint_count": 127,
-        "sorted_fingerprint_sha256": "c8af686942a5e49ef0b197e07b62a93b3eb3fe499dde33091931376c2b32109d"
+        "finding_count": 130,
+        "unique_fingerprint_count": 128,
+        "sorted_fingerprint_sha256": "9aa84c448c4ad6a5d35133597ba59a195b62bca7a1b73d0ebaa444eb593a7aa3"
       },
-      "justification": "Reviewed historical findings are confined to synthetic CI/test fixture identifiers and explicitly synthetic provider/AWS credential placeholders; none grants live provider, production, or customer access. The exact fingerprint-set digest prevents this review from covering any changed or newly introduced finding.",
+      "justification": "Reviewed historical findings are confined to synthetic CI/test fixture identifiers and explicitly synthetic provider/AWS credential placeholders; none grants live provider, production, or customer access. The added exact fingerprint is the unchanged p10s-synthetic AWS placeholder re-emitted when the P10-S docker-run line was edited to enforce the frozen CPU envelope. The exact fingerprint-set digest prevents this review from covering any other changed or newly introduced finding.",
       "owner": "DOers security certification",
       "reviewed_at": "2026-09-18",
       "expires_at": "2026-12-18"
