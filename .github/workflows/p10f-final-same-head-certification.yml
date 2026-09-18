@@ -371,6 +371,28 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.sha }}
 
+      - name: Recreate inherited gate evidence after checkout
+        env:
+          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          mkdir -p p10f-evidence
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          results=json.loads(os.environ["REQUIRED_RESULTS_JSON"])
+          expected=int(os.environ["P10F_INHERITED_JOB_COUNT"])
+          if len(results)!=expected:
+              raise SystemExit(f"P10-F inherited topology changed after checkout: {len(results)} != {expected}")
+          failures={name:details["result"] for name,details in results.items() if details["result"]!="success"}
+          if failures:
+              raise SystemExit(f"P10-F inherited gates changed after checkout: {failures}")
+          Path("p10f-evidence/inherited-needs.json").write_text(
+              json.dumps(results,indent=2,sort_keys=True)+"\n",encoding="utf-8"
+          )
+          print(f"P10-F inherited evidence snapshot restored: {len(results)}")
+          PY
+
       - name: Bind seven exact-head P9 slice workflows
         env:
           GH_TOKEN: ${{ github.token }}

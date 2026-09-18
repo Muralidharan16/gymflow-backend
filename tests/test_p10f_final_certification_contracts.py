@@ -134,3 +134,15 @@ def test_p10f_terminal_cleanliness_ignores_generated_untracked_evidence_only():
     assert 'git status --porcelain --untracked-files=no' in block
     assert 'test -z "$(git status --porcelain)"' not in block
 
+def test_p10f_recreates_inherited_snapshot_after_checkout_cleanup():
+    text = _read(WORKFLOW)
+    checkout = text.index("- name: Checkout exact final P10 candidate")
+    restore = text.index("- name: Recreate inherited gate evidence after checkout", checkout)
+    bind = text.index("- name: Bind seven exact-head P9 slice workflows", restore)
+    block = text[restore:bind]
+    assert checkout < restore < bind
+    assert 'REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}' in block
+    assert 'Path("p10f-evidence/inherited-needs.json").write_text(' in block
+    assert "P10-F inherited topology changed after checkout" in block
+    assert "P10-F inherited gates changed after checkout" in block
+
