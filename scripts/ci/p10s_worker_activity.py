@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
 from scripts.ci.p10b_durable_queue_calibration import seed_authority,terminal_snapshot,controller,queue_depth,worker_environment,worker_ping
-BATCH_SIZE=10
+BATCH_SIZE=2
 def wait(pred,desc,timeout=30):
     end=time.monotonic()+timeout
     while time.monotonic()<end:
@@ -14,7 +14,7 @@ def wait(pred,desc,timeout=30):
         time.sleep(.1)
     raise RuntimeError("timeout "+desc)
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--duration-seconds",type=int,default=300); ap.add_argument("--interval-seconds",type=int,default=5)
+    ap=argparse.ArgumentParser(); ap.add_argument("--duration-seconds",type=int,default=300); ap.add_argument("--interval-seconds",type=int,default=1)
     ap.add_argument("--output",required=True); ap.add_argument("--log",required=True); a=ap.parse_args()
     queue="p10s-worker"; host=f"p10s-{uuid.uuid4().hex}@localhost"; log=Path(a.log); log.parent.mkdir(parents=True,exist_ok=True)
     h=log.open("w"); p=subprocess.Popen([sys.executable,"-m","celery","-A","app.core.celery_app:celery_app","worker","--pool=prefork","--concurrency=2",

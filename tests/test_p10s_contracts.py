@@ -35,10 +35,11 @@ def test_p10s_worker_prioritizes_only_its_synthetic_cycle_over_old_fixture_backl
 
 def test_p10s_worker_smooths_the_same_two_items_per_second_without_reducing_rate():
     worker=(ROOT/"scripts/ci/p10s_worker_activity.py").read_text()
-    assert "BATCH_SIZE=10" in worker
-    assert 'default=5' in worker
+    assert "BATCH_SIZE=2" in worker
+    assert 'default=1' in worker
     assert '"target_worker_items_per_second":BATCH_SIZE/a.interval_seconds' in worker
     assert '"worker_batch_size":BATCH_SIZE' in worker
+    assert 'ctl.send_task("app.tasks.branch_outbox_poller.run",queue=queue)' in worker
 
 
 
