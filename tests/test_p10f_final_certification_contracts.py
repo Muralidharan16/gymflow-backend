@@ -57,9 +57,11 @@ def test_p10f_runs_only_on_exact_branch_push_and_is_read_only():
 
 def test_p10f_reexecutes_p9_inherited_topology_and_all_p9_slices():
     text = _read(WORKFLOW)
-    assert "P10F_INHERITED_JOB_COUNT: '53'" in text
+    assert "P10F_INHERITED_JOB_COUNT: '46'" in text
+    assert "P10F_P9_SLICE_COUNT: '7'" in text
     for path in P9_REUSABLE:
-        assert f"uses: ./{path}" in text
+        assert f'"{path}"' in text
+        assert f"uses: ./{path}" not in text
     for required in (
         ".github/workflows/p3e-certification.yml",
         ".github/workflows/p4b-opensearch-live.yml",
@@ -70,7 +72,8 @@ def test_p10f_reexecutes_p9_inherited_topology_and_all_p9_slices():
         ".github/workflows/p8o-production-like-observability.yml",
     ):
         assert f"uses: ./{required}" in text
-    assert "if len(results) != int(os.environ[\"P10F_INHERITED_JOB_COUNT\"])" in text
+    assert "expected=int(os.environ[\"P10F_INHERITED_JOB_COUNT\"])" in text
+    assert '"inherited_p1_p9_gate_count":len(inherited)+len(p9_runs)' in text
 
 
 def test_p10f_binds_all_p10_slices_and_required_artifacts():
