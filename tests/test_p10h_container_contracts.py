@@ -28,3 +28,11 @@ def test_production_static_scratch_uses_writable_tmp_boundary():
     assert "tempfile.gettempdir()" in source
     assert "if settings.is_production" in source
     assert '"doers-static"' in source
+
+
+
+def test_hardened_runtime_keeps_required_metrics_fail_closed_boundary():
+    workflow = (ROOT / ".github/workflows/p10h-container-hardening.yml").read_text(encoding="utf-8")
+    assert "scripts/ci/p8o_otlp_collector.py" in workflow
+    assert "P8_METRICS_OTLP_ENDPOINT=http://127.0.0.1:4324/v1/metrics" in workflow
+    assert "p10h-runtime-metrics.jsonl" in workflow
