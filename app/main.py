@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from contextlib import asynccontextmanager
 
 import sentry_sdk
@@ -188,7 +189,15 @@ app.add_middleware(SystemControlMiddleware)
 
 # ── Static storage ─────────────────────────────────────────────────────────
 
-storage_dir = os.path.join(os.getcwd(), "storage", settings.S3_BUCKET_NAME)
+# Production containers run with a read-only application filesystem. Static
+# scratch space is therefore process-ephemeral under the writable temp boundary;
+# durable assets remain provider-backed and are never made authoritative here.
+storage_root = (
+    os.path.join(tempfile.gettempdir(), "doers-static")
+    if settings.is_production
+    else os.path.join(os.getcwd(), "storage")
+)
+storage_dir = os.path.join(storage_root, settings.S3_BUCKET_NAME)
 os.makedirs(storage_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=storage_dir), name="static")
 
