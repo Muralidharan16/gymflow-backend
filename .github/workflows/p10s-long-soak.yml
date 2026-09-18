@@ -7,7 +7,9 @@ on:
     types: [opened, synchronize, reopened]
   workflow_call:
   workflow_dispatch:
-permissions: {contents: read}
+permissions:
+  contents: read
+  actions: read
 concurrency:
   group: p10s-soak-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -35,6 +37,7 @@ env:
   P10S_ADMIN_DATABASE_URL: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
 jobs:
   soak:
+    if: github.event_name == 'pull_request'
     name: Five minute API worker PostgreSQL Redis soak
     runs-on: ubuntu-24.04
     timeout-minutes: 70
@@ -91,5 +94,79 @@ jobs:
       - name: Emit P10-S terminal marker
         run: |
           grep -q '^P10_SOAK=PASS$' p10s-evidence/decision.log
+          echo 'P10_SOAK=PASS'
+          echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+
+  bind_same_head_soak:
+    if: github.event_name != 'pull_request'
+    name: Bind canonical same-head five-minute soak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      P10S_CANDIDATE_SHA: ${{ github.sha }}
+      EVIDENCE_DIR: p10s-evidence
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+
+      - name: Install contract-only pytest
+        run: python -m pip install 'pytest==9.1.1'
+
+      - name: Prove P10-S binding and frozen-budget contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/ci/p10s_bind_same_head_soak.py \
+            scripts/ci/p10s_verify_soak.py \
+            tests/test_p10s_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p10s_contracts.py
+          python scripts/ci/verify_p10_performance_budgets.py | tee /tmp/p10s-budget.log
+          grep -q '^P10_BASELINE_BUDGETS=PASS$' /tmp/p10s-budget.log
+
+      - name: Bind canonical same-head PR soak evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python -s scripts/ci/p10s_bind_same_head_soak.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --sha "${P10S_CANDIDATE_SHA}" \
+            --output-dir "${EVIDENCE_DIR}" \
+            | tee "${EVIDENCE_DIR}/p10s-bind.log"
+          grep -q '^P10S_SAME_HEAD_SOAK_BOUND=PASS$' "${EVIDENCE_DIR}/p10s-bind.log"
+
+      - name: Re-enforce frozen soak budgets on bound evidence
+        run: |
+          set -euo pipefail
+          python -s scripts/ci/p10s_verify_soak.py \
+            --http "${EVIDENCE_DIR}/http.json" \
+            --worker "${EVIDENCE_DIR}/worker.json" \
+            --resources "${EVIDENCE_DIR}/resources.jsonl" \
+            --output "${EVIDENCE_DIR}/bound-decision.json" \
+            | tee "${EVIDENCE_DIR}/bound-decision.log"
+          grep -q '^P10_SOAK=PASS$' "${EVIDENCE_DIR}/bound-decision.log"
+          test "$(git rev-parse HEAD)" = "${P10S_CANDIDATE_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+      - name: Upload bound P10-S evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p10s-${{ github.sha }}
+          path: p10s-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Emit bound P10-S terminal marker
+        run: |
           echo 'P10_SOAK=PASS'
           echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
