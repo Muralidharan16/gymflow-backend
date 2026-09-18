@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BUDGET_PATH = ROOT / "docs/architecture/p10_performance_budgets.v1.json"
 DIGEST_PATH = ROOT / "docs/architecture/p10_performance_budgets.v1.sha256"
 
-EXPECTED_DIGEST = "0f5502c99f995a5824111bb7f7b2511b7940a2d937553bfc8defc3f3d76007c6"
+EXPECTED_DIGEST = "b8613f5deab4d1dba77ba41d86b4cb4d8e8dab6b85fa5630a6206105951b8520"
 EXPECTED_SOURCE_SHA = "2c35d9c777f038b195f1191ffcaeeffbf14dc6e2"
 EXPECTED_P9_SHA = "33abd2bad81c65ac998b91726cc314ab54080010"
 EXPECTED_P9_TREE = "a6a0a87ebbaa251482c67f1bc4cbd9dc8ab7d1e0"
