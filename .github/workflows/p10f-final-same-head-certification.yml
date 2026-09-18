@@ -412,7 +412,9 @@ jobs:
               last_missing,last_pending=missing,pending; time.sleep(15)
           if final is None:
               raise SystemExit(f"P10-F P9 slice evidence incomplete; missing={last_missing}, pending={last_pending}")
-          Path("p10f-evidence/p9-same-head-runs.json").write_text(
+          evidence_root=Path("p10f-evidence")
+          evidence_root.mkdir(parents=True,exist_ok=True)
+          (evidence_root/"p9-same-head-runs.json").write_text(
               json.dumps(final,indent=2,sort_keys=True)+"\n",encoding="utf-8"
           )
           print("P10-F exact-head P9 slice workflows passed: 7")

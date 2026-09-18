@@ -113,3 +113,14 @@ def test_p10f_artifact_hashing_uses_safe_signed_redirect_transport():
     assert "from scripts.ci.github_artifact_transport import download_github_artifact" in text
     assert 'download_github_artifact(artifact["archive_download_url"],token)' in text
     assert "class _NoRedirect" in helper
+
+def test_p10f_p9_binder_recreates_evidence_directory_after_checkout():
+    text = _read(WORKFLOW)
+    checkout = text.index("- name: Checkout exact final P10 candidate")
+    bind = text.index("- name: Bind seven exact-head P9 slice workflows", checkout)
+    p10_bind = text.index("- name: Bind eight canonical P10 slice runs and evidence archives", bind)
+    block = text[bind:p10_bind]
+    assert 'evidence_root=Path("p10f-evidence")' in block
+    assert "evidence_root.mkdir(parents=True,exist_ok=True)" in block
+    assert '(evidence_root/"p9-same-head-runs.json").write_text(' in block
+
