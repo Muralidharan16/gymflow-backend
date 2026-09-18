@@ -29,6 +29,9 @@ def test_p10q_requires_real_durable_backlog_worker_replacement_and_timeseries():
         "DEFERRED_FAIL_CLOSED",
         "items_per_second",
         "deadline_seconds",
+        "expire_processing_leases",
+        "ci_expired_processing_leases",
+        "lease_expiry_fault_injection",
     ):
         assert fragment in probe
 
