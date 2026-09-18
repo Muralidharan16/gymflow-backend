@@ -26,6 +26,7 @@ from typing import Optional
 from fastapi import Request, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.core.security import ACCESS_TOKEN_PRINCIPAL_TYPES, decode_token
 from app.core.redis import redis_client
@@ -232,26 +233,35 @@ return 1
 """
 
 
-class RedisRateLimiterMiddleware(BaseHTTPMiddleware):
+class RedisRateLimiterMiddleware:
     """
-    Token-bucket rate limiter using atomic Lua scripts with Redis-server TIME.
-    Concurrency semaphore uses sorted-set leases with Redis-authoritative timestamps.
+    Pure-ASGI tenant admission middleware.
+
+    Concurrency leases and live-tier token-bucket admission are decided by one
+    atomic Redis script using Redis-server time. Avoiding BaseHTTPMiddleware
+    removes task/stream orchestration from the authenticated request hot path.
 
     Tier defaults:
       ENTERPRISE   → 5000 tokens capacity, 500/s fill
       default      → 600 tokens capacity,  60/s fill
     """
-    _LEASE_TTL    = 60
-    _BURST_LIMIT  = 150
+    _LEASE_TTL = 60
+    _BURST_LIMIT = 150
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        tenant_id = request.headers.get("X-Tenant-ID")
-        if not tenant_id:
-            return await call_next(request)
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-        # Concurrency + live-tier token-bucket admission share one atomic
-        # Redis script. This preserves the distributed lease/rate-limit authority
-        # while removing two loopback round trips from every authenticated request.
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        tenant_raw = dict(scope.get("headers") or ()).get(b"x-tenant-id")
+        if not tenant_raw:
+            await self.app(scope, receive, send)
+            return
+        tenant_id = tenant_raw.decode("latin-1")
+
         sem_key = f"concurrency_lease:{tenant_id}"
         rate_key = f"rate_limit:{tenant_id}"
         tier_key = f"tenant_tier:{tenant_id}"
@@ -272,18 +282,21 @@ class RedisRateLimiterMiddleware(BaseHTTPMiddleware):
             500_000,
         )
         if decision is None:
-            # ResilientRedis returns None when Redis admission cannot be evaluated.
-            # Preserve the established degraded mode: Redis coordinates admission,
-            # but an application-Redis outage must not suspend otherwise-authorized
-            # traffic. Readiness still reports the dependency outage separately.
-            return await call_next(request)
-        if decision == 2:
-            return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded."})
-        if decision != 1:
-            return JSONResponse(status_code=429, content={"detail": "Concurrency limit reached."})
+            # Preserve the certified degraded mode: readiness reports Redis loss,
+            # while otherwise-authorized application traffic remains available.
+            await self.app(scope, receive, send)
+            return
+        if decision in (2, "2"):
+            response = JSONResponse(status_code=429, content={"detail": "Rate limit exceeded."})
+            await response(scope, receive, send)
+            return
+        if decision not in (1, "1"):
+            response = JSONResponse(status_code=429, content={"detail": "Concurrency limit reached."})
+            await response(scope, receive, send)
+            return
 
         try:
-            return await call_next(request)
+            await self.app(scope, receive, send)
         finally:
             await redis_client.eval(_LUA_SEM_RELEASE, 1, sem_key, token)
 
@@ -292,40 +305,45 @@ class RedisRateLimiterMiddleware(BaseHTTPMiddleware):
 # 5. Adaptive Write Throttler (EWMA-based, priority-aware)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class AdaptiveWriteThrottler(BaseHTTPMiddleware):
+class AdaptiveWriteThrottler:
     """
-    Under backpressure (Redis flag set by Prometheus alerting or WAL monitor),
-    probabilistically rejects write requests based on EWMA latency and traffic class.
+    Pure-ASGI adaptive write shedding.
 
-    Priority tiers:
-      CRITICAL  (auth, billing, sessions) → never rejected
-      ELEVATED  (members, etc.)           → 25% of BULK rejection rate
-      BULK      (all others)              → up to 80% rejection under extreme load
+    Reads pass directly to the next ASGI app. Writes preserve the existing Redis
+    backpressure flag, priority calculation, rejection probability, headers and
+    response body without BaseHTTPMiddleware task/stream overhead.
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
-            try:
-                is_throttled = await redis_client.get("backpressure:write_throttle_active")
-            except Exception:
-                is_throttled = None
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "")
+        if method in ("POST", "PUT", "PATCH", "DELETE"):
+            is_throttled = await redis_client.get("backpressure:write_throttle_active")
             if is_throttled == b"true" or is_throttled == "true":
-                reject_prob = adaptive_controller.rejection_probability(request.url.path)
+                reject_prob = adaptive_controller.rejection_probability(scope.get("path", ""))
                 if reject_prob > 0 and random.random() < reject_prob:
-                    return JSONResponse(
+                    response = JSONResponse(
                         status_code=429,
                         headers={
                             "X-Envoy-Overloaded": "true",
                             "Retry-After": "5",
                         },
                         content={
-                            "detail":           "Server under backpressure. Retry after a moment.",
-                            "reason":           "adaptive_backpressure",
-                            "ewma_latency_ms":  adaptive_controller.ewma_latency_ms,
+                            "detail": "Server under backpressure. Retry after a moment.",
+                            "reason": "adaptive_backpressure",
+                            "ewma_latency_ms": adaptive_controller.ewma_latency_ms,
                         },
                     )
-        return await call_next(request)
+                    await response(scope, receive, send)
+                    return
+
+        await self.app(scope, receive, send)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

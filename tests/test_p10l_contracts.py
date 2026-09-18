@@ -87,3 +87,17 @@ def test_p10l_authenticated_admission_is_single_atomic_redis_round_trip():
     assert "an application-Redis outage must not suspend otherwise-authorized" in middleware
     assert "if decision == 2:" in middleware
     assert "if decision != 1:" in middleware
+
+
+def test_p10l_hot_path_admission_layers_use_pure_asgi_without_semantic_bypass():
+    middleware = (ROOT / "app/core/middleware.py").read_text(encoding="utf-8")
+    assert "from starlette.types import ASGIApp, Receive, Scope, Send" in middleware
+    assert "class RedisRateLimiterMiddleware:" in middleware
+    assert "class AdaptiveWriteThrottler:" in middleware
+    assert "class RedisRateLimiterMiddleware(BaseHTTPMiddleware)" not in middleware
+    assert "class AdaptiveWriteThrottler(BaseHTTPMiddleware)" not in middleware
+    assert 'dict(scope.get("headers") or ()).get(b"x-tenant-id")' in middleware
+    assert "if decision is None:" in middleware
+    assert 'method in ("POST", "PUT", "PATCH", "DELETE")' in middleware
+    assert 'redis_client.get("backpressure:write_throttle_active")' in middleware
+    assert "await self.app(scope, receive, send)" in middleware
