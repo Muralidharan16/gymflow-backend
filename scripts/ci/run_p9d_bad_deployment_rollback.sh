@@ -31,7 +31,17 @@ git merge-base --is-ancestor "$P9D_LAST_KNOWN_GOOD_SHA" HEAD
 rm -rf "$P9D_LKG_SOURCE"
 git worktree add --detach "$P9D_LKG_SOURCE" "$P9D_LAST_KNOWN_GOOD_SHA"
 test "$(cd "$P9D_LKG_SOURCE" && git rev-parse HEAD)" = "$P9D_LAST_KNOWN_GOOD_SHA"
-cmp requirements-test.lock "$P9D_LKG_SOURCE/requirements-test.lock"
+
+P9D_LKG_VENV=/tmp/p9d-lkg-venv
+rm -rf "$P9D_LKG_VENV"
+python -m venv "$P9D_LKG_VENV"
+"$P9D_LKG_VENV/bin/python" -m pip install 'pip==26.2.1'
+"$P9D_LKG_VENV/bin/python" -m pip install -r "$P9D_LKG_SOURCE/requirements-test.lock"
+"$P9D_LKG_VENV/bin/python" -m pip check
+"$P9D_LKG_VENV/bin/python" -m pip freeze | LC_ALL=C sort > "$EVIDENCE_DIR/lkg-runtime-resolved.txt"
+diff -u "$P9D_LKG_SOURCE/requirements-test.lock" "$EVIDENCE_DIR/lkg-runtime-resolved.txt"
+echo 'P9D_HISTORICAL_DEPENDENCY_RUNTIME=PASS'
+
 lkg_head="$(cd "$P9D_LKG_SOURCE" && python -s -m alembic -c alembic.ini heads | awk '{print $1}')"
 candidate_head="$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')"
 test "$lkg_head" = "$P9D_HEAD"
@@ -41,7 +51,8 @@ test "$candidate_head" = "$P9D_HEAD"
   printf 'last_known_good_sha=%s\n' "$P9D_LAST_KNOWN_GOOD_SHA"
   printf 'candidate_schema=%s\n' "$candidate_head"
   printf 'last_known_good_schema=%s\n' "$lkg_head"
-  printf 'dependency_lock_sha256=%s\n' "$(sha256sum requirements-test.lock | awk '{print $1}')"
+  printf 'current_dependency_lock_sha256=%s\n' "$(sha256sum requirements-test.lock | awk '{print $1}')"
+  printf 'lkg_dependency_lock_sha256=%s\n' "$(sha256sum "$P9D_LKG_SOURCE/requirements-test.lock" | awk '{print $1}')"
 } > "$EVIDENCE_DIR/revision-boundary.txt"
 
 bash scripts/ci/bootstrap_cluster_roles.sh
@@ -157,7 +168,11 @@ PY
 
 launch_app() {
   local runtime="$1" work="$2" port="$3" redis_url="$4" broker_url="$5" result_url="$6" log="$7" pidfile="$8" python_bin
-  python_bin="$(command -v python)"
+  if [[ "$runtime" == "$P9D_LKG_RUNTIME" ]]; then
+    python_bin="$P9D_LKG_VENV/bin/python"
+  else
+    python_bin="$(command -v python)"
+  fi
   (
     exec sudo -u p9dapp env -i \
       HOME="$P9D_HOME" PATH="$PATH" PYTHONPATH="$runtime" PYTHONDONTWRITEBYTECODE=1 ENVIRONMENT=test \
@@ -257,7 +272,7 @@ wait_ready "$P9D_ROUTER_PORT" "$EVIDENCE_DIR/rollback-router-ready.json" "$P9D_N
 echo 'P9D_TRAFFIC_RETURNED_TO_LAST_KNOWN_GOOD=PASS'
 
 sudo pkill -u p9dapp -f "uvicorn app.main:app --host 127.0.0.1 --port ${P9D_CANDIDATE_PORT}" >/dev/null 2>&1 || true
-python -s scripts/ci/p9d_durable_work_harness.py recover | tee "$EVIDENCE_DIR/durable-recover.log"
+"$P9D_LKG_VENV/bin/python" -s scripts/ci/p9d_durable_work_harness.py recover | tee "$EVIDENCE_DIR/durable-recover.log"
 grep -q 'P9D_DURABLE_WORK_RECOVERED_BY_LAST_KNOWN_GOOD=PASS' "$EVIDENCE_DIR/durable-recover.log"
 grep -q 'P9D_NO_LOST_DURABLE_WORK=PASS' "$EVIDENCE_DIR/durable-recover.log"
 grep -q 'P9D_SINGLE_TERMINAL_EFFECT=PASS' "$EVIDENCE_DIR/durable-recover.log"

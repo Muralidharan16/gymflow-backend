@@ -58,6 +58,10 @@ def test_p9d_workflow_is_exact_lkg_real_pg16_and_read_only_permission_bound() ->
     assert "postgresql-client-16" in pg16_installer
     assert "nginx" in source.lower()
     assert "git worktree add --detach" in source
+    assert "P9D_LKG_VENV=/tmp/p9d-lkg-venv" in source
+    assert '"$P9D_LKG_VENV/bin/python" -m pip install -r "$P9D_LKG_SOURCE/requirements-test.lock"' in source
+    assert '"$P9D_LKG_VENV/bin/python" -s scripts/ci/p9d_durable_work_harness.py recover' in source
+    assert "P9D_HISTORICAL_DEPENDENCY_RUNTIME=PASS" in source
     assert "/_system/live" in source
     assert "/_system/ready" in source
 

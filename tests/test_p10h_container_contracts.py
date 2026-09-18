@@ -11,8 +11,9 @@ def test_p10h_image_is_multistage_locked_and_nonroot():
     assert "apt-get" not in D and "build-essential" not in D
 def test_p10h_image_has_exec_cmd_healthcheck_and_no_reload():
     assert 'HEALTHCHECK' in D and "/_system/ready" in D
-    assert 'CMD ["wget","-q","-T","2","-O","/dev/null","http://127.0.0.1:8000/_system/ready"]' in D
-    assert "urllib.request" not in D
+    assert 'CMD ["python","-c","import http.client,sys;' in D
+    assert "http.client.HTTPConnection('127.0.0.1',8000,timeout=2)" in D
+    assert "wget" not in D and "urllib.request" not in D
     assert 'CMD ["uvicorn","app.main:app"' in D
     assert "--reload" not in D
     assert D.count("EXPOSE ") == 1 and "EXPOSE 8000" in D
@@ -51,8 +52,8 @@ def test_graceful_shutdown_cleanup_happens_after_sigterm_proof():
 
 
 
-def test_p10h_base_image_is_exact_low_vulnerability_alpine_and_runtime_has_no_pip():
-    assert "python:3.12.14-alpine3.24@sha256:c4634f578a412db396771b61b064c6e546c9d6414c7fb5b1b05d5871f1885f7b" in D
+def test_p10h_base_image_matches_frozen_glibc_calibration_and_runtime_has_no_pip():
+    assert "python:3.12.14-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea" in D
     assert "/usr/local/lib/python3.12/site-packages/pip" in D
     assert '"$VIRTUAL_ENV/lib/python3.12/site-packages/pip"' in D
     assert "USER 10001:10001" in D

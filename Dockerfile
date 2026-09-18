@@ -1,4 +1,4 @@
-ARG PYTHON_IMAGE=python:3.12.14-alpine3.24@sha256:c4634f578a412db396771b61b064c6e546c9d6414c7fb5b1b05d5871f1885f7b
+ARG PYTHON_IMAGE=python:3.12.14-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 
 FROM ${PYTHON_IMAGE} AS python-deps
 ENV VIRTUAL_ENV=/opt/venv \
@@ -35,5 +35,5 @@ COPY . /app
 USER 10001:10001
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
-  CMD ["wget","-q","-T","2","-O","/dev/null","http://127.0.0.1:8000/_system/ready"]
+  CMD ["python","-c","import http.client,sys; c=http.client.HTTPConnection('127.0.0.1',8000,timeout=2); c.request('GET','/_system/ready'); r=c.getresponse(); sys.exit(0 if r.status == 200 else 1)"]
 CMD ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000"]
