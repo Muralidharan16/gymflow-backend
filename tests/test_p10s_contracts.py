@@ -1,5 +1,6 @@
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
+BINDER=ROOT/"scripts/ci/p10s_bind_same_head_soak.py"
 def test_p10s_is_continuous_long_running_and_frozen_budget_bound():
     w=(ROOT/".github/workflows/p10s-long-soak.yml").read_text()
     s=(ROOT/"scripts/ci/run_p10s_soak.sh").read_text()
@@ -29,3 +30,20 @@ def test_p10s_worker_smooths_the_same_two_items_per_second_without_reducing_rate
     assert 'default=5' in worker
     assert '"target_worker_items_per_second":BATCH_SIZE/a.interval_seconds' in worker
     assert '"worker_batch_size":BATCH_SIZE' in worker
+
+
+
+def test_p10s_uses_one_canonical_live_soak_per_sha_and_push_binds_it():
+    w=(ROOT/".github/workflows/p10s-long-soak.yml").read_text()
+    b=BINDER.read_text()
+    assert "if: github.event_name == 'pull_request'" in w
+    assert "if: github.event_name != 'pull_request'" in w
+    assert "actions: read" in w
+    assert "p10s_bind_same_head_soak.py" in w
+    assert "P10S_SAME_HEAD_SOAK_BOUND=PASS" in w
+    assert 'SOURCE_EVENT = "pull_request"' in b
+    assert "head_sha" in b
+    assert "candidate_sha" in b
+    assert "duration_seconds" in b
+    assert "windows" in b
+    assert "retry" not in w.lower()
