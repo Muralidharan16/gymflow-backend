@@ -37,8 +37,8 @@ env:
   P10S_ADMIN_DATABASE_URL: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
 jobs:
   soak:
-    if: github.event_name == 'pull_request'
-    name: Five minute API worker PostgreSQL Redis soak
+    if: github.event_name != 'pull_request'
+    name: Canonical five minute API worker PostgreSQL Redis soak
     runs-on: ubuntu-24.04
     timeout-minutes: 70
     services:
@@ -98,19 +98,19 @@ jobs:
           echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
 
   bind_same_head_soak:
-    if: github.event_name != 'pull_request'
-    name: Bind canonical same-head five-minute soak
+    if: github.event_name == 'pull_request'
+    name: Bind canonical same-head push five-minute soak
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
-      P10S_CANDIDATE_SHA: ${{ github.sha }}
+      P10S_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
       EVIDENCE_DIR: p10s-evidence
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
@@ -131,7 +131,7 @@ jobs:
           python scripts/ci/verify_p10_performance_budgets.py | tee /tmp/p10s-budget.log
           grep -q '^P10_BASELINE_BUDGETS=PASS$' /tmp/p10s-budget.log
 
-      - name: Bind canonical same-head PR soak evidence
+      - name: Bind canonical same-head push soak evidence
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -162,7 +162,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p10s-${{ github.sha }}
+          name: p10s-${{ github.event.pull_request.head.sha }}
           path: p10s-evidence/
           if-no-files-found: error
           retention-days: 14

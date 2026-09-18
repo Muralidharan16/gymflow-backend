@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind push-side P10-S to the canonical same-head PR soak artifact."""
+"""Bind PR-side P10-S to the canonical same-head push soak artifact."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from github_artifact_transport import download_github_artifact
 
 WORKFLOW_PATH = ".github/workflows/p10s-long-soak.yml"
-SOURCE_EVENT = "pull_request"
+SOURCE_EVENT = "push"
 REQUIRED_FILES = (
     "http.json",
     "worker.json",
@@ -124,7 +124,7 @@ def main() -> int:
     archive_bytes = download_github_artifact(artifact["archive_download_url"], token)
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    extracted = output / "_canonical_pr_soak"
+    extracted = output / "_canonical_push_soak"
     if extracted.exists():
         shutil.rmtree(extracted)
     extracted.mkdir(parents=True)

@@ -33,15 +33,15 @@ def test_p10s_worker_smooths_the_same_two_items_per_second_without_reducing_rate
 
 
 
-def test_p10s_uses_one_canonical_live_soak_per_sha_and_push_binds_it():
+def test_p10s_uses_one_canonical_live_soak_per_sha_and_pr_binds_push():
     w=(ROOT/".github/workflows/p10s-long-soak.yml").read_text()
     b=BINDER.read_text()
-    assert "if: github.event_name == 'pull_request'" in w
     assert "if: github.event_name != 'pull_request'" in w
+    assert "if: github.event_name == 'pull_request'" in w
     assert "actions: read" in w
     assert "p10s_bind_same_head_soak.py" in w
     assert "P10S_SAME_HEAD_SOAK_BOUND=PASS" in w
-    assert 'SOURCE_EVENT = "pull_request"' in b
+    assert 'SOURCE_EVENT = "push"' in b
     assert "head_sha" in b
     assert "candidate_sha" in b
     assert "duration_seconds" in b
@@ -78,3 +78,10 @@ def test_p10s_artifact_binding_strips_github_auth_before_blob_download():
     assert "_download(" not in binder
     assert "_NoRedirect" in transport
     assert "GitHub bearer token must never be forwarded" in transport
+
+
+def test_p10s_push_is_the_canonical_final_certification_soak():
+    w=(ROOT/".github/workflows/p10s-long-soak.yml").read_text()
+    assert "Canonical five minute API worker PostgreSQL Redis soak" in w
+    assert "Bind canonical same-head push five-minute soak" in w
+    assert "P10S_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}" in w
