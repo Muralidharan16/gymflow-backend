@@ -28,7 +28,7 @@ services:
 
   celery-worker:
     build: .
-    command: ["celery", "-A", "app.core.celery_app:celery_app", "worker", "--loglevel=info", "--concurrency=4", "-Q", "worker"]
+    command: celery -A app.core.celery_app:celery_app worker --loglevel=info --concurrency=4 -Q worker
     env_file: .env.worker
     environment:
       DOERS_PROCESS_PROFILE: worker
@@ -39,7 +39,7 @@ services:
 
   celery-maintenance-worker:
     build: .
-    command: ["celery", "-A", "app.core.celery_app:celery_app", "worker", "--loglevel=info", "--concurrency=1", "-Q", "lifecycle-maintenance"]
+    command: celery -A app.core.celery_app:celery_app worker --loglevel=info --concurrency=1 -Q lifecycle-maintenance
     env_file: .env.maintenance
     environment:
       DOERS_PROCESS_PROFILE: maintenance
@@ -50,7 +50,7 @@ services:
 
   celery-beat:
     build: .
-    command: ["celery", "-A", "app.core.celery_app:celery_app", "beat", "--loglevel=info"]
+    command: celery -A app.core.celery_app:celery_app beat --loglevel=info
     env_file: .env
     environment:
       DOERS_PROCESS_PROFILE: beat
@@ -58,7 +58,7 @@ services:
 
   flower:
     build: .
-    command: ["celery", "-A", "app.core.celery_app:celery_app", "flower", "--port=5555"]
+    command: celery -A app.core.celery_app:celery_app flower --port=5555
     env_file: .env
     ports:
       - "5555:5555"

@@ -110,12 +110,9 @@ jobs:
           CERTIFICATION_HEAD: ${{ inputs.certification_head }}
         run: |
           set -euo pipefail
-          if [[ -n "${CERTIFICATION_HEAD}" ]]; then
-            expected_head="${CERTIFICATION_HEAD}"
-          elif [[ "${GITHUB_EVENT_NAME}" == 'pull_request' ]]; then
+          expected_head="${CERTIFICATION_HEAD:-zi07d8e9f0a43}"
+          if [[ -z "${CERTIFICATION_HEAD:-}" && "${GITHUB_EVENT_NAME}" == 'pull_request' ]]; then
             expected_head='zk07d8e9f0a45'
-          else
-            expected_head='zi07d8e9f0a43'
           fi
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${expected_head}"
