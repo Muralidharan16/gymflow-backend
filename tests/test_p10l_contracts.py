@@ -22,6 +22,8 @@ def test_p10l_workflow_binds_frozen_budget_and_real_dependencies():
         "P10_REPRESENTATIVE_LOAD=PASS",
         "P10_CONCURRENCY_STRESS=PASS",
         "P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED",
+        "Install terminal pytest",
+        "pytest==9.1.1",
     ):
         assert fragment in workflow
 
