@@ -14,6 +14,8 @@ import zipfile
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 
+from scripts.ci.github_artifact_transport import download_github_artifact
+
 WORKFLOW_PATH = ".github/workflows/p10b-baseline-calibration.yml"
 REQUIRED_FILES = (
     "http-calibration.json",
@@ -37,19 +39,6 @@ def _get_json(url: str, token: str) -> dict:
     )
     with urllib.request.urlopen(request, timeout=60) as response:
         return json.load(response)
-
-
-def _download(url: str, token: str) -> bytes:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        return response.read()
 
 
 def _safe_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
@@ -132,7 +121,7 @@ def main() -> int:
             f"expected one retained artifact {expected_name!r}, found {len(artifacts)}"
         )
     artifact = artifacts[0]
-    archive_bytes = _download(artifact["archive_download_url"], token)
+    archive_bytes = download_github_artifact(artifact["archive_download_url"], token)
     archive_sha256 = hashlib.sha256(archive_bytes).hexdigest()
 
     output = Path(args.output_dir)
