@@ -69,3 +69,12 @@ def test_p10s_enforces_frozen_growth_budgets_not_p10l_absolute_throughput_floor(
     assert "sustained throughput progressively degraded" in verifier
     assert "RSS progressively grew" in verifier
     assert "database connections progressively grew" in verifier
+
+
+def test_p10s_artifact_binding_strips_github_auth_before_blob_download():
+    binder = BINDER.read_text(encoding="utf-8")
+    transport = (ROOT / "scripts/ci/github_artifact_transport.py").read_text(encoding="utf-8")
+    assert "download_github_artifact" in binder
+    assert "_download(" not in binder
+    assert "_NoRedirect" in transport
+    assert "GitHub bearer token must never be forwarded" in transport
