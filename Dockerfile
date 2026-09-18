@@ -1,4 +1,4 @@
-ARG PYTHON_IMAGE=python:3.12-slim
+ARG PYTHON_IMAGE=python:3.12.14-alpine3.24@sha256:c4634f578a412db396771b61b064c6e546c9d6414c7fb5b1b05d5871f1885f7b
 
 FROM ${PYTHON_IMAGE} AS python-deps
 ENV VIRTUAL_ENV=/opt/venv \
@@ -9,7 +9,13 @@ RUN python -m venv "$VIRTUAL_ENV" \
     && python -m pip install --no-cache-dir 'pip==26.2.1'
 COPY requirements-test.lock /tmp/requirements.lock
 RUN python -m pip install --no-cache-dir --no-deps -r /tmp/requirements.lock \
-    && python -m pip check
+    && python -m pip check \
+    && rm -rf \
+       "$VIRTUAL_ENV/lib/python3.12/site-packages/pip" \
+       "$VIRTUAL_ENV/lib/python3.12/site-packages"/pip-*.dist-info \
+       "$VIRTUAL_ENV/lib/python3.12/site-packages"/setuptools* \
+       "$VIRTUAL_ENV/lib/python3.12/site-packages/_distutils_hack" \
+       "$VIRTUAL_ENV/bin"/pip*
 
 FROM ${PYTHON_IMAGE} AS runtime
 ENV VIRTUAL_ENV=/opt/venv \
@@ -17,9 +23,12 @@ ENV VIRTUAL_ENV=/opt/venv \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HOME=/tmp
-RUN groupadd --gid 10001 doers \
-    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp \
-       --shell /usr/sbin/nologin doers
+RUN rm -rf \
+      /usr/local/lib/python3.12/site-packages/pip \
+      /usr/local/lib/python3.12/site-packages/pip-*.dist-info \
+      /usr/local/lib/python3.12/site-packages/setuptools* \
+      /usr/local/lib/python3.12/site-packages/_distutils_hack \
+      /usr/local/bin/pip*
 WORKDIR /app
 COPY --from=python-deps /opt/venv /opt/venv
 COPY . /app
