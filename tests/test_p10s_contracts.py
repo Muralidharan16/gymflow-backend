@@ -47,3 +47,25 @@ def test_p10s_uses_one_canonical_live_soak_per_sha_and_push_binds_it():
     assert "duration_seconds" in b
     assert "windows" in b
     assert "retry" not in w.lower()
+
+
+
+def test_p10s_enforces_frozen_growth_budgets_not_p10l_absolute_throughput_floor():
+    verifier=(ROOT/"scripts/ci/p10s_verify_soak.py").read_text()
+    budget=(ROOT/"docs/architecture/p10_performance_budgets.v1.json").read_text()
+    for token in (
+        "soak_stability",
+        "max_rss_growth_bytes",
+        "max_db_connection_growth",
+        "max_db_connections",
+        "max_worker_broker_depth",
+        "max_throughput_degradation_ratio",
+        "max_overall_p95_growth_ratio",
+        "max_write_p95_growth_ratio",
+    ):
+        assert token in verifier
+        assert token in budget
+    assert 'representative["min_throughput_rps"]' not in verifier
+    assert "sustained throughput progressively degraded" in verifier
+    assert "RSS progressively grew" in verifier
+    assert "database connections progressively grew" in verifier
