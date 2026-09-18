@@ -74,12 +74,26 @@ jobs:
           test "$(docker image inspect -f '{{.Config.User}}' "doers-p10h:${{ github.event.pull_request.head.sha || github.sha }}")" = "10001:10001"
           test "$(docker image inspect -f '{{json .Config.ExposedPorts}}' "doers-p10h:${{ github.event.pull_request.head.sha || github.sha }}")" = '{"8000/tcp":{}}'
           test "$(docker image inspect -f '{{json .Config.Healthcheck.Test}}' "doers-p10h:${{ github.event.pull_request.head.sha || github.sha }}")" != "null"
+      - name: Start required loopback production metrics sink
+        run: |
+          set -euo pipefail
+          python -s scripts/ci/p8o_otlp_collector.py \
+            --host 127.0.0.1 \
+            --port 4324 \
+            --capture p10h-runtime-metrics.jsonl \
+            >p10h-metrics-collector.log 2>&1 &
+          echo "$!" > /tmp/p10h-metrics.pid
+          for _ in $(seq 1 40); do
+            curl -fsS http://127.0.0.1:4324/healthz >/dev/null && break
+            sleep .25
+          done
+          curl -fsS http://127.0.0.1:4324/healthz >/dev/null
       - name: Run with mandatory runtime restrictions
         run: |
           set -euo pipefail
           IMAGE="doers-p10h:${{ github.event.pull_request.head.sha || github.sha }}"
-          docker run -d --name p10h-api --network host             --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m             --security-opt no-new-privileges:true --cap-drop ALL             --cpus 1.5 --memory 384m --pids-limit 256             -e ENVIRONMENT=production -e DOERS_PROCESS_PROFILE=api             -e DATABASE_URL=postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test             -e AUTH_DATABASE_URL=postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test             -e REDIS_URL=redis://127.0.0.1:6379/0 -e CELERY_BROKER_URL=redis://127.0.0.1:6379/1 -e CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/2             -e SECRET_KEY=p10h-synthetic-secret-not-production -e AWS_ACCESS_KEY_ID=p10h-synthetic -e AWS_SECRET_ACCESS_KEY=p10h-synthetic -e S3_BUCKET_NAME=p10h-synthetic             -e NOTIFICATION_EMAIL_PROVIDER_MODE=disabled -e SEARCH_PROVIDER_MODE=disabled -e PLATFORM_BILLING_PROVIDER_MODE=disabled             -e PLATFORM_BILLING_CHECKOUT=false -e PLATFORM_BILLING_WEBHOOK_PROCESSING=false -e PLATFORM_BILLING_DUNNING_TRANSITIONS=false -e PLATFORM_BILLING_NOTIFICATIONS=false             -e DOERS_PRESTOP_CONTROL_TOKEN=p10h-synthetic-control-token-0123456789abcdef0123456789abcdef             "$IMAGE"
-          trap 'docker rm -f p10h-api >/dev/null 2>&1 || true' EXIT
+          docker run -d --name p10h-api --network host             --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m             --security-opt no-new-privileges:true --cap-drop ALL             --cpus 1.5 --memory 384m --pids-limit 256             -e ENVIRONMENT=production -e DOERS_PROCESS_PROFILE=api             -e DATABASE_URL=postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test             -e AUTH_DATABASE_URL=postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test             -e REDIS_URL=redis://127.0.0.1:6379/0 -e CELERY_BROKER_URL=redis://127.0.0.1:6379/1 -e CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/2             -e SECRET_KEY=p10h-synthetic-secret-not-production -e AWS_ACCESS_KEY_ID=p10h-synthetic -e AWS_SECRET_ACCESS_KEY=p10h-synthetic -e S3_BUCKET_NAME=p10h-synthetic             -e NOTIFICATION_EMAIL_PROVIDER_MODE=disabled -e SEARCH_PROVIDER_MODE=disabled -e PLATFORM_BILLING_PROVIDER_MODE=disabled             -e PLATFORM_BILLING_CHECKOUT=false -e PLATFORM_BILLING_WEBHOOK_PROCESSING=false -e PLATFORM_BILLING_DUNNING_TRANSITIONS=false -e PLATFORM_BILLING_NOTIFICATIONS=false             -e P8_METRICS_OTLP_ENDPOINT=http://127.0.0.1:4324/v1/metrics -e P8_METRICS_EXPORT_INTERVAL_SECONDS=1 -e P8_METRICS_EXPORT_TIMEOUT_SECONDS=2             -e DOERS_PRESTOP_CONTROL_TOKEN=p10h-synthetic-control-token-0123456789abcdef0123456789abcdef             "$IMAGE"
+          trap 'docker rm -f p10h-api >/dev/null 2>&1 || true; [ -s /tmp/p10h-metrics.pid ] && kill "$(cat /tmp/p10h-metrics.pid)" >/dev/null 2>&1 || true' EXIT
           for _ in $(seq 1 90); do
             state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' p10h-api)"
             [ "$state" = healthy ] && break
@@ -119,5 +133,7 @@ jobs:
             p10h-image-inspect.json
             p10h-readiness.json
             p10h-container.log
+            p10h-runtime-metrics.jsonl
+            p10h-metrics-collector.log
           if-no-files-found: warn
           retention-days: 14
