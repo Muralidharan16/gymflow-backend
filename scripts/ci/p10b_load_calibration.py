@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
-from jose import jwt
+import jwt
 
 
 def deterministic_uuid(label: str) -> str:
