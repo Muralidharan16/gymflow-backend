@@ -19,3 +19,5 @@ build
 *.egg-info
 p10*-evidence
 /tmp
+login_out.json
+reg_out.json
