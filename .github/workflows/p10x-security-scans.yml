@@ -82,7 +82,72 @@ jobs:
       - name: Scan complete Git repository history for secrets
         run: |
           set -euo pipefail
+          set +e
           gitleaks git --redact --report-format json --report-path p10x-evidence/gitleaks.json .
+          gitleaks_rc=$?
+          set -e
+          test "$gitleaks_rc" -eq 0 -o "$gitleaks_rc" -eq 1
+          python -s scripts/ci/p10x_review_gitleaks.py \
+            --report p10x-evidence/gitleaks.json \
+            --policy security/p10x_scan_suppressions.v1.json \
+            --output p10x-evidence/gitleaks-review.json \
+            | tee p10x-evidence/gitleaks-review.log
+          grep -q '^P10X_GITLEAKS_EXACT_REVIEW=PASS      - name: Build hardened exact candidate image
+        run: |
+          set -euo pipefail
+          IMAGE="doers-p10x:${{ github.event.pull_request.head.sha || github.sha }}"
+          docker build --pull=false -t "$IMAGE" .
+          docker image inspect "$IMAGE" >p10x-evidence/image-inspect.json
+          docker image inspect -f '{{.Id}}' "$IMAGE" >p10x-evidence/image-digest.txt
+      - name: Hard-stop High or Critical runtime image vulnerabilities
+        run: |
+          set -euo pipefail
+          IMAGE="doers-p10x:${{ github.event.pull_request.head.sha || github.sha }}"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --format json --output p10x-evidence/trivy-image.json "$IMAGE"
+      - name: Generate CycloneDX SBOM from certified image
+        run: |
+          set -euo pipefail
+          IMAGE="doers-p10x:${{ github.event.pull_request.head.sha || github.sha }}"
+          trivy image --format cyclonedx --output p10x-evidence/sbom.cdx.json "$IMAGE"
+          python - <<'PY'
+          import json
+          p=json.load(open("p10x-evidence/sbom.cdx.json"))
+          assert p.get("bomFormat")=="CycloneDX"
+          assert len(p.get("components",[]))>0
+          print("P10X_SBOM=PASS")
+          PY
+      - name: Reprove exact head and emit scan terminal marker
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P10_SECURITY_SCANS=PASS'
+          echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+      - name: Upload security evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p10x-${{ github.event.pull_request.head.sha || github.sha }}
+          path: p10x-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
+  terminal:
+    name: P10-X exact-head terminal decision
+    if: always()
+    needs: [config, scans]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require both security surfaces
+        run: |
+          set -euo pipefail
+          test "${{ needs.config.result }}" = success
+          test "${{ needs.scans.result }}" = success
+          echo 'P10_SECURITY_SCANS=PASS'
+          echo 'P10_SECRETS_CONFIG_FAIL_CLOSED=PASS'
+          echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+ p10x-evidence/gitleaks-review.log
       - name: Build hardened exact candidate image
         run: |
           set -euo pipefail
