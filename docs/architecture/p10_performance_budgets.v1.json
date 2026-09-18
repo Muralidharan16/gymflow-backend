@@ -4,25 +4,35 @@
     "durable_queue": {
       "max_broker_remaining": 0,
       "max_external_provider_effects": 0,
-      "min_durable_items_per_second": 40.0,
-      "min_exact_terminal_ratio": 1.0
+      "min_durable_items_per_second": 40,
+      "min_exact_terminal_ratio": 1
     },
     "redis_transport": {
       "max_remaining_items": 0,
       "max_round_trip_seconds": 0.1,
-      "min_drain_items_per_second": 125000.0,
-      "min_enqueue_items_per_second": 100000.0
+      "min_drain_items_per_second": 125000,
+      "min_enqueue_items_per_second": 100000
     },
     "representative_http": {
-      "max_cpu_percent": 125.0,
+      "max_cpu_percent": 125,
       "max_http_errors": 0,
-      "max_overall_p95_ms": 850.0,
-      "max_overall_p99_ms": 1200.0,
+      "max_overall_p95_ms": 850,
+      "max_overall_p99_ms": 1200,
       "max_rss_bytes": 268435456,
       "max_server_errors_5xx": 0,
-      "max_write_p95_ms": 1100.0,
-      "max_write_p99_ms": 1350.0,
-      "min_throughput_rps": 45.0
+      "max_write_p95_ms": 1100,
+      "max_write_p99_ms": 1350,
+      "min_throughput_rps": 45
+    },
+    "soak_stability": {
+      "duration_seconds": 300,
+      "max_rss_growth_bytes": 33554432,
+      "max_db_connection_growth": 8,
+      "max_db_connections": 32,
+      "max_worker_broker_depth": 0,
+      "max_throughput_degradation_ratio": 0.15,
+      "max_overall_p95_growth_ratio": 1.2,
+      "max_write_p95_growth_ratio": 1.2
     }
   },
   "calibrations": {
