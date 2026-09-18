@@ -54,7 +54,10 @@ def test_p9c_workflow_is_exact_revision_and_real_pg16_bound() -> None:
     assert "git worktree add --detach" in source
     assert 'test "$old_head" = "$P9C_PREDECESSOR"' in source
     assert 'test "$new_head" = "$P9C_HEAD"' in source
-    assert "cmp requirements-test.lock" in source
+    assert 'P9C_OLD_VENV=/tmp/p9c-old-venv' in source
+    assert '"$P9C_OLD_VENV/bin/python" -m pip install -r "$P9C_OLD_SOURCE/requirements-test.lock"' in source
+    assert 'diff -u "$P9C_OLD_SOURCE/requirements-test.lock"' in source
+    assert "P9C_HISTORICAL_DEPENDENCY_RUNTIME=PASS" in source
 
 
 def test_p9c_uses_one_forward_upgraded_database_and_never_database_downgrade() -> None:

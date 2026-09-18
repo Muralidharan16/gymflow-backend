@@ -133,7 +133,8 @@ jobs:
           CERTIFICATION_HEAD: ${{ inputs.certification_head }}
         run: |
           set -euo pipefail
-          expected_head="${CERTIFICATION_HEAD:-zj07d8e9f0a44}"
+          # Historical P5 same-head certification anchor: zj07d8e9f0a44
+          expected_head="${CERTIFICATION_HEAD:-zk07d8e9f0a45}"
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${expected_head}"
           python -s -m alembic -c alembic.ini upgrade head

@@ -5,7 +5,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import bcrypt
-from jose import ExpiredSignatureError, JWTError, jwt
+import jwt
+from jwt.exceptions import ExpiredSignatureError, PyJWTError
 from pwdlib import PasswordHash
 from pwdlib.exceptions import UnknownHashError
 
@@ -105,7 +106,7 @@ def decode_token(token: str) -> Dict[str, Any]:
         )
     except ExpiredSignatureError:
         raise ExpiredTokenError("Token has expired")
-    except JWTError as exc:
+    except PyJWTError as exc:
         raise InvalidTokenError(f"Invalid token: {str(exc)}") from exc
 
 

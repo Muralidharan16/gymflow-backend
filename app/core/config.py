@@ -82,6 +82,23 @@ class Settings(DoersSettingsSchema):
                 raise ValueError("application database configuration is required")
             return self
 
+        mandatory_secrets = {
+            "SECRET_KEY": self.SECRET_KEY,
+            "AWS_ACCESS_KEY_ID": self.AWS_ACCESS_KEY_ID,
+            "AWS_SECRET_ACCESS_KEY": self.AWS_SECRET_ACCESS_KEY,
+        }
+        missing_secrets = sorted(
+            name for name, value in mandatory_secrets.items()
+            if not str(value or "").strip()
+        )
+        if missing_secrets:
+            raise ValueError(
+                "production mandatory security configuration is empty: "
+                + ", ".join(missing_secrets)
+            )
+        if self.LOG_LEVEL.strip().lower() in {"debug", "trace"}:
+            raise ValueError("debug or trace logging is forbidden in production")
+
         manifest = _process_manifest()
         profiles = manifest["profiles"]
         profile_name = self.process_profile

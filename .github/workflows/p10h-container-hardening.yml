@@ -1,0 +1,139 @@
+name: P10-H Production Container Hardening
+on:
+  push:
+    branches: [hardening/p10-performance-security-final-production-certification]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: p10h-container-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  CERTIFICATION_HEAD: zk07d8e9f0a45
+  MIGRATION_PASSWORD: ci-migration-owner
+  GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+  AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+  WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
+  MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
+  DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
+  TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+  TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+  WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_test
+  MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
+  REDIS_URL: redis://127.0.0.1:6379/0
+  CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+  CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+  SECRET_KEY: p10h-synthetic-secret-not-production
+  AWS_ACCESS_KEY_ID: p10h-synthetic
+  AWS_SECRET_ACCESS_KEY: p10h-synthetic
+  S3_BUCKET_NAME: p10h-synthetic
+  ENVIRONMENT: test
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  container:
+    name: Restricted non-root production image runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: [6379:6379]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Prove static hardening contract
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip freeze | LC_ALL=C sort >/tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p10h_container_contracts.py
+      - name: Prepare real PostgreSQL 16 identities and HEAD schema
+        run: bash scripts/ci/prepare_p3e_pg16.sh
+      - name: Build exact candidate production image
+        run: |
+          set -euo pipefail
+          docker build --pull=false -t "doers-p10h:${{ github.event.pull_request.head.sha || github.sha }}" .
+          docker image inspect "doers-p10h:${{ github.event.pull_request.head.sha || github.sha }}" > p10h-image-inspect.json
+          test "$(docker image inspect -f '{{.Config.User}}' "doers-p10h:${{ github.event.pull_request.head.sha || github.sha }}")" = "10001:10001"
+          test "$(docker image inspect -f '{{json .Config.ExposedPorts}}' "doers-p10h:${{ github.event.pull_request.head.sha || github.sha }}")" = '{"8000/tcp":{}}'
+          test "$(docker image inspect -f '{{json .Config.Healthcheck.Test}}' "doers-p10h:${{ github.event.pull_request.head.sha || github.sha }}")" != "null"
+      - name: Start required loopback production metrics sink
+        run: |
+          set -euo pipefail
+          python -s scripts/ci/p8o_otlp_collector.py \
+            --host 127.0.0.1 \
+            --port 4324 \
+            --capture p10h-runtime-metrics.jsonl \
+            >p10h-metrics-collector.log 2>&1 &
+          echo "$!" > /tmp/p10h-metrics.pid
+          for _ in $(seq 1 40); do
+            curl -fsS http://127.0.0.1:4324/healthz >/dev/null && break
+            sleep .25
+          done
+          curl -fsS http://127.0.0.1:4324/healthz >/dev/null
+      - name: Run with mandatory runtime restrictions
+        run: |
+          set -euo pipefail
+          IMAGE="doers-p10h:${{ github.event.pull_request.head.sha || github.sha }}"
+          docker run -d --name p10h-api --network host             --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m             --security-opt no-new-privileges:true --cap-drop ALL             --cpus 1.5 --memory 384m --pids-limit 256             -e ENVIRONMENT=production -e DOERS_PROCESS_PROFILE=api             -e DATABASE_URL=postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test             -e AUTH_DATABASE_URL=postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test             -e REDIS_URL=redis://127.0.0.1:6379/0 -e CELERY_BROKER_URL=redis://127.0.0.1:6379/1 -e CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/2             -e SECRET_KEY=p10h-synthetic-secret-not-production -e AWS_ACCESS_KEY_ID=p10h-synthetic -e AWS_SECRET_ACCESS_KEY=p10h-synthetic -e S3_BUCKET_NAME=p10h-synthetic             -e NOTIFICATION_EMAIL_PROVIDER_MODE=disabled -e SEARCH_PROVIDER_MODE=disabled -e PLATFORM_BILLING_PROVIDER_MODE=disabled             -e PLATFORM_BILLING_CHECKOUT=false -e PLATFORM_BILLING_WEBHOOK_PROCESSING=false -e PLATFORM_BILLING_DUNNING_TRANSITIONS=false -e PLATFORM_BILLING_NOTIFICATIONS=false             -e P8_METRICS_OTLP_ENDPOINT=http://127.0.0.1:4324/v1/metrics -e P8_METRICS_EXPORT_INTERVAL_SECONDS=1 -e P8_METRICS_EXPORT_TIMEOUT_SECONDS=2             -e DOERS_PRESTOP_CONTROL_TOKEN=p10h-synthetic-control-token-0123456789abcdef0123456789abcdef             "$IMAGE"
+          for _ in $(seq 1 90); do
+            state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' p10h-api)"
+            [ "$state" = healthy ] && break
+            [ "$(docker inspect -f '{{.State.Running}}' p10h-api)" = true ] || { docker logs p10h-api; exit 1; }
+            sleep 1
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' p10h-api)" = healthy
+          test "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' p10h-api)" = true
+          test "$(docker inspect -f '{{.HostConfig.Privileged}}' p10h-api)" = false
+          test "$(docker inspect -f '{{.HostConfig.PidsLimit}}' p10h-api)" = 256
+          test "$(docker inspect -f '{{.HostConfig.Memory}}' p10h-api)" -gt 0
+          test "$(docker inspect -f '{{.HostConfig.NanoCpus}}' p10h-api)" -gt 0
+          docker inspect -f '{{json .HostConfig.CapDrop}}' p10h-api | grep -q '"ALL"'
+          docker inspect -f '{{json .HostConfig.SecurityOpt}}' p10h-api | grep -q 'no-new-privileges'
+          test "$(docker exec p10h-api id -u)" = 10001
+          curl -fsS http://127.0.0.1:8000/_system/ready | tee p10h-readiness.json
+      - name: Prove graceful SIGTERM
+        run: |
+          set -euo pipefail
+          trap 'docker rm -f p10h-api >/dev/null 2>&1 || true; [ -s /tmp/p10h-metrics.pid ] && kill "$(cat /tmp/p10h-metrics.pid)" >/dev/null 2>&1 || true' EXIT
+          started="$(date +%s)"
+          docker stop --timeout 15 p10h-api
+          elapsed=$(( $(date +%s) - started ))
+          test "$elapsed" -le 15
+          test "$(docker inspect -f '{{.State.ExitCode}}' p10h-api)" = 0
+          docker logs p10h-api >p10h-container.log 2>&1 || true
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P10_CONTAINER_HARDENING=PASS'
+          echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+      - name: Upload P10-H evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p10h-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            p10h-image-inspect.json
+            p10h-readiness.json
+            p10h-container.log
+            p10h-runtime-metrics.jsonl
+            p10h-metrics-collector.log
+          if-no-files-found: warn
+          retention-days: 14

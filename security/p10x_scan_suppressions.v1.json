@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "policy": "Reviewed Gitleaks exceptions are exact report fingerprints, frozen by per-rule sorted-fingerprint SHA-256 plus exact counts. Any added, removed, moved, changed, unexpected-rule, stale, or expired finding fails P10-X.",
+  "suppressions": [
+    {
+      "scanner": "gitleaks",
+      "rule_or_advisory_id": "generic-api-key",
+      "exact_scope": {
+        "finding_count": 130,
+        "unique_fingerprint_count": 128,
+        "sorted_fingerprint_sha256": "9aa84c448c4ad6a5d35133597ba59a195b62bca7a1b73d0ebaa444eb593a7aa3"
+      },
+      "justification": "Reviewed historical findings are confined to synthetic CI/test fixture identifiers and explicitly synthetic provider/AWS credential placeholders; none grants live provider, production, or customer access. The added exact fingerprint is the unchanged p10s-synthetic AWS placeholder re-emitted when the P10-S docker-run line was edited to enforce the frozen CPU envelope. The exact fingerprint-set digest prevents this review from covering any other changed or newly introduced finding.",
+      "owner": "DOers security certification",
+      "reviewed_at": "2026-09-18",
+      "expires_at": "2026-12-18"
+    },
+    {
+      "scanner": "gitleaks",
+      "rule_or_advisory_id": "jwt",
+      "exact_scope": {
+        "finding_count": 4,
+        "unique_fingerprint_count": 2,
+        "sorted_fingerprint_sha256": "981fc6010ee7e8b3ac5f4d52064f1ca620daa77ead8f36cba53a9d94a267dc12"
+      },
+      "justification": "Reviewed findings are duplicate detections for two historical local-development response capture files from 2026-05-09. Those bearer tokens are historical/expired and are not production credentials. The exact fingerprint-set digest prevents suppression of any new JWT finding.",
+      "owner": "DOers security certification",
+      "reviewed_at": "2026-09-18",
+      "expires_at": "2026-12-18"
+    }
+  ]
+}

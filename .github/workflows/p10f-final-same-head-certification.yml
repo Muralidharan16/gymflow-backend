@@ -1,0 +1,541 @@
+name: P10-F Final Same-Head Production Certification
+
+on:
+  push:
+    branches:
+      - hardening/p10-performance-security-final-production-certification
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: p10f-final-same-head-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  P9D_CERTIFIED_HEAD: 63f927bef51c167d995d47ae6a65c458e38f0762
+  P9D_CERTIFIED_TREE: ce88550621b94e2ecdcae12e4143cae92ff19647
+  P9_CURRENT_ALEMBIC_HEAD: zk07d8e9f0a45
+  P9_HARD_GATE: upgrade_and_recovery_from_bad_deployment_or_data_loss_proven
+  P9_MERGE_BASE: 33abd2bad81c65ac998b91726cc314ab54080010
+  P9_CERTIFIED_TREE: a6a0a87ebbaa251482c67f1bc4cbd9dc8ab7d1e0
+  P10_ALEMBIC_HEAD: zk07d8e9f0a45
+  P10_PERFORMANCE_BUDGET_DIGEST: b8613f5deab4d1dba77ba41d86b4cb4d8e8dab6b85fa5630a6206105951b8520
+  P10F_INHERITED_JOB_COUNT: '44'
+  P10F_P9_SLICE_COUNT: '7'
+
+jobs:
+  contract:
+    name: Frozen Final P9 scope and 53-gate topology
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_p9f_contract_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-p9f-contract-not-production
+      AWS_ACCESS_KEY_ID: ci-p9f-contract
+      AWS_SECRET_ACCESS_KEY: ci-p9f-contract
+      S3_BUCKET_NAME: gymflow-p9f-contract-test
+      ENVIRONMENT: test
+      P8_METRICS_OTLP_ENDPOINT: http://127.0.0.1:4318/v1/metrics
+      P8_METRICS_EXPORT_INTERVAL_SECONDS: '1'
+      P8_METRICS_EXPORT_TIMEOUT_SECONDS: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/p9f-resolved.txt
+          diff -u requirements-test.lock /tmp/p9f-resolved.txt
+
+      - name: Guard certified P9-D parent boundary
+        run: |
+          set -euo pipefail
+          git cat-file -e "${P9D_CERTIFIED_HEAD}^{commit}"
+          test "$(git rev-parse "${P9D_CERTIFIED_HEAD}^{tree}")" = "${P9D_CERTIFIED_TREE}"
+          git merge-base --is-ancestor "${P9D_CERTIFIED_HEAD}" HEAD
+
+      - name: Validate immutable Final P9 contract
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          python -s scripts/verify_head_workflow_bootstrap.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P9_CURRENT_ALEMBIC_HEAD}"
+          python -m json.tool docs/architecture/p9_data_protection_recovery_matrix.json >/dev/null
+          python -m py_compile tests/test_p9f_final_certification_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p8f_final_certification_contracts.py \
+            tests/test_p9_governance_contracts.py \
+            tests/test_p9m_populated_migration_contracts.py \
+            tests/test_p9l_lock_rewrite_contracts.py \
+            tests/test_p9b_backup_integrity_contracts.py \
+            tests/test_p9r_full_restore_pitr_contracts.py \
+            tests/test_p9r_recovery_compatibility_contracts.py \
+            tests/test_p9c_rolling_schema_compatibility_contracts.py \
+            tests/test_p9d_bad_deployment_rollback_contracts.py \
+            tests/test_p9f_final_certification_contracts.py
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+      - name: Validate immutable P10 final contracts
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/p10_performance_security_final_certification_matrix.json >/dev/null
+          python scripts/ci/verify_p10_performance_budgets.py | tee /tmp/p10f-budget.log
+          grep -q '^P10_BASELINE_BUDGETS=PASS$' /tmp/p10f-budget.log
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p10_governance_contracts.py \
+            tests/test_p10b_baseline_contracts.py \
+            tests/test_p10b_performance_budget_contract.py \
+            tests/test_p10l_contracts.py \
+            tests/test_p10q_contracts.py \
+            tests/test_p10d_contracts.py \
+            tests/test_p10s_contracts.py \
+            tests/test_p10x_security_contracts.py \
+            tests/test_p10h_container_contracts.py \
+            tests/test_p10f_final_certification_contracts.py
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+  architecture:
+    name: Inherited architecture contracts
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+  migration_hardening:
+    name: General, Platform Billing, and fresh-lineage regression
+    uses: ./.github/workflows/hardening-ci.yml
+  finance:
+    name: Finance Core regression
+    uses: ./.github/workflows/finance-hardening-ci.yml
+  migration_lifecycle:
+    name: Full migration lifecycle
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+  migration_preservation:
+    name: Populated migration data preservation
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+  migration_adversarial:
+    name: Adversarial migration recovery
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+  migration_contracts:
+    name: Migration lifecycle contracts
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+  migration_semantics:
+    name: Migration semantics inventory
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+  p3:
+    name: Inherited P1, P2, and P3 certification
+    uses: ./.github/workflows/p3e-certification.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p3a_general:
+    name: P3A broad inherited regression
+    uses: ./.github/workflows/p3a-general-regressions.yml
+  lifecycle_maintenance:
+    name: Lifecycle maintenance production boundary
+    uses: ./.github/workflows/lifecycle-maintenance-production-boundary.yml
+  platform_maintenance:
+    name: Platform maintenance production boundary
+    uses: ./.github/workflows/platform-maintenance-production-boundary.yml
+  p4b_opensearch:
+    name: Real local OpenSearch behavior
+    uses: ./.github/workflows/p4b-opensearch-live.yml
+  p4b_evidence:
+    name: P4B provider evidence compatibility on current P9 schema
+    uses: ./.github/workflows/p5f-current-head-p4b-evidence.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4b_drift:
+    name: P4B drift repair compatibility on current P9 schema
+    uses: ./.github/workflows/p5f-current-head-p4b-drift.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4c_general:
+    name: P4C broad inherited regression
+    uses: ./.github/workflows/p4c-general-regression.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4c_notification:
+    name: P4C notification compatibility on current P9 schema
+    uses: ./.github/workflows/p5f-current-head-p4c-notification.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4d_refund:
+    name: P4D refund-obligation authority without provider execution
+    uses: ./.github/workflows/p4d-refund-authority-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4e_contract:
+    name: P4E current-head external-effect contract
+    uses: ./.github/workflows/p5f-inherited-p4e-contract.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p4e_operational:
+    name: P4E current-head operational observability
+    uses: ./.github/workflows/p5f-inherited-p4e-operational-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+
+  p5_governance:
+    name: P5 governance and frozen fault matrix
+    uses: ./.github/workflows/p5-governance-fault-matrix.yml
+  p5_worker_fencing:
+    name: P5-W1 current-head fencing compatibility
+    uses: ./.github/workflows/p5f-current-head-p5w1.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p5_provider_ack:
+    name: P5-E provider success and DB-ack ambiguity
+    uses: ./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p5_dependency_loss:
+    name: P5-D dependency and database loss
+    uses: ./.github/workflows/p5d-dependency-loss-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+  p5_compensation:
+    name: P5-C compensation crash and replay
+    uses: ./.github/workflows/p5c-compensation-crash-replay-pg16.yml
+    with:
+      certification_head: zk07d8e9f0a45
+
+  p6_governance:
+    name: P6 governance and production-readiness contract
+    uses: ./.github/workflows/p6-governance-production-readiness.yml
+  p6_redis:
+    name: P6-R real Redis production contract
+    uses: ./.github/workflows/p6r-redis-production-contract.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_broker:
+    name: P6-B broker restart and reconnect recovery
+    uses: ./.github/workflows/p6b-broker-reconnect-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_worker:
+    name: P6-W graceful shutdown and late-ack redelivery
+    uses: ./.github/workflows/p6w-worker-shutdown-redelivery-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_poison:
+    name: P6-P poison-message containment
+    uses: ./.github/workflows/p6p-poison-message-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+  p6_scheduler:
+    name: P6-S Beat ownership and duplicate scheduler protection
+    uses: ./.github/workflows/p6s-scheduler-ownership-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+
+  p7_governance:
+    name: P7 governance API runtime contract
+    uses: ./.github/workflows/p7-governance-api-runtime.yml
+  p7_system:
+    name: P7 system control and probes
+    uses: ./.github/workflows/p7s-system-control.yml
+  p7_drain:
+    name: P7 request drain
+    uses: ./.github/workflows/p7d-request-drain.yml
+  p7_resource:
+    name: P7 API resource shutdown
+    uses: ./.github/workflows/p7r-api-resource-shutdown.yml
+  p7_worker:
+    name: P7 worker termination inheritance
+    needs: p6_worker
+    uses: ./.github/workflows/p7w-worker-termination-inheritance.yml
+  p7_orchestration:
+    name: P7 real production-like API orchestration
+    uses: ./.github/workflows/p7o-production-like-orchestration.yml
+    with:
+      certification_head: ${{ github.sha }}
+
+  p8_governance:
+    name: P8-G governance and observability contract
+    uses: ./.github/workflows/p8-governance-observability.yml
+  p8_logging:
+    name: P8-L structured logging and redaction
+    uses: ./.github/workflows/p8l-structured-logging-redaction.yml
+  p8_metrics:
+    name: P8-M runtime metrics
+    uses: ./.github/workflows/p8m-runtime-metrics.yml
+  p8_alerts:
+    name: P8-A alerts and SLOs
+    uses: ./.github/workflows/p8a-alerts-slos.yml
+  p8_runbooks:
+    name: P8-R operational runbooks
+    uses: ./.github/workflows/p8r-operational-runbooks.yml
+  p8_production_like:
+    name: P8-O real production-like observability
+    uses: ./.github/workflows/p8o-production-like-observability.yml
+
+  certify:
+    name: Terminal immutable Final P10 decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - architecture
+      - migration_hardening
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+      - p3
+      - p3a_general
+      - lifecycle_maintenance
+      - platform_maintenance
+      - p4b_opensearch
+      - p4b_evidence
+      - p4b_drift
+      - p4c_general
+      - p4c_notification
+      - p4d_refund
+      - p4e_contract
+      - p4e_operational
+      - p5_governance
+      - p5_worker_fencing
+      - p5_provider_ack
+      - p5_dependency_loss
+      - p5_compensation
+      - p6_governance
+      - p6_redis
+      - p6_broker
+      - p6_worker
+      - p6_poison
+      - p6_scheduler
+      - p7_governance
+      - p7_system
+      - p7_drain
+      - p7_resource
+      - p7_worker
+      - p7_orchestration
+      - p8_governance
+      - p8_logging
+      - p8_metrics
+      - p8_alerts
+      - p8_runbooks
+      - p8_production_like
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      P10F_CANDIDATE_SHA: ${{ github.sha }}
+    steps:
+      - name: Require 44 inherited P1-P8 and P9 contract jobs
+        env:
+          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          mkdir -p p10f-evidence
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          results=json.loads(os.environ["REQUIRED_RESULTS_JSON"])
+          expected=int(os.environ["P10F_INHERITED_JOB_COUNT"])
+          if len(results)!=expected:
+              raise SystemExit(f"P10-F inherited topology changed: {len(results)} != {expected}")
+          failures={name:details["result"] for name,details in results.items() if details["result"]!="success"}
+          if failures:
+              raise SystemExit(f"P10-F inherited P1-P8/P9-contract gates failed: {failures}")
+          Path("p10f-evidence/inherited-needs.json").write_text(
+              json.dumps(results,indent=2,sort_keys=True)+"\n",encoding="utf-8"
+          )
+          print(f"P10-F direct inherited gates passed: {len(results)}")
+          PY
+
+      - name: Checkout exact final P10 candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Recreate inherited gate evidence after checkout
+        env:
+          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          mkdir -p p10f-evidence
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          results=json.loads(os.environ["REQUIRED_RESULTS_JSON"])
+          expected=int(os.environ["P10F_INHERITED_JOB_COUNT"])
+          if len(results)!=expected:
+              raise SystemExit(f"P10-F inherited topology changed after checkout: {len(results)} != {expected}")
+          failures={name:details["result"] for name,details in results.items() if details["result"]!="success"}
+          if failures:
+              raise SystemExit(f"P10-F inherited gates changed after checkout: {failures}")
+          Path("p10f-evidence/inherited-needs.json").write_text(
+              json.dumps(results,indent=2,sort_keys=True)+"\n",encoding="utf-8"
+          )
+          print(f"P10-F inherited evidence snapshot restored: {len(results)}")
+          PY
+
+      - name: Bind seven exact-head P9 slice workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          api=os.environ["GITHUB_API_URL"]; repo=os.environ["GITHUB_REPOSITORY"]
+          sha=os.environ["GITHUB_SHA"]; token=os.environ["GH_TOKEN"]
+          expected={
+              ".github/workflows/p9-governance-data-protection-recovery.yml":"P9-G",
+              ".github/workflows/p9m-populated-predecessor-head.yml":"P9-M",
+              ".github/workflows/p9l-lock-rewrite-analysis.yml":"P9-L",
+              ".github/workflows/p9b-backup-integrity.yml":"P9-B",
+              ".github/workflows/p9r-full-restore-pitr.yml":"P9-R",
+              ".github/workflows/p9c-rolling-schema-compatibility.yml":"P9-C",
+              ".github/workflows/p9d-bad-deployment-rollback.yml":"P9-D",
+          }
+          headers={"Accept":"application/vnd.github+json","Authorization":f"Bearer {token}","X-GitHub-Api-Version":"2022-11-28"}
+          def get_json(url):
+              request=urllib.request.Request(url,headers=headers)
+              with urllib.request.urlopen(request,timeout=60) as response: return json.load(response)
+          final=None; last_missing=[]; last_pending=[]
+          for _ in range(100):
+              runs=get_json(f"{api}/repos/{repo}/actions/runs?head_sha={sha}&per_page=100").get("workflow_runs",[])
+              selected={}; missing=[]; pending=[]; failed={}
+              for path,label in expected.items():
+                  candidates=[r for r in runs if r.get("path")==path and r.get("head_sha")==sha and r.get("event")=="pull_request"]
+                  if not candidates:
+                      missing.append(label); continue
+                  run=max(candidates,key=lambda item:item["id"])
+                  selected[label]={k:run.get(k) for k in ("id","name","path","event","head_sha","status","conclusion")}
+                  if run["status"]!="completed": pending.append(label)
+                  elif run["conclusion"]!="success": failed[label]=run["conclusion"]
+              if failed: raise SystemExit(f"P10-F exact-head P9 slice failures: {failed}")
+              if not missing and not pending and len(selected)==int(os.environ["P10F_P9_SLICE_COUNT"]):
+                  final=selected; break
+              last_missing,last_pending=missing,pending; time.sleep(15)
+          if final is None:
+              raise SystemExit(f"P10-F P9 slice evidence incomplete; missing={last_missing}, pending={last_pending}")
+          evidence_root=Path("p10f-evidence")
+          evidence_root.mkdir(parents=True,exist_ok=True)
+          (evidence_root/"p9-same-head-runs.json").write_text(
+              json.dumps(final,indent=2,sort_keys=True)+"\n",encoding="utf-8"
+          )
+          print("P10-F exact-head P9 slice workflows passed: 7")
+          PY
+
+      - name: Bind eight canonical P10 slice runs and evidence archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, time, urllib.request
+          from pathlib import Path
+          from scripts.ci.github_artifact_transport import download_github_artifact
+          api=os.environ["GITHUB_API_URL"]; repo=os.environ["GITHUB_REPOSITORY"]; sha=os.environ["GITHUB_SHA"]; token=os.environ["GH_TOKEN"]
+          expected={
+              ".github/workflows/p10-governance-performance-security.yml":"P10-G",
+              ".github/workflows/p10b-performance-budget-freeze.yml":"P10-B",
+              ".github/workflows/p10l-representative-load-concurrency.yml":"P10-L",
+              ".github/workflows/p10q-queue-backlog-recovery.yml":"P10-Q",
+              ".github/workflows/p10d-query-performance.yml":"P10-D",
+              ".github/workflows/p10s-long-soak.yml":"P10-S",
+              ".github/workflows/p10x-security-scans.yml":"P10-X",
+              ".github/workflows/p10h-container-hardening.yml":"P10-H",
+          }
+          artifact_required={"P10-L","P10-Q","P10-D","P10-S","P10-X","P10-H"}
+          headers={"Accept":"application/vnd.github+json","Authorization":f"Bearer {token}","X-GitHub-Api-Version":"2022-11-28"}
+          def get_json(url):
+              req=urllib.request.Request(url,headers=headers)
+              with urllib.request.urlopen(req,timeout=60) as response: return json.load(response)
+          selected=None; last_missing=[]; last_pending=[]
+          for _ in range(100):
+              runs=get_json(f"{api}/repos/{repo}/actions/runs?head_sha={sha}&event=push&per_page=100").get("workflow_runs",[])
+              current={}; missing=[]; pending=[]; failed={}
+              for path,label in expected.items():
+                  candidates=[r for r in runs if r.get("path")==path and r.get("head_sha")==sha and r.get("event")=="push"]
+                  if not candidates: missing.append(label); continue
+                  run=max(candidates,key=lambda item:item["id"])
+                  current[label]={k:run.get(k) for k in ("id","name","path","event","head_sha","status","conclusion","artifacts_url")}
+                  if run["status"]!="completed": pending.append(label)
+                  elif run["conclusion"]!="success": failed[label]=run["conclusion"]
+              if failed: raise SystemExit(f"P10-F exact-head P10 slice failures: {failed}")
+              if not missing and not pending and len(current)==8: selected=current; break
+              last_missing,last_pending=missing,pending; time.sleep(15)
+          if selected is None:
+              raise SystemExit(f"P10-F P10 slice evidence incomplete; missing={last_missing}, pending={last_pending}")
+          artifact_evidence={}
+          for label in sorted(artifact_required):
+              run=selected[label]; payload=get_json(run["artifacts_url"]+"?per_page=100")
+              artifacts=[a for a in payload.get("artifacts",[]) if not a.get("expired")]
+              if not artifacts: raise SystemExit(f"{label} produced no retained evidence artifact")
+              rows=[]
+              for artifact in artifacts:
+                  archive_bytes=download_github_artifact(artifact["archive_download_url"],token)
+                  digest=hashlib.sha256(archive_bytes).hexdigest(); count=len(archive_bytes)
+                  rows.append({"id":artifact["id"],"name":artifact["name"],"size_in_bytes":artifact.get("size_in_bytes"),"archive_bytes_downloaded":count,"archive_sha256":digest,"github_digest":artifact.get("digest")})
+              artifact_evidence[label]=rows
+          root=Path("p10f-evidence"); root.mkdir(exist_ok=True)
+          (root/"p10-same-head-runs.json").write_text(json.dumps(selected,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+          (root/"p10-artifacts.json").write_text(json.dumps(artifact_evidence,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+          print("P10-F exact-head P10 slice workflows passed: 8")
+          print("P10-L carries same-head P5-R inherited reproof")
+          print("P10-Q carries same-head P5-W2 inherited reproof")
+          PY
+
+      - name: Emit final machine-readable P10 decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P10F_CANDIDATE_SHA}"
+          test "$(git rev-parse "${P9_MERGE_BASE}^{tree}")" = "${P9_CERTIFIED_TREE}"
+          git merge-base --is-ancestor "${P9_MERGE_BASE}" HEAD
+          test "$(cat docs/architecture/p10_performance_budgets.v1.sha256)" = "${P10_PERFORMANCE_BUDGET_DIGEST}"
+          test "$(git rev-parse HEAD^{tree})" = "$(git write-tree)"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git status --porcelain --untracked-files=no)"
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          inherited=json.loads(Path("p10f-evidence/inherited-needs.json").read_text())
+          p9_runs=json.loads(Path("p10f-evidence/p9-same-head-runs.json").read_text())
+          slices=json.loads(Path("p10f-evidence/p10-same-head-runs.json").read_text())
+          artifact_evidence=json.loads(Path("p10f-evidence/p10-artifacts.json").read_text())
+          decision={"schema_version":1,"phase":"P10-F","candidate_sha":os.environ["P10F_CANDIDATE_SHA"],"candidate_tree":subprocess.check_output(["git","rev-parse","HEAD^{tree}"],text=True).strip(),"p9_merged_base_sha":os.environ["P9_MERGE_BASE"],"p9_merged_base_tree":os.environ["P9_CERTIFIED_TREE"],"alembic_head":os.environ["P10_ALEMBIC_HEAD"],"budget_digest":os.environ["P10_PERFORMANCE_BUDGET_DIGEST"],"inherited_p1_p9_gate_count":len(inherited)+len(p9_runs)+2,"p10_slice_gate_count":len(slices),"p9_runs":p9_runs,"p10_runs":slices,"artifact_evidence":artifact_evidence,"refund_provider_execution":"DEFERRED_FAIL_CLOSED","release_authorized":False,"deployment_authorized":False,"decision":"PASS"}
+          assert decision["inherited_p1_p9_gate_count"]==53
+          assert decision["p10_slice_gate_count"]==8
+          assert decision["candidate_sha"]==os.environ["GITHUB_SHA"]
+          Path("p10f-evidence/decision.json").write_text(json.dumps(decision,indent=2,sort_keys=True)+"\n")
+          PY
+          cat p10f-evidence/decision.json
+          echo 'P10_P1_P9_INHERITED=PASS'
+          echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+          echo 'P10_FINAL_PRODUCTION_CERTIFICATION=PASS'
+
+      - name: Upload terminal P10-F evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p10f-final-${{ github.sha }}
+          path: p10f-evidence/
+          if-no-files-found: error
+          retention-days: 30

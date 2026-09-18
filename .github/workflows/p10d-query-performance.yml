@@ -1,0 +1,112 @@
+name: P10-D Query Plans Indexes N+1 and Pagination
+
+on:
+  push:
+    branches:
+      - hardening/p10-performance-security-final-production-certification
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p10d-query-performance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CERTIFICATION_HEAD: zk07d8e9f0a45
+  MIGRATION_PASSWORD: ci-migration-owner
+  GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+  AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+  WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
+  MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
+  DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
+  TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+  TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+  P10D_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+  P10D_APP_DATABASE_URL: postgresql://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+  WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_test
+  MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
+  REDIS_URL: redis://127.0.0.1:6379/0
+  CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+  CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+  SECRET_KEY: p10d-synthetic-secret-not-production
+  AWS_ACCESS_KEY_ID: p10d-synthetic
+  AWS_SECRET_ACCESS_KEY: p10d-synthetic
+  S3_BUCKET_NAME: p10d-synthetic
+  ENVIRONMENT: test
+  PYTHONDONTWRITEBYTECODE: '1'
+  EVIDENCE_DIR: p10d-evidence
+
+jobs:
+  query-performance:
+    name: Real PostgreSQL plans index inventory and fixed query count
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment and prove static P10-D contracts
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+          python -m py_compile scripts/ci/p10d_query_performance.py tests/test_p10d_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p10d_contracts.py
+          python scripts/ci/verify_p10_performance_budgets.py | tee /tmp/p10d-budget.log
+          grep -q '^P10_BASELINE_BUDGETS=PASS$' /tmp/p10d-budget.log
+
+      - name: Prepare fresh real PostgreSQL 16 identities and HEAD schema
+        run: bash scripts/ci/prepare_p3e_pg16.sh
+
+      - name: Seed deterministic production-shaped synthetic data
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test             -f scripts/ci/p9m_seed_populated_predecessor.sql             | tee "${EVIDENCE_DIR:-p10d-evidence}-p9m-seed.log"
+          mkdir -p "${EVIDENCE_DIR}"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_test             -f scripts/ci/p10b_seed_baseline.sql             | tee "${EVIDENCE_DIR}/p10b-seed.log"
+          grep -q 'P10B_SYNTHETIC_BASELINE_SEED=PASS' "${EVIDENCE_DIR}/p10b-seed.log"
+
+      - name: Prove real plans indexes fixed query count and pagination
+        run: |
+          set -euo pipefail
+          python -s scripts/ci/p10d_query_performance.py             --output-dir "${EVIDENCE_DIR}"             | tee "${EVIDENCE_DIR}/run.log"
+          grep -q '^P10_QUERY_PERFORMANCE=PASS$' "${EVIDENCE_DIR}/run.log"
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          git diff --exit-code
+          git diff --cached --exit-code
+
+      - name: Upload P10-D evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p10d-query-performance-${{ github.event.pull_request.head.sha || github.sha }}
+          path: p10d-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Emit terminal P10-D marker
+        run: |
+          set -euo pipefail
+          grep -q '^P10_QUERY_PERFORMANCE=PASS$' "${EVIDENCE_DIR}/run.log"
+          echo 'P10_QUERY_PERFORMANCE=PASS'
+          echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'

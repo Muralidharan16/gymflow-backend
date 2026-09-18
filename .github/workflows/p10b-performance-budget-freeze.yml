@@ -1,0 +1,61 @@
+name: P10-B Performance Budget Freeze
+
+on:
+  push:
+    branches:
+      - hardening/p10-performance-security-final-production-certification
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "docs/architecture/p10_performance_budgets.v1.json"
+      - "docs/architecture/p10_performance_budgets.v1.sha256"
+      - "scripts/ci/verify_p10_performance_budgets.py"
+      - "tests/test_p10b_performance_budget_contract.py"
+      - ".github/workflows/p10b-performance-budget-freeze.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frozen-performance-budgets:
+    name: Verify immutable P10-B numeric budgets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+
+      - name: Verify frozen budget document and digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/ci/verify_p10_performance_budgets.py
+          python scripts/ci/verify_p10_performance_budgets.py | tee p10b-budget-freeze.log
+          grep -q '^P10_BASELINE_BUDGETS=PASS$' p10b-budget-freeze.log
+          grep -q '^P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED$' p10b-budget-freeze.log
+
+      - name: Run budget immutability contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tests/test_p10b_performance_budget_contract.py
+
+      - name: Prove exact candidate and clean checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo "P10_BASELINE_BUDGETS=PASS"
+          echo "P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED"

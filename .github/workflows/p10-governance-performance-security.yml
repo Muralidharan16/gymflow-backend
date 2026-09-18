@@ -1,0 +1,92 @@
+name: P10 Governance Performance Security and Final Production Certification
+
+on:
+  push:
+    branches:
+      - hardening/p10-performance-security-final-production-certification
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p10-governance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  governance:
+    name: Frozen P10 performance security production contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      P9_MERGE_BASE: 33abd2bad81c65ac998b91726cc314ab54080010
+      P9_CERTIFIED_TREE: a6a0a87ebbaa251482c67f1bc4cbd9dc8ab7d1e0
+      P10_ALEMBIC_HEAD: zk07d8e9f0a45
+      P10_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pip freeze | LC_ALL=C sort > /tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+
+      - name: Prove exact merged P9 ancestry and tree
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P10_CANDIDATE_SHA}"
+          git cat-file -e "${P9_MERGE_BASE}^{commit}"
+          test "$(git rev-parse "${P9_MERGE_BASE}^{tree}")" = "${P9_CERTIFIED_TREE}"
+          git merge-base --is-ancestor "${P9_MERGE_BASE}" HEAD
+
+      - name: Validate P10 governance artifacts
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/p10_performance_security_final_certification_matrix.json >/dev/null
+          python -m py_compile tests/test_p10_governance_contracts.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p10_governance_contracts.py
+
+      - name: Guard current Alembic head
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${P10_ALEMBIC_HEAD}"
+
+      - name: Reprove inherited P9 governance and terminal contracts
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_p9_governance_contracts.py \
+            tests/test_p9f_final_certification_contracts.py
+          python -s scripts/verify_head_workflow_bootstrap.py
+
+      - name: Emit P10 governance markers
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${P10_CANDIDATE_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P10_GOVERNANCE=PASS'
+          echo 'P10_FINAL_PRODUCTION_CERTIFICATION=GOVERNANCE_FROZEN'
+          echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'

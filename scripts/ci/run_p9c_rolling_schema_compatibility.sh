@@ -30,7 +30,16 @@ old_head="$(cd "$P9C_OLD_SOURCE" && python -s -m alembic -c alembic.ini heads | 
 new_head="$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')"
 test "$old_head" = "$P9C_PREDECESSOR"
 test "$new_head" = "$P9C_HEAD"
-cmp requirements-test.lock "$P9C_OLD_SOURCE/requirements-test.lock"
+
+P9C_OLD_VENV=/tmp/p9c-old-venv
+rm -rf "$P9C_OLD_VENV"
+python -m venv "$P9C_OLD_VENV"
+"$P9C_OLD_VENV/bin/python" -m pip install 'pip==26.2.1'
+"$P9C_OLD_VENV/bin/python" -m pip install -r "$P9C_OLD_SOURCE/requirements-test.lock"
+"$P9C_OLD_VENV/bin/python" -m pip check
+"$P9C_OLD_VENV/bin/python" -m pip freeze | LC_ALL=C sort > "$EVIDENCE_DIR/old-runtime-resolved.txt"
+diff -u "$P9C_OLD_SOURCE/requirements-test.lock" "$EVIDENCE_DIR/old-runtime-resolved.txt"
+echo 'P9C_HISTORICAL_DEPENDENCY_RUNTIME=PASS'
 
 migration_delta="$(git diff --name-only "${P9C_OLD_APP_SHA}..${P9C_CANDIDATE_SHA}" -- alembic/versions/)"
 test "$migration_delta" = 'alembic/versions/zk07d8e9f0a45_p8_lifecycle_dead_letter_snapshot.py'
@@ -44,7 +53,8 @@ fi
   printf 'old_native_schema=%s\n' "$old_head"
   printf 'new_application_sha=%s\n' "$P9C_CANDIDATE_SHA"
   printf 'new_native_schema=%s\n' "$new_head"
-  printf 'dependency_lock_sha256=%s\n' "$(sha256sum requirements-test.lock | awk '{print $1}')"
+  printf 'current_dependency_lock_sha256=%s\n' "$(sha256sum requirements-test.lock | awk '{print $1}')"
+  printf 'old_dependency_lock_sha256=%s\n' "$(sha256sum "$P9C_OLD_SOURCE/requirements-test.lock" | awk '{print $1}')"
   printf 'migration_delta=%s\n' "$migration_delta"
 } > "$EVIDENCE_DIR/revision-boundary.txt"
 echo 'P9C_EXPAND_MIGRATE_CONTRACT_BOUNDARY=PASS'
@@ -150,7 +160,11 @@ PY
 
 launch_app() {
   local runtime="$1" work="$2" port="$3" log="$4" pidfile="$5" python_bin
-  python_bin="$(command -v python)"
+  if [[ "$runtime" == "$P9C_OLD_RUNTIME" ]]; then
+    python_bin="$P9C_OLD_VENV/bin/python"
+  else
+    python_bin="$(command -v python)"
+  fi
   (
     exec sudo -u p9capp env -i \
       HOME="$P9C_HOME" PATH="$PATH" PYTHONPATH="$runtime" PYTHONDONTWRITEBYTECODE=1 ENVIRONMENT=test \
