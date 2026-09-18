@@ -186,10 +186,18 @@ def collect_database_evidence(output_dir: Path) -> dict[str, Any]:
 
             page_indexes = set(plans["tenant_page"]["indexes_used"])
             phone_indexes = set(plans["tenant_phone_lookup"]["indexes_used"])
-            if "uq_members_org_member_number" not in page_indexes:
+            tenant_scoped_member_indexes = {
+                name
+                for name in page_indexes
+                if name == "uq_members_org_member_number"
+                or name.startswith("ix_members_org_")
+            }
+            if not tenant_scoped_member_indexes:
                 errors.append(
-                    "tenant_page did not use the organization/member-number ordering index"
+                    "tenant_page did not use a tenant-scoped members index"
                 )
+            if "Seq Scan" in dict(plans["tenant_page"]["node_types"]):
+                errors.append("tenant_page regressed to a sequential scan")
             if "ix_members_org_phone" not in phone_indexes:
                 errors.append("tenant_phone_lookup did not use ix_members_org_phone")
 
