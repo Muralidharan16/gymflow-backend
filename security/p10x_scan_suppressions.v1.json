@@ -1,5 +1,32 @@
 {
   "schema_version": 1,
-  "policy": "Every suppression requires scanner, rule_or_advisory_id, exact scope, justification, owner, reviewed_at, and expires_at. Empty means no P10-X suppressions are authorized.",
-  "suppressions": []
+  "policy": "Reviewed Gitleaks exceptions are exact report fingerprints, frozen by per-rule sorted-fingerprint SHA-256 plus exact counts. Any added, removed, moved, changed, unexpected-rule, stale, or expired finding fails P10-X.",
+  "suppressions": [
+    {
+      "scanner": "gitleaks",
+      "rule_or_advisory_id": "generic-api-key",
+      "exact_scope": {
+        "finding_count": 129,
+        "unique_fingerprint_count": 127,
+        "sorted_fingerprint_sha256": "c8af686942a5e49ef0b197e07b62a93b3eb3fe499dde33091931376c2b32109d"
+      },
+      "justification": "Reviewed historical findings are confined to synthetic CI/test fixture identifiers and explicitly synthetic provider/AWS credential placeholders; none grants live provider, production, or customer access. The exact fingerprint-set digest prevents this review from covering any changed or newly introduced finding.",
+      "owner": "DOers security certification",
+      "reviewed_at": "2026-09-18",
+      "expires_at": "2026-12-18"
+    },
+    {
+      "scanner": "gitleaks",
+      "rule_or_advisory_id": "jwt",
+      "exact_scope": {
+        "finding_count": 4,
+        "unique_fingerprint_count": 2,
+        "sorted_fingerprint_sha256": "981fc6010ee7e8b3ac5f4d52064f1ca620daa77ead8f36cba53a9d94a267dc12"
+      },
+      "justification": "Reviewed findings are duplicate detections for two historical local-development response capture files from 2026-05-09. Those bearer tokens are historical/expired and are not production credentials. The exact fingerprint-set digest prevents suppression of any new JWT finding.",
+      "owner": "DOers security certification",
+      "reviewed_at": "2026-09-18",
+      "expires_at": "2026-12-18"
+    }
+  ]
 }
