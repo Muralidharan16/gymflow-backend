@@ -24,7 +24,6 @@ def test_p10l_workflow_binds_frozen_budget_and_real_dependencies():
         "P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED",
         "Install terminal pytest",
         "pytest==9.1.1",
-        "P10B_CPU_LIMIT: '1.20'",
     ):
         assert fragment in workflow
 
@@ -47,10 +46,10 @@ def test_p10l_verifier_enforces_every_frozen_http_resource_budget():
     assert "DEFERRED_FAIL_CLOSED" in verifier
 
 
-def test_p10l_applies_stricter_cpu_control_than_frozen_cpu_ceiling():
+def test_p10l_does_not_throttle_below_the_frozen_representative_shape():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     harness = (ROOT / "scripts/ci/run_p10b_baseline_calibration.sh").read_text(encoding="utf-8")
-    assert "P10B_CPU_LIMIT: '1.20'" in workflow
+    assert "P10B_CPU_LIMIT:" not in workflow
     assert 'DOCKER_RESOURCE_ARGS+=(--cpus "${P10B_CPU_LIMIT}")' in harness
     assert "P10B_CPU_LIMIT must be in (0, 1.25] cores" in harness
     assert "'cpu_limit_cores':" in harness
