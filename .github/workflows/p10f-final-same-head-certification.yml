@@ -488,7 +488,9 @@ jobs:
           git merge-base --is-ancestor "${P9_MERGE_BASE}" HEAD
           test "$(cat docs/architecture/p10_performance_budgets.v1.sha256)" = "${P10_PERFORMANCE_BUDGET_DIGEST}"
           test "$(git rev-parse HEAD^{tree})" = "$(git write-tree)"
-          test -z "$(git status --porcelain)"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git status --porcelain --untracked-files=no)"
           python - <<'PY'
           import json, os, subprocess
           from pathlib import Path

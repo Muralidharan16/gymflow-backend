@@ -124,3 +124,13 @@ def test_p10f_p9_binder_recreates_evidence_directory_after_checkout():
     assert "evidence_root.mkdir(parents=True,exist_ok=True)" in block
     assert '(evidence_root/"p9-same-head-runs.json").write_text(' in block
 
+def test_p10f_terminal_cleanliness_ignores_generated_untracked_evidence_only():
+    text = _read(WORKFLOW)
+    start = text.index("- name: Emit final machine-readable P10 decision")
+    end = text.index("- name: Upload terminal P10-F evidence", start)
+    block = text[start:end]
+    assert "git diff --exit-code" in block
+    assert "git diff --cached --exit-code" in block
+    assert 'git status --porcelain --untracked-files=no' in block
+    assert 'test -z "$(git status --porcelain)"' not in block
+
