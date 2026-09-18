@@ -20,7 +20,7 @@ def test_p10b_is_calibration_not_moving_performance_budget():
     assert "throughput_rps" in load
     assert "P10B_DURATION_SECONDS: '60'" in workflow
     assert "P10B_CONCURRENCY: '24'" in workflow
-    assert "P10B_CPU_LIMIT: '1.24'" in workflow
+    assert "P10B_CPU_LIMIT: '1.25'" in workflow
     assert "P10B_CPU_LIMIT must be in (0, 1.25] cores" in runner
     assert 'DOCKER_RESOURCE_ARGS+=(--cpus "${P10B_CPU_LIMIT}")' in runner
 
