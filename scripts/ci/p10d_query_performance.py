@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import uuid
 from collections import Counter
 from pathlib import Path
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 BUDGET_PATH = ROOT / "docs/architecture/p10_performance_budgets.v1.json"
 DIGEST_PATH = ROOT / "docs/architecture/p10_performance_budgets.v1.sha256"
 

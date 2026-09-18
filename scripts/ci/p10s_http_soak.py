@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """P10-S continuous representative HTTP soak with per-window evidence."""
 from __future__ import annotations
-import argparse, asyncio, json, math, time
+import argparse, asyncio, json, math, sys, time
 from collections import Counter
 from pathlib import Path
+ROOT=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT))
 import httpx
 from scripts.ci.p10b_load_calibration import token_for_tenant, request_headers, percentile, deterministic_uuid
 

@@ -3,8 +3,9 @@
 from __future__ import annotations
 import argparse,json,os,signal,subprocess,sys,time,uuid
 from pathlib import Path
-from scripts.ci.p10b_durable_queue_calibration import seed_authority,terminal_snapshot,controller,queue_depth,worker_environment,worker_ping
 ROOT=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT))
+from scripts.ci.p10b_durable_queue_calibration import seed_authority,terminal_snapshot,controller,queue_depth,worker_environment,worker_ping
 def wait(pred,desc,timeout=30):
     end=time.monotonic()+timeout
     while time.monotonic()<end:
