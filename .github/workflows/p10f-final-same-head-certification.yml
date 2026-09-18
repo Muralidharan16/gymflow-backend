@@ -426,6 +426,7 @@ jobs:
           python - <<'PY'
           import hashlib, json, os, time, urllib.request
           from pathlib import Path
+          from scripts.ci.github_artifact_transport import download_github_artifact
           api=os.environ["GITHUB_API_URL"]; repo=os.environ["GITHUB_REPOSITORY"]; sha=os.environ["GITHUB_SHA"]; token=os.environ["GH_TOKEN"]
           expected={
               ".github/workflows/p10-governance-performance-security.yml":"P10-G",
@@ -465,14 +466,9 @@ jobs:
               if not artifacts: raise SystemExit(f"{label} produced no retained evidence artifact")
               rows=[]
               for artifact in artifacts:
-                  req=urllib.request.Request(artifact["archive_download_url"],headers=headers)
-                  digest=hashlib.sha256(); count=0
-                  with urllib.request.urlopen(req,timeout=120) as response:
-                      while True:
-                          chunk=response.read(1024*1024)
-                          if not chunk: break
-                          digest.update(chunk); count+=len(chunk)
-                  rows.append({"id":artifact["id"],"name":artifact["name"],"size_in_bytes":artifact.get("size_in_bytes"),"archive_bytes_downloaded":count,"archive_sha256":digest.hexdigest(),"github_digest":artifact.get("digest")})
+                  archive_bytes=download_github_artifact(artifact["archive_download_url"],token)
+                  digest=hashlib.sha256(archive_bytes).hexdigest(); count=len(archive_bytes)
+                  rows.append({"id":artifact["id"],"name":artifact["name"],"size_in_bytes":artifact.get("size_in_bytes"),"archive_bytes_downloaded":count,"archive_sha256":digest,"github_digest":artifact.get("digest")})
               artifact_evidence[label]=rows
           root=Path("p10f-evidence"); root.mkdir(exist_ok=True)
           (root/"p10-same-head-runs.json").write_text(json.dumps(selected,indent=2,sort_keys=True)+"\n",encoding="utf-8")
