@@ -4,12 +4,6 @@ on:
   push:
     branches:
       - hardening/p10-performance-security-final-production-certification
-    paths:
-      - "docs/architecture/p10_performance_budgets.v1.json"
-      - "docs/architecture/p10_performance_budgets.v1.sha256"
-      - "scripts/ci/verify_p10_performance_budgets.py"
-      - "tests/test_p10b_performance_budget_contract.py"
-      - ".github/workflows/p10b-performance-budget-freeze.yml"
   pull_request:
     branches:
       - main
