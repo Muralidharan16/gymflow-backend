@@ -1,5 +1,5 @@
 import pytest
-from jose import jwt
+import jwt
 from unittest.mock import patch, MagicMock, AsyncMock, PropertyMock
 from sqlalchemy import select, text
 import sys
