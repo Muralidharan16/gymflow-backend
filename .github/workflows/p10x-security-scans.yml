@@ -92,7 +92,8 @@ jobs:
             --policy security/p10x_scan_suppressions.v1.json \
             --output p10x-evidence/gitleaks-review.json \
             | tee p10x-evidence/gitleaks-review.log
-          grep -q '^P10X_GITLEAKS_EXACT_REVIEW=PASS      - name: Build hardened exact candidate image
+          grep -q '^P10X_GITLEAKS_EXACT_REVIEW=PASS$' p10x-evidence/gitleaks-review.log
+      - name: Build hardened exact candidate image
         run: |
           set -euo pipefail
           IMAGE="doers-p10x:${{ github.event.pull_request.head.sha || github.sha }}"
