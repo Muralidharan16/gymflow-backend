@@ -49,7 +49,11 @@ def connect_url(name: str):
     )
 
 
-def seed_authority(item_count: int) -> list[uuid.UUID]:
+def seed_authority(
+    item_count: int,
+    *,
+    process_after: str | None = None,
+) -> list[uuid.UUID]:
     org_id = uuid.uuid4()
     branch_id = uuid.uuid4()
     with connect_url("TEST_ADMIN_DATABASE_URL") as connection:
@@ -107,14 +111,23 @@ def seed_authority(item_count: int) -> list[uuid.UUID]:
                 """
                 INSERT INTO public.branch_outbox_events(
                     outbox_id,tenant_id,branch_id,event_type,payload,
-                    max_attempts,correlation_id
+                    process_after,max_attempts,correlation_id
                 ) VALUES (
                     %s,%s,%s,'branch.lifecycle_saga',
-                    jsonb_build_object('p10b_queue_calibration',%s),1,%s
+                    jsonb_build_object('p10b_queue_calibration',%s),
+                    COALESCE(%s::timestamptz, pg_catalog.clock_timestamp()),
+                    1,%s
                 )
                 """,
                 [
-                    (event_id, org_id, branch_id, sequence, uuid.uuid4())
+                    (
+                        event_id,
+                        org_id,
+                        branch_id,
+                        sequence,
+                        process_after,
+                        uuid.uuid4(),
+                    )
                     for sequence, event_id in enumerate(ids, start=1)
                 ],
             )
