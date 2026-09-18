@@ -18,6 +18,8 @@ def test_p10q_requires_real_durable_backlog_worker_replacement_and_timeseries():
         "p10q-evidence",
         "P10_QUEUE_BACKLOG_RECOVERY=PASS",
         "P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED",
+        "Install terminal pytest",
+        "pytest==9.1.1",
     ):
         assert fragment in workflow
     for fragment in (
