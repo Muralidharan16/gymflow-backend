@@ -105,3 +105,11 @@ def test_p10f_emits_terminal_markers_and_has_no_integration_action():
         "continue-on-error",
     ):
         assert forbidden not in text
+
+
+def test_p10f_artifact_hashing_uses_safe_signed_redirect_transport():
+    text = _read(WORKFLOW)
+    helper = _read(ROOT / "scripts/ci/github_artifact_transport.py")
+    assert "from scripts.ci.github_artifact_transport import download_github_artifact" in text
+    assert 'download_github_artifact(artifact["archive_download_url"],token)' in text
+    assert "class _NoRedirect" in helper
