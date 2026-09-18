@@ -42,6 +42,23 @@ class P10BPerformanceBudgetContractTests(unittest.TestCase):
         errors = verifier.validate_document(mutated)
         self.assertTrue(any("frozen numeric budgets changed" in error for error in errors))
 
+
+    def test_soak_growth_budgets_are_explicit_and_frozen(self) -> None:
+        soak = self.document["budgets"]["soak_stability"]
+        self.assertEqual(soak["duration_seconds"], 300)
+        self.assertEqual(soak["max_rss_growth_bytes"], 33554432)
+        self.assertEqual(soak["max_db_connection_growth"], 8)
+        self.assertEqual(soak["max_db_connections"], 32)
+        self.assertEqual(soak["max_worker_broker_depth"], 0)
+        self.assertEqual(soak["max_throughput_degradation_ratio"], 0.15)
+        self.assertEqual(soak["max_overall_p95_growth_ratio"], 1.2)
+        self.assertEqual(soak["max_write_p95_growth_ratio"], 1.2)
+
+        mutated = copy.deepcopy(self.document)
+        mutated["budgets"]["soak_stability"]["max_rss_growth_bytes"] += 1
+        errors = verifier.validate_document(mutated)
+        self.assertTrue(any("frozen numeric budgets changed" in error for error in errors))
+
     def test_provider_effects_remain_fail_closed(self) -> None:
         self.assertFalse(self.document["scope"]["live_provider_credentials"])
         self.assertEqual(
