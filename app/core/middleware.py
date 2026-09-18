@@ -99,14 +99,33 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 # 2. Correlation ID
 # ─────────────────────────────────────────────────────────────────────────────
 
-class CorrelationIdMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next) -> Response:
+class CorrelationIdMiddleware:
+    """Pure-ASGI correlation propagation without BaseHTTP task/stream overhead."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
         correlation_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         request.state.correlation_id = correlation_id
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = correlation_id
-        return response
 
+        async def send_with_correlation(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                headers = [
+                    (key, value)
+                    for key, value in message.get("headers", [])
+                    if key.lower() != b"x-request-id"
+                ]
+                headers.append((b"x-request-id", correlation_id.encode("latin-1")))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_correlation)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. OpenTelemetry Trace Middleware
@@ -350,17 +369,29 @@ class AdaptiveWriteThrottler:
 # 6. Tenant Authentication Middleware
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TenantMiddleware(BaseHTTPMiddleware):
+class TenantMiddleware:
     """
-    Validates JWT, checks blacklist/family-revocation in Redis, and injects
-    principal claims into request.state for downstream use.
+    Pure-ASGI JWT tenant authentication.
+
+    Preserves the existing token validation, Redis revocation checks, degraded
+    Redis behavior, and request.state contract while avoiding BaseHTTPMiddleware
+    task/stream orchestration on every authenticated request.
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
         if _is_exempt(request.url.path) or request.method == "OPTIONS":
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
-        auth  = request.headers.get("Authorization", "")
+        auth = request.headers.get("Authorization", "")
         token = None
 
         if auth.startswith("Bearer "):
@@ -369,57 +400,79 @@ class TenantMiddleware(BaseHTTPMiddleware):
             token = request.cookies.get("access_token")
 
         if not token:
-            return JSONResponse(status_code=401, content={"detail": "Missing authentication."})
+            response = JSONResponse(status_code=401, content={"detail": "Missing authentication."})
+            await response(scope, receive, send)
+            return
 
         try:
             payload = decode_token(token)
         except Exception:
-            return JSONResponse(status_code=401, content={"detail": "Invalid or expired token."})
+            response = JSONResponse(status_code=401, content={"detail": "Invalid or expired token."})
+            await response(scope, receive, send)
+            return
 
         principal_type = payload.get("principal_type")
         if principal_type not in ACCESS_TOKEN_PRINCIPAL_TYPES:
-            return JSONResponse(status_code=401, content={"detail": "Invalid principal type."})
+            response = JSONResponse(status_code=401, content={"detail": "Invalid principal type."})
+            await response(scope, receive, send)
+            return
 
-        jti       = payload.get("jti")
+        jti = payload.get("jti")
         family_id = payload.get("f_id")
 
         try:
             if jti and await redis_client.get(f"blacklist:{jti}"):
-                return JSONResponse(status_code=401, content={"detail": "Token revoked."})
+                response = JSONResponse(status_code=401, content={"detail": "Token revoked."})
+                await response(scope, receive, send)
+                return
             if family_id and await redis_client.get(f"family_revoked:{family_id}"):
-                return JSONResponse(status_code=401, content={"detail": "Session revoked."})
+                response = JSONResponse(status_code=401, content={"detail": "Session revoked."})
+                await response(scope, receive, send)
+                return
         except Exception:
             pass  # Redis unavailable — proceed (fail-open; blacklist check is defense-in-depth)
 
         request.state.staff_id = payload.get("sub")
         request.state.principal_type = principal_type
-        request.state.org_id   = payload.get("org_id")
-        request.state.gym_id   = payload.get("gym_id")
-        request.state.role     = payload.get("role")
+        request.state.org_id = payload.get("org_id")
+        request.state.gym_id = payload.get("gym_id")
+        request.state.role = payload.get("role")
         request.state.branch_ids = payload.get("branch_ids", [])
 
-        return await call_next(request)
-
+        await self.app(scope, receive, send)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. Idempotency Header Fast-Path Middleware
 # ─────────────────────────────────────────────────────────────────────────────
 
-class IdempotencyMiddleware(BaseHTTPMiddleware):
+class IdempotencyMiddleware:
     """
-    Fast-path Redis replay for simple idempotency via X-Idempotency-Key header.
-    For full DB-backed idempotency with zombie recovery, use IdempotencyEngine directly.
+    Pure-ASGI fast-path replay for simple X-Idempotency-Key requests.
+
+    The durable database-backed idempotency engine remains authoritative. This
+    middleware preserves the existing Redis cache semantics while removing
+    BaseHTTPMiddleware overhead from the read-heavy request path.
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
         if request.method not in ("POST", "PATCH", "PUT"):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         ikey = request.headers.get("X-Idempotency-Key")
         if not ikey:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
-        user_id   = getattr(request.state, "staff_id", "anon")
+        user_id = getattr(request.state, "staff_id", "anon")
         cache_key = f"idempotency:{user_id}:{ikey}"
 
         try:
@@ -427,26 +480,33 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             if cached and cached != "processing":
                 try:
                     data = json.loads(cached)
-                    return Response(
+                    response = Response(
                         content=data["body"],
                         status_code=data["status_code"],
                         headers=data.get("headers", {}),
                     )
+                    await response(scope, receive, send)
+                    return
                 except Exception:
                     pass
         except Exception:
             pass
 
-        response = await call_next(request)
+        status_code: int | None = None
 
-        if response.status_code < 400:
+        async def capture_status(message: dict) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+            await send(message)
+
+        await self.app(scope, receive, capture_status)
+
+        if status_code is not None and status_code < 400:
             try:
                 await redis_client.setex(cache_key, 3600, "processing")
             except Exception:
                 pass
-
-        return response
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # JWT sub extractor (rate-limit identity — no signature verification)

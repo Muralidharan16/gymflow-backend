@@ -94,10 +94,21 @@ def test_p10l_hot_path_admission_layers_use_pure_asgi_without_semantic_bypass():
     assert "from starlette.types import ASGIApp, Receive, Scope, Send" in middleware
     assert "class RedisRateLimiterMiddleware:" in middleware
     assert "class AdaptiveWriteThrottler:" in middleware
+    assert "class CorrelationIdMiddleware:" in middleware
+    assert "class TenantMiddleware:" in middleware
+    assert "class IdempotencyMiddleware:" in middleware
     assert "class RedisRateLimiterMiddleware(BaseHTTPMiddleware)" not in middleware
     assert "class AdaptiveWriteThrottler(BaseHTTPMiddleware)" not in middleware
+    assert "class CorrelationIdMiddleware(BaseHTTPMiddleware)" not in middleware
+    assert "class TenantMiddleware(BaseHTTPMiddleware)" not in middleware
+    assert "class IdempotencyMiddleware(BaseHTTPMiddleware)" not in middleware
     assert 'dict(scope.get("headers") or ()).get(b"x-tenant-id")' in middleware
     assert "if decision is None:" in middleware
     assert 'method in ("POST", "PUT", "PATCH", "DELETE")' in middleware
     assert 'redis_client.get("backpressure:write_throttle_active")' in middleware
+    assert 'request.headers.get("Authorization", "")' in middleware
+    assert "request.state.principal_type = principal_type" in middleware
+    assert 'request.headers.get("X-Idempotency-Key")' in middleware
+    assert "send_with_correlation" in middleware
+    assert "capture_status" in middleware
     assert "await self.app(scope, receive, send)" in middleware
