@@ -160,6 +160,33 @@ def sample(ids: list[uuid.UUID], queue: str, started: float) -> dict[str, int | 
     }
 
 
+def expire_processing_leases(ids: list[uuid.UUID]) -> int:
+    """Accelerate the production lease-expiry boundary for disposable CI.
+
+    The production lease is intentionally long (10 minutes). P10-Q certifies
+    replacement/reclaim behavior inside a bounded CI window by moving only the
+    already-owned synthetic rows past their lease deadline. The replacement
+    worker must still reclaim them through the real fenced claim path.
+    """
+    with connect_url("WORKER_DATABASE_URL") as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE public.branch_outbox_events
+                SET leased_until=pg_catalog.clock_timestamp()-INTERVAL '1 second'
+                WHERE outbox_id = ANY(%s)
+                  AND status='processing'
+                  AND leased_by IS NOT NULL
+                  AND leased_until > pg_catalog.clock_timestamp()
+                RETURNING outbox_id
+                """,
+                (ids,),
+            )
+            expired = len(cursor.fetchall())
+        connection.commit()
+    return expired
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--items", type=int, default=800)
@@ -219,6 +246,14 @@ def main() -> int:
         if remaining_after_stop <= 0:
             raise RuntimeError("no durable backlog remained at worker replacement boundary")
 
+        processing_at_stop = int(after_stop.get("processing", 0))
+        expired_leases = expire_processing_leases(ids)
+        if expired_leases != processing_at_stop:
+            raise RuntimeError(
+                "lease-expiry injection did not cover every processing row: "
+                f"processing={processing_at_stop} expired={expired_leases}"
+            )
+
         second = start_worker(queue, args.concurrency, log_dir / "worker-2.log")
         if second.hostname == first_hostname:
             raise RuntimeError("replacement worker identity did not change")
@@ -277,6 +312,9 @@ def main() -> int:
                 "first_hostname": first_hostname,
                 "replacement_hostname": second.hostname,
                 "durable_backlog_at_stop": remaining_after_stop,
+                "processing_at_stop": processing_at_stop,
+                "ci_expired_processing_leases": expired_leases,
+                "lease_expiry_fault_injection": True,
             },
             "replacement_drain": {
                 "items": replacement_work,
