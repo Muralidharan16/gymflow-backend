@@ -93,7 +93,6 @@ jobs:
           set -euo pipefail
           IMAGE="doers-p10h:${{ github.event.pull_request.head.sha || github.sha }}"
           docker run -d --name p10h-api --network host             --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m             --security-opt no-new-privileges:true --cap-drop ALL             --cpus 1.5 --memory 384m --pids-limit 256             -e ENVIRONMENT=production -e DOERS_PROCESS_PROFILE=api             -e DATABASE_URL=postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test             -e AUTH_DATABASE_URL=postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test             -e REDIS_URL=redis://127.0.0.1:6379/0 -e CELERY_BROKER_URL=redis://127.0.0.1:6379/1 -e CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/2             -e SECRET_KEY=p10h-synthetic-secret-not-production -e AWS_ACCESS_KEY_ID=p10h-synthetic -e AWS_SECRET_ACCESS_KEY=p10h-synthetic -e S3_BUCKET_NAME=p10h-synthetic             -e NOTIFICATION_EMAIL_PROVIDER_MODE=disabled -e SEARCH_PROVIDER_MODE=disabled -e PLATFORM_BILLING_PROVIDER_MODE=disabled             -e PLATFORM_BILLING_CHECKOUT=false -e PLATFORM_BILLING_WEBHOOK_PROCESSING=false -e PLATFORM_BILLING_DUNNING_TRANSITIONS=false -e PLATFORM_BILLING_NOTIFICATIONS=false             -e P8_METRICS_OTLP_ENDPOINT=http://127.0.0.1:4324/v1/metrics -e P8_METRICS_EXPORT_INTERVAL_SECONDS=1 -e P8_METRICS_EXPORT_TIMEOUT_SECONDS=2             -e DOERS_PRESTOP_CONTROL_TOKEN=p10h-synthetic-control-token-0123456789abcdef0123456789abcdef             "$IMAGE"
-          trap 'docker rm -f p10h-api >/dev/null 2>&1 || true; [ -s /tmp/p10h-metrics.pid ] && kill "$(cat /tmp/p10h-metrics.pid)" >/dev/null 2>&1 || true' EXIT
           for _ in $(seq 1 90); do
             state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' p10h-api)"
             [ "$state" = healthy ] && break
@@ -113,8 +112,9 @@ jobs:
       - name: Prove graceful SIGTERM
         run: |
           set -euo pipefail
+          trap 'docker rm -f p10h-api >/dev/null 2>&1 || true; [ -s /tmp/p10h-metrics.pid ] && kill "$(cat /tmp/p10h-metrics.pid)" >/dev/null 2>&1 || true' EXIT
           started="$(date +%s)"
-          docker stop --time 15 p10h-api
+          docker stop --timeout 15 p10h-api
           elapsed=$(( $(date +%s) - started ))
           test "$elapsed" -le 15
           test "$(docker inspect -f '{{.State.ExitCode}}' p10h-api)" = 0
