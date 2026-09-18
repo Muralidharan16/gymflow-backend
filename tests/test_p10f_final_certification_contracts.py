@@ -9,7 +9,7 @@ DOC = ROOT / "docs/architecture/P10F_FINAL_CERTIFICATION.md"
 P9_BASE = "33abd2bad81c65ac998b91726cc314ab54080010"
 P9_TREE = "a6a0a87ebbaa251482c67f1bc4cbd9dc8ab7d1e0"
 ALEMBIC_HEAD = "zk07d8e9f0a45"
-BUDGET_DIGEST = "88705c91dfefc80d835e3c0faed55a0d8becfa46e0df710d82b3baf14f919008"
+BUDGET_DIGEST = "b8613f5deab4d1dba77ba41d86b4cb4d8e8dab6b85fa5630a6206105951b8520"
 
 P10_SLICES = (
     ".github/workflows/p10-governance-performance-security.yml",
