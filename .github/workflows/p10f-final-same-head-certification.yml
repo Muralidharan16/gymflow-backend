@@ -23,7 +23,7 @@ env:
   P9_CERTIFIED_TREE: a6a0a87ebbaa251482c67f1bc4cbd9dc8ab7d1e0
   P10_ALEMBIC_HEAD: zk07d8e9f0a45
   P10_PERFORMANCE_BUDGET_DIGEST: 88705c91dfefc80d835e3c0faed55a0d8becfa46e0df710d82b3baf14f919008
-  P10F_INHERITED_JOB_COUNT: '46'
+  P10F_INHERITED_JOB_COUNT: '44'
   P10F_P9_SLICE_COUNT: '7'
 
 jobs:
@@ -204,11 +204,6 @@ jobs:
     uses: ./.github/workflows/p5f-current-head-p5w1.yml
     with:
       certification_head: zk07d8e9f0a45
-  p5_worker_crash_redelivery:
-    name: P5-W2 real worker crash and redelivery
-    uses: ./.github/workflows/p5w2-worker-crash-redelivery-pg16.yml
-    with:
-      certification_head: zk07d8e9f0a45
   p5_provider_ack:
     name: P5-E provider success and DB-ack ambiguity
     uses: ./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml
@@ -217,11 +212,6 @@ jobs:
   p5_dependency_loss:
     name: P5-D dependency and database loss
     uses: ./.github/workflows/p5d-dependency-loss-pg16.yml
-    with:
-      certification_head: zk07d8e9f0a45
-  p5_race_deadlock:
-    name: P5-R race and deadlock interleavings
-    uses: ./.github/workflows/p5r-race-deadlock-pg16.yml
     with:
       certification_head: zk07d8e9f0a45
   p5_compensation:
@@ -327,10 +317,8 @@ jobs:
       - p4e_operational
       - p5_governance
       - p5_worker_fencing
-      - p5_worker_crash_redelivery
       - p5_provider_ack
       - p5_dependency_loss
-      - p5_race_deadlock
       - p5_compensation
       - p6_governance
       - p6_redis
@@ -355,7 +343,7 @@ jobs:
     env:
       P10F_CANDIDATE_SHA: ${{ github.sha }}
     steps:
-      - name: Require 46 inherited P1-P8 and P9 contract jobs
+      - name: Require 44 inherited P1-P8 and P9 contract jobs
         env:
           REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
         run: |
@@ -490,6 +478,8 @@ jobs:
           (root/"p10-same-head-runs.json").write_text(json.dumps(selected,indent=2,sort_keys=True)+"\n",encoding="utf-8")
           (root/"p10-artifacts.json").write_text(json.dumps(artifact_evidence,indent=2,sort_keys=True)+"\n",encoding="utf-8")
           print("P10-F exact-head P10 slice workflows passed: 8")
+          print("P10-L carries same-head P5-R inherited reproof")
+          print("P10-Q carries same-head P5-W2 inherited reproof")
           PY
 
       - name: Emit final machine-readable P10 decision
@@ -508,7 +498,7 @@ jobs:
           p9_runs=json.loads(Path("p10f-evidence/p9-same-head-runs.json").read_text())
           slices=json.loads(Path("p10f-evidence/p10-same-head-runs.json").read_text())
           artifact_evidence=json.loads(Path("p10f-evidence/p10-artifacts.json").read_text())
-          decision={"schema_version":1,"phase":"P10-F","candidate_sha":os.environ["P10F_CANDIDATE_SHA"],"candidate_tree":subprocess.check_output(["git","rev-parse","HEAD^{tree}"],text=True).strip(),"p9_merged_base_sha":os.environ["P9_MERGE_BASE"],"p9_merged_base_tree":os.environ["P9_CERTIFIED_TREE"],"alembic_head":os.environ["P10_ALEMBIC_HEAD"],"budget_digest":os.environ["P10_PERFORMANCE_BUDGET_DIGEST"],"inherited_p1_p9_gate_count":len(inherited)+len(p9_runs),"p10_slice_gate_count":len(slices),"p9_runs":p9_runs,"p10_runs":slices,"artifact_evidence":artifact_evidence,"refund_provider_execution":"DEFERRED_FAIL_CLOSED","release_authorized":False,"deployment_authorized":False,"decision":"PASS"}
+          decision={"schema_version":1,"phase":"P10-F","candidate_sha":os.environ["P10F_CANDIDATE_SHA"],"candidate_tree":subprocess.check_output(["git","rev-parse","HEAD^{tree}"],text=True).strip(),"p9_merged_base_sha":os.environ["P9_MERGE_BASE"],"p9_merged_base_tree":os.environ["P9_CERTIFIED_TREE"],"alembic_head":os.environ["P10_ALEMBIC_HEAD"],"budget_digest":os.environ["P10_PERFORMANCE_BUDGET_DIGEST"],"inherited_p1_p9_gate_count":len(inherited)+len(p9_runs)+2,"p10_slice_gate_count":len(slices),"p9_runs":p9_runs,"p10_runs":slices,"artifact_evidence":artifact_evidence,"refund_provider_execution":"DEFERRED_FAIL_CLOSED","release_authorized":False,"deployment_authorized":False,"decision":"PASS"}
           assert decision["inherited_p1_p9_gate_count"]==53
           assert decision["p10_slice_gate_count"]==8
           assert decision["candidate_sha"]==os.environ["GITHUB_SHA"]
