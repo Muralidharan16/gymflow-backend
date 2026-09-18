@@ -20,3 +20,11 @@ def test_compose_uses_canonical_celery_and_no_reload():
     assert "app.core.celery_app:celery_app" in C
     assert "app.tasks.celery_app" not in C
     assert "--reload" not in C
+
+
+
+def test_production_static_scratch_uses_writable_tmp_boundary():
+    source = (ROOT / "app/main.py").read_text(encoding="utf-8")
+    assert "tempfile.gettempdir()" in source
+    assert "if settings.is_production" in source
+    assert '"doers-static"' in source
