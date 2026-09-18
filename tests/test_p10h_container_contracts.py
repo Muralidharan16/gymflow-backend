@@ -46,3 +46,16 @@ def test_graceful_shutdown_cleanup_happens_after_sigterm_proof():
     assert "trap 'docker rm -f p10h-api" in graceful
     runtime = workflow.split("- name: Run with mandatory runtime restrictions", 1)[1].split("- name: Prove graceful SIGTERM", 1)[0]
     assert "docker rm -f p10h-api" not in runtime
+
+
+
+def test_p10h_base_image_is_exact_low_vulnerability_alpine_and_runtime_has_no_pip():
+    assert "python:3.12.14-alpine3.24@sha256:c4634f578a412db396771b61b064c6e546c9d6414c7fb5b1b05d5871f1885f7b" in D
+    assert "/usr/local/lib/python3.12/site-packages/pip" in D
+    assert '"$VIRTUAL_ENV/lib/python3.12/site-packages/pip"' in D
+    assert "USER 10001:10001" in D
+
+
+def test_p10h_context_excludes_historical_auth_response_captures():
+    assert "login_out.json" in I
+    assert "reg_out.json" in I
