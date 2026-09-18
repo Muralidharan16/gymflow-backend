@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "policy": "Every suppression requires scanner, rule_or_advisory_id, exact scope, justification, owner, reviewed_at, and expires_at. Empty means no P10-X suppressions are authorized.",
+  "suppressions": []
+}

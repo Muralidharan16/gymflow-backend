@@ -1,0 +1,132 @@
+name: P10-X Security Scans and Secrets Config Fail Closed
+on:
+  push:
+    branches: [hardening/p10-performance-security-final-production-certification]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: p10x-security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  config:
+    name: Production secrets and configuration fail closed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {fetch-depth: 0, ref: ${{ github.event.pull_request.head.sha || github.sha }}}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.12', cache: pip, cache-dependency-path: requirements-test.lock}
+      - name: Install exact application lock and prove config contracts
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip freeze | LC_ALL=C sort >/tmp/resolved.txt
+          diff -u requirements-test.lock /tmp/resolved.txt
+          python -m pytest --noconftest -q --maxfail=1 tests/test_p10x_security_contracts.py
+          python -s scripts/ci/p10x_config_fail_closed.py | tee p10x-config.log
+          grep -q '^P10_SECRETS_CONFIG_FAIL_CLOSED=PASS$' p10x-config.log
+      - name: Emit config terminal marker
+        run: |
+          echo 'P10_SECRETS_CONFIG_FAIL_CLOSED=PASS'
+          echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+
+  scans:
+    name: Locked dependencies SAST secrets image vulnerabilities and SBOM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with: {fetch-depth: 0, ref: ${{ github.event.pull_request.head.sha || github.sha }}}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: {python-version: '3.12'}
+      - name: Install pinned Python security scanners
+        run: |
+          set -euo pipefail
+          mkdir -p p10x-evidence
+          python -m pip install 'pip==26.2.1' 'pip-audit==2.10.1' 'bandit==1.9.4'
+          { pip-audit --version; bandit --version; } | tee p10x-evidence/python-scanners.txt
+      - name: Install checksum-pinned Trivy and Gitleaks
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+          echo '2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  /tmp/trivy.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+          sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
+          curl -fsSL -o /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          { trivy --version; gitleaks version; } | tee p10x-evidence/native-scanners.txt
+      - name: Audit exact locked Python dependency graph
+        run: |
+          set -euo pipefail
+          pip-audit -r requirements-test.lock --format json --output p10x-evidence/pip-audit.json
+      - name: Run high-confidence high-severity Python SAST
+        run: |
+          set -euo pipefail
+          bandit -r app -lll -iii -f json -o p10x-evidence/bandit.json
+      - name: Scan complete Git repository history for secrets
+        run: |
+          set -euo pipefail
+          gitleaks git --redact --report-format json --report-path p10x-evidence/gitleaks.json .
+      - name: Build hardened exact candidate image
+        run: |
+          set -euo pipefail
+          IMAGE="doers-p10x:${{ github.event.pull_request.head.sha || github.sha }}"
+          docker build --pull=false -t "$IMAGE" .
+          docker image inspect "$IMAGE" >p10x-evidence/image-inspect.json
+          docker image inspect -f '{{.Id}}' "$IMAGE" >p10x-evidence/image-digest.txt
+      - name: Hard-stop High or Critical runtime image vulnerabilities
+        run: |
+          set -euo pipefail
+          IMAGE="doers-p10x:${{ github.event.pull_request.head.sha || github.sha }}"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --format json --output p10x-evidence/trivy-image.json "$IMAGE"
+      - name: Generate CycloneDX SBOM from certified image
+        run: |
+          set -euo pipefail
+          IMAGE="doers-p10x:${{ github.event.pull_request.head.sha || github.sha }}"
+          trivy image --format cyclonedx --output p10x-evidence/sbom.cdx.json "$IMAGE"
+          python - <<'PY'
+          import json
+          p=json.load(open("p10x-evidence/sbom.cdx.json"))
+          assert p.get("bomFormat")=="CycloneDX"
+          assert len(p.get("components",[]))>0
+          print("P10X_SBOM=PASS")
+          PY
+      - name: Reprove exact head and emit scan terminal marker
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'P10_SECURITY_SCANS=PASS'
+          echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+      - name: Upload security evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p10x-${{ github.event.pull_request.head.sha || github.sha }}
+          path: p10x-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
+  terminal:
+    name: P10-X exact-head terminal decision
+    if: always()
+    needs: [config, scans]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require both security surfaces
+        run: |
+          set -euo pipefail
+          test "${{ needs.config.result }}" = success
+          test "${{ needs.scans.result }}" = success
+          echo 'P10_SECURITY_SCANS=PASS'
+          echo 'P10_SECRETS_CONFIG_FAIL_CLOSED=PASS'
+          echo 'P10_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
