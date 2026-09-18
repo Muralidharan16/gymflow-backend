@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BUDGET_PATH = ROOT / "docs/architecture/p10_performance_budgets.v1.json"
 DIGEST_PATH = ROOT / "docs/architecture/p10_performance_budgets.v1.sha256"
 
-EXPECTED_DIGEST = "88705c91dfefc80d835e3c0faed55a0d8becfa46e0df710d82b3baf14f919008"
+EXPECTED_DIGEST = "0f5502c99f995a5824111bb7f7b2511b7940a2d937553bfc8defc3f3d76007c6"
 EXPECTED_SOURCE_SHA = "2c35d9c777f038b195f1191ffcaeeffbf14dc6e2"
 EXPECTED_P9_SHA = "33abd2bad81c65ac998b91726cc314ab54080010"
 EXPECTED_P9_TREE = "a6a0a87ebbaa251482c67f1bc4cbd9dc8ab7d1e0"
@@ -43,6 +43,16 @@ EXPECTED_BUDGETS = {
         "min_exact_terminal_ratio": 1.0,
         "max_external_provider_effects": 0,
         "max_broker_remaining": 0,
+    },
+    "soak_stability": {
+        "duration_seconds": 300,
+        "max_rss_growth_bytes": 33554432,
+        "max_db_connection_growth": 8,
+        "max_db_connections": 32,
+        "max_worker_broker_depth": 0,
+        "max_throughput_degradation_ratio": 0.15,
+        "max_overall_p95_growth_ratio": 1.2,
+        "max_write_p95_growth_ratio": 1.2,
     },
 }
 
