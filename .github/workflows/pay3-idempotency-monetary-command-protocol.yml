@@ -17,7 +17,7 @@ env:
   PAY3_BASE_SHA: f229e655ffd22500697d69fb6504ef48ecc827f1
   PAY3_BASE_TREE: 33bae8741c16925681414bf58ff0be3133c98391
   PAY3_PREDECESSOR: zl07d8e9f0a46
-  PAY3_HEAD: zm07d8e9f0a47
+  PAY3_HEAD: zn07d8e9f0a48
 
 jobs:
   contract:
@@ -52,12 +52,44 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse "${PAY3_BASE_SHA}^{tree}")" = "${PAY3_BASE_TREE}"
           git merge-base --is-ancestor "${PAY3_BASE_SHA}" HEAD
+          git diff --name-only "${PAY3_BASE_SHA}...HEAD" > /tmp/pay3-changed.txt
+          python - <<'PY_SCOPE'
+          from pathlib import Path
+          allowed={
+              ".github/workflows/pay3-idempotency-monetary-command-protocol.yml",
+              "alembic/versions/zm07d8e9f0a47_pay3_monetary_command_protocol.py",
+              "alembic/versions/zn07d8e9f0a48_pay3_monetary_command_ambiguity_repair.py",
+              "app/finance_core/domain/monetary_command.py",
+              "app/finance_core/models/__init__.py",
+              "app/finance_core/models/foundation.py",
+              "docs/architecture/PAY3_ACCEPTANCE_MATRIX.md",
+              "docs/architecture/PAY3_IDEMPOTENCY_MONETARY_COMMAND_PROTOCOL.md",
+              "docs/architecture/pay3_monetary_command_protocol_v1.json",
+              "security/cluster_role_bootstrap/ownership.v1.json",
+              "tests/finance_core/test_phase5b_foundation.py",
+              "tests/test_cluster_role_contract_manifests.py",
+              "tests/test_migration_app_secure_owner_context_boundary.py",
+              "tests/test_pay3_monetary_command_runtime.py",
+              "tests/test_pay3_monetary_command_static_contracts.py",
+          }
+          changed={line.strip() for line in Path('/tmp/pay3-changed.txt').read_text().splitlines() if line.strip()}
+          if changed != allowed:
+              raise SystemExit(f"PAY-3 exact scope mismatch: missing={sorted(allowed-changed)}, unexpected={sorted(changed-allowed)}")
+          migrations=sorted(p for p in changed if p.startswith('alembic/versions/'))
+          expected=[
+              'alembic/versions/zm07d8e9f0a47_pay3_monetary_command_protocol.py',
+              'alembic/versions/zn07d8e9f0a48_pay3_monetary_command_ambiguity_repair.py',
+          ]
+          if migrations != expected:
+              raise SystemExit(f"PAY-3 migration scope mismatch: {migrations}")
+          print(f"PAY-3 exact allowlist paths: {len(changed)}")
+          PY_SCOPE
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY3_HEAD}"
       - name: PAY-3 contracts
         run: |
           set -euo pipefail
-          python -m py_compile             app/finance_core/domain/monetary_command.py             alembic/versions/zm07d8e9f0a47_pay3_monetary_command_protocol.py
+          python -m py_compile             app/finance_core/domain/monetary_command.py             alembic/versions/zm07d8e9f0a47_pay3_monetary_command_protocol.py             alembic/versions/zn07d8e9f0a48_pay3_monetary_command_ambiguity_repair.py
           python -m json.tool docs/architecture/pay3_monetary_command_protocol_v1.json >/dev/null
           python -m pytest --noconftest -q --maxfail=1             tests/test_pay3_monetary_command_static_contracts.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py
           echo 'PAY3_MONETARY_COMMAND_PROTOCOL=PASS'
@@ -147,6 +179,7 @@ jobs:
           python -m pytest --noconftest -q tests/test_pay3_monetary_command_runtime.py
           echo 'PAY3_IDEMPOTENT_REPLAY=PASS'
           echo 'PAY3_UNKNOWN_OUTCOME_FENCING=PASS'
+          echo 'PAY3_CONCURRENCY_CRASH=PASS'
       - name: Prove populated downgrade fails closed then empty lifecycle works
         run: |
           set -euo pipefail
@@ -155,7 +188,7 @@ jobs:
           RC=$?
           set -e
           test "$RC" -ne 0
-          printf '%s\n' "$OUTPUT" | grep -F 'PAY-3 downgrade blocked: durable monetary command evidence exists'
+          printf '%s\n' "$OUTPUT" | grep -F 'PAY-3 repair downgrade blocked: durable ambiguity evidence exists'
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_pay3_test             -c 'DELETE FROM finance.monetary_commands'
           python -s -m alembic -c alembic.ini downgrade "${PAY3_PREDECESSOR}"
           python -s -m alembic -c alembic.ini upgrade "${PAY3_HEAD}"
@@ -241,6 +274,7 @@ jobs:
           echo 'PAY3_MONETARY_COMMAND_PROTOCOL=PASS'
           echo 'PAY3_IDEMPOTENT_REPLAY=PASS'
           echo 'PAY3_UNKNOWN_OUTCOME_FENCING=PASS'
+          echo 'PAY3_CONCURRENCY_CRASH=PASS'
           echo 'PAY3_DIRECT_DML_DENIAL=PASS'
           echo 'PAY3_DURABLE_EVIDENCE=PASS'
           echo 'PAY3_MIGRATION_LIFECYCLE=PASS'
