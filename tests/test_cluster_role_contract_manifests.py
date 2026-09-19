@@ -20,8 +20,8 @@ OWNERSHIP_MANIFEST = (
     / "ownership.v1.json"
 )
 EXPECTED_OWNERSHIP_SHA256 = (
-    "f24266c29830e664206c10b9695f5b7"
-    "c47728657f4b1145e4785ca02027dd9a0"
+    "2131aaccd4f02c4ba0e6c54dc72ab8d6"
+    "adc553c8c1eb8c33054b3f1f64c69822"
 )
 
 
@@ -328,7 +328,7 @@ def test_ownership_manifest_matches_reviewed_projection() -> None:
 
     ownership = json.loads(payload.decode("utf-8"))
     objects = ownership["objects"]
-    assert len(objects) == 196
+    assert len(objects) == 204
     assert not any(record["object"] == "IF" for record in objects)
     assert {
         "dynamic": False,
@@ -449,3 +449,24 @@ PAY2_FINANCE_CAPABILITY_ROLES_FOR_TEST = (
     "finance_read_runtime",
     "finance_maintenance_runtime",
 )
+
+
+def test_pay4_member_finance_ownership_projection_is_exact() -> None:
+    bundle = load_contract_bundle()
+    by_name = {record["object"]: record for record in bundle.ownership["objects"]}
+    for name in (
+        "finance.payment_contexts",
+        "finance.member_subscription_finance_bindings",
+    ):
+        assert by_name[name]["target_owner"] == "migration_owner"
+    for name in (
+        "app_secure.create_member_subscription_pending_term(uuid)",
+        "app_secure.record_member_subscription_finance_binding(uuid,uuid)",
+        "app_secure.apply_member_subscription_finance_event(uuid,text)",
+        "app_secure.pay4_reject_binding_mutation()",
+        "app_secure.pay4_guard_subscription_activation()",
+        "app_secure.pay4_guard_v2_activation()",
+    ):
+        assert by_name[name]["target_owner"] == "app_security_owner"
+    for role in PAY2_FINANCE_CAPABILITY_ROLES_FOR_TEST + ("app_runtime", "worker_runtime"):
+        assert role in set(bundle.ownership["forbidden_object_owners"])
