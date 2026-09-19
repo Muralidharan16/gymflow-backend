@@ -556,7 +556,7 @@ async def test_member_search_by_number_name_phone_and_branch(client, test_data):
 
 
 @pytest.mark.asyncio
-async def test_member_search_active_subscription_projection(client, test_data, db_session):
+async def test_member_search_active_subscription_projection(client, test_data, db_session, admin_db_session):
     headers = get_headers(test_data["owner_id"], test_data["org_id"])
     create_resp = await client.post(
         f"/organizations/{test_data['org_id']}/members",
@@ -594,8 +594,13 @@ async def test_member_search_active_subscription_projection(client, test_data, d
         status=PlanStatus.active,
     )
     db_session.add(plan)
-    await db_session.flush()
-    db_session.add(
+    await db_session.commit()
+
+    # PAY-4 forbids ordinary app runtime from manufacturing active entitlement.
+    # This test needs a historical active row only to characterize member-search
+    # projection behavior, so seed that legacy state through the explicit
+    # administrative fixture identity.
+    admin_db_session.add(
         MemberSubscriptionV2(
             id=subscription_id,
             org_id=test_data["org_id"],
@@ -613,7 +618,7 @@ async def test_member_search_active_subscription_projection(client, test_data, d
             max_members_snapshot=1,
         )
     )
-    await db_session.commit()
+    await admin_db_session.commit()
 
     response = await client.get(
         f"/organizations/{test_data['org_id']}/members",
