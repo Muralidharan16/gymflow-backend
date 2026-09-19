@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-4",
+  "date": "2026-09-19",
+  "branch": "hardening/pay4-member-finance-binding",
+  "inherited_pay3": {
+    "commit": "4cddca720ddaac4a4f29cfc0eaf2019ecd821464",
+    "tree": "a4e562171d9bb3cc407063cb88bd183597318b8c",
+    "certification": "PAY3_FINAL=PASS"
+  },
+  "alembic": {
+    "predecessor": "zn07d8e9f0a48",
+    "head": "zo07d8e9f0a49"
+  },
+  "canonical_binding": {
+    "relation": "finance.member_subscription_finance_bindings",
+    "payment_context_relation": "finance.payment_contexts",
+    "immutable": true,
+    "fields": [
+      "subscription_term_id",
+      "finance_invoice_id",
+      "finance_payment_context_id",
+      "organization_id",
+      "member_id",
+      "plan_snapshot",
+      "amount",
+      "currency_code"
+    ]
+  },
+  "admission": {
+    "compatibility_projection": "member_subscriptions_v2:pending",
+    "canonical_term": "subscription_terms:pending_payment",
+    "direct_active_creation_by_app_runtime": false
+  },
+  "activation_gate": {
+    "payment_missing": "no_activation",
+    "payment_pending": "no_activation",
+    "payment_failed": "no_activation",
+    "payment_amount_mismatch": "no_activation",
+    "payment_currency_mismatch": "no_activation",
+    "fully_applied_matching_finance_payment": "exactly_one_activation"
+  },
+  "activation_authority": {
+    "source": "finance.invoice.paid durable outbox event",
+    "frontend_callback": false,
+    "razorpay_js_success": false,
+    "raw_webhook": false,
+    "api_amount_or_currency": false,
+    "production_worker_execute_bound": false,
+    "next_phase_binding": "PAY-5"
+  },
+  "migration_safety": {
+    "existing_finance_table_rewrite": false,
+    "existing_lifecycle_row_backfill": false,
+    "populated_downgrade": "blocked_if_binding_or_activation_evidence_exists",
+    "empty_roundtrip_required": true,
+    "predecessor_acl_preserved": true,
+    "lock_timeout": "3s_transaction_local",
+    "statement_timeout": "30s_transaction_local"
+  },
+  "live_money_movement": false,
+  "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+  "next_phase": "PAY-5"
+}

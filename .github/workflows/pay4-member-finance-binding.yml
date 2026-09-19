@@ -1,0 +1,370 @@
+name: PAY-4 Member Finance Binding
+
+on:
+  push:
+    branches:
+      - hardening/pay4-member-finance-binding
+  pull_request:
+    branches:
+      - hardening/pay3-idempotency-monetary-command-protocol
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay4-member-finance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY4_BASE_SHA: 4cddca720ddaac4a4f29cfc0eaf2019ecd821464
+  PAY4_BASE_TREE: a4e562171d9bb3cc407063cb88bd183597318b8c
+  PAY4_PREDECESSOR: zn07d8e9f0a48
+  PAY4_HEAD: zo07d8e9f0a49
+  PAY4_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-4 static member Finance authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay4_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay4-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay4-static
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY4_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Exact PAY-4 scope and graph
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY4_BASE_SHA}^{tree}")" = "${PAY4_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY4_BASE_SHA}" HEAD
+          git diff --name-only "${PAY4_BASE_SHA}...HEAD" > /tmp/pay4-changed.txt
+          python - <<'PY_SCOPE'
+          from pathlib import Path
+          allowed={
+              ".github/workflows/pay4-member-finance-binding.yml",
+              "alembic/versions/zo07d8e9f0a49_pay4_member_finance_binding.py",
+              "app/finance_core/models/__init__.py",
+              "app/finance_core/models/foundation.py",
+              "app/finance_core/services/member_subscription_checkout.py",
+              "app/repositories/member_subscription_v2_repo.py",
+              "app/services/member_subscription_v2_service.py",
+              "docs/architecture/PAY4_ACCEPTANCE_MATRIX.md",
+              "docs/architecture/PAY4_MEMBER_FINANCE_BINDING.md",
+              "docs/architecture/pay4_member_finance_binding_v1.json",
+              "security/cluster_role_bootstrap/ownership.v1.json",
+              "tests/finance_core/admin_database.py",
+              "tests/finance_core/test_phase5b_foundation.py",
+              "tests/test_cluster_role_contract_manifests.py",
+              "tests/test_migration_app_secure_owner_context_boundary.py",
+              "tests/test_member_subscriptions_v2.py",
+              "tests/test_members.py",
+              "tests/test_p4d_refund_obligation_resolution_runtime.py",
+              "tests/test_pay0_payment_architecture_inventory.py",
+              "tests/test_pay4_member_finance_binding_runtime.py",
+              "tests/test_pay4_member_finance_binding_static.py",
+          }
+          changed={x.strip() for x in Path("/tmp/pay4-changed.txt").read_text().splitlines() if x.strip()}
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-4 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          migrations=sorted(x for x in changed if x.startswith("alembic/versions/"))
+          if migrations != ["alembic/versions/zo07d8e9f0a49_pay4_member_finance_binding.py"]:
+              raise SystemExit(f"PAY-4 migration scope mismatch: {migrations}")
+          print(f"PAY-4 exact allowlist paths: {len(changed)}")
+          PY_SCOPE
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY4_HEAD}"
+      - name: PAY-4 static contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            app/services/member_subscription_v2_service.py \
+            app/repositories/member_subscription_v2_repo.py \
+            app/finance_core/services/member_subscription_checkout.py \
+            app/finance_core/models/foundation.py \
+            alembic/versions/zo07d8e9f0a49_pay4_member_finance_binding.py
+          python -m json.tool docs/architecture/pay4_member_finance_binding_v1.json >/dev/null
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_pay4_member_finance_binding_static.py \
+            tests/test_cluster_role_contract_manifests.py \
+            tests/test_migration_managed_role_boundary.py \
+            tests/test_migration_app_secure_owner_context_boundary.py
+          echo 'PAY4_MEMBER_FINANCE_BINDING=PASS'
+          echo 'PAY4_ACTIVATION_BYPASS_DENIAL=PASS'
+
+  protocol_pg16:
+    name: PAY-4 real PG16 binding activation and migration proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay4-migration@127.0.0.1:5432/gymflow_pay4_test
+      PAY4_APP_DATABASE_URL: postgresql://pay4_app_test:ci-pay4-app@127.0.0.1:5432/gymflow_pay4_test
+      PAY4_WORKER_DATABASE_URL: postgresql://pay4_worker_test:ci-pay4-worker@127.0.0.1:5432/gymflow_pay4_test
+      PAY4_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay4-migration@127.0.0.1:5432/gymflow_pay4_test
+      PAY4_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay4-postgres@127.0.0.1:5432/gymflow_pay4_test
+      SECRET_KEY: pay4-pg16-not-production
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay4-pg16
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY4_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Install PG16 and canonical roles
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE postgres PASSWORD 'ci-pay4-postgres';
+          ALTER ROLE migration_owner PASSWORD 'ci-pay4-migration';
+          CREATE ROLE pay4_app_test LOGIN PASSWORD 'ci-pay4-app'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay4_worker_test LOGIN PASSWORD 'ci-pay4-worker'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT app_runtime TO pay4_app_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO pay4_worker_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_pay4_test OWNER migration_owner;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_pay4_test
+      - name: Upgrade certified PAY-3 predecessor and fingerprint it
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY4_PREDECESSOR}"
+          PGPASSWORD=ci-pay4-migration psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_pay4_test -At <<'SQL' > /tmp/pay4-rel-before.txt
+          SELECT n.nspname||'.'||c.relname||'|'||c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname IN ('public','finance')
+            AND c.relkind IN ('r','p')
+          ORDER BY 1;
+          SQL
+          PGPASSWORD=ci-pay4-migration psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_pay4_test -At <<'SQL' > /tmp/pay4-acl-before.txt
+          SELECT table_schema||'.'||table_name||'|'||grantee||'|'||privilege_type
+          FROM information_schema.role_table_grants
+          WHERE table_schema IN ('public','finance')
+            AND grantee IN ('app_security_owner','app_runtime','worker_runtime')
+          UNION ALL
+          SELECT table_schema||'.'||table_name||'.'||column_name||'|'||grantee||'|'||privilege_type
+          FROM information_schema.column_privileges
+          WHERE table_schema IN ('public','finance')
+            AND grantee IN ('app_security_owner','app_runtime','worker_runtime')
+          ORDER BY 1;
+          SQL
+      - name: Upgrade PAY-4 and prove no predecessor table rewrite
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY4_HEAD}"
+          PGPASSWORD=ci-pay4-migration psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_pay4_test -At <<'SQL' > /tmp/pay4-rel-after.txt
+          SELECT n.nspname||'.'||c.relname||'|'||c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname IN ('public','finance')
+            AND c.relkind IN ('r','p')
+            AND NOT (n.nspname='finance' AND c.relname IN (
+              'payment_contexts','member_subscription_finance_bindings'
+            ))
+          ORDER BY 1;
+          SQL
+          diff -u /tmp/pay4-rel-before.txt /tmp/pay4-rel-after.txt
+          PGPASSWORD=ci-pay4-migration psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_pay4_test <<'SQL'
+          SET ROLE app_security_owner;
+          GRANT EXECUTE ON FUNCTION
+            app_secure.apply_member_subscription_finance_event(uuid,text)
+            TO worker_runtime;
+          RESET ROLE;
+          SQL
+      - name: Real PAY-4 authority and adversarial runtime proof
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_pay4_member_finance_binding_runtime.py
+          echo 'PAY4_PENDING_PAYMENT_ADMISSION=PASS'
+          echo 'PAY4_FINANCE_EVENT_ACTIVATION=PASS'
+          echo 'PAY4_ACTIVATION_BYPASS_DENIAL=PASS'
+          echo 'PAY4_EXACTLY_ONCE_ACTIVATION=PASS'
+      - name: Populated downgrade fails closed
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from tests.test_pay4_member_finance_binding_runtime import (
+              _cleanup,_seed_pending,_seed_invoice_and_binding
+          )
+          _cleanup()
+          term=_seed_pending()
+          _seed_invoice_and_binding(term)
+          PY
+          set +e
+          OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY4_PREDECESSOR}" 2>&1)"
+          RC=$?
+          set -e
+          test "$RC" -ne 0
+          printf '%s\n' "$OUTPUT" | grep -F \
+            'PAY-4 downgrade blocked: member-Finance binding/activation evidence exists'
+          python - <<'PY'
+          from tests.test_pay4_member_finance_binding_runtime import _cleanup
+          _cleanup()
+          PY
+      - name: Empty downgrade restores exact predecessor then re-upgrade
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini downgrade "${PAY4_PREDECESSOR}"
+          PGPASSWORD=ci-pay4-migration psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_pay4_test -At <<'SQL' > /tmp/pay4-rel-restored.txt
+          SELECT n.nspname||'.'||c.relname||'|'||c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname IN ('public','finance')
+            AND c.relkind IN ('r','p')
+          ORDER BY 1;
+          SQL
+          PGPASSWORD=ci-pay4-migration psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_pay4_test -At <<'SQL' > /tmp/pay4-acl-restored.txt
+          SELECT table_schema||'.'||table_name||'|'||grantee||'|'||privilege_type
+          FROM information_schema.role_table_grants
+          WHERE table_schema IN ('public','finance')
+            AND grantee IN ('app_security_owner','app_runtime','worker_runtime')
+          UNION ALL
+          SELECT table_schema||'.'||table_name||'.'||column_name||'|'||grantee||'|'||privilege_type
+          FROM information_schema.column_privileges
+          WHERE table_schema IN ('public','finance')
+            AND grantee IN ('app_security_owner','app_runtime','worker_runtime')
+          ORDER BY 1;
+          SQL
+          diff -u /tmp/pay4-rel-before.txt /tmp/pay4-rel-restored.txt
+          diff -u /tmp/pay4-acl-before.txt /tmp/pay4-acl-restored.txt
+          python -s -m alembic -c alembic.ini upgrade "${PAY4_HEAD}"
+          echo 'PAY4_MIGRATION_LIFECYCLE=PASS'
+
+  architecture:
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+  general_platform:
+    uses: ./.github/workflows/hardening-ci.yml
+  finance:
+    uses: ./.github/workflows/finance-hardening-ci.yml
+  migration_lifecycle:
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+  migration_preservation:
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+  migration_adversarial:
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+  migration_contracts:
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+  migration_semantics:
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+
+  certify:
+    name: Terminal immutable PAY-4 decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - protocol_pg16
+      - architecture
+      - general_platform
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all PAY-4 gates
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          data=json.loads(os.environ["RESULTS"])
+          bad={k:v["result"] for k,v in data.items() if v["result"]!="success"}
+          if bad:
+              raise SystemExit(f"PAY-4 prerequisite failure: {bad}")
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY4_CANDIDATE_SHA }}
+      - name: Bind exact PAY-4 candidate
+        run: |
+          set -euo pipefail
+          mkdir -p pay4-evidence
+          test "$(git rev-parse "${PAY4_BASE_SHA}^{tree}")" = "${PAY4_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY4_BASE_SHA}" HEAD
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          decision={
+            "phase":"PAY-4",
+            "candidate_sha":os.environ["PAY4_CANDIDATE_SHA"],
+            "candidate_tree":subprocess.check_output(
+              ["git","rev-parse","HEAD^{tree}"],text=True
+            ).strip(),
+            "inherited_pay3_sha":os.environ["PAY4_BASE_SHA"],
+            "alembic_head":os.environ["PAY4_HEAD"],
+            "live_money_movement":False,
+            "refund_provider_execution":"DEFERRED_FAIL_CLOSED",
+            "merge_authorized":False,
+            "release_authorized":False,
+            "deployment_authorized":False,
+            "decision":"PASS",
+          }
+          Path("pay4-evidence/decision.json").write_text(
+              json.dumps(decision,indent=2,sort_keys=True)+"\n"
+          )
+          PY
+          cat pay4-evidence/decision.json
+          echo 'PAY4_MEMBER_FINANCE_BINDING=PASS'
+          echo 'PAY4_PENDING_PAYMENT_ADMISSION=PASS'
+          echo 'PAY4_FINANCE_EVENT_ACTIVATION=PASS'
+          echo 'PAY4_ACTIVATION_BYPASS_DENIAL=PASS'
+          echo 'PAY4_EXACTLY_ONCE_ACTIVATION=PASS'
+          echo 'PAY4_MIGRATION_LIFECYCLE=PASS'
+          echo 'PAY4_PAY3_INHERITED=PASS'
+          echo 'PAY4_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY4_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+          echo 'PAY4_FINAL=PASS'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay4-final-${{ github.sha }}
+          path: pay4-evidence/
+          if-no-files-found: error
+          retention-days: 30

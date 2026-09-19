@@ -101,6 +101,9 @@ _PAY3_MONETARY_COMMAND_MIGRATION = (
 _PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION = (
     "zn07d8e9f0a48_pay3_monetary_command_ambiguity_repair.py"
 )
+_PAY4_MEMBER_FINANCE_BINDING_MIGRATION = (
+    "zo07d8e9f0a49_pay4_member_finance_binding.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -142,6 +145,7 @@ APP_SECURE_FILES.update(
         _PAY2_FINANCIAL_AUTHORITY_MIGRATION,
         _PAY3_MONETARY_COMMAND_MIGRATION,
         _PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION,
+        _PAY4_MEMBER_FINANCE_BINDING_MIGRATION,
     }
 )
 
@@ -287,6 +291,14 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # Repair only replaces reduced-owner functions and adds table columns;
         # it does not broaden schema/view/policy DDL.
         _PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION: set(),
+        # PAY-4 introduces tenant RLS policies around the canonical binding,
+        # payment context and product lifecycle capabilities.
+        _PAY4_MEMBER_FINANCE_BINDING_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
         A1.name: view_contract,
     }
     actual = {

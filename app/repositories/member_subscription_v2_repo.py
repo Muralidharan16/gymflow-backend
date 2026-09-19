@@ -92,7 +92,11 @@ class MemberSubscriptionV2Repository:
             .where(
                 MemberSubscriptionV2.org_id == org_id,
                 MemberSubscriptionV2.primary_member_id == member_id,
-                MemberSubscriptionV2.status.in_([ModernSubscriptionStatus.active, ModernSubscriptionStatus.frozen]),
+                MemberSubscriptionV2.status.in_([
+                    ModernSubscriptionStatus.pending,
+                    ModernSubscriptionStatus.active,
+                    ModernSubscriptionStatus.frozen,
+                ]),
                 MemberSubscriptionV2.end_date > start_date,
             )
         )
