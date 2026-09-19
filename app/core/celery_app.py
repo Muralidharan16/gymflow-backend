@@ -78,6 +78,7 @@ celery_app.conf.update(
         "app.tasks.branch_hours_partition",
         "app.tasks.outbox_poller",
         "app.tasks.branch_outbox_poller",
+        "app.tasks.finance_event_dispatcher",
         "app.tasks.branch_lifecycle_sweeps",
     ),
     task_routes={
@@ -146,6 +147,10 @@ celery_app.conf.beat_schedule = {
     },
     "poll-branch-outbox": {
         "task": "app.tasks.branch_outbox_poller.run",
+        "schedule": crontab(minute="*"),
+    },
+    "poll-finance-events": {
+        "task": "app.tasks.finance_event_dispatcher.run",
         "schedule": crontab(minute="*"),
     },
     "watchdog-sweep": {
