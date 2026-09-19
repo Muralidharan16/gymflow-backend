@@ -3,7 +3,7 @@ import uuid
 from datetime import date
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.member import Member
@@ -82,7 +82,7 @@ class MemberSubscriptionV2Service:
             subscription_code=subscription_code,
             start_date=start_date,
             end_date=end_date,
-            status=ModernSubscriptionStatus.active,
+            status=ModernSubscriptionStatus.pending,
             price_snapshot=plan.price,
             currency_code=plan.currency,
             duration_value_snapshot=plan.duration_value,
@@ -102,6 +102,17 @@ class MemberSubscriptionV2Service:
             is_active=True,
         )
         await self.repo.create_member(slot)
+
+        # PAY-4: the V2 row is only a compatibility projection. The canonical
+        # entitlement term is born pending_payment and cannot become active
+        # until the Finance-paid event capability proves authoritative truth.
+        await self.session.execute(
+            text(
+                "SELECT * FROM app_secure.create_member_subscription_pending_term(:subscription_id)"
+            ),
+            {"subscription_id": subscription.id},
+        )
+
         subscription.members = [slot]
         return subscription
 
