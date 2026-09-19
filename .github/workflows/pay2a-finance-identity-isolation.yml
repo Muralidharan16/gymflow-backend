@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 55
     env:
       MIGRATION_PASSWORD: ci-migration-owner
+      P2B_DATABASE: gymflow_pay2a_identity
       DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:ci-migration-owner@127.0.0.1:5432/postgres
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -91,7 +92,10 @@ jobs:
           set -euo pipefail
           bash scripts/ci/certify_fresh_cluster_bootstrap_fail_closed.sh
           bash scripts/ci/bootstrap_cluster_roles.sh
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres -c "ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          CREATE DATABASE gymflow_pay2a_identity OWNER migration_owner;
+          SQL
           python -s scripts/verify_cluster_role_bootstrap.py
           python -s scripts/verify_cluster_identity_graph.py
 
