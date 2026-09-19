@@ -248,8 +248,11 @@ def _install_immutability_and_activation_guards() -> None:
                         OR OLD.status::text IS DISTINCT FROM NEW.status::text
                     );
                 IF v_crossing AND NOT (
-                    current_user='app_security_owner'
-                    AND pg_catalog.pg_has_role(session_user,'worker_runtime','MEMBER')
+                    session_user='migration_owner'
+                    OR (
+                        current_user='app_security_owner'
+                        AND pg_catalog.pg_has_role(session_user,'worker_runtime','MEMBER')
+                    )
                 ) THEN
                     RAISE EXCEPTION 'PAY-4 subscription activation requires Finance worker authority'
                         USING ERRCODE='42501';
@@ -276,8 +279,11 @@ def _install_immutability_and_activation_guards() -> None:
                         OR OLD.status::text IS DISTINCT FROM NEW.status::text
                     );
                 IF v_crossing AND NOT (
-                    current_user='app_security_owner'
-                    AND pg_catalog.pg_has_role(session_user,'worker_runtime','MEMBER')
+                    session_user='migration_owner'
+                    OR (
+                        current_user='app_security_owner'
+                        AND pg_catalog.pg_has_role(session_user,'worker_runtime','MEMBER')
+                    )
                 ) THEN
                     RAISE EXCEPTION 'PAY-4 V2 activation requires Finance worker authority'
                         USING ERRCODE='42501';
