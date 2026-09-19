@@ -337,8 +337,7 @@ def _install_functions() -> None:
                 SELECT * INTO v_consumption
                 FROM public.member_subscription_finance_event_consumptions c
                 WHERE c.finance_event_id=p_finance_event_id
-                   OR c.idempotency_key=v_consume_key
-                FOR SHARE;
+                   OR c.idempotency_key=v_consume_key;
                 IF FOUND THEN
                     IF v_consumption.finance_event_id IS DISTINCT FROM p_finance_event_id
                        OR v_consumption.org_id IS DISTINCT FROM v_org
