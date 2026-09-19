@@ -140,8 +140,7 @@ def _install_consumption_table() -> None:
             id UUID PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
             org_id UUID NOT NULL
                 REFERENCES public.organizations(id) ON DELETE RESTRICT,
-            finance_event_id UUID NOT NULL
-                REFERENCES finance.outbox_events(id) ON DELETE RESTRICT,
+            finance_event_id UUID NOT NULL,
             idempotency_key VARCHAR(200) NOT NULL,
             finance_payload_sha256 CHAR(64) NOT NULL,
             subscription_term_id UUID NOT NULL,
