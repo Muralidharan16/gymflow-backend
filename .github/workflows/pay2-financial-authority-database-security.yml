@@ -73,6 +73,7 @@ jobs:
               "security/cluster_role_bootstrap/role_settings.v1.json",
               "security/cluster_role_bootstrap/roles.v1.json",
               "tests/test_cluster_role_contract_manifests.py",
+              "tests/test_migration_app_secure_owner_context_boundary.py",
               "tests/test_migration_managed_role_boundary.py",
               "tests/test_pay2_financial_authority_runtime.py",
               "tests/test_pay2_financial_authority_static_contracts.py",

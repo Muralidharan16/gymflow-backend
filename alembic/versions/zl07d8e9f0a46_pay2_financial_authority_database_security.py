@@ -372,7 +372,7 @@ def _post_install_proof(bind) -> None:
     expected.add(("ledger_entries", _LEDGER_TRIGGER))
     rows = bind.execute(sa.text(
         """
-        SELECT c.relname,t.tgname,t.tgenabled
+        SELECT c.relname,t.tgname,(t.tgenabled = 'O') AS enabled
         FROM pg_catalog.pg_trigger t
         JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
         JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
@@ -384,7 +384,7 @@ def _post_install_proof(bind) -> None:
         "immutable_trigger": _IMMUTABLE_TRIGGER,
         "ledger_trigger": _LEDGER_TRIGGER,
     }).all()
-    actual={(str(r[0]),str(r[1])) for r in rows if str(r[2]) == "O"}
+    actual={(str(r[0]),str(r[1])) for r in rows if bool(r[2])}
     if actual != expected:
         raise RuntimeError(f"PAY-2 immutable trigger inventory drift: {sorted(actual)!r}")
 
