@@ -599,7 +599,13 @@ async def test_member_search_active_subscription_projection(client, test_data, d
     # PAY-4 forbids ordinary app runtime from manufacturing active entitlement.
     # This test needs a historical active row only to characterize member-search
     # projection behavior, so seed that legacy state through the explicit
-    # administrative fixture identity.
+    # migration-owner fixture identity with the same tenant GUC enforced by RLS.
+    await _set_owner_context(
+        admin_db_session,
+        owner_id=test_data["owner_id"],
+        org_id=test_data["org_id"],
+        request_suffix=f"{test_data['suffix']}-historical-active",
+    )
     admin_db_session.add(
         MemberSubscriptionV2(
             id=subscription_id,
