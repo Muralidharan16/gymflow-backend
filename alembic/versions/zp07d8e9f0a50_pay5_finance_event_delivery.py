@@ -423,7 +423,7 @@ def _install_functions() -> None:
 
                 UPDATE finance.outbox_events e
                 SET status='published',
-                    published_at=COALESCE(e.published_at,pg_catalog.clock_timestamp()),
+                    published_at=pg_catalog.clock_timestamp(),
                     acknowledged_at=pg_catalog.clock_timestamp(),
                     leased_by=NULL,
                     leased_until=NULL,
