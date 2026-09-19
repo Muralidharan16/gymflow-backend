@@ -451,81 +451,7 @@ class FinancePaymentContext(Base):
             name="chk_finance_payment_contexts_type",
         ),
         CheckConstraint(
-            "char_length(business_reference) = 54 AND "
-            "business_reference ~ '^subscription_term:[0-9a-f-]{36}'",
-            name="chk_finance_payment_contexts_business",
-        ),
-        {"schema": SCHEMA},
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()")
-    )
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False
-    )
-    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
-    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()")
-    )
-
-
-class FinanceMemberSubscriptionFinanceBinding(Base):
-    __tablename__ = "member_subscription_finance_bindings"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["subscription_term_id", "organization_id"],
-            ["subscription_terms.id", "subscription_terms.org_id"],
-            name="fk_pay4_binding_term_org",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["finance_invoice_id", "organization_id"],
-            ["finance.invoices.id", "finance.invoices.organization_id"],
-            name="fk_pay4_binding_invoice_org",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["finance_payment_context_id", "organization_id"],
-            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
-            name="fk_pay4_binding_context_org",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["member_id", "organization_id"],
-            ["members.id", "members.org_id"],
-            name="fk_pay4_binding_member_org",
-            ondelete="RESTRICT",
-        ),
-        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
-        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
-        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
-        CheckConstraint("jsonb_typeof(plan_snapshot) = 'object'", name="chk_pay4_binding_plan_snapshot"),
-        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
-        CheckConstraint("currency_code ~ '^[A-Z]{3}' AND char_length(currency_code) = 3", name="chk_pay4_binding_currency"),
-        {"schema": SCHEMA},
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()")
-    )
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False
-    )
-    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
-    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()")
-    )
-
-
-class FinanceMemberSubscriptionCheckoutBinding(Base):
+            "business_reference ~ '^subscription_term:[0-9a-f-]{36}
     __tablename__ = "member_subscription_checkout_bindings"
     __table_args__ = (
         ForeignKeyConstraint(
@@ -560,6 +486,7 @@ class FinanceMemberSubscriptionCheckoutBinding(Base):
     checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
 
 class FinanceRefundObligationBinding(Base):
     __tablename__ = "refund_obligation_bindings"
@@ -983,15 +910,22 @@ class FinanceOutboxEvent(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()")
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     context_type: Mapped[str] = mapped_column(String(80), nullable=False)
     business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()")
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
     )
 
 
@@ -1025,9 +959,13 @@ class FinanceMemberSubscriptionFinanceBinding(Base):
         UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
         UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
         UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
-        CheckConstraint("jsonb_typeof(plan_snapshot) = 'object'", name="chk_pay4_binding_plan_snapshot"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
         CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
-        CheckConstraint("currency_code ~ '^[A-Z]{3}
+        CheckConstraint(
+            "currency_code ~ '^[A-Z]{3}
     __tablename__ = "member_subscription_checkout_bindings"
     __table_args__ = (
         ForeignKeyConstraint(
@@ -1479,15 +1417,22 @@ class FinanceOutboxEvent(Base):
     acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
-", name="chk_pay4_binding_currency"),
+",
+            name="chk_pay4_binding_currency",
+        ),
         {"schema": SCHEMA},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()")
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
@@ -1497,7 +1442,9 @@ class FinanceOutboxEvent(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()")
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
     )
 
 
