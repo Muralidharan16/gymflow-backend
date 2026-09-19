@@ -87,7 +87,7 @@ def _install_schema() -> None:
             CONSTRAINT chk_finance_payment_contexts_type
                 CHECK (context_type = 'member_subscription_term'),
             CONSTRAINT chk_finance_payment_contexts_business
-                CHECK (business_reference ~ '^subscription_term:[0-9a-f-]{36}$')
+                CHECK (business_reference LIKE 'subscription_term:%' AND char_length(business_reference) = 54 AND pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid'))
         )
         """
     )
@@ -123,7 +123,7 @@ def _install_schema() -> None:
             CONSTRAINT chk_pay4_binding_plan_snapshot
                 CHECK (pg_catalog.jsonb_typeof(plan_snapshot)='object'),
             CONSTRAINT chk_pay4_binding_amount CHECK (amount >= 0),
-            CONSTRAINT chk_pay4_binding_currency CHECK (currency_code ~ '^[A-Z]{3}$')
+            CONSTRAINT chk_pay4_binding_currency CHECK (char_length(currency_code) = 3 AND upper(currency_code) = currency_code AND currency_code !~ '[^A-Z]')
         )
         """
     )
