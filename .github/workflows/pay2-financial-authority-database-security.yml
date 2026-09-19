@@ -60,6 +60,7 @@ jobs:
               ".github/workflows/pay2-financial-authority-database-security.yml",
               "alembic/versions/zl07d8e9f0a46_pay2_financial_authority_database_security.py",
               "app/core/pay2_finance_roles.py",
+              "app/core/runtime_principal_attestation.py",
               "docs/architecture/PAY2_ACCEPTANCE_MATRIX.md",
               "docs/architecture/PAY2_FINANCIAL_AUTHORITY_DATABASE_SECURITY.md",
               "docs/architecture/pay2_financial_authority_v1.json",
@@ -72,11 +73,13 @@ jobs:
               "security/cluster_role_bootstrap/ownership.v1.json",
               "security/cluster_role_bootstrap/role_settings.v1.json",
               "security/cluster_role_bootstrap/roles.v1.json",
+              "security/runtime_identity/runtime_bindings.v1.json",
               "tests/test_cluster_role_contract_manifests.py",
               "tests/test_migration_app_secure_owner_context_boundary.py",
               "tests/test_migration_managed_role_boundary.py",
               "tests/test_pay2_financial_authority_runtime.py",
               "tests/test_pay2_financial_authority_static_contracts.py",
+              "tests/test_runtime_principal_attestation.py",
           }
           changed = {
               line.strip()
@@ -102,7 +105,7 @@ jobs:
           set -euo pipefail
           python -m py_compile app/core/pay2_finance_roles.py             scripts/render_pay2_cluster_role_predecessor.py             scripts/render_pay2_finance_role_expansion.py             scripts/verify_pay2_finance_role_state.py             alembic/versions/zl07d8e9f0a46_pay2_financial_authority_database_security.py
           bash -n scripts/release/expand_pay2_finance_roles.sh
-          python -m pytest --noconftest -q --maxfail=1             tests/test_pay2_financial_authority_static_contracts.py             tests/test_cluster_role_contract_manifests.py             tests/test_p2b_cluster_role_bootstrap.py             tests/test_cluster_identity_graph.py             tests/test_migration_managed_role_boundary.py
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay2_financial_authority_static_contracts.py             tests/test_cluster_role_contract_manifests.py             tests/test_p2b_cluster_role_bootstrap.py             tests/test_cluster_identity_graph.py             tests/test_migration_managed_role_boundary.py             tests/test_runtime_principal_attestation.py
           echo 'PAY2_CLUSTER_ROLE_AUTHORITY=PASS'
           echo 'PAY2_FINANCE_OBJECT_OWNERSHIP=PASS'
           echo 'PAY2_DIRECT_DML_DENIAL=PASS'

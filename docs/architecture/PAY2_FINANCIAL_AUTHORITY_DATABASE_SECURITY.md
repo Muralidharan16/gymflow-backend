@@ -24,7 +24,15 @@ They are deliberately inert in PAY-2. They receive no raw Finance table SELECT,
 INSERT, UPDATE, DELETE or TRUNCATE privilege, own no object, have no membership
 edge to migration/security owner and are not deployment logins yet.
 
-Future phases must grant only exact `app_secure` capabilities.
+The runtime identity contract records all six as
+`reserved_unbound_capabilities`. Bound runtime capabilities plus reserved
+capabilities must exactly equal the protected peer-capability graph. A reserved
+Finance capability is rejected if it appears in any deployment login's direct
+capability set.
+
+Future phases must first remove the exact capability from the reserved set,
+introduce a separately attested deployment binding, and then grant only exact
+`app_secure` capabilities.
 
 ## Existing-cluster rollout
 

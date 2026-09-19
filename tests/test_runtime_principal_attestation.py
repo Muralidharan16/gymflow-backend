@@ -74,6 +74,14 @@ def test_runtime_binding_contract_matches_p2b_p2c_role_model() -> None:
     contract = load_runtime_binding_contract()
     assert validate_runtime_binding_contract(contract) == ()
     assert set(contract.bindings) == {"api", "auth", "worker", "maintenance", "finance_config"}
+    assert set(contract.reserved_unbound_capabilities) == {
+        "finance_runtime",
+        "finance_payment_runtime",
+        "finance_refund_runtime",
+        "finance_reconciliation_runtime",
+        "finance_read_runtime",
+        "finance_maintenance_runtime",
+    }
     assert set(contract.bindings["api"].direct_capabilities) == {
         "app_runtime", "app_user"
     }
@@ -100,6 +108,21 @@ def test_runtime_binding_contract_matches_p2b_p2c_role_model() -> None:
         "lock_timeout": "2s",
         "idle_in_transaction_session_timeout": "30s",
     }
+
+
+def test_reserved_finance_capabilities_cannot_be_bound_accidentally() -> None:
+    contract = load_runtime_binding_contract()
+    api = contract.bindings["api"]
+    drifted_api = replace(
+        api,
+        direct_capabilities=(*api.direct_capabilities, "finance_runtime"),
+    )
+    drifted = replace(
+        contract,
+        bindings={**contract.bindings, "api": drifted_api},
+    )
+    codes = {item.code for item in validate_runtime_binding_contract(drifted)}
+    assert "runtime.contract.reserved_direct_capability" in codes
 
 
 def test_all_canonical_runtime_login_overlays_pass() -> None:

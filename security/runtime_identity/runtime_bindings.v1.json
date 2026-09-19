@@ -85,6 +85,15 @@
     "require_row_security": true,
     "require_baseline_current_user": true,
     "forbid_set_role_to_managed_roles": true,
-    "reject_database_specific_settings": true
-  }
+    "reject_database_specific_settings": true,
+    "reserved_capabilities_remain_unbound": true
+  },
+  "reserved_unbound_capabilities": [
+    "finance_runtime",
+    "finance_payment_runtime",
+    "finance_refund_runtime",
+    "finance_reconciliation_runtime",
+    "finance_read_runtime",
+    "finance_maintenance_runtime"
+  ]
 }

@@ -105,6 +105,29 @@ def test_pay2_release_expansion_is_outside_alembic_and_fail_closed():
     assert "alembic" not in source.lower()
 
 
+def test_pay2_finance_capabilities_are_reserved_and_unbound():
+    runtime = json.loads(
+        (ROOT / "security/runtime_identity/runtime_bindings.v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert set(runtime["reserved_unbound_capabilities"]) == set(
+        PAY2_FINANCE_CAPABILITY_ROLES
+    )
+    bound = {
+        item["runtime_capability"]
+        for item in runtime["bindings"].values()
+    }
+    direct = {
+        role
+        for item in runtime["bindings"].values()
+        for role in item["direct_capabilities"]
+    }
+    assert set(PAY2_FINANCE_CAPABILITY_ROLES).isdisjoint(bound)
+    assert set(PAY2_FINANCE_CAPABILITY_ROLES).isdisjoint(direct)
+    assert runtime["rules"]["reserved_capabilities_remain_unbound"] is True
+
+
 def test_pay2_machine_contract_keeps_money_disabled():
     data = json.loads(CONTRACT.read_text(encoding="utf-8"))
     assert data["phase"] == "PAY-2"

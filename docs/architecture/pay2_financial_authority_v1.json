@@ -35,7 +35,8 @@
     "posted_ledger_entries_immutable": true,
     "migration_owner_is_only_explicit_trigger_bypass": true,
     "live_money_movement": false,
-    "refund_provider_execution": "DEFERRED_FAIL_CLOSED"
+    "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+    "finance_runtime_deployment_bindings_created": false
   },
   "migration_safety": {
     "additive_data_shape": true,
@@ -61,5 +62,13 @@
     "PAY2_LIVE_MONEY_MOVEMENT=DISABLED",
     "PAY2_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED",
     "PAY2_FINAL=PASS"
+  ],
+  "reserved_unbound_runtime_capabilities": [
+    "finance_runtime",
+    "finance_payment_runtime",
+    "finance_refund_runtime",
+    "finance_reconciliation_runtime",
+    "finance_read_runtime",
+    "finance_maintenance_runtime"
   ]
 }
