@@ -869,13 +869,15 @@ def _install_capabilities() -> None:
 
         for signature in (_CREATE_PENDING,_RECORD_BINDING,_APPLY_EVENT):
             op.execute(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC")
+
+        # Admission and invoice-binding are existing API-side preparation only.
+        # Grant from the exact function owner; migration_owner intentionally
+        # cannot resolve app_secure objects after its install window closes.
+        op.execute(f"GRANT EXECUTE ON FUNCTION {_CREATE_PENDING} TO app_runtime")
+        op.execute(f"GRANT EXECUTE ON FUNCTION {_RECORD_BINDING} TO app_runtime")
+        # The money-derived activation capability remains unbound until PAY-5.
     finally:
         op.execute("RESET ROLE")
-
-    # Admission and invoice-binding are existing API-side preparation only.
-    # The money-derived activation capability remains unbound until PAY-5.
-    op.execute(f"GRANT EXECUTE ON FUNCTION {_CREATE_PENDING} TO app_runtime")
-    op.execute(f"GRANT EXECUTE ON FUNCTION {_RECORD_BINDING} TO app_runtime")
 
 
 def upgrade() -> None:
@@ -952,9 +954,6 @@ def downgrade() -> None:
             "PAY-4 downgrade blocked: member-Finance binding/activation evidence exists"
         )
 
-    op.execute(f"REVOKE EXECUTE ON FUNCTION {_RECORD_BINDING} FROM app_runtime")
-    op.execute(f"REVOKE EXECUTE ON FUNCTION {_CREATE_PENDING} FROM app_runtime")
-
     for trigger,table in (
         ("trg_pay4_v2_activation_guard","public.member_subscriptions_v2"),
         ("trg_pay4_subscription_term_activation_guard","public.subscription_terms"),
@@ -965,6 +964,8 @@ def downgrade() -> None:
 
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
+        op.execute(f"REVOKE EXECUTE ON FUNCTION {_RECORD_BINDING} FROM app_runtime")
+        op.execute(f"REVOKE EXECUTE ON FUNCTION {_CREATE_PENDING} FROM app_runtime")
         for signature in (_APPLY_EVENT,_RECORD_BINDING,_CREATE_PENDING):
             op.execute(f"DROP FUNCTION IF EXISTS {signature}")
         op.execute("DROP FUNCTION IF EXISTS app_secure.pay4_guard_v2_activation()")
