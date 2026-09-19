@@ -560,7 +560,7 @@ def upgrade() -> None:
             JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
             WHERE n.nspname='app_secure'
               AND p.proname='apply_member_subscription_finance_event'
-              AND pg_catalog.pg_get_function_identity_arguments(p.oid)='uuid, text'
+              AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, text'
             """
         )
     ).scalar_one_or_none()
