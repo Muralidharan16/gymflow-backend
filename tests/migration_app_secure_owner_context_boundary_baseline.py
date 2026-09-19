@@ -486,6 +486,7 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "grant_schema",
             "revoke_schema",
         },
+        "zm07d8e9f0a47_pay3_monetary_command_protocol.py": set(),
         A1.name: view_contract,
     }
     actual = {
