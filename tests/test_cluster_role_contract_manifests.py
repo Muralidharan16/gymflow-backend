@@ -328,7 +328,7 @@ def test_ownership_manifest_matches_reviewed_projection() -> None:
 
     ownership = json.loads(payload.decode("utf-8"))
     objects = ownership["objects"]
-    assert len(objects) == 189
+    assert len(objects) == 196
     assert not any(record["object"] == "IF" for record in objects)
     assert {
         "dynamic": False,
