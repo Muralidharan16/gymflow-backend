@@ -93,8 +93,10 @@ def test_pay2b_dedicated_roles_gain_no_direct_finance_table_or_schema_access():
 def test_pay2b_downgrade_removes_only_pay2b_database_capability():
     downgrade = SOURCE.split("def downgrade()", 1)[1]
     assert "DROP FUNCTION app_secure.require_finance_capability(text,boolean)" in downgrade
+    assert "for role_name in _FINANCE_ROLES:" in downgrade
+    assert 'op.execute(f"REVOKE USAGE ON SCHEMA app_secure FROM {role_name}")' in downgrade
     for role in FINANCE_ROLES:
-        assert f"REVOKE USAGE ON SCHEMA app_secure FROM {role}" in downgrade
+        assert f'"{role}"' in SOURCE
     assert "DROP ROLE" not in downgrade.upper()
     assert "DELETE FROM finance." not in downgrade
     assert "TRUNCATE" not in downgrade.upper()
