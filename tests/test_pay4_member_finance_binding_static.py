@@ -104,7 +104,12 @@ def test_pay4_downgrade_is_evidence_preserving_and_predecessor_acl_safe():
     assert "REVOKE SELECT ON TABLE finance.payments FROM app_security_owner" not in source
     assert "REVOKE SELECT ON TABLE finance.payment_allocations FROM app_security_owner" not in source
     assert "REVOKE SELECT ON TABLE finance.billing_parties FROM app_security_owner" not in source
-    assert 'for table in ("invoice_lines","outbox_events")' in source
+    assert "GRANT SELECT ON TABLE finance.invoice_lines TO app_security_owner" not in source
+    assert "GRANT SELECT ON TABLE finance.outbox_events TO app_security_owner" not in source
+    assert "GRANT SELECT (description,unit_amount)" in source
+    assert "REVOKE SELECT (description,unit_amount)" in source
+    assert "GRANT SELECT (id,organization_id,payload_json)" in source
+    assert "REVOKE SELECT (id,organization_id,payload_json)" in source
 
 
 def test_pay4_machine_contract_matches_hard_gate():
