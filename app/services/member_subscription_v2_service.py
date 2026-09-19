@@ -64,7 +64,7 @@ class MemberSubscriptionV2Service:
         if await self.repo.has_active_for_primary_member(org_id, member.id, start_date):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Primary member already has an active subscription",
+                detail="Primary member already has an active or pending subscription",
             )
 
         if plan.max_members < 1:
