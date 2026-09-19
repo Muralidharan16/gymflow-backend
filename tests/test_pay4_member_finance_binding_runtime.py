@@ -12,10 +12,11 @@ from psycopg.errors import InsufficientPrivilege
 
 APP_URL=os.environ.get("PAY4_APP_DATABASE_URL")
 WORKER_URL=os.environ.get("PAY4_WORKER_DATABASE_URL")
-ADMIN_URL=os.environ.get("PAY4_MIGRATION_DATABASE_URL")
+MIGRATION_URL=os.environ.get("PAY4_MIGRATION_DATABASE_URL")
+ADMIN_URL=os.environ.get("PAY4_ADMIN_DATABASE_URL")
 
 pytestmark=pytest.mark.skipif(
-    not (APP_URL and WORKER_URL and ADMIN_URL),
+    not (APP_URL and WORKER_URL and MIGRATION_URL and ADMIN_URL),
     reason="PAY-4 isolated PG16 harness is not configured",
 )
 
@@ -41,6 +42,42 @@ def _set_org(cur, org=ORG):
 
 
 def _cleanup():
+    # PAY-4 binding/context rows are immutable to every identity except the
+    # migration owner. Their FORCE-RLS policies target app_security_owner, so
+    # the table owner opens a narrowly scoped cleanup window in this disposable
+    # test database, deletes only this tenant's rows, then restores FORCE RLS.
+    with psycopg.connect(MIGRATION_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "ALTER TABLE finance.member_subscription_finance_bindings "
+                "NO FORCE ROW LEVEL SECURITY"
+            )
+            cur.execute(
+                "ALTER TABLE finance.payment_contexts NO FORCE ROW LEVEL SECURITY"
+            )
+            try:
+                cur.execute(
+                    "DELETE FROM finance.member_subscription_finance_bindings "
+                    "WHERE organization_id=%s",
+                    (ORG,),
+                )
+                cur.execute(
+                    "DELETE FROM finance.payment_contexts WHERE organization_id=%s",
+                    (ORG,),
+                )
+            finally:
+                cur.execute(
+                    "ALTER TABLE finance.payment_contexts FORCE ROW LEVEL SECURITY"
+                )
+                cur.execute(
+                    "ALTER TABLE finance.member_subscription_finance_bindings "
+                    "FORCE ROW LEVEL SECURITY"
+                )
+        conn.commit()
+
+    # Infrastructure superuser is test-only and bypasses tenant RLS for cleanup
+    # of the remaining non-immutable fixture graph. It is never an application
+    # or Finance execution authority.
     with psycopg.connect(ADMIN_URL) as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM public.subscription_events WHERE org_id=%s",(ORG,))
