@@ -9,6 +9,15 @@ import pytest
 DB_URL = os.environ.get("PAY2_RUNTIME_DATABASE_URL")
 ATTACK_URL = os.environ.get("PAY2_ATTACK_DATABASE_URL")
 
+# This file is an isolated PAY-2 authority/attack harness, not a generic
+# repository runtime test. Broad inherited suites intentionally do not receive
+# PAY-2 database credentials. A partially configured PAY-2 harness must still
+# fail through _required() rather than being silently skipped.
+pytestmark = pytest.mark.skipif(
+    DB_URL is None and ATTACK_URL is None,
+    reason="PAY-2 isolated runtime harness is not configured",
+)
+
 
 def _required(value: str | None, name: str) -> str:
     if not value:
