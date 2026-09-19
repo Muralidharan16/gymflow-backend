@@ -74,7 +74,7 @@ def test_same_payload_replays_and_different_payload_or_actor_conflicts():
 
 
 def test_unknown_reason_is_durable_after_reconciliation():
-    # Persist the original ambiguity evidence first. A later conflicting report
+    # Persist the original ambiguity evidence first.  A later conflicting report
     # must fail without rolling back the already-durable command history.
     with psycopg.connect(URL) as conn:
         row=_reserve(conn,key="doers:pay:sub_124:1",request_hash="d"*64,business_ref="sub_124")
