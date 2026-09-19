@@ -182,6 +182,7 @@ jobs:
       - name: Emit machine-readable PAY-0 decision
         run: |
           set -euo pipefail
+          mkdir -p pay0-evidence
           test "$(git rev-parse "${PAY0_BASE_SHA}^{tree}")" = "${PAY0_BASE_TREE}"
           git merge-base --is-ancestor "${PAY0_BASE_SHA}" HEAD
           test -z "$(git diff --name-only "${PAY0_BASE_SHA}...HEAD" | grep '^alembic/versions/' || true)"
