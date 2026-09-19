@@ -44,8 +44,13 @@ def _cleanup():
     with psycopg.connect(ADMIN_URL) as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM public.subscription_events WHERE org_id=%s",(ORG,))
-            cur.execute("DELETE FROM finance.member_subscription_finance_bindings WHERE organization_id=%s",(ORG,))
-            cur.execute("DELETE FROM finance.payment_contexts WHERE organization_id=%s",(ORG,))
+            # PAY-4 binding/context rows are immutable under row mutation.  The
+            # isolated test administrator resets both FK-related tables as one
+            # explicit disposable-test TRUNCATE; no production code imports it.
+            cur.execute(
+                "TRUNCATE TABLE finance.member_subscription_finance_bindings, "
+                "finance.payment_contexts"
+            )
             cur.execute("DELETE FROM public.subscription_slot_assignments WHERE org_id=%s",(ORG,))
             cur.execute("DELETE FROM public.subscription_term_slots WHERE org_id=%s",(ORG,))
             cur.execute("DELETE FROM public.subscription_terms WHERE org_id=%s",(ORG,))
