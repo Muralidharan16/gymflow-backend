@@ -1,0 +1,225 @@
+name: PAY-0 Payment Architecture Inventory
+
+on:
+  push:
+    branches:
+      - hardening/pay0-payment-architecture-inventory
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay0-payment-architecture-inventory-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY0_BASE_SHA: 4357fb14b406514d80376f6d23aed4dc185c4c00
+  PAY0_BASE_TREE: 66e4528ee2380a5591ee8a94d9df3ff465e3581c
+  PAY0_ALEMBIC_HEAD: zk07d8e9f0a45
+  PAY0_BRANCH: hardening/pay0-payment-architecture-inventory
+
+jobs:
+  contract:
+    name: PAY-0 frozen inventory and migration baseline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_pay0_contract_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-pay0-contract-not-production
+      AWS_ACCESS_KEY_ID: ci-pay0-contract
+      AWS_SECRET_ACCESS_KEY: ci-pay0-contract
+      S3_BUCKET_NAME: gymflow-pay0-contract-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact PAY-0 candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+
+      - name: Guard exact certified P10 parent
+        run: |
+          set -euo pipefail
+          git cat-file -e "${PAY0_BASE_SHA}^{commit}"
+          test "$(git rev-parse "${PAY0_BASE_SHA}^{tree}")" = "${PAY0_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY0_BASE_SHA}" HEAD
+
+      - name: Forbid PAY-0 behavior and migration mutation
+        run: |
+          set -euo pipefail
+          git diff --name-only "${PAY0_BASE_SHA}...HEAD" > /tmp/pay0-changed.txt
+          cat /tmp/pay0-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              ".github/workflows/pay0-payment-architecture-inventory.yml",
+              "docs/architecture/PAY0_ACCEPTANCE_MATRIX.md",
+              "docs/architecture/PAY0_PAYMENT_ARCHITECTURE_INVENTORY_AND_GOVERNANCE.md",
+              "docs/architecture/pay0_payment_architecture_inventory.json",
+              "tests/test_pay0_payment_architecture_inventory.py",
+          }
+          changed = {line.strip() for line in Path("/tmp/pay0-changed.txt").read_text().splitlines() if line.strip()}
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(f"PAY-0 scope violation: {sorted(unexpected)}")
+          migration_changes = sorted(path for path in changed if path.startswith("alembic/versions/"))
+          if migration_changes:
+              raise SystemExit(f"PAY-0 migration mutation forbidden: {migration_changes}")
+          if not changed:
+              raise SystemExit("PAY-0 candidate contains no inventory/governance change")
+          print(f"PAY-0 allowlisted paths: {len(changed)}")
+          PY
+
+      - name: Verify Alembic graph and exact head
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY0_ALEMBIC_HEAD}"
+          echo 'PAY0_MIGRATION_BASELINE=PASS'
+
+      - name: Validate PAY-0 inventory contracts
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/pay0_payment_architecture_inventory.json >/dev/null
+          python -m pytest --noconftest -q --maxfail=1 tests/test_pay0_payment_architecture_inventory.py
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'PAY0_ARCHITECTURE_INVENTORY=PASS'
+          echo 'PAY0_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY0_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+
+  architecture:
+    name: Inherited architecture contracts
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+
+  general_platform:
+    name: Inherited General and Platform Billing regression
+    uses: ./.github/workflows/hardening-ci.yml
+
+  finance:
+    name: Inherited Finance Core regression
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  migration_lifecycle:
+    name: Inherited full migration lifecycle
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+
+  migration_preservation:
+    name: Inherited populated migration preservation
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+
+  migration_adversarial:
+    name: Inherited adversarial migration safety
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+
+  migration_contracts:
+    name: Inherited migration lifecycle contracts
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+
+  migration_semantics:
+    name: Inherited migration semantics inventory
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+
+  certify:
+    name: Terminal immutable PAY-0 decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - architecture
+      - general_platform
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require every PAY-0 and inherited gate
+        env:
+          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          mkdir -p pay0-evidence
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          results = json.loads(os.environ["REQUIRED_RESULTS_JSON"])
+          failures = {name: value["result"] for name, value in results.items() if value["result"] != "success"}
+          if failures:
+              raise SystemExit(f"PAY-0 prerequisite failure: {failures}")
+          Path("pay0-evidence/needs.json").write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
+          print(f"PAY-0 prerequisite gates passed: {len(results)}")
+          PY
+
+      - name: Checkout exact PAY-0 candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Emit machine-readable PAY-0 decision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY0_BASE_SHA}^{tree}")" = "${PAY0_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY0_BASE_SHA}" HEAD
+          test -z "$(git diff --name-only "${PAY0_BASE_SHA}...HEAD" | grep '^alembic/versions/' || true)"
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          decision = {
+              "schema_version": 1,
+              "phase": "PAY-0",
+              "candidate_sha": os.environ["GITHUB_SHA"],
+              "candidate_tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+              "inherited_p10_sha": os.environ["PAY0_BASE_SHA"],
+              "inherited_p10_tree": os.environ["PAY0_BASE_TREE"],
+              "alembic_head": os.environ["PAY0_ALEMBIC_HEAD"],
+              "migration_mutation": False,
+              "application_behavior_mutation": False,
+              "live_money_movement": False,
+              "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+              "merge_authorized": False,
+              "release_authorized": False,
+              "deployment_authorized": False,
+              "decision": "PASS",
+          }
+          Path("pay0-evidence/decision.json").write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          PY
+          cat pay0-evidence/decision.json
+          echo 'PAY0_ARCHITECTURE_INVENTORY=PASS'
+          echo 'PAY0_MIGRATION_BASELINE=PASS'
+          echo 'PAY0_P10_INHERITED=PASS'
+          echo 'PAY0_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY0_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+          echo 'PAY0_FINAL=PASS'
+
+      - name: Upload PAY-0 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay0-final-${{ github.sha }}
+          path: pay0-evidence/
+          if-no-files-found: error
+          retention-days: 30

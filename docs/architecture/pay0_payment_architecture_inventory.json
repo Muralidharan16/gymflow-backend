@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-0",
+  "date": "2026-09-19",
+  "branch": "hardening/pay0-payment-architecture-inventory",
+  "inherited_p10": {
+    "commit": "4357fb14b406514d80376f6d23aed4dc185c4c00",
+    "tree": "66e4528ee2380a5591ee8a94d9df3ff465e3581c",
+    "alembic_head": "zk07d8e9f0a45",
+    "certification": "P10_FINAL_PRODUCTION_CERTIFICATION=PASS"
+  },
+  "authority": {
+    "durable_internal_financial_authority": "postgresql_finance_core",
+    "external_money_fact_authority": "verified_provider_evidence",
+    "member_commerce": "business_state_only_not_accounting_authority",
+    "platform_billing": "separate_saas_billing_domain",
+    "browser": "non_authoritative",
+    "redis_celery_beat": "delivery_coordination_only",
+    "telemetry": "evidence_only",
+    "operator_input": "non_authoritative"
+  },
+  "components": [
+    {
+      "id": "legacy_member_payments",
+      "paths": [
+        "app/models/payment.py",
+        "app/services/payment_service.py",
+        "app/repositories/payment_repo.py",
+        "app/routers/payments.py",
+        "app/services/invoice_service.py"
+      ],
+      "classification": "deprecated_compatibility_mutation_surface",
+      "production_authority": false,
+      "risk": "contract_drift_and_dual_ledger_risk"
+    },
+    {
+      "id": "finance_core",
+      "paths": [
+        "app/finance_core/"
+      ],
+      "classification": "authoritative_financial_accounting_core",
+      "production_authority": true,
+      "live_money_enabled": false
+    },
+    {
+      "id": "modern_member_subscription_v2",
+      "paths": [
+        "app/models/member_subscription_v2.py",
+        "app/services/member_subscription_v2_service.py",
+        "app/routers/member_subscriptions_v2.py"
+      ],
+      "classification": "member_commerce_business_state",
+      "production_authority": false,
+      "risk": "currently_active_before_authoritative_payment"
+    },
+    {
+      "id": "subscription_lifecycle",
+      "paths": [
+        "app/domain/subscription_lifecycle.py"
+      ],
+      "classification": "target_member_subscription_lifecycle",
+      "production_authority": false,
+      "supports_pending_payment": true
+    },
+    {
+      "id": "finance_member_checkout",
+      "paths": [
+        "app/finance_core/services/member_subscription_checkout.py"
+      ],
+      "classification": "sandbox_test_checkout_binding",
+      "production_authority": false,
+      "provider_mode": "razorpay_sandbox_test"
+    },
+    {
+      "id": "finance_outbox",
+      "paths": [
+        "app/finance_core/models/foundation.py"
+      ],
+      "classification": "durable_finance_event_producer_foundation",
+      "production_authority": false,
+      "risk": "product_consumption_activation_path_not_yet_admitted"
+    },
+    {
+      "id": "platform_billing",
+      "paths": [
+        "app/platform_billing/"
+      ],
+      "classification": "separate_saas_billing_foundation",
+      "production_authority": false,
+      "provider_mode": "fake_provider_only"
+    },
+    {
+      "id": "refund_provider_execution",
+      "paths": [
+        "alembic/versions/zc07d8e9f0a3d_p4d_refund_authority_boundary.py",
+        "alembic/versions/zd07d8e9f0a3e_p4d_refund_obligation_resolution.py"
+      ],
+      "classification": "deferred_fail_closed",
+      "production_authority": false
+    }
+  ],
+  "live_money_guards": {
+    "finance_payment_api_enabled": false,
+    "finance_live_provider_enabled": false,
+    "finance_live_money_movement_enabled": false,
+    "platform_billing_checkout": false,
+    "platform_billing_webhook_processing": false,
+    "platform_billing_dunning_transitions": false,
+    "platform_billing_notifications": false,
+    "refund_provider_execution": "DEFERRED_FAIL_CLOSED"
+  },
+  "migration_baseline": {
+    "mutation_allowed_in_pay0": false,
+    "expected_single_head": "zk07d8e9f0a45",
+    "payment_related_migrations": [
+      "alembic/versions/aa9303384b66_initial_schema.py",
+      "alembic/versions/c3a4b5c6d7e8_create_subscription_lifecycle_foundation.py",
+      "alembic/versions/e5f6a7b8c9d0_harden_subscription_lifecycle_constraints.py",
+      "alembic/versions/f1a2b3c4d5e6_platform_billing_phase_1_foundation.py",
+      "alembic/versions/f2b3c4d5e6a7_platform_billing_phase_2_resolver.py",
+      "alembic/versions/014167728f4a_platform_billing_phase_4a_provider_persistence.py",
+      "alembic/versions/1a2b3c4d5e7f_finance_core_phase_5b_foundation.py",
+      "alembic/versions/zc07d8e9f0a3d_p4d_refund_authority_boundary.py",
+      "alembic/versions/zd07d8e9f0a3e_p4d_refund_obligation_resolution.py"
+    ],
+    "future_required_gates": [
+      "linear_or_explicitly_reviewed_alembic_graph",
+      "real_postgresql_forward_migration",
+      "downgrade_reupgrade_when_supported",
+      "populated_data_preservation",
+      "rls_acl_ownership_preservation",
+      "lock_wait_and_table_rewrite_analysis",
+      "rolling_schema_compatibility",
+      "backup_restore_pitr_compatibility"
+    ]
+  },
+  "hard_stops": [
+    "application_runtime_code_change_in_pay0",
+    "alembic_revision_change_in_pay0",
+    "database_acl_rls_or_role_change_in_pay0",
+    "live_provider_activation",
+    "live_money_movement",
+    "refund_provider_execution",
+    "subscription_activation_behavior_change",
+    "platform_billing_enforcement_or_dunning_enablement",
+    "merge",
+    "release",
+    "production_deployment"
+  ],
+  "next_phase": "PAY-1"
+}
