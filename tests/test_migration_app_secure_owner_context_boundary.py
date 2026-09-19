@@ -95,6 +95,9 @@ _P8_LIFECYCLE_SNAPSHOT_MIGRATION = "zk07d8e9f0a45_p8_lifecycle_dead_letter_snaps
 _PAY2_FINANCIAL_AUTHORITY_MIGRATION = (
     "zl07d8e9f0a46_pay2_financial_authority_database_security.py"
 )
+_PAY3_MONETARY_COMMAND_MIGRATION = (
+    "zm07d8e9f0a47_pay3_monetary_command_protocol.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -134,6 +137,7 @@ APP_SECURE_FILES.update(
         _P5E_PROVIDER_FENCE_MIGRATION,
         _P8_LIFECYCLE_SNAPSHOT_MIGRATION,
         _PAY2_FINANCIAL_AUTHORITY_MIGRATION,
+        _PAY3_MONETARY_COMMAND_MIGRATION,
     }
 )
 
@@ -273,6 +277,9 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # PAY-2 installs trigger functions and function ACLs only. This
         # historical detector is deliberately schema/view/policy scoped.
         _PAY2_FINANCIAL_AUTHORITY_MIGRATION: set(),
+        # PAY-3 introduces a Finance monetary-command RLS policy and drops it
+        # on downgrade; function ownership/ACL behavior is covered separately.
+        _PAY3_MONETARY_COMMAND_MIGRATION: {"create_policy", "drop_policy"},
         A1.name: view_contract,
     }
     actual = {
