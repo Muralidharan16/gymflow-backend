@@ -214,9 +214,7 @@ class MemberSubscriptionFinanceEventConsumption(Base):
         nullable=False,
     )
     finance_event_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("finance.outbox_events.id", ondelete="RESTRICT"),
-        nullable=False,
+        UUID(as_uuid=True), nullable=False
     )
     idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
     finance_payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
