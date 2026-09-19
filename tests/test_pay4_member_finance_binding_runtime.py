@@ -12,7 +12,7 @@ from psycopg.errors import InsufficientPrivilege
 
 APP_URL=os.environ.get("PAY4_APP_DATABASE_URL")
 WORKER_URL=os.environ.get("PAY4_WORKER_DATABASE_URL")
-ADMIN_URL=os.environ.get("PAY4_ADMIN_DATABASE_URL")
+ADMIN_URL=os.environ.get("PAY4_MIGRATION_DATABASE_URL")
 
 pytestmark=pytest.mark.skipif(
     not (APP_URL and WORKER_URL and ADMIN_URL),
