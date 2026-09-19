@@ -53,6 +53,7 @@ from app.models.member_subscription_v2 import (  # noqa: F401
     SubscriptionMemberRole,
 )
 from app.models.subscription_lifecycle import (  # noqa: F401
+    MemberSubscriptionFinanceEventConsumption,
     SubscriptionEvent,
     SubscriptionFreeze,
     SubscriptionOperationIdempotency,
