@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 MIGRATION=ROOT/"alembic/versions/zp07d8e9f0a50_pay5_finance_event_delivery.py"
 WORKER=ROOT/"app/tasks/finance_event_dispatcher.py"
 CELERY=ROOT/"app/core/celery_app.py"
+CONTRACT=ROOT/"docs/architecture/pay5_finance_event_delivery_v1.json"
 
 
 def test_pay5_is_additive_over_certified_pay4():
@@ -113,3 +115,19 @@ def test_pay5_populated_downgrade_is_fail_closed():
     source=MIGRATION.read_text(encoding="utf-8")
     assert "PAY-5 downgrade blocked: product Finance-event consumption evidence exists" in source
     assert "PAY-5 downgrade blocked: Finance-event delivery evidence exists" in source
+
+
+def test_pay5_machine_contract_is_bound_to_certified_pay4():
+    data=json.loads(CONTRACT.read_text(encoding="utf-8"))
+    assert data["phase"]=="PAY-5"
+    assert data["inherited_pay4"]["commit"]=="bde31b620b1619c85e581933da1c8de465a6aa00"
+    assert data["inherited_pay4"]["tree"]=="4ff5e1176657dc96643d7da01f3d7f91c564fb78"
+    assert data["alembic"]=={"predecessor":"zo07d8e9f0a49","head":"zp07d8e9f0a50"}
+    assert data["delivery"]["transport_semantics"]=="at_least_once"
+    assert data["delivery"]["business_semantics"]=="effectively_once"
+    assert data["delivery"]["admitted_event"]=="finance.invoice.paid"
+    assert data["runtime_authority"]["direct_worker_finance_outbox_dml"] is False
+    assert data["runtime_authority"]["direct_worker_pay4_activation_execute"] is False
+    assert data["live_money_movement"] is False
+    assert data["refund_provider_execution"]=="DEFERRED_FAIL_CLOSED"
+    assert data["next_phase"]=="PAY-6"
