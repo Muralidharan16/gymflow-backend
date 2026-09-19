@@ -10,7 +10,8 @@
   },
   "alembic": {
     "predecessor": "zl07d8e9f0a46",
-    "head": "zm07d8e9f0a47"
+    "initial": "zm07d8e9f0a47",
+    "head": "zn07d8e9f0a48"
   },
   "protocol": {
     "journal": "finance.monetary_commands",
@@ -25,6 +26,11 @@
     "same_key_same_payload": "replay_original_command",
     "same_key_different_payload": "conflict_no_side_effect",
     "unknown": "blocks_replacement_effect_until_reconciled",
+    "unknown_reason_persists_after_reconciliation": true,
+    "same_command_actor_identity_immutable": true,
+    "concurrent_same_key_database_fenced": true,
+    "crash_before_commit_retry_safe": true,
+    "crash_after_commit_retry_replays": true,
     "terminal_truth_immutable": true,
     "actor_reference_storage": "sha256_only",
     "float_payloads_forbidden": true
@@ -37,10 +43,13 @@
     "isolated_ci_execution_only": true
   },
   "migration_safety": {
-    "additive_new_table_only": true,
+    "pushed_initial_revision_rewritten": false,
+    "additive_new_table_only_at_initial_revision": true,
+    "repair_adds_nullable_evidence_columns_only": true,
     "existing_finance_table_rewrite": false,
     "existing_data_backfill": false,
-    "populated_downgrade": "blocked_fail_closed_if_command_evidence_exists",
+    "repair_populated_downgrade": "blocked_if_ambiguity_evidence_exists",
+    "full_populated_downgrade": "blocked_if_command_evidence_exists",
     "empty_downgrade_reupgrade": true,
     "lock_timeout": "3s_transaction_local",
     "statement_timeout": "30s_transaction_local"
