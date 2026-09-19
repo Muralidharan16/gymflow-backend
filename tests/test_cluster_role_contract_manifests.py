@@ -19,7 +19,10 @@ OWNERSHIP_MANIFEST = (
     / "cluster_role_bootstrap"
     / "ownership.v1.json"
 )
-EXPECTED_OWNERSHIP_SHA256 = (\n    "f24266c29830e664206c10b9695f5b7"\n    "c47728657f4b1145e4785ca02027dd9a0"\n)
+EXPECTED_OWNERSHIP_SHA256 = (
+    "f24266c29830e664206c10b9695f5b7"
+    "c47728657f4b1145e4785ca02027dd9a0"
+)
 
 
 def test_all_five_machine_readable_manifests_exist() -> None:

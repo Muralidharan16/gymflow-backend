@@ -767,14 +767,9 @@ class FinanceIdempotencyKey(Base):
 class FinanceMonetaryCommand(Base):
     __tablename__ = "monetary_commands"
     __table_args__ = (
-        UniqueConstraint(
-            "organization_id",
-            "scope",
-            "idempotency_key",
-            name="uq_finance_monetary_commands_scope_key",
-        ),
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
         CheckConstraint(
-            "scope ~ '^[a-z][a-z0-9_.]{2,119}
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*
     __tablename__ = "outbox_events"
     __table_args__ = (
         UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
@@ -808,7 +803,8 @@ class FinanceMonetaryCommand(Base):
             name="chk_finance_monetary_commands_scope",
         ),
         CheckConstraint(
-            "idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]{0,199}
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*
     __tablename__ = "outbox_events"
     __table_args__ = (
         UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
@@ -842,7 +838,7 @@ class FinanceMonetaryCommand(Base):
             name="chk_finance_monetary_commands_key",
         ),
         CheckConstraint(
-            "request_hash_sha256 ~ '^[0-9a-f]{64}
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+
     __tablename__ = "outbox_events"
     __table_args__ = (
         UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
@@ -876,7 +872,8 @@ class FinanceMonetaryCommand(Base):
             name="chk_finance_monetary_commands_request_hash",
         ),
         CheckConstraint(
-            "business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]{0,199}
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*
     __tablename__ = "outbox_events"
     __table_args__ = (
         UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
@@ -910,7 +907,7 @@ class FinanceMonetaryCommand(Base):
             name="chk_finance_monetary_commands_business_ref",
         ),
         CheckConstraint(
-            "actor_type ~ '^[a-z][a-z0-9_]{0,39}
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*
     __tablename__ = "outbox_events"
     __table_args__ = (
         UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
@@ -944,7 +941,7 @@ class FinanceMonetaryCommand(Base):
             name="chk_finance_monetary_commands_actor_type",
         ),
         CheckConstraint(
-            "actor_ref_sha256 ~ '^[0-9a-f]{64}
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+
     __tablename__ = "outbox_events"
     __table_args__ = (
         UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
@@ -982,7 +979,8 @@ class FinanceMonetaryCommand(Base):
             name="chk_finance_monetary_commands_status",
         ),
         CheckConstraint(
-            "error_code IS NULL OR (error_code ~ '^[a-z][a-z0-9_]{0,63}
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*
     __tablename__ = "outbox_events"
     __table_args__ = (
         UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
@@ -1012,11 +1010,13 @@ class FinanceMonetaryCommand(Base):
     acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
- AND error_code !~ '(secret|token|bearer)')",
+ "
+            "AND error_code !~ '(secret|token|bearer)')",
             name="chk_finance_monetary_commands_error_code",
         ),
         CheckConstraint(
-            "response_ref IS NULL OR response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]{0,199}
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*
     __tablename__ = "outbox_events"
     __table_args__ = (
         UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
@@ -1046,7 +1046,7 @@ class FinanceMonetaryCommand(Base):
     acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
-",
+)",
             name="chk_finance_monetary_commands_response_ref",
         ),
         CheckConstraint(
@@ -1061,25 +1061,12 @@ class FinanceMonetaryCommand(Base):
             "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
             name="chk_finance_monetary_commands_terminal_completed",
         ),
-        Index(
-            "ix_finance_monetary_commands_status_created",
-            "status",
-            "created_at",
-        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=new_uuid,
-        server_default=text("gen_random_uuid()"),
-    )
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
     scope: Mapped[str] = mapped_column(String(120), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
     request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
@@ -1090,15 +1077,9 @@ class FinanceMonetaryCommand(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
     response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()")
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()")
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=True
-    )
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
 
 class FinanceOutboxEvent(Base):
