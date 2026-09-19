@@ -130,6 +130,23 @@ class SourceBoundMemberSubscriptionCheckoutService:
                 "checkout_intent_id": intent.intent_id,
             },
         )
+        # PAY-4 canonical authority is term-based. The legacy checkout binding
+        # remains compatibility evidence only; this second capability derives
+        # the immutable term/member/plan/amount/currency relationship.
+        await self._session.execute(
+            text(
+                """
+                SELECT *
+                FROM app_secure.record_member_subscription_finance_binding(
+                    :subscription_id, :invoice_id
+                )
+                """
+            ),
+            {
+                "subscription_id": subscription_id,
+                "invoice_id": invoice["id"],
+            },
+        )
         await self._session.flush()
         return MemberSubscriptionCheckoutPreparation(
             organization_id=organization_id,
