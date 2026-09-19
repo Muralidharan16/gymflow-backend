@@ -375,7 +375,7 @@ async def test_create_subscription_org_wide_plan_snapshots_and_primary_slot(clie
     assert data["primary_member_id"] == str(test_data["member1_id"])
     assert data["start_date"] == "2026-06-11"
     assert data["end_date"] == "2026-07-11"
-    assert data["status"] == "active"
+    assert data["status"] == "pending"
     assert data["price_snapshot"] == "1500.00"
     assert data["currency_code"] == "INR"
     assert data["duration_value_snapshot"] == 1
@@ -542,7 +542,7 @@ async def test_server_managed_fields_are_ignored(client, test_data):
     assert data["end_date"] == "2026-07-11"
     assert data["price_snapshot"] == "1500.00"
     assert data["currency_code"] == "INR"
-    assert data["status"] == "active"
+    assert data["status"] == "pending"
 
 
 @pytest.mark.asyncio
@@ -556,7 +556,7 @@ async def test_duplicate_active_subscription_for_primary_member_is_rejected(clie
         membership_plan_id=str(test_data["branch_plan_id"]),
     )
     assert second.status_code == 400
-    assert "already has an active subscription" in second.json()["detail"]
+    assert "already has an active or pending subscription" in second.json()["detail"]
 
 
 @pytest.mark.asyncio
