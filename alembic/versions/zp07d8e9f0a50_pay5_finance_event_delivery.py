@@ -552,11 +552,26 @@ def upgrade() -> None:
         ).scalar_one():
             raise RuntimeError(f"PAY-5 outbox column already exists: {column_name}")
 
+    pay4_apply_oid = bind.execute(
+        sa.text(
+            """
+            SELECT p.oid
+            FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+            WHERE n.nspname='app_secure'
+              AND p.proname='apply_member_subscription_finance_event'
+              AND pg_catalog.pg_get_function_identity_arguments(p.oid)='uuid, text'
+            """
+        )
+    ).scalar_one_or_none()
+    if pay4_apply_oid is None:
+        raise RuntimeError("PAY-5 missing exact PAY-4 activation capability")
     if bind.execute(
         sa.text(
             "SELECT pg_catalog.has_function_privilege("
-            "'worker_runtime','app_secure.apply_member_subscription_finance_event(uuid,text)','EXECUTE')"
-        )
+            "'worker_runtime', CAST(:function_oid AS oid), 'EXECUTE')"
+        ),
+        {"function_oid": pay4_apply_oid},
     ).scalar_one():
         raise RuntimeError("PAY-5 refuses direct worker EXECUTE on PAY-4 activation capability")
 
