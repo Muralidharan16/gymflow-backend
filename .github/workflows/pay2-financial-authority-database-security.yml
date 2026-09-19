@@ -1,0 +1,341 @@
+name: PAY-2 Financial Authority Database Security
+
+on:
+  push:
+    branches:
+      - hardening/pay2-financial-authority-database-security
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay2-financial-authority-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY2_BASE_SHA: ba8d77d0e50907fd435d358697d9721a63bad64b
+  PAY2_BASE_TREE: cd9500217b8230df2c0777b405b3d462b83e99ac
+  PAY2_PREDECESSOR: zk07d8e9f0a45
+  PAY2_HEAD: zl07d8e9f0a46
+
+jobs:
+  contract:
+    name: PAY-2 static authority contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay2_contract_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay2-contract-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay2-contract
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Exact PAY-1 parent and PAY-2 scope
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY2_BASE_SHA}^{tree}")" = "${PAY2_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY2_BASE_SHA}" HEAD
+          git diff --name-only "${PAY2_BASE_SHA}...HEAD" > /tmp/pay2-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              ".github/workflows/pay2-financial-authority-database-security.yml",
+              "alembic/versions/zl07d8e9f0a46_pay2_financial_authority_database_security.py",
+              "app/core/pay2_finance_roles.py",
+              "docs/architecture/PAY2_ACCEPTANCE_MATRIX.md",
+              "docs/architecture/PAY2_FINANCIAL_AUTHORITY_DATABASE_SECURITY.md",
+              "docs/architecture/pay2_financial_authority_v1.json",
+              "scripts/release/expand_pay2_finance_roles.sh",
+              "scripts/render_pay2_cluster_role_predecessor.py",
+              "scripts/render_pay2_finance_role_expansion.py",
+              "scripts/verify_pay2_finance_role_state.py",
+              "security/cluster_role_bootstrap/identity_transitions.v1.json",
+              "security/cluster_role_bootstrap/memberships.v1.json",
+              "security/cluster_role_bootstrap/ownership.v1.json",
+              "security/cluster_role_bootstrap/role_settings.v1.json",
+              "security/cluster_role_bootstrap/roles.v1.json",
+              "tests/test_cluster_role_contract_manifests.py",
+              "tests/test_migration_managed_role_boundary.py",
+              "tests/test_pay2_financial_authority_runtime.py",
+              "tests/test_pay2_financial_authority_static_contracts.py",
+          }
+          changed = {
+              line.strip()
+              for line in Path("/tmp/pay2-changed.txt").read_text().splitlines()
+              if line.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-2 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          migrations = sorted(path for path in changed if path.startswith("alembic/versions/"))
+          if migrations != [
+              "alembic/versions/zl07d8e9f0a46_pay2_financial_authority_database_security.py"
+          ]:
+              raise SystemExit(f"PAY-2 migration scope mismatch: {migrations}")
+          print(f"PAY-2 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY2_HEAD}"
+      - name: PAY-2 contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile app/core/pay2_finance_roles.py             scripts/render_pay2_cluster_role_predecessor.py             scripts/render_pay2_finance_role_expansion.py             scripts/verify_pay2_finance_role_state.py             alembic/versions/zl07d8e9f0a46_pay2_financial_authority_database_security.py
+          bash -n scripts/release/expand_pay2_finance_roles.sh
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay2_financial_authority_static_contracts.py             tests/test_cluster_role_contract_manifests.py             tests/test_p2b_cluster_role_bootstrap.py             tests/test_cluster_identity_graph.py             tests/test_migration_managed_role_boundary.py
+          echo 'PAY2_CLUSTER_ROLE_AUTHORITY=PASS'
+          echo 'PAY2_FINANCE_OBJECT_OWNERSHIP=PASS'
+          echo 'PAY2_DIRECT_DML_DENIAL=PASS'
+
+  authority_pg16:
+    name: PAY-2 real PG16 authority and populated roundtrip
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay2-migration@127.0.0.1:5432/gymflow_pay2_test
+      PAY2_RUNTIME_DATABASE_URL: postgresql://migration_owner:ci-pay2-migration@127.0.0.1:5432/gymflow_pay2_test
+      PAY2_ATTACK_DATABASE_URL: postgresql://pay2_attack_runtime:ci-pay2-attack@127.0.0.1:5432/gymflow_pay2_test
+      DOERS_PAY2_CLUSTER_ADMIN_DATABASE_URL: postgresql+psycopg://postgres:ci-pay2-postgres@127.0.0.1:5432/postgres
+      DOERS_PAY2_CLUSTER_ADMIN_PSQL_DSN: postgresql://postgres:ci-pay2-postgres@127.0.0.1:5432/postgres
+      SECRET_KEY: pay2-pg16-not-production
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay2-pg16
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Install PG16 stack
+        run: bash scripts/ci/install_pg16_test_stack.sh
+      - name: Build predecessor cluster role graph
+        run: |
+          set -euo pipefail
+          python -s scripts/render_pay2_cluster_role_predecessor.py             | sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE postgres PASSWORD 'ci-pay2-postgres';
+          ALTER ROLE migration_owner PASSWORD 'ci-pay2-migration';
+          CREATE ROLE pay2_attack_runtime LOGIN PASSWORD 'ci-pay2-attack'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          SQL
+          python -s scripts/verify_pay2_finance_role_state.py predecessor
+      - name: Perform audited PAY-2 additive role expansion
+        run: |
+          bash scripts/release/expand_pay2_finance_roles.sh
+      - name: Provision PAY-2 database
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          CREATE DATABASE gymflow_pay2_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_pay2_test TO pay2_attack_runtime;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_pay2_test
+      - name: Upgrade predecessor and seed immutable evidence
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY2_PREDECESSOR}"
+          PGPASSWORD=ci-pay2-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay2_test <<'SQL'
+          INSERT INTO finance.audit_events(
+            event_type,target_type,event_payload_sha256
+          ) VALUES (
+            'pay2.seed','pay2_seed',
+            repeat('a',64)
+          );
+
+          INSERT INTO finance.legal_entities(
+            id,code,legal_name,status
+          ) VALUES (
+            '22000000-0000-4000-8000-000000000001',
+            'PAY2_ENTITY','PAY2 Security Entity','active'
+          );
+
+          INSERT INTO finance.ledger_entries(
+            id,legal_entity_id,entry_type,source_type,source_id,status,posted_at
+          ) VALUES (
+            '22000000-0000-4000-8000-000000000002',
+            '22000000-0000-4000-8000-000000000001',
+            'adjustment','pay2_seed',
+            '22000000-0000-4000-8000-000000000003',
+            'posted',pg_catalog.clock_timestamp()
+          );
+
+          SELECT n.nspname || '.' || c.relname || '|' || c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname='finance'
+            AND c.relname IN (
+              'audit_events','payment_events','ledger_entry_lines',
+              'tax_records','credit_note_lines','ledger_entries'
+            )
+          ORDER BY c.relname;
+          SQL
+
+          PGPASSWORD=ci-pay2-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay2_test -At <<'SQL'             > /tmp/pay2-relfilenodes-before.txt
+          SELECT n.nspname || '.' || c.relname || '|' || c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname='finance'
+            AND c.relname IN (
+              'audit_events','payment_events','ledger_entry_lines',
+              'tax_records','credit_note_lines','ledger_entries'
+            )
+          ORDER BY c.relname;
+          SQL
+      - name: Upgrade PAY-2 and prove immutable runtime boundary
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY2_HEAD}"
+          PGPASSWORD=ci-pay2-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay2_test -At <<'SQL'             > /tmp/pay2-relfilenodes-after.txt
+          SELECT n.nspname || '.' || c.relname || '|' || c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname='finance'
+            AND c.relname IN (
+              'audit_events','payment_events','ledger_entry_lines',
+              'tax_records','credit_note_lines','ledger_entries'
+            )
+          ORDER BY c.relname;
+          SQL
+          diff -u /tmp/pay2-relfilenodes-before.txt /tmp/pay2-relfilenodes-after.txt
+          echo 'PAY2_ZERO_TABLE_REWRITE=PASS'
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_pay2_test <<'SQL'
+          GRANT USAGE ON SCHEMA finance TO pay2_attack_runtime;
+          GRANT SELECT,UPDATE,DELETE ON TABLE finance.audit_events TO pay2_attack_runtime;
+          GRANT SELECT,UPDATE,DELETE ON TABLE finance.ledger_entries TO pay2_attack_runtime;
+          SQL
+          python -m pytest --noconftest -q tests/test_pay2_financial_authority_runtime.py
+          echo 'PAY2_IMMUTABLE_HISTORY=PASS'
+      - name: Populated downgrade/re-upgrade
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini downgrade "${PAY2_PREDECESSOR}"
+          PGPASSWORD=ci-pay2-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay2_test             -Atqc "SELECT count(*) FROM finance.audit_events WHERE target_type='pay2_seed'"             | grep -qx '1'
+          python -s scripts/verify_pay2_finance_role_state.py full
+          python -s -m alembic -c alembic.ini upgrade "${PAY2_HEAD}"
+          python -m pytest --noconftest -q tests/test_pay2_financial_authority_runtime.py
+          echo 'PAY2_MIGRATION_LIFECYCLE=PASS'
+
+  architecture:
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+  general_platform:
+    uses: ./.github/workflows/hardening-ci.yml
+  finance:
+    uses: ./.github/workflows/finance-hardening-ci.yml
+  migration_lifecycle:
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+  migration_preservation:
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+  migration_adversarial:
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+  migration_contracts:
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+  migration_semantics:
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+
+  certify:
+    name: Terminal immutable PAY-2 decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - authority_pg16
+      - architecture
+      - general_platform
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all PAY-2 gates
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          mkdir -p pay2-evidence
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          data=json.loads(os.environ["RESULTS"])
+          bad={k:v["result"] for k,v in data.items() if v["result"]!="success"}
+          if bad:
+              raise SystemExit(f"PAY-2 prerequisite failure: {bad}")
+          Path("pay2-evidence/needs.json").write_text(json.dumps(data,indent=2,sort_keys=True)+"\n")
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Bind exact PAY-2 candidate
+        run: |
+          set -euo pipefail
+          mkdir -p pay2-evidence
+          test "$(git rev-parse "${PAY2_BASE_SHA}^{tree}")" = "${PAY2_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY2_BASE_SHA}" HEAD
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          decision={
+            "phase":"PAY-2",
+            "candidate_sha":os.environ["GITHUB_SHA"],
+            "candidate_tree":subprocess.check_output(["git","rev-parse","HEAD^{tree}"],text=True).strip(),
+            "inherited_pay1_sha":os.environ["PAY2_BASE_SHA"],
+            "alembic_head":os.environ["PAY2_HEAD"],
+            "live_money_movement":False,
+            "refund_provider_execution":"DEFERRED_FAIL_CLOSED",
+            "merge_authorized":False,
+            "release_authorized":False,
+            "deployment_authorized":False,
+            "decision":"PASS",
+          }
+          Path("pay2-evidence/decision.json").write_text(json.dumps(decision,indent=2,sort_keys=True)+"\n")
+          PY
+          cat pay2-evidence/decision.json
+          echo 'PAY2_CLUSTER_ROLE_AUTHORITY=PASS'
+          echo 'PAY2_FINANCE_OBJECT_OWNERSHIP=PASS'
+          echo 'PAY2_IMMUTABLE_HISTORY=PASS'
+          echo 'PAY2_DIRECT_DML_DENIAL=PASS'
+          echo 'PAY2_MIGRATION_LIFECYCLE=PASS'
+          echo 'PAY2_ZERO_TABLE_REWRITE=PASS'
+          echo 'PAY2_PAY1_INHERITED=PASS'
+          echo 'PAY2_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY2_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+          echo 'PAY2_FINAL=PASS'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay2-final-${{ github.sha }}
+          path: pay2-evidence/
+          if-no-files-found: error
+          retention-days: 30

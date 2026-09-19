@@ -194,6 +194,90 @@
       "decision": "Dedicated asynchronous-worker privilege group. Deployment worker logins may inherit this role, but worker_runtime is NOLOGIN/NOBYPASSRLS, owns no schema objects, is not a member of API/auth roles, and must never be granted to migration_owner.",
       "purpose": "Bounded cross-tenant queue claim and tenant-scoped background processing capability.",
       "role": "worker_runtime"
+    },
+    "finance_runtime": {
+      "attributes": {
+        "superuser": false,
+        "inherit": false,
+        "create_role": false,
+        "create_db": false,
+        "can_login": false,
+        "replication": false,
+        "bypass_rls": false
+      },
+      "purpose": "Bounded Finance Core command capability for admitted internal finance application operations.",
+      "decision": "NOLOGIN/NOBYPASSRLS capability role. Owns no objects, receives no direct Finance table DML, has no migration-owner edge, and may only receive exact reviewed app_secure capabilities in later PAY phases.",
+      "role": "finance_runtime"
+    },
+    "finance_payment_runtime": {
+      "attributes": {
+        "superuser": false,
+        "inherit": false,
+        "create_role": false,
+        "create_db": false,
+        "can_login": false,
+        "replication": false,
+        "bypass_rls": false
+      },
+      "purpose": "Bounded provider payment-acquisition and payment-attempt execution capability.",
+      "decision": "NOLOGIN/NOBYPASSRLS payment capability. No direct Finance table DML, no refund capability, no reconciliation capability, no object ownership, and no migration-owner edge.",
+      "role": "finance_payment_runtime"
+    },
+    "finance_refund_runtime": {
+      "attributes": {
+        "superuser": false,
+        "inherit": false,
+        "create_role": false,
+        "create_db": false,
+        "can_login": false,
+        "replication": false,
+        "bypass_rls": false
+      },
+      "purpose": "Bounded provider refund-execution capability isolated from payment acquisition.",
+      "decision": "NOLOGIN/NOBYPASSRLS refund capability. No direct Finance table DML, no payment-acquisition capability, no object ownership, and no migration-owner edge.",
+      "role": "finance_refund_runtime"
+    },
+    "finance_reconciliation_runtime": {
+      "attributes": {
+        "superuser": false,
+        "inherit": false,
+        "create_role": false,
+        "create_db": false,
+        "can_login": false,
+        "replication": false,
+        "bypass_rls": false
+      },
+      "purpose": "Bounded settlement/provider reconciliation capability for authoritative evidence matching.",
+      "decision": "NOLOGIN/NOBYPASSRLS reconciliation capability. No direct Finance table DML, no provider money-movement authority, no object ownership, and no migration-owner edge.",
+      "role": "finance_reconciliation_runtime"
+    },
+    "finance_read_runtime": {
+      "attributes": {
+        "superuser": false,
+        "inherit": false,
+        "create_role": false,
+        "create_db": false,
+        "can_login": false,
+        "replication": false,
+        "bypass_rls": false
+      },
+      "purpose": "Bounded Finance read-model capability for approved internal administrative queries.",
+      "decision": "NOLOGIN/NOBYPASSRLS read capability. No direct raw Finance table SELECT/DML is admitted by PAY-2; later reads must use exact reviewed capability interfaces.",
+      "role": "finance_read_runtime"
+    },
+    "finance_maintenance_runtime": {
+      "attributes": {
+        "superuser": false,
+        "inherit": false,
+        "create_role": false,
+        "create_db": false,
+        "can_login": false,
+        "replication": false,
+        "bypass_rls": false
+      },
+      "purpose": "Bounded Finance maintenance and stuck-work discovery capability.",
+      "decision": "NOLOGIN/NOBYPASSRLS maintenance capability. No direct Finance table DML, no provider money-movement authority, no object ownership, and no migration-owner edge.",
+      "role": "finance_maintenance_runtime"
     }
   },
   "retired_roles": {
@@ -234,5 +318,18 @@
       "path": "v2-role-setting-manifest.json",
       "sha256": "38007e7b50e29feec729afa7b09f4f690d4996a5f83c2a88e77f94e42cfd0abb"
     }
+  },
+  "pay2_extension": {
+    "phase": "PAY-2",
+    "contract": "dedicated_finance_capability_roles_v1",
+    "roles": [
+      "finance_runtime",
+      "finance_payment_runtime",
+      "finance_refund_runtime",
+      "finance_reconciliation_runtime",
+      "finance_read_runtime",
+      "finance_maintenance_runtime"
+    ],
+    "rule": "Provisioned outside Alembic; database migrations only verify and consume these roles."
   }
 }

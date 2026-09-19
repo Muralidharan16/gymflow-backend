@@ -13,28 +13,22 @@
     "app_runtime",
     "app_user",
     "audit_writer",
+    "auth_runtime",
     "branch_admin",
     "branch_viewer",
+    "finance_config_runtime",
+    "finance_maintenance_runtime",
+    "finance_payment_runtime",
+    "finance_read_runtime",
+    "finance_reconciliation_runtime",
+    "finance_refund_runtime",
+    "finance_runtime",
+    "lifecycle_maintenance_runtime",
     "ops_support",
-    "readonly_analytics"
+    "readonly_analytics",
+    "worker_runtime"
   ],
   "objects": [
-    {
-      "dynamic": false,
-      "object": "app_private",
-      "object_type": "SCHEMA",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "app_private.append_audit_event",
-      "object_type": "FUNCTION",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
     {
       "dynamic": false,
       "object": "app_private.append_audit_event(UUID,UUID,UUID,VARCHAR,VARCHAR,TEXT,JSONB,UUID,JSONB,JSONB,TEXT,VARCHAR,VARCHAR,UUID)",
@@ -45,7 +39,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.compile_member_permissions",
+      "object": "app_private.append_audit_event",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -61,7 +55,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.create_branch_contacts_audit_partition",
+      "object": "app_private.compile_member_permissions",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -77,7 +71,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.enforce_membership_state_transition",
+      "object": "app_private.create_branch_contacts_audit_partition",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -93,7 +87,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.ensure_future_partition",
+      "object": "app_private.enforce_membership_state_transition",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -109,7 +103,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.ensure_primary_contact_delete",
+      "object": "app_private.ensure_future_partition",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -125,7 +119,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.ensure_primary_contact_insert",
+      "object": "app_private.ensure_primary_contact_delete",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -141,7 +135,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.ensure_primary_contact_update",
+      "object": "app_private.ensure_primary_contact_insert",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -157,7 +151,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.handle_user_deactivation_cascade",
+      "object": "app_private.ensure_primary_contact_update",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -173,7 +167,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.log_branch_contact_changes",
+      "object": "app_private.handle_user_deactivation_cascade",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -189,7 +183,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.log_branch_staff_role_audit",
+      "object": "app_private.log_branch_contact_changes",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -205,7 +199,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.mark_snapshot_stale",
+      "object": "app_private.log_branch_staff_role_audit",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -221,7 +215,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.org_advisory_lock_key",
+      "object": "app_private.mark_snapshot_stale",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -237,15 +231,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.partition_metadata",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "app_rls_executor"
-    },
-    {
-      "dynamic": false,
-      "object": "app_private.prevent_audit_modification",
+      "object": "app_private.org_advisory_lock_key",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -261,7 +247,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.prevent_soft_delete_resurrection",
+      "object": "app_private.prevent_audit_modification",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -277,7 +263,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.process_primary_contact_batch",
+      "object": "app_private.prevent_soft_delete_resurrection",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -293,7 +279,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.raise_immutable_audit_violation",
+      "object": "app_private.process_primary_contact_batch",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -309,7 +295,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.sync_branch_staff_role_contract_fields",
+      "object": "app_private.raise_immutable_audit_violation",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -317,7 +303,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.touch_updated_at",
+      "object": "app_private.sync_branch_staff_role_contract_fields",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -333,7 +319,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.update_timestamp",
+      "object": "app_private.touch_updated_at",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -349,7 +335,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.validate_effective_from_window",
+      "object": "app_private.update_timestamp",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -365,7 +351,7 @@
     },
     {
       "dynamic": false,
-      "object": "app_private.validate_rls_context_match",
+      "object": "app_private.validate_effective_from_window",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -381,67 +367,27 @@
     },
     {
       "dynamic": false,
-      "object": "app_secure",
-      "object_type": "SCHEMA",
+      "object": "app_private.validate_rls_context_match",
+      "object_type": "FUNCTION",
       "parent_relation": null,
-      "policy": "app_secure schema and approved secure views are owned by app_security_owner.",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.pay2_guard_posted_finance_ledger_entry_mutation()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-2 posted-ledger trigger authority is owned only by app_security_owner.",
       "target_owner": "app_security_owner"
     },
     {
       "dynamic": false,
-      "object": "app_secure.v_active_branch_staff_roles",
-      "object_type": "VIEW",
+      "object": "app_secure.pay2_reject_finance_immutable_history_mutation()",
+      "object_type": "FUNCTION",
       "parent_relation": null,
-      "policy": "app_secure schema and approved secure views are owned by app_security_owner.",
+      "policy": "PAY-2 immutable-history trigger authority is owned only by app_security_owner.",
       "target_owner": "app_security_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "app_secure.v_effective_member_permissions",
-      "object_type": "VIEW",
-      "parent_relation": null,
-      "policy": "app_secure schema and approved secure views are owned by app_security_owner.",
-      "target_owner": "app_security_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "branch_audit_log",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "branch_audit_log_y2026_m05",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "branch_audit_log_y2026_m06",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "branch_audit_log_y2026_m07",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "branch_audit_log_y2026_m08",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
     },
     {
       "dynamic": false,
@@ -462,6 +408,70 @@
     {
       "dynamic": false,
       "object": "enforce_max_branches",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "increment_branch_state_version",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "prevent_audit_mutation",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "prevent_critical_branch_deletion",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "set_branches_updated_at",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "set_updated_at",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "snapshot_address_on_change",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "snapshot_address_on_insert",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "validate_branch_transition",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
@@ -592,14 +602,6 @@
       "object": "idx_places_cache_expires",
       "object_type": "INDEX",
       "parent_relation": "google_places_cache",
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "increment_branch_state_version",
-      "object_type": "FUNCTION",
-      "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
       "target_owner": "migration_owner"
     },
@@ -821,350 +823,6 @@
     },
     {
       "dynamic": false,
-      "object": "outbox_events",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "outbox_events_y2026_m05",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "prevent_audit_mutation",
-      "object_type": "FUNCTION",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "prevent_critical_branch_deletion",
-      "object_type": "FUNCTION",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.active_idempotency_keys",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.address_audit_ledger",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.audit_chain_heads",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.audit_key_registry",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.branch_audit_log_seq",
-      "object_type": "SEQUENCE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.branch_contacts",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "app_rls_executor"
-    },
-    {
-      "dynamic": false,
-      "object": "public.branch_contacts_audit",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "app_rls_executor"
-    },
-    {
-      "dynamic": false,
-      "object": "public.branch_contacts_audit_default",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "app_rls_executor"
-    },
-    {
-      "dynamic": true,
-      "object": "public.branch_contacts_audit_yYYYY_mMM",
-      "object_type": "TABLE PARTITION FAMILY",
-      "parent_relation": "public.branch_contacts_audit",
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "app_rls_executor"
-    },
-    {
-      "dynamic": false,
-      "object": "public.branch_staff_roles",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.encryption_key_registry",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.event_outbox",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.event_outbox_delivery_state",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.event_outbox_delivery_state_p0",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": true,
-      "object": "public.event_outbox_delivery_state_p1",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": true,
-      "object": "public.event_outbox_delivery_state_p2",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": true,
-      "object": "public.event_outbox_delivery_state_p3",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": true,
-      "object": "public.event_outbox_delivery_state_p4",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": true,
-      "object": "public.event_outbox_delivery_state_p5",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": true,
-      "object": "public.event_outbox_delivery_state_p6",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": true,
-      "object": "public.event_outbox_delivery_state_p7",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.event_outbox_y2026_m05_d18",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.google_places_cache",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.idempotency_store",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.idempotency_store_y2026_m05_d18",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.key_rotation_progress",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.member_permission_snapshots",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.membership_statuses",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.organization_address_payloads_secure",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.organization_members",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.organization_users",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.permissions",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.scope_types",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.staff_roles",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "public.tenant_resource_quotas",
-      "object_type": "TABLE",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "set_branches_updated_at",
-      "object_type": "FUNCTION",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "set_updated_at",
-      "object_type": "FUNCTION",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "snapshot_address_on_change",
-      "object_type": "FUNCTION",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "snapshot_address_on_insert",
-      "object_type": "FUNCTION",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
       "object": "uq_branch_name_per_org",
       "object_type": "INDEX",
       "parent_relation": "org_branches",
@@ -1253,6 +911,622 @@
     },
     {
       "dynamic": false,
+      "object": "app_private",
+      "object_type": "SCHEMA",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure",
+      "object_type": "SCHEMA",
+      "parent_relation": null,
+      "policy": "app_secure schema and approved secure views are owned by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance",
+      "object_type": "SCHEMA",
+      "parent_relation": null,
+      "policy": "PAY-2 governs the Finance namespace owner; runtime capability roles may never own it.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.branch_audit_log_seq",
+      "object_type": "SEQUENCE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.branch_contacts_audit_yYYYY_mMM",
+      "object_type": "TABLE PARTITION FAMILY",
+      "parent_relation": "public.branch_contacts_audit",
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "app_private.partition_metadata",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "branch_audit_log_y2026_m05",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "branch_audit_log_y2026_m06",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "branch_audit_log_y2026_m07",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "branch_audit_log_y2026_m08",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "branch_audit_log",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.audit_events",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.bank_accounts",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.billing_parties",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.branch_accounting_profiles",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.brand_ref_series",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.brands",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.credit_note_lines",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.credit_notes",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.divisions",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.gst_registrations",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.idempotency_keys",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.invoice_lines",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.invoice_series",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.invoices",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.ledger_accounts",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.ledger_entries",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.ledger_entry_lines",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.legal_entities",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.member_subscription_checkout_bindings",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.membership_plan_tax_profiles",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.outbox_events",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.payment_allocations",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.payment_events",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.payments",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.refund_execution_commands",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.refund_obligation_bindings",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.refunds",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.tax_codes",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.tax_records",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "outbox_events_y2026_m05",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "outbox_events",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.active_idempotency_keys",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.address_audit_ledger",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.audit_chain_heads",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.audit_key_registry",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.branch_contacts_audit_default",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "public.branch_contacts_audit",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "public.branch_contacts",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "app_rls_executor"
+    },
+    {
+      "dynamic": false,
+      "object": "public.branch_staff_roles",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.encryption_key_registry",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.event_outbox_delivery_state_p0",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p1",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p2",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p3",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p4",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p5",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p6",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": true,
+      "object": "public.event_outbox_delivery_state_p7",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.event_outbox_delivery_state",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.event_outbox_y2026_m05_d18",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.event_outbox",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.google_places_cache",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.idempotency_store_y2026_m05_d18",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.idempotency_store",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.key_rotation_progress",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.member_permission_snapshots",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.membership_statuses",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.organization_address_payloads_secure",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.organization_members",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.organization_users",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.permissions",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.scope_types",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.staff_roles",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.tenant_resource_quotas",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.v_active_branch_staff_roles",
+      "object_type": "VIEW",
+      "parent_relation": null,
+      "policy": "app_secure schema and approved secure views are owned by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.v_effective_member_permissions",
+      "object_type": "VIEW",
+      "parent_relation": null,
+      "policy": "app_secure schema and approved secure views are owned by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
       "object": "v_active_org_branches",
       "object_type": "VIEW",
       "parent_relation": null,
@@ -1263,14 +1537,6 @@
       "dynamic": false,
       "object": "v_public_branch_addresses",
       "object_type": "VIEW",
-      "parent_relation": null,
-      "policy": "Preserve source-derived final owner.",
-      "target_owner": "migration_owner"
-    },
-    {
-      "dynamic": false,
-      "object": "validate_branch_transition",
-      "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
       "target_owner": "migration_owner"
@@ -1312,5 +1578,44 @@
     "forbidden_role_ownership_rejected": true,
     "listed_objects_require_exact_owner": true,
     "unknown_objects_are_not_assumed_safe": true
+  },
+  "pay2_extension": {
+    "phase": "PAY-2",
+    "governed_finance_schema": "finance",
+    "governed_finance_tables": [
+      "legal_entities",
+      "gst_registrations",
+      "divisions",
+      "brands",
+      "bank_accounts",
+      "tax_codes",
+      "ledger_accounts",
+      "billing_parties",
+      "branch_accounting_profiles",
+      "membership_plan_tax_profiles",
+      "invoice_series",
+      "brand_ref_series",
+      "invoices",
+      "invoice_lines",
+      "tax_records",
+      "payments",
+      "member_subscription_checkout_bindings",
+      "refund_obligation_bindings",
+      "payment_allocations",
+      "payment_events",
+      "refunds",
+      "refund_execution_commands",
+      "credit_notes",
+      "credit_note_lines",
+      "ledger_entries",
+      "ledger_entry_lines",
+      "audit_events",
+      "idempotency_keys",
+      "outbox_events"
+    ],
+    "immutable_guard_functions": [
+      "app_secure.pay2_reject_finance_immutable_history_mutation()",
+      "app_secure.pay2_guard_posted_finance_ledger_entry_mutation()"
+    ]
   }
 }
