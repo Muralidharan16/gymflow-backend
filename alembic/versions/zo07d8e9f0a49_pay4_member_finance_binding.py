@@ -898,16 +898,33 @@ def upgrade() -> None:
         "SELECT pg_catalog.has_schema_privilege('migration_owner','app_secure','USAGE')"
     )).scalar_one():
         raise RuntimeError("PAY-4 migration_owner app_secure USAGE leaked after trigger installation")
-    for signature in (
-        "app_secure.pay4_reject_binding_mutation()",
-        "app_secure.pay4_guard_subscription_activation()",
-        "app_secure.pay4_guard_v2_activation()",
+    for function_name in (
+        "pay4_reject_binding_mutation",
+        "pay4_guard_subscription_activation",
+        "pay4_guard_v2_activation",
     ):
-        if bind.execute(sa.text(
-            "SELECT pg_catalog.has_function_privilege('migration_owner',:signature,'EXECUTE')"
-        ), {"signature": signature}).scalar_one():
+        leaked = bind.execute(sa.text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_proc p
+                JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                    COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+                ) acl
+                JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
+                WHERE n.nspname='app_secure'
+                  AND p.proname=:function_name
+                  AND p.pronargs=0
+                  AND grantee.rolname='migration_owner'
+                  AND acl.privilege_type='EXECUTE'
+            )
+            """
+        ), {"function_name": function_name}).scalar_one()
+        if leaked:
             raise RuntimeError(
-                f"PAY-4 migration_owner trigger EXECUTE leaked after installation: {signature}"
+                "PAY-4 migration_owner trigger EXECUTE leaked after installation: "
+                + function_name
             )
 
     for role in (_API,_WORKER):
