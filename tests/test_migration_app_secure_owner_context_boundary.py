@@ -293,7 +293,12 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         _PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION: set(),
         # PAY-4 introduces tenant RLS policies around the canonical binding,
         # payment context and product lifecycle capabilities.
-        _PAY4_MEMBER_FINANCE_BINDING_MIGRATION: {"create_policy", "drop_policy"},
+        _PAY4_MEMBER_FINANCE_BINDING_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
         A1.name: view_contract,
     }
     actual = {
