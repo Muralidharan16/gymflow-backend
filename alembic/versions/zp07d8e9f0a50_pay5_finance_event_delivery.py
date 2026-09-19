@@ -585,40 +585,47 @@ def downgrade() -> None:
     op.execute("SET LOCAL statement_timeout='30s'")
     _require_identity(bind)
 
+    # FORCE RLS intentionally applies to the table owner. For downgrade
+    # evidence detection, migration_owner opens a transaction-local owner view.
+    # If the guard raises, PostgreSQL rollback restores FORCE automatically.
+    op.execute(
+        "ALTER TABLE public.member_subscription_finance_event_consumptions "
+        "NO FORCE ROW LEVEL SECURITY"
+    )
+    if bind.execute(
+        sa.text(
+            "SELECT EXISTS("
+            "SELECT 1 FROM public.member_subscription_finance_event_consumptions LIMIT 1)"
+        )
+    ).scalar_one():
+        raise RuntimeError(
+            "PAY-5 downgrade blocked: product Finance-event consumption evidence exists"
+        )
+    if bind.execute(
+        sa.text(
+            """
+            SELECT EXISTS(
+              SELECT 1
+              FROM finance.outbox_events
+              WHERE aggregate_type='invoice'
+                AND event_type='finance.invoice.paid'
+                AND (
+                  lease_fence<>0
+                  OR leased_by IS NOT NULL
+                  OR leased_until IS NOT NULL
+                  OR status IN ('processing','published','failed')
+                )
+              LIMIT 1
+            )
+            """
+        )
+    ).scalar_one():
+        raise RuntimeError(
+            "PAY-5 downgrade blocked: Finance-event delivery evidence exists"
+        )
+
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
-        if bind.execute(
-            sa.text(
-                "SELECT EXISTS("
-                "SELECT 1 FROM public.member_subscription_finance_event_consumptions LIMIT 1)"
-            )
-        ).scalar_one():
-            raise RuntimeError(
-                "PAY-5 downgrade blocked: product Finance-event consumption evidence exists"
-            )
-        if bind.execute(
-            sa.text(
-                """
-                SELECT EXISTS(
-                  SELECT 1
-                  FROM finance.outbox_events
-                  WHERE aggregate_type='invoice'
-                    AND event_type='finance.invoice.paid'
-                    AND (
-                      lease_fence<>0
-                      OR leased_by IS NOT NULL
-                      OR leased_until IS NOT NULL
-                      OR status IN ('processing','published','failed')
-                    )
-                  LIMIT 1
-                )
-                """
-            )
-        ).scalar_one():
-            raise RuntimeError(
-                "PAY-5 downgrade blocked: Finance-event delivery evidence exists"
-            )
-
         for signature in (_RELEASE,_ACK,_CONSUME,_CLAIM):
             op.execute(f"REVOKE EXECUTE ON FUNCTION {signature} FROM worker_runtime")
             op.execute(f"DROP FUNCTION {signature}")
