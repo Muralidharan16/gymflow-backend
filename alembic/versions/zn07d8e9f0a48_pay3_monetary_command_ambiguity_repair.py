@@ -309,7 +309,7 @@ def upgrade() -> None:
         raise RuntimeError("PAY-3 repair ambiguity columns already exist")
 
     # The pushed predecessor did not persist why a command became UNKNOWN.
-    # Never invent that evidence during migration. A populated predecessor with
+    # Never invent that evidence during migration.  A populated predecessor with
     # UNKNOWN rows requires an explicit evidence-recovery decision instead.
     if bind.execute(sa.text(
         "SELECT EXISTS(SELECT 1 FROM finance.monetary_commands "
