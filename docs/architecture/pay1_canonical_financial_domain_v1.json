@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-1",
+  "date": "2026-09-19",
+  "branch": "hardening/pay1-canonical-financial-domain-model",
+  "inherited_pay0": {
+    "commit": "a9fa1c521bcd1685ee822d332eeaf87c7cf5554a",
+    "tree": "724671aecdcc2d322c405855a26d93be1cd8968c",
+    "alembic_head": "zk07d8e9f0a45",
+    "certification": "PAY0_FINAL=PASS"
+  },
+  "purpose": "freeze_canonical_financial_domain_and_state_machines_before_database_enforcement",
+  "authority": {
+    "internal_financial_authority": "postgresql_finance_core",
+    "external_money_fact_authority": "verified_provider_evidence",
+    "payment_acquisition_truth": "captured_is_immutable_acquisition_truth",
+    "settlement": "separate_aggregate",
+    "refunds": "separate_business_intent_and_execution_aggregate",
+    "disputes_and_chargebacks": "separate_aggregates",
+    "browser": "non_authoritative",
+    "redis_celery_beat": "delivery_coordination_only",
+    "operator_input": "non_authoritative"
+  },
+  "money": {
+    "business_representation": "Decimal",
+    "provider_representation": "integer_minor_units",
+    "float_forbidden": true,
+    "currency_format": "ISO-4217 uppercase 3-letter",
+    "production_currency_allowlist": {
+      "INR": 2
+    },
+    "cross_currency_financial_application_forbidden": true
+  },
+  "state_machines": {
+    "payment": [
+      "created",
+      "pending",
+      "requires_action",
+      "authorized",
+      "captured",
+      "failed",
+      "cancelled",
+      "expired"
+    ],
+    "payment_attempt": [
+      "created",
+      "submitting",
+      "provider_pending",
+      "requires_action",
+      "authorized",
+      "captured",
+      "unknown",
+      "failed_retryable",
+      "failed_final",
+      "cancelled",
+      "expired"
+    ],
+    "payment_evidence_verdict": [
+      "verified",
+      "rejected",
+      "unresolved"
+    ],
+    "invoice": [
+      "draft",
+      "issued",
+      "partially_paid",
+      "paid",
+      "cancelled",
+      "voided",
+      "credited"
+    ],
+    "invoice_due_state": [
+      "not_due",
+      "due",
+      "overdue",
+      "satisfied"
+    ],
+    "allocation": [
+      "applied",
+      "partially_reversed",
+      "reversed"
+    ],
+    "settlement": [
+      "reported",
+      "verified",
+      "partially_reconciled",
+      "reconciled",
+      "discrepant"
+    ],
+    "settlement_kind": [
+      "credit",
+      "debit_adjustment",
+      "reversal"
+    ],
+    "credit_note": [
+      "draft",
+      "issued",
+      "voided"
+    ],
+    "refund": [
+      "requested",
+      "approved",
+      "rejected",
+      "processing",
+      "succeeded",
+      "failed",
+      "cancelled"
+    ],
+    "refund_execution": [
+      "pending",
+      "processing",
+      "retry_pending",
+      "provider_accepted",
+      "reconciliation_pending",
+      "unknown",
+      "succeeded",
+      "rejected",
+      "dead_lettered",
+      "cancelled"
+    ],
+    "dispute": [
+      "opened",
+      "evidence_required",
+      "evidence_submitted",
+      "under_review",
+      "won",
+      "lost",
+      "closed"
+    ],
+    "chargeback": [
+      "pending",
+      "debited",
+      "reversed",
+      "final_loss"
+    ],
+    "adjustment": [
+      "proposed",
+      "approved",
+      "rejected",
+      "cancelled",
+      "posted"
+    ],
+    "provider_operation": [
+      "reserved",
+      "in_progress",
+      "unknown",
+      "succeeded",
+      "failed_retryable",
+      "failed_final",
+      "cancelled"
+    ]
+  },
+  "separation_rules": [
+    "payment_status_does_not_encode_settlement",
+    "payment_status_does_not_encode_refund",
+    "payment_status_does_not_encode_dispute_or_chargeback",
+    "invoice_overdue_is_derived_due_state_not_canonical_invoice_lifecycle_state",
+    "refund_status_does_not_encode_worker_lease_or_provider_unknown_outcome",
+    "refund_execution_status_does_not_grant_business_refund_approval",
+    "settlement_does_not_grant_member_entitlement",
+    "provider_callback_does_not_grant_product_entitlement"
+  ],
+  "compatibility": {
+    "current_finance_payment": {
+      "settled": "captured_plus_separate_settlement_projection",
+      "partially_refunded": "captured_plus_separate_refund_projection",
+      "refunded": "captured_plus_separate_refund_projection"
+    },
+    "current_finance_invoice": {
+      "overdue": "derive_due_state_from_due_date_and_outstanding_balance"
+    },
+    "current_platform_provider_operation": {
+      "failed": "requires_authoritative_evidence_classification_before_failed_retryable_or_failed_final"
+    }
+  },
+  "hard_invariants": [
+    "captured_payment_acquisition_truth_is_not_rewritten_by_settlement_refund_dispute_or_chargeback",
+    "payment_attempt_unknown_requires_reconciliation_before_replacement_effect",
+    "provider_event_staleness_requires_authoritative_version_or_time_evidence_not_enum_order",
+    "issued_statutory_documents_are_immutable_except_controlled_status_or_linked_corrective_documents",
+    "payment_allocation_and_reversal_history_is_append_only",
+    "settlement_reversal_is_a_new_linked_settlement_not_mutation_of_reconciled_truth",
+    "refund_execution_is_separate_from_refund_business_intent",
+    "dispute_and_chargeback_do_not_rewrite_original_capture_truth",
+    "manual_adjustment_posting_requires_approved_command_and_append_only_ledger_effect",
+    "browser_redis_celery_telemetry_and_operator_input_are_not_financial_authority",
+    "money_uses_decimal_business_units_and_integer_provider_minor_units_never_float",
+    "cross_currency_allocation_refund_credit_or_settlement_is_forbidden",
+    "provider_level_refund_total_cannot_exceed_captured_amount",
+    "allocation_reversal_total_cannot_exceed_original_allocation",
+    "financial_history_is_not_hard_deleted"
+  ],
+  "pay1_scope": {
+    "application_behavior_wiring": false,
+    "migration_mutation": false,
+    "database_acl_rls_change": false,
+    "live_provider_activation": false,
+    "live_money_movement": false,
+    "refund_provider_execution": "DEFERRED_FAIL_CLOSED"
+  },
+  "next_phase": "PAY-2"
+}

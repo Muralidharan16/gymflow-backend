@@ -1,0 +1,236 @@
+name: PAY-1 Canonical Financial Domain
+
+on:
+  push:
+    branches:
+      - hardening/pay1-canonical-financial-domain-model
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay1-canonical-financial-domain-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY1_BASE_SHA: a9fa1c521bcd1685ee822d332eeaf87c7cf5554a
+  PAY1_BASE_TREE: 724671aecdcc2d322c405855a26d93be1cd8968c
+  PAY1_ALEMBIC_HEAD: zk07d8e9f0a45
+  PAY1_BRANCH: hardening/pay1-canonical-financial-domain-model
+
+jobs:
+  contract:
+    name: PAY-1 canonical financial model contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/gymflow_pay1_contract_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: ci-pay1-contract-not-production
+      AWS_ACCESS_KEY_ID: ci-pay1-contract
+      AWS_SECRET_ACCESS_KEY: ci-pay1-contract
+      S3_BUCKET_NAME: gymflow-pay1-contract-test
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact PAY-1 candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+
+      - name: Guard certified PAY-0 parent
+        run: |
+          set -euo pipefail
+          git cat-file -e "${PAY1_BASE_SHA}^{commit}"
+          test "$(git rev-parse "${PAY1_BASE_SHA}^{tree}")" = "${PAY1_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY1_BASE_SHA}" HEAD
+
+      - name: Enforce PAY-1 exact scope and zero migration mutation
+        run: |
+          set -euo pipefail
+          git diff --name-only "${PAY1_BASE_SHA}...HEAD" > /tmp/pay1-changed.txt
+          cat /tmp/pay1-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              ".github/workflows/pay1-canonical-financial-domain.yml",
+              "app/finance_core/domain/canonical_financial_model.py",
+              "docs/architecture/PAY1_ACCEPTANCE_MATRIX.md",
+              "docs/architecture/PAY1_CANONICAL_FINANCIAL_DOMAIN_MODEL.md",
+              "docs/architecture/pay1_canonical_financial_domain_v1.json",
+              "tests/test_pay1_canonical_financial_domain.py",
+          }
+          changed = {line.strip() for line in Path("/tmp/pay1-changed.txt").read_text().splitlines() if line.strip()}
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(f"PAY-1 scope violation: {sorted(unexpected)}")
+          migration_changes = sorted(path for path in changed if path.startswith("alembic/versions/"))
+          if migration_changes:
+              raise SystemExit(f"PAY-1 migration mutation forbidden: {migration_changes}")
+          if changed != allowed:
+              raise SystemExit(f"PAY-1 required allowlist mismatch: changed={sorted(changed)}")
+          print(f"PAY-1 exact allowlist paths: {len(changed)}")
+          PY
+
+      - name: Verify Alembic graph and exact inherited head
+        run: |
+          set -euo pipefail
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY1_ALEMBIC_HEAD}"
+          echo 'PAY1_MIGRATION_BASELINE=PASS'
+
+      - name: Validate PAY-0 inheritance and PAY-1 canonical model
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/pay0_payment_architecture_inventory.json >/dev/null
+          python -m json.tool docs/architecture/pay1_canonical_financial_domain_v1.json >/dev/null
+          python -m py_compile app/finance_core/domain/canonical_financial_model.py
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay0_payment_architecture_inventory.py             tests/test_pay1_canonical_financial_domain.py
+          if git grep -n "canonical_financial_model" -- 'app/**' ':!app/finance_core/domain/canonical_financial_model.py'; then
+            echo "PAY-1 canonical model was wired into existing runtime code" >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'PAY1_CANONICAL_FINANCIAL_MODEL=PASS'
+          echo 'PAY1_STATE_MACHINE_SEPARATION=PASS'
+          echo 'PAY1_MONEY_CONTRACT=PASS'
+          echo 'PAY1_COMPATIBILITY_MAPPING=PASS'
+          echo 'PAY1_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY1_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+
+  architecture:
+    name: Inherited architecture contracts
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+
+  general_platform:
+    name: Inherited General and Platform Billing regression
+    uses: ./.github/workflows/hardening-ci.yml
+
+  finance:
+    name: Inherited Finance Core regression
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  migration_lifecycle:
+    name: Inherited full migration lifecycle
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+
+  migration_preservation:
+    name: Inherited populated migration preservation
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+
+  migration_adversarial:
+    name: Inherited adversarial migration safety
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+
+  migration_contracts:
+    name: Inherited migration lifecycle contracts
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+
+  migration_semantics:
+    name: Inherited migration semantics inventory
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+
+  certify:
+    name: Terminal immutable PAY-1 decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - architecture
+      - general_platform
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require all PAY-1 and inherited gates
+        env:
+          REQUIRED_RESULTS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          results = json.loads(os.environ["REQUIRED_RESULTS_JSON"])
+          failures = {name: value["result"] for name, value in results.items() if value["result"] != "success"}
+          if failures:
+              raise SystemExit(f"PAY-1 prerequisite failure: {failures}")
+          print(f"PAY-1 prerequisite gates passed: {len(results)}")
+          PY
+
+      - name: Checkout exact PAY-1 candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Emit machine-readable PAY-1 decision
+        run: |
+          set -euo pipefail
+          mkdir -p pay1-evidence
+          test "$(git rev-parse "${PAY1_BASE_SHA}^{tree}")" = "${PAY1_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY1_BASE_SHA}" HEAD
+          test -z "$(git diff --name-only "${PAY1_BASE_SHA}...HEAD" | grep '^alembic/versions/' || true)"
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          decision = {
+              "schema_version": 1,
+              "phase": "PAY-1",
+              "candidate_sha": os.environ["GITHUB_SHA"],
+              "candidate_tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+              "inherited_pay0_sha": os.environ["PAY1_BASE_SHA"],
+              "inherited_pay0_tree": os.environ["PAY1_BASE_TREE"],
+              "alembic_head": os.environ["PAY1_ALEMBIC_HEAD"],
+              "migration_mutation": False,
+              "application_behavior_wiring": False,
+              "live_money_movement": False,
+              "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+              "merge_authorized": False,
+              "release_authorized": False,
+              "deployment_authorized": False,
+              "decision": "PASS",
+          }
+          Path("pay1-evidence/decision.json").write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          PY
+          cat pay1-evidence/decision.json
+          echo 'PAY1_CANONICAL_FINANCIAL_MODEL=PASS'
+          echo 'PAY1_STATE_MACHINE_SEPARATION=PASS'
+          echo 'PAY1_MONEY_CONTRACT=PASS'
+          echo 'PAY1_COMPATIBILITY_MAPPING=PASS'
+          echo 'PAY1_MIGRATION_BASELINE=PASS'
+          echo 'PAY1_PAY0_INHERITED=PASS'
+          echo 'PAY1_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY1_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+          echo 'PAY1_FINAL=PASS'
+
+      - name: Upload PAY-1 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay1-final-${{ github.sha }}
+          path: pay1-evidence/
+          if-no-files-found: error
+          retention-days: 30
