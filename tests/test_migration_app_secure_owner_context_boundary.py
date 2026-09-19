@@ -98,6 +98,9 @@ _PAY2_FINANCIAL_AUTHORITY_MIGRATION = (
 _PAY3_MONETARY_COMMAND_MIGRATION = (
     "zm07d8e9f0a47_pay3_monetary_command_protocol.py"
 )
+_PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION = (
+    "zn07d8e9f0a48_pay3_monetary_command_ambiguity_repair.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -138,6 +141,7 @@ APP_SECURE_FILES.update(
         _P8_LIFECYCLE_SNAPSHOT_MIGRATION,
         _PAY2_FINANCIAL_AUTHORITY_MIGRATION,
         _PAY3_MONETARY_COMMAND_MIGRATION,
+        _PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION,
     }
 )
 
@@ -280,6 +284,9 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # PAY-3 introduces a Finance monetary-command RLS policy and drops it
         # on downgrade; function ownership/ACL behavior is covered separately.
         _PAY3_MONETARY_COMMAND_MIGRATION: {"create_policy", "drop_policy"},
+        # Repair only replaces reduced-owner functions and adds table columns;
+        # it does not broaden schema/view/policy DDL.
+        _PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {
