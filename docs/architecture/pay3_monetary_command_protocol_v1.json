@@ -17,12 +17,7 @@
     "journal": "finance.monetary_commands",
     "tenant_scoped": true,
     "persistent_no_automatic_expiry": true,
-    "states": [
-      "processing",
-      "unknown",
-      "succeeded",
-      "failed_deterministic"
-    ],
+    "states": ["processing", "unknown", "succeeded", "failed_deterministic"],
     "same_key_same_payload": "replay_original_command",
     "same_key_different_payload": "conflict_no_side_effect",
     "unknown": "blocks_replacement_effect_until_reconciled",
