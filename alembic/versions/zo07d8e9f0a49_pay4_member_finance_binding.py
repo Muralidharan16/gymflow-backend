@@ -569,7 +569,8 @@ def _install_capabilities() -> None:
                 WHERE il.invoice_id=v_invoice.id;
                 IF v_line_count <> 1
                    OR v_line_unit IS DISTINCT FROM v_term.list_price_amount
-                   OR pg_catalog.btrim(v_line_description) IS DISTINCT FROM pg_catalog.btrim(v_term.plan_name_snapshot) THEN
+                   OR pg_catalog.btrim(v_line_description) IS DISTINCT FROM
+                      ('Membership subscription '||v_term.legacy_subscription_code) THEN
                     RAISE EXCEPTION 'PAY-4 binding invoice plan snapshot mismatch'
                         USING ERRCODE='23514';
                 END IF;
@@ -590,14 +591,19 @@ def _install_capabilities() -> None:
                     RETURN;
                 END IF;
 
-                INSERT INTO finance.payment_contexts(
-                    organization_id,context_type,business_reference
-                ) VALUES (
-                    v_org,'member_subscription_term','subscription_term:'||v_term.id::text
-                )
-                ON CONFLICT ON CONSTRAINT uq_finance_payment_contexts_business
-                DO UPDATE SET business_reference=EXCLUDED.business_reference
-                RETURNING * INTO v_context;
+                SELECT * INTO v_context
+                FROM finance.payment_contexts c
+                WHERE c.organization_id=v_org
+                  AND c.context_type='member_subscription_term'
+                  AND c.business_reference='subscription_term:'||v_term.id::text;
+                IF NOT FOUND THEN
+                    INSERT INTO finance.payment_contexts(
+                        organization_id,context_type,business_reference
+                    ) VALUES (
+                        v_org,'member_subscription_term','subscription_term:'||v_term.id::text
+                    )
+                    RETURNING * INTO v_context;
+                END IF;
 
                 v_plan_snapshot := pg_catalog.jsonb_build_object(
                     'plan_id',v_term.plan_id::text,
@@ -769,7 +775,7 @@ def _install_capabilities() -> None:
 
                 SELECT COALESCE(
                     pg_catalog.timezone(NULLIF(b.timezone,''),pg_catalog.clock_timestamp())::date,
-                    pg_catalog.current_date
+                    CURRENT_DATE
                 )
                 INTO v_business_date
                 FROM public.org_branches b
@@ -838,7 +844,6 @@ def _install_capabilities() -> None:
 
     # Admission and invoice-binding are existing API-side preparation only.
     # The money-derived activation capability remains unbound until PAY-5.
-    op.execute("GRANT USAGE ON SCHEMA app_secure TO app_runtime")
     op.execute(f"GRANT EXECUTE ON FUNCTION {_CREATE_PENDING} TO app_runtime")
     op.execute(f"GRANT EXECUTE ON FUNCTION {_RECORD_BINDING} TO app_runtime")
 
