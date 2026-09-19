@@ -8,7 +8,13 @@
     "worker_runtime",
     "lifecycle_maintenance_runtime",
     "finance_config_runtime",
-    "migration_owner"
+    "migration_owner",
+    "finance_runtime",
+    "finance_read_runtime",
+    "payment_worker_runtime",
+    "refund_runtime",
+    "finance_reconciliation_runtime",
+    "finance_maintenance_runtime"
   ],
   "migration_helpers": [
     "app_rls_executor",

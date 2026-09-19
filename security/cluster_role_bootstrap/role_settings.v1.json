@@ -38,6 +38,42 @@
       "lock_timeout": "2s",
       "row_security": "on",
       "statement_timeout": "15s"
+    },
+    "finance_runtime": {
+      "idle_in_transaction_session_timeout": "15s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "5s"
+    },
+    "finance_read_runtime": {
+      "idle_in_transaction_session_timeout": "15s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "10s"
+    },
+    "payment_worker_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "15s"
+    },
+    "refund_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "15s"
+    },
+    "finance_reconciliation_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "15s"
+    },
+    "finance_maintenance_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "15s"
     }
   },
   "source_evidence": {

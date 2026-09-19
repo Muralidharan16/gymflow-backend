@@ -51,6 +51,15 @@ def test_fresh_bootstrap_is_exact_manifest_driven_and_create_only() -> None:
 
     assert "CREATE ROLE lifecycle_maintenance_runtime" in sql
     assert "CREATE ROLE finance_config_runtime" in sql
+    for finance_role in (
+        "finance_runtime",
+        "finance_read_runtime",
+        "payment_worker_runtime",
+        "refund_runtime",
+        "finance_reconciliation_runtime",
+        "finance_maintenance_runtime",
+    ):
+        assert f"CREATE ROLE {finance_role}" in sql
     for setting, value in {
         "statement_timeout": "15s",
         "lock_timeout": "2s",

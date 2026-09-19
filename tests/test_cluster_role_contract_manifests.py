@@ -122,6 +122,12 @@ def test_exact_managed_role_contract() -> None:
         "worker_runtime",
         "lifecycle_maintenance_runtime",
         "finance_config_runtime",
+        "finance_runtime",
+        "finance_read_runtime",
+        "payment_worker_runtime",
+        "refund_runtime",
+        "finance_reconciliation_runtime",
+        "finance_maintenance_runtime",
     }
 
     migration_attributes = roles["migration_owner"]["attributes"]
@@ -153,6 +159,12 @@ def test_exact_managed_role_contract() -> None:
         "worker_runtime",
         "lifecycle_maintenance_runtime",
         "finance_config_runtime",
+        "finance_runtime",
+        "finance_read_runtime",
+        "payment_worker_runtime",
+        "refund_runtime",
+        "finance_reconciliation_runtime",
+        "finance_maintenance_runtime",
     ):
         attributes = roles[role]["attributes"]
         assert attributes == {
@@ -177,6 +189,18 @@ def test_exact_managed_role_contract() -> None:
     assert "configuration control-plane" in roles["finance_config_runtime"]["decision"]
     assert "NOLOGIN/NOBYPASSRLS" in roles["finance_config_runtime"]["decision"]
     assert "must never be granted to migration_owner" in roles["finance_config_runtime"]["decision"]
+    for finance_role in (
+        "finance_runtime",
+        "finance_read_runtime",
+        "payment_worker_runtime",
+        "refund_runtime",
+        "finance_reconciliation_runtime",
+        "finance_maintenance_runtime",
+    ):
+        assert "NOLOGIN/NOINHERIT/NOBYPASSRLS" in roles[finance_role]["decision"]
+        assert "must never be granted to migration_owner" in roles[finance_role]["decision"]
+        assert roles[finance_role]["attributes"]["can_login"] is False
+        assert roles[finance_role]["attributes"]["bypass_rls"] is False
 
 
 def test_role_settings_are_exact() -> None:
@@ -197,6 +221,22 @@ def test_role_settings_are_exact() -> None:
     assert settings["worker_runtime"] == bounded_background_settings
     assert settings["lifecycle_maintenance_runtime"] == bounded_background_settings
     assert settings["finance_config_runtime"] == bounded_background_settings
+    assert settings["payment_worker_runtime"] == bounded_background_settings
+    assert settings["refund_runtime"] == bounded_background_settings
+    assert settings["finance_reconciliation_runtime"] == bounded_background_settings
+    assert settings["finance_maintenance_runtime"] == bounded_background_settings
+    assert settings["finance_runtime"] == {
+        "statement_timeout": "5s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "15s",
+        "row_security": "on",
+    }
+    assert settings["finance_read_runtime"] == {
+        "statement_timeout": "10s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "15s",
+        "row_security": "on",
+    }
     assert "auth_runtime" in settings
 
     for role, values in settings.items():
@@ -205,6 +245,12 @@ def test_role_settings_are_exact() -> None:
             "worker_runtime",
             "lifecycle_maintenance_runtime",
             "finance_config_runtime",
+            "finance_runtime",
+            "finance_read_runtime",
+            "payment_worker_runtime",
+            "refund_runtime",
+            "finance_reconciliation_runtime",
+            "finance_maintenance_runtime",
         }:
             assert values == {}
 
@@ -257,6 +303,12 @@ def test_runtime_capabilities_are_not_migration_owner_memberships() -> None:
         "worker_runtime",
         "lifecycle_maintenance_runtime",
         "finance_config_runtime",
+        "finance_runtime",
+        "finance_read_runtime",
+        "payment_worker_runtime",
+        "refund_runtime",
+        "finance_reconciliation_runtime",
+        "finance_maintenance_runtime",
     }
     assert not any(
         row["granted_role"] in runtime_roles
@@ -265,7 +317,7 @@ def test_runtime_capabilities_are_not_migration_owner_memberships() -> None:
     )
     forbidden = set(bundle.memberships["forbidden_migration_owner_memberships"])
     assert runtime_roles.isdisjoint({row["granted_role"] for row in rows})
-    assert {"worker_runtime", "lifecycle_maintenance_runtime", "finance_config_runtime"} <= forbidden
+    assert runtime_roles <= forbidden
 
 
 def test_ownership_manifest_uses_only_allowed_owners() -> None:
@@ -280,6 +332,15 @@ def test_ownership_manifest_uses_only_allowed_owners() -> None:
     assert "auth_runtime" not in ownership["allowed_target_owners"]
     assert "worker_runtime" not in ownership["allowed_target_owners"]
     assert "lifecycle_maintenance_runtime" not in ownership["allowed_target_owners"]
+    for finance_role in (
+        "finance_runtime",
+        "finance_read_runtime",
+        "payment_worker_runtime",
+        "refund_runtime",
+        "finance_reconciliation_runtime",
+        "finance_maintenance_runtime",
+    ):
+        assert finance_role not in ownership["allowed_target_owners"]
     assert ownership["objects"]
 
     for record in ownership["objects"]:

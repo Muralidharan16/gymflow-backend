@@ -194,6 +194,90 @@
       "decision": "Dedicated asynchronous-worker privilege group. Deployment worker logins may inherit this role, but worker_runtime is NOLOGIN/NOBYPASSRLS, owns no schema objects, is not a member of API/auth roles, and must never be granted to migration_owner.",
       "purpose": "Bounded cross-tenant queue claim and tenant-scoped background processing capability.",
       "role": "worker_runtime"
+    },
+    "finance_runtime": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "Dedicated synchronous Finance command capability. Deployment Finance logins may inherit this role, but finance_runtime is NOLOGIN/NOINHERIT/NOBYPASSRLS, owns no schema objects, receives no direct Finance table DML, may use only approved app_secure Finance capabilities, and must never be granted to migration_owner.",
+      "purpose": "Tenant-bound Finance command and authoritative accounting capability through exact SECURITY DEFINER interfaces only.",
+      "role": "finance_runtime"
+    },
+    "finance_read_runtime": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "Dedicated Finance read capability. Deployment Finance-read logins may inherit this role, but finance_read_runtime is NOLOGIN/NOINHERIT/NOBYPASSRLS, owns no schema objects, receives no mutation authority, and must never be granted to migration_owner.",
+      "purpose": "Tenant-bound and explicitly approved Finance read models through bounded views/functions without raw mutation authority.",
+      "role": "finance_read_runtime"
+    },
+    "payment_worker_runtime": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "Dedicated payment-provider worker capability. Deployment payment worker logins may inherit this role, but payment_worker_runtime is NOLOGIN/NOINHERIT/NOBYPASSRLS, owns no schema objects, receives no broad Finance table DML, and must never be granted to migration_owner.",
+      "purpose": "Bounded asynchronous payment-attempt, provider-evidence and payment-processing capabilities through exact app_secure functions.",
+      "role": "payment_worker_runtime"
+    },
+    "refund_runtime": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "Dedicated refund-provider execution capability. Deployment refund worker logins may inherit this role, but refund_runtime is NOLOGIN/NOINHERIT/NOBYPASSRLS, owns no schema objects, cannot approve refunds, receives no broad Finance table DML, and must never be granted to migration_owner.",
+      "purpose": "Bounded execution and reconciliation of already-authorized refund obligations through exact fenced app_secure capabilities.",
+      "role": "refund_runtime"
+    },
+    "finance_reconciliation_runtime": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "Dedicated Finance reconciliation capability. Deployment reconciliation logins may inherit this role, but finance_reconciliation_runtime is NOLOGIN/NOINHERIT/NOBYPASSRLS, owns no schema objects, cannot create customer entitlements, receives no broad Finance table DML, and must never be granted to migration_owner.",
+      "purpose": "Bounded payment, refund, settlement and provider reconciliation through exact evidence-driven capabilities.",
+      "role": "finance_reconciliation_runtime"
+    },
+    "finance_maintenance_runtime": {
+      "attributes": {
+        "bypass_rls": false,
+        "can_login": false,
+        "create_db": false,
+        "create_role": false,
+        "inherit": false,
+        "replication": false,
+        "superuser": false
+      },
+      "decision": "Dedicated Finance maintenance/watchdog capability. Deployment Finance-maintenance logins may inherit this role, but finance_maintenance_runtime is NOLOGIN/NOINHERIT/NOBYPASSRLS, owns no schema objects, cannot manufacture financial success, receives no broad Finance table DML, and must never be granted to migration_owner.",
+      "purpose": "Bounded Finance dead-letter discovery, lease recovery and maintenance operations without customer-facing money authority.",
+      "role": "finance_maintenance_runtime"
     }
   },
   "retired_roles": {

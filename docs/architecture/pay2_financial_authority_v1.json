@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-2A",
+  "date": "2026-09-19",
+  "branch": "hardening/pay2-financial-authority-db-security",
+  "inherited_pay1": {
+    "commit": "ba8d77d0e50907fd435d358697d9721a63bad64b",
+    "tree": "cd9500217b8230df2c0777b405b3d462b83e99ac",
+    "alembic_head": "zk07d8e9f0a45",
+    "certification": "PAY1_FINAL=PASS"
+  },
+  "dedicated_finance_capabilities": [
+    "finance_runtime",
+    "finance_read_runtime",
+    "payment_worker_runtime",
+    "refund_runtime",
+    "finance_reconciliation_runtime",
+    "finance_maintenance_runtime"
+  ],
+  "role_invariants": {
+    "no_login": true,
+    "no_inherit": true,
+    "no_bypass_rls": true,
+    "no_superuser": true,
+    "no_create_db": true,
+    "no_create_role": true,
+    "no_replication": true,
+    "no_object_ownership": true,
+    "migration_owner_membership_forbidden": true,
+    "peer_runtime_membership_forbidden": true,
+    "direct_finance_table_dml_default": "forbidden"
+  },
+  "scope": {
+    "cluster_role_contract_change": true,
+    "runtime_login_binding": false,
+    "alembic_revision": false,
+    "finance_acl_mutation": false,
+    "live_money_movement": false,
+    "refund_provider_execution": "DEFERRED_FAIL_CLOSED"
+  },
+  "next_slice": "PAY-2B"
+}
