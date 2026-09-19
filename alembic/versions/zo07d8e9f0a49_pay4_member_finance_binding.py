@@ -724,8 +724,7 @@ def _install_capabilities() -> None:
                 WHERE e.id=p_finance_event_id
                   AND e.organization_id=v_org
                   AND e.aggregate_type='invoice'
-                  AND e.event_type='finance.invoice.paid'
-                FOR SHARE;
+                  AND e.event_type='finance.invoice.paid';
                 IF NOT FOUND
                    OR v_event.payload_json->>'invoice_id' IS DISTINCT FROM v_event.aggregate_id::text
                    OR v_event.payload_json->>'status' IS DISTINCT FROM 'paid' THEN
