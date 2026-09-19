@@ -118,6 +118,7 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay4-migration@127.0.0.1:5432/gymflow_pay4_test
       PAY4_APP_DATABASE_URL: postgresql://pay4_app_test:ci-pay4-app@127.0.0.1:5432/gymflow_pay4_test
       PAY4_WORKER_DATABASE_URL: postgresql://pay4_worker_test:ci-pay4-worker@127.0.0.1:5432/gymflow_pay4_test
+      PAY4_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay4-migration@127.0.0.1:5432/gymflow_pay4_test
       PAY4_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay4-postgres@127.0.0.1:5432/gymflow_pay4_test
       SECRET_KEY: pay4-pg16-not-production
       REDIS_URL: redis://127.0.0.1:6379/0
