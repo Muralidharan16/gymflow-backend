@@ -296,6 +296,21 @@ def _install_immutability_and_activation_guards() -> None:
     finally:
         op.execute("RESET ROLE")
 
+    # migration_owner owns the trigger target relations but intentionally has no
+    # standing app_secure visibility. Open one transactional installation window
+    # for only these trigger functions, then revoke it before migration exit.
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        op.execute("REVOKE ALL ON FUNCTION app_secure.pay4_reject_binding_mutation() FROM PUBLIC")
+        op.execute("REVOKE ALL ON FUNCTION app_secure.pay4_guard_subscription_activation() FROM PUBLIC")
+        op.execute("REVOKE ALL ON FUNCTION app_secure.pay4_guard_v2_activation() FROM PUBLIC")
+        op.execute("GRANT USAGE ON SCHEMA app_secure TO migration_owner")
+        op.execute("GRANT EXECUTE ON FUNCTION app_secure.pay4_reject_binding_mutation() TO migration_owner")
+        op.execute("GRANT EXECUTE ON FUNCTION app_secure.pay4_guard_subscription_activation() TO migration_owner")
+        op.execute("GRANT EXECUTE ON FUNCTION app_secure.pay4_guard_v2_activation() TO migration_owner")
+    finally:
+        op.execute("RESET ROLE")
+
     op.execute(
         """
         CREATE TRIGGER trg_pay4_payment_contexts_immutable
@@ -324,6 +339,15 @@ def _install_immutability_and_activation_guards() -> None:
         FOR EACH ROW EXECUTE FUNCTION app_secure.pay4_guard_v2_activation()
         """
     )
+
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        op.execute("REVOKE EXECUTE ON FUNCTION app_secure.pay4_reject_binding_mutation() FROM migration_owner")
+        op.execute("REVOKE EXECUTE ON FUNCTION app_secure.pay4_guard_subscription_activation() FROM migration_owner")
+        op.execute("REVOKE EXECUTE ON FUNCTION app_secure.pay4_guard_v2_activation() FROM migration_owner")
+        op.execute("REVOKE USAGE ON SCHEMA app_secure FROM migration_owner")
+    finally:
+        op.execute("RESET ROLE")
 
 
 def _install_capabilities() -> None:
@@ -867,6 +891,22 @@ def upgrade() -> None:
     _install_schema()
     _install_immutability_and_activation_guards()
     _install_capabilities()
+
+    if bind.execute(sa.text(
+        "SELECT pg_catalog.has_schema_privilege('migration_owner','app_secure','USAGE')"
+    )).scalar_one():
+        raise RuntimeError("PAY-4 migration_owner app_secure USAGE leaked after trigger installation")
+    for signature in (
+        "app_secure.pay4_reject_binding_mutation()",
+        "app_secure.pay4_guard_subscription_activation()",
+        "app_secure.pay4_guard_v2_activation()",
+    ):
+        if bind.execute(sa.text(
+            "SELECT pg_catalog.has_function_privilege('migration_owner',:signature,'EXECUTE')"
+        ), {"signature": signature}).scalar_one():
+            raise RuntimeError(
+                f"PAY-4 migration_owner trigger EXECUTE leaked after installation: {signature}"
+            )
 
     for role in (_API,_WORKER):
         for table in ("finance.payment_contexts","finance.member_subscription_finance_bindings"):
