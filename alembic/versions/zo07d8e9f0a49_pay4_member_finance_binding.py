@@ -932,24 +932,26 @@ def downgrade() -> None:
     op.execute("SET LOCAL statement_timeout='30s'")
     _require_identity(bind)
 
-    op.execute("SET LOCAL ROLE app_security_owner")
+    # Both new PAY-4 Finance relations use FORCE RLS. migration_owner is the
+    # relation owner but is still subject to FORCE RLS, so an unscoped query
+    # could incorrectly see zero rows. Temporarily remove FORCE (not ENABLE)
+    # inside this downgrade transaction, inspect as the exact owner, and restore
+    # FORCE before making the downgrade decision. Any exception rolls back the
+    # DDL atomically.
+    for table in ("member_subscription_finance_bindings", "payment_contexts"):
+        op.execute(f"ALTER TABLE finance.{table} NO FORCE ROW LEVEL SECURITY")
     try:
         binding_rows=bind.execute(sa.text(
             "SELECT EXISTS(SELECT 1 FROM finance.member_subscription_finance_bindings LIMIT 1)"
         )).scalar_one()
-        activation_rows=bind.execute(sa.text(
-            """
-            SELECT EXISTS(
-              SELECT 1 FROM public.subscription_events
-              WHERE event_source='finance'
-                AND metadata ? 'finance_binding_id'
-              LIMIT 1
-            )
-            """
+        context_rows=bind.execute(sa.text(
+            "SELECT EXISTS(SELECT 1 FROM finance.payment_contexts LIMIT 1)"
         )).scalar_one()
     finally:
-        op.execute("RESET ROLE")
-    if binding_rows or activation_rows:
+        for table in ("payment_contexts", "member_subscription_finance_bindings"):
+            op.execute(f"ALTER TABLE finance.{table} FORCE ROW LEVEL SECURITY")
+
+    if binding_rows or context_rows:
         raise RuntimeError(
             "PAY-4 downgrade blocked: member-Finance binding/activation evidence exists"
         )
