@@ -4,6 +4,7 @@ import uuid
 import asyncio
 from datetime import date
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from app.main import app
 from app.core.database import update_session_context
@@ -606,6 +607,15 @@ async def test_member_search_active_subscription_projection(client, test_data, d
         org_id=test_data["org_id"],
         request_suffix=f"{test_data['suffix']}-historical-active",
     )
+    # FORCE RLS intentionally blocks ordinary inserts of active entitlement.
+    # For this backwards-read characterization only, the migration-owner fixture
+    # temporarily disables RLS transactionally, seeds one historical active row,
+    # then restores ENABLE + FORCE before committing. No production role gains
+    # a bypass and the PAY-4 activation trigger still permits only migration
+    # authority or the reduced Finance worker capability.
+    await admin_db_session.execute(
+        text("ALTER TABLE public.member_subscriptions_v2 DISABLE ROW LEVEL SECURITY")
+    )
     admin_db_session.add(
         MemberSubscriptionV2(
             id=subscription_id,
@@ -623,6 +633,13 @@ async def test_member_search_active_subscription_projection(client, test_data, d
             duration_unit_snapshot=DurationUnit.months,
             max_members_snapshot=1,
         )
+    )
+    await admin_db_session.flush()
+    await admin_db_session.execute(
+        text("ALTER TABLE public.member_subscriptions_v2 ENABLE ROW LEVEL SECURITY")
+    )
+    await admin_db_session.execute(
+        text("ALTER TABLE public.member_subscriptions_v2 FORCE ROW LEVEL SECURITY")
     )
     await admin_db_session.commit()
 
