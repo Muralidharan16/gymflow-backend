@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-5",
+  "branch": "hardening/pay5-finance-event-delivery",
+  "inherited_pay4": {
+    "commit": "bde31b620b1619c85e581933da1c8de465a6aa00",
+    "tree": "4ff5e1176657dc96643d7da01f3d7f91c564fb78",
+    "certification": "PAY4_FINAL=PASS"
+  },
+  "alembic": {
+    "predecessor": "zo07d8e9f0a49",
+    "head": "zp07d8e9f0a50"
+  },
+  "source_flow": [
+    "finance_transaction",
+    "finance_outbox_commit",
+    "lease_claim",
+    "consumer_transaction",
+    "product_consumption_commit",
+    "finance_acknowledgement"
+  ],
+  "delivery": {
+    "transport_semantics": "at_least_once",
+    "business_semantics": "effectively_once",
+    "admitted_event": "finance.invoice.paid",
+    "claim": "FOR UPDATE SKIP LOCKED",
+    "lease_fence": "monotonic",
+    "reclaim_expired_processing_without_extra_attempt": true
+  },
+  "product_consumption": {
+    "relation": "public.member_subscription_finance_event_consumptions",
+    "unique": [
+      "finance_event_id",
+      "idempotency_key"
+    ],
+    "payload_hash_bound": true,
+    "cross_domain_finance_fk": false
+  },
+  "crash_cases": {
+    "before_consumer_commit": "rollback_and_reclaim",
+    "after_consumer_commit_before_finance_ack": "replay_consumption_then_ack",
+    "duplicate_delivery": "one_business_effect",
+    "stale_lease": "reject",
+    "two_consumers_racing": "one_business_effect"
+  },
+  "runtime_authority": {
+    "direct_worker_finance_outbox_dml": false,
+    "direct_worker_consumption_dml": false,
+    "direct_worker_pay4_activation_execute": false,
+    "bounded_capabilities": [
+      "claim_member_subscription_finance_events",
+      "consume_member_subscription_finance_event",
+      "acknowledge_member_subscription_finance_event",
+      "release_member_subscription_finance_event"
+    ]
+  },
+  "migration_safety": {
+    "existing_finance_business_row_rewrite": false,
+    "populated_downgrade": "fail_closed",
+    "empty_roundtrip_required": true,
+    "predecessor_acl_preservation_required": true,
+    "lock_timeout": "3s_transaction_local",
+    "statement_timeout": "30s_transaction_local"
+  },
+  "live_money_movement": false,
+  "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+  "next_phase": "PAY-6"
+}
