@@ -620,8 +620,7 @@ def _install_capabilities() -> None:
 
                 SELECT * INTO v_binding
                 FROM finance.member_subscription_finance_bindings b
-                WHERE b.subscription_term_id=v_term.id
-                FOR SHARE;
+                WHERE b.subscription_term_id=v_term.id;
                 IF FOUND THEN
                     IF v_binding.finance_invoice_id IS DISTINCT FROM p_invoice_id THEN
                         RAISE EXCEPTION 'PAY-4 subscription term already bound to different Finance invoice'
@@ -737,8 +736,7 @@ def _install_capabilities() -> None:
                 SELECT * INTO v_binding
                 FROM finance.member_subscription_finance_bindings b
                 WHERE b.organization_id=v_org
-                  AND b.finance_invoice_id=v_event.aggregate_id
-                FOR SHARE;
+                  AND b.finance_invoice_id=v_event.aggregate_id;
                 IF NOT FOUND THEN
                     RAISE EXCEPTION 'PAY-4 activation Finance binding unavailable'
                         USING ERRCODE='23514';
