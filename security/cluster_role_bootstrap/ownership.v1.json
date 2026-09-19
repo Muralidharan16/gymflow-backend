@@ -375,6 +375,30 @@
     },
     {
       "dynamic": false,
+      "object": "app_secure.complete_finance_monetary_command(UUID,TEXT)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-3 bounded monetary-command capability is owned only by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.fail_finance_monetary_command(UUID,TEXT)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-3 bounded monetary-command capability is owned only by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.mark_finance_monetary_command_unknown(UUID,TEXT)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-3 bounded monetary-command capability is owned only by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
       "object": "app_secure.pay2_guard_posted_finance_ledger_entry_mutation()",
       "object_type": "FUNCTION",
       "parent_relation": null,
@@ -387,6 +411,14 @@
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "PAY-2 immutable-history trigger authority is owned only by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.reserve_finance_monetary_command(TEXT,TEXT,TEXT,TEXT,UUID,TEXT,TEXT)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-3 bounded monetary-command capability is owned only by app_security_owner.",
       "target_owner": "app_security_owner"
     },
     {
@@ -727,6 +759,14 @@
     },
     {
       "dynamic": false,
+      "object": "ix_finance_monetary_commands_status_created",
+      "object_type": "INDEX",
+      "parent_relation": "finance.monetary_commands",
+      "policy": "PAY-3 command status index ownership follows its Finance parent relation.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
       "object": "ix_membership_statuses_code",
       "object_type": "INDEX",
       "parent_relation": "public.membership_statuses",
@@ -843,6 +883,14 @@
       "object_type": "INDEX",
       "parent_relation": "public.branch_staff_roles",
       "policy": "Index ownership follows its parent relation ownership.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "uq_finance_monetary_commands_scope_key",
+      "object_type": "INDEX",
+      "parent_relation": "finance.monetary_commands",
+      "policy": "PAY-3 command uniqueness index ownership follows its Finance parent relation.",
       "target_owner": "migration_owner"
     },
     {
@@ -1155,6 +1203,14 @@
       "object_type": "TABLE",
       "parent_relation": null,
       "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.monetary_commands",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-3 durable monetary-command evidence is owned by migration_owner; runtime capabilities remain table-blind.",
       "target_owner": "migration_owner"
     },
     {

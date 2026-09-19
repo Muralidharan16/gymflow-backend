@@ -764,6 +764,343 @@ class FinanceIdempotencyKey(Base):
     expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
 
 
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "scope",
+            "idempotency_key",
+            name="uq_finance_monetary_commands_scope_key",
+        ),
+        CheckConstraint(
+            "scope ~ '^[a-z][a-z0-9_.]{2,119}
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]{0,199}
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "request_hash_sha256 ~ '^[0-9a-f]{64}
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]{0,199}
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "actor_type ~ '^[a-z][a-z0-9_]{0,39}
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "actor_ref_sha256 ~ '^[0-9a-f]{64}
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (error_code ~ '^[a-z][a-z0-9_]{0,63}
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+ AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]{0,199}
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        Index(
+            "ix_finance_monetary_commands_status_created",
+            "status",
+            "created_at",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()")
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+
 class FinanceOutboxEvent(Base):
     __tablename__ = "outbox_events"
     __table_args__ = (

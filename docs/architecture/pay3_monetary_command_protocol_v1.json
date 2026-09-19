@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-3",
+  "date": "2026-09-19",
+  "branch": "hardening/pay3-idempotency-monetary-command-protocol",
+  "inherited_pay2": {
+    "commit": "f229e655ffd22500697d69fb6504ef48ecc827f1",
+    "tree": "33bae8741c16925681414bf58ff0be3133c98391",
+    "certification": "PAY2_FINAL=PASS"
+  },
+  "alembic": {
+    "predecessor": "zl07d8e9f0a46",
+    "head": "zm07d8e9f0a47"
+  },
+  "protocol": {
+    "journal": "finance.monetary_commands",
+    "tenant_scoped": true,
+    "persistent_no_automatic_expiry": true,
+    "states": [
+      "processing",
+      "unknown",
+      "succeeded",
+      "failed_deterministic"
+    ],
+    "same_key_same_payload": "replay_original_command",
+    "same_key_different_payload": "conflict_no_side_effect",
+    "unknown": "blocks_replacement_effect_until_reconciled",
+    "terminal_truth_immutable": true,
+    "actor_reference_storage": "sha256_only",
+    "float_payloads_forbidden": true
+  },
+  "authority": {
+    "direct_runtime_table_dml": false,
+    "public_function_execute": false,
+    "production_function_execute_grant": false,
+    "production_runtime_binding_added": false,
+    "isolated_ci_execution_only": true
+  },
+  "migration_safety": {
+    "additive_new_table_only": true,
+    "existing_finance_table_rewrite": false,
+    "existing_data_backfill": false,
+    "populated_downgrade": "blocked_fail_closed_if_command_evidence_exists",
+    "empty_downgrade_reupgrade": true,
+    "lock_timeout": "3s_transaction_local",
+    "statement_timeout": "30s_transaction_local"
+  },
+  "live_money_movement": false,
+  "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+  "next_phase": "PAY-4"
+}
