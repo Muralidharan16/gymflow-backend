@@ -75,6 +75,7 @@ jobs:
               "tests/finance_core/test_phase5b_foundation.py",
               "tests/test_cluster_role_contract_manifests.py",
               "tests/test_migration_app_secure_owner_context_boundary.py",
+              "tests/test_p4d_refund_obligation_resolution_runtime.py",
               "tests/test_pay4_member_finance_binding_runtime.py",
               "tests/test_pay4_member_finance_binding_static.py",
           }
