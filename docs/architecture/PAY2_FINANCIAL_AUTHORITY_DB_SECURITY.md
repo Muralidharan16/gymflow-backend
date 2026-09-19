@@ -51,3 +51,29 @@ The first PAY-2 migration must:
 
 PAY-2 does not authorize live payment execution, production provider access,
 refund provider execution, merge, release or deployment.
+
+
+## PAY-2B — Additive Finance authority migration
+
+PAY-2B starts from certified PAY-2A SHA `b529916020a03cfc3d9875fec0462944deea8622`.
+
+The first PAY-2 migration is `zl07d8e9f0a46` and revises exactly
+`zk07d8e9f0a45`.
+
+It adds only `app_secure.require_finance_capability(text,boolean)`.
+The function is owned by `app_security_owner`, uses a fixed search path,
+forces row security, has no PUBLIC EXECUTE, performs no dynamic SQL, and grants
+no direct access to `finance` tables or schema.
+
+The guard maps a fixed capability token to exactly one dedicated PAY-2 role.
+Tenant bypass is available only to the reconciliation and maintenance
+capabilities and still grants no table authority by itself.
+
+The migration refuses to install if any dedicated Finance role already has
+unexpected Finance schema/table/routine authority. Drift is investigated rather
+than silently repaired.
+
+PAY-2B is an expand migration. Existing app/worker Finance functions and grants
+are unchanged so an old application version can continue to run during a rolling
+deployment. PAY-2C must establish dedicated runtime logins and prove dual-path
+equivalence before any contract migration revokes generic Finance authority.

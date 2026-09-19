@@ -38,5 +38,19 @@
     "live_money_movement": false,
     "refund_provider_execution": "DEFERRED_FAIL_CLOSED"
   },
-  "next_slice": "PAY-2B"
+  "next_slice": "PAY-2C",
+  "pay2b": {
+    "revision": "zl07d8e9f0a46",
+    "predecessor": "zk07d8e9f0a45",
+    "mode": "expand_only",
+    "helper_function": "app_secure.require_finance_capability(text,boolean)",
+    "helper_owner": "app_security_owner",
+    "fixed_search_path": "pg_catalog,public,finance",
+    "row_security": "on",
+    "public_execute": false,
+    "direct_finance_table_dml": false,
+    "existing_runtime_grants_changed": false,
+    "cluster_roles_managed_by_alembic": false,
+    "downgrade_data_destructive": false
+  }
 }
