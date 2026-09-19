@@ -155,6 +155,19 @@ def _install_schema() -> None:
     for table in ("invoice_lines","outbox_events"):
         op.execute(f"GRANT SELECT ON TABLE finance.{table} TO app_security_owner")
 
+    # Existing lifecycle tenant-integrity triggers execute under the invoking
+    # reduced owner. P4D already grants app_security_owner SELECT on members,
+    # but older worker-scoped policies can hide the row. PAY-4 adds one exact
+    # tenant-scoped visibility policy without broadening the predecessor ACL.
+    op.execute(
+        f"""
+        CREATE POLICY pay4_members_security_owner_select
+        ON public.members
+        FOR SELECT TO app_security_owner
+        USING (org_id = {_TENANT})
+        """
+    )
+
     # Product lifecycle writes remain capability-only. Predecessor member,
     # plan, V2-subscription and branch read ACL/policies are reused unchanged.
     for table in (
@@ -1023,6 +1036,10 @@ def downgrade() -> None:
     op.execute(
         "REVOKE UPDATE (status,activated_at,updated_at,version) "
         "ON TABLE public.subscription_terms FROM app_security_owner"
+    )
+
+    op.execute(
+        "DROP POLICY IF EXISTS pay4_members_security_owner_select ON public.members"
     )
 
     for table in (
