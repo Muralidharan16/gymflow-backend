@@ -936,10 +936,25 @@ def upgrade() -> None:
                     raise RuntimeError(
                         f"PAY-4 runtime role received direct binding authority: {role} {table} {privilege}"
                     )
-    if bind.execute(sa.text(
-        "SELECT pg_catalog.has_function_privilege('worker_runtime',"
-        "'app_secure.apply_member_subscription_finance_event(uuid,text)','EXECUTE')"
-    )).scalar_one():
+    worker_activation_execute = bind.execute(sa.text(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+            ) acl
+            JOIN pg_catalog.pg_roles grantee ON grantee.oid=acl.grantee
+            WHERE n.nspname='app_secure'
+              AND p.proname='apply_member_subscription_finance_event'
+              AND replace(pg_catalog.oidvectortypes(p.proargtypes),' ','')='uuid,text'
+              AND grantee.rolname='worker_runtime'
+              AND acl.privilege_type='EXECUTE'
+        )
+        """
+    )).scalar_one()
+    if worker_activation_execute:
         raise RuntimeError("PAY-4 activation capability must remain unbound until PAY-5")
 
 
