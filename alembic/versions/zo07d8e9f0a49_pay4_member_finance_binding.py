@@ -149,19 +149,19 @@ def _install_schema() -> None:
             """
         )
 
-    # Existing Finance evidence is read by the reduced owner only inside the
-    # SECURITY DEFINER activation capability. Runtime roles remain table-blind.
-    for table in ("invoices","invoice_lines","payments","payment_allocations","outbox_events","billing_parties"):
+    # PAY-4 owns only the two predecessor-absent Finance reads required by
+    # its binding/event proofs. Invoice/payment/allocation/billing-party reads
+    # are predecessor-owned P4D capabilities and must survive PAY-4 downgrade.
+    for table in ("invoice_lines","outbox_events"):
         op.execute(f"GRANT SELECT ON TABLE finance.{table} TO app_security_owner")
 
-    # Product writes remain capability-only. Ordinary app_runtime retains its
-    # predecessor read/create contract and receives no lifecycle table DML.
+    # Product lifecycle writes remain capability-only. Predecessor member,
+    # plan, V2-subscription and branch read ACL/policies are reused unchanged.
     for table in (
-        "member_subscriptions_v2","membership_plans","members","org_branches",
         "subscription_series","subscription_terms","subscription_term_slots",
         "subscription_slot_assignments","subscription_events",
     ):
-        op.execute(f"GRANT SELECT ON TABLE public.{table} TO app_security_owner")
+        op.execute(f"GRANT SELECT,INSERT ON TABLE public.{table} TO app_security_owner")
 
     for table in ("subscription_series","subscription_terms","subscription_term_slots",
                   "subscription_slot_assignments","subscription_events"):
@@ -179,16 +179,6 @@ def _install_schema() -> None:
             ON public.{table}
             FOR INSERT TO app_security_owner
             WITH CHECK (org_id = {_TENANT})
-            """
-        )
-
-    for table in ("member_subscriptions_v2","membership_plans","members","org_branches"):
-        op.execute(
-            f"""
-            CREATE POLICY pay4_{table}_security_owner_select
-            ON public.{table}
-            FOR SELECT TO app_security_owner
-            USING (org_id = {_TENANT})
             """
         )
 
@@ -949,12 +939,6 @@ def downgrade() -> None:
         "ON TABLE public.subscription_terms FROM app_security_owner"
     )
 
-    for table in ("member_subscriptions_v2","membership_plans","members","org_branches"):
-        op.execute(
-            f"DROP POLICY IF EXISTS pay4_{table}_security_owner_select ON public.{table}"
-        )
-        op.execute(f"REVOKE SELECT ON TABLE public.{table} FROM app_security_owner")
-
     for table in (
         "subscription_events","subscription_slot_assignments","subscription_term_slots",
         "subscription_terms","subscription_series",
@@ -963,7 +947,7 @@ def downgrade() -> None:
         op.execute(f"DROP POLICY IF EXISTS pay4_{table}_security_owner_select ON public.{table}")
         op.execute(f"REVOKE SELECT,INSERT ON TABLE public.{table} FROM app_security_owner")
 
-    for table in ("invoices","invoice_lines","payments","payment_allocations","outbox_events","billing_parties"):
+    for table in ("invoice_lines","outbox_events"):
         op.execute(f"REVOKE SELECT ON TABLE finance.{table} FROM app_security_owner")
 
     for table in ("member_subscription_finance_bindings","payment_contexts"):
