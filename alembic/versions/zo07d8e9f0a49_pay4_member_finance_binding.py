@@ -149,11 +149,16 @@ def _install_schema() -> None:
             """
         )
 
-    # PAY-4 owns only the two predecessor-absent Finance reads required by
-    # its binding/event proofs. Invoice/payment/allocation/billing-party reads
-    # are predecessor-owned P4D capabilities and must survive PAY-4 downgrade.
-    for table in ("invoice_lines","outbox_events"):
-        op.execute(f"GRANT SELECT ON TABLE finance.{table} TO app_security_owner")
+    # PAY-4 owns only the predecessor-absent columns its capabilities read.
+    # Existing P4D column SELECT grants must survive PAY-4 downgrade unchanged.
+    op.execute(
+        "GRANT SELECT (description,unit_amount) "
+        "ON TABLE finance.invoice_lines TO app_security_owner"
+    )
+    op.execute(
+        "GRANT SELECT (id,organization_id,payload_json) "
+        "ON TABLE finance.outbox_events TO app_security_owner"
+    )
 
     # Existing lifecycle tenant-integrity triggers execute under the invoking
     # reduced owner. P4D already grants app_security_owner SELECT on members,
@@ -694,7 +699,8 @@ def _install_capabilities() -> None:
             AS $function$
             DECLARE
                 v_org uuid;
-                v_event finance.outbox_events%ROWTYPE;
+                v_event_aggregate_id uuid;
+                v_event_payload jsonb;
                 v_binding finance.member_subscription_finance_bindings%ROWTYPE;
                 v_invoice finance.invoices%ROWTYPE;
                 v_term public.subscription_terms%ROWTYPE;
@@ -719,15 +725,16 @@ def _install_capabilities() -> None:
                         USING ERRCODE='22023';
                 END IF;
 
-                SELECT * INTO v_event
+                SELECT e.aggregate_id,e.payload_json
+                INTO v_event_aggregate_id,v_event_payload
                 FROM finance.outbox_events e
                 WHERE e.id=p_finance_event_id
                   AND e.organization_id=v_org
                   AND e.aggregate_type='invoice'
                   AND e.event_type='finance.invoice.paid';
                 IF NOT FOUND
-                   OR v_event.payload_json->>'invoice_id' IS DISTINCT FROM v_event.aggregate_id::text
-                   OR v_event.payload_json->>'status' IS DISTINCT FROM 'paid' THEN
+                   OR v_event_payload->>'invoice_id' IS DISTINCT FROM v_event_aggregate_id::text
+                   OR v_event_payload->>'status' IS DISTINCT FROM 'paid' THEN
                     RAISE EXCEPTION 'PAY-4 activation requires authoritative Finance invoice paid event'
                         USING ERRCODE='23514';
                 END IF;
@@ -735,7 +742,7 @@ def _install_capabilities() -> None:
                 SELECT * INTO v_binding
                 FROM finance.member_subscription_finance_bindings b
                 WHERE b.organization_id=v_org
-                  AND b.finance_invoice_id=v_event.aggregate_id;
+                  AND b.finance_invoice_id=v_event_aggregate_id;
                 IF NOT FOUND THEN
                     RAISE EXCEPTION 'PAY-4 activation Finance binding unavailable'
                         USING ERRCODE='23514';
@@ -1047,8 +1054,14 @@ def downgrade() -> None:
         op.execute(f"DROP POLICY IF EXISTS pay4_{table}_security_owner_select ON public.{table}")
         op.execute(f"REVOKE SELECT,INSERT ON TABLE public.{table} FROM app_security_owner")
 
-    for table in ("invoice_lines","outbox_events"):
-        op.execute(f"REVOKE SELECT ON TABLE finance.{table} FROM app_security_owner")
+    op.execute(
+        "REVOKE SELECT (description,unit_amount) "
+        "ON TABLE finance.invoice_lines FROM app_security_owner"
+    )
+    op.execute(
+        "REVOKE SELECT (id,organization_id,payload_json) "
+        "ON TABLE finance.outbox_events FROM app_security_owner"
+    )
 
     for table in ("member_subscription_finance_bindings","payment_contexts"):
         op.execute(f"DROP POLICY IF EXISTS pay4_{table}_security_owner_insert ON finance.{table}")
