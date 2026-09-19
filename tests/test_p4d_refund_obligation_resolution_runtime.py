@@ -343,7 +343,7 @@ def _seed_org_b_subscription(
                     id,org_id,branch_id,membership_plan_id,primary_member_id,subscription_code,
                     start_date,end_date,status,price_snapshot,currency_code,
                     duration_value_snapshot,duration_unit_snapshot,max_members_snapshot
-                ) VALUES (%s,%s,%s,%s,%s,'P4D2-SUB-B',current_date,current_date + interval '1 month','active',100,'INR',1,'months',1)
+                ) VALUES (%s,%s,%s,%s,%s,'P4D2-SUB-B',current_date,current_date + interval '1 month','pending',100,'INR',1,'months',1)
                 ON CONFLICT (id) DO NOTHING
                 """,
                 (_SUBSCRIPTION_B, _ORG_B, _BRANCH_B, _PLAN_B, _MEMBER_B),
@@ -443,7 +443,7 @@ def _seed_invoice(
                     id,org_id,branch_id,membership_plan_id,primary_member_id,subscription_code,
                     start_date,end_date,status,price_snapshot,currency_code,
                     duration_value_snapshot,duration_unit_snapshot,max_members_snapshot
-                ) VALUES (%s,%s,%s,%s,%s,%s,current_date,current_date + interval '1 month','active',100,'INR',1,'months',1)
+                ) VALUES (%s,%s,%s,%s,%s,%s,current_date,current_date + interval '1 month','pending',100,'INR',1,'months',1)
                 ON CONFLICT (id) DO NOTHING
                 """,
                 (subscription_id, _ORG_A, branch_id, plan_id, member_id, subscription_code),
