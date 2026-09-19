@@ -821,6 +821,20 @@ class FinanceMonetaryCommand(Base):
             "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
             name="chk_finance_monetary_commands_terminal_completed",
         ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
         Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
         {"schema": SCHEMA},
     )
@@ -837,6 +851,8 @@ class FinanceMonetaryCommand(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
     response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
