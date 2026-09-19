@@ -114,11 +114,13 @@ def _seed_pending(*, start_offset_days=0):
                 "INSERT INTO finance.brands(id,legal_entity_id,division_id,code,name,status) "
                 "VALUES (%s,%s,%s,'DS','PAY4 Brand','active')",(BRAND,ENTITY,DIVISION)
             )
-        conn.commit()
-
-    with psycopg.connect(APP_URL) as conn:
-        with conn.cursor() as cur:
-            _set_org(cur)
+            # Branch administration is not an ordinary app_runtime capability.
+            # Seed the already-existing branch through the migration/admin test
+            # identity while preserving the tenant GUC required by its guards.
+            cur.execute(
+                "SELECT pg_catalog.set_config('app.current_org_id',%s,true)",
+                (str(ORG),),
+            )
             cur.execute(
                 """
                 INSERT INTO public.org_branches(
@@ -127,6 +129,11 @@ def _seed_pending(*, start_offset_days=0):
                 ) VALUES (%s,%s,'PAY4 Branch','PAY4','pay4-branch','IN','INR','Asia/Kolkata')
                 """,(BRANCH,ORG)
             )
+        conn.commit()
+
+    with psycopg.connect(APP_URL) as conn:
+        with conn.cursor() as cur:
+            _set_org(cur)
             cur.execute(
                 """
                 INSERT INTO public.members(
