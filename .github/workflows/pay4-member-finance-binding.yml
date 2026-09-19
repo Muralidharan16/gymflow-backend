@@ -78,6 +78,7 @@ jobs:
               "tests/test_member_subscriptions_v2.py",
               "tests/test_members.py",
               "tests/test_p4d_refund_obligation_resolution_runtime.py",
+              "tests/test_pay0_payment_architecture_inventory.py",
               "tests/test_pay4_member_finance_binding_runtime.py",
               "tests/test_pay4_member_finance_binding_static.py",
           }
