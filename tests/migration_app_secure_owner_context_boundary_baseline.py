@@ -19,6 +19,7 @@ APP_SECURE_FILES = {
     "0027_rbac_p6_perm_snapshots.py",
     "0029_rbac_p8_contract.py",
     "6f708192a3b4_address_runtime_privilege_boundary.py",
+    "zm07d8e9f0a47_pay3_monetary_command_protocol.py",
     A1.name,
 }
 
