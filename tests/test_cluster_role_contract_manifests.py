@@ -20,8 +20,8 @@ OWNERSHIP_MANIFEST = (
     / "ownership.v1.json"
 )
 EXPECTED_OWNERSHIP_SHA256 = (
-    "2acfa3881db38549c859cb089682f9c7"
-    "98870aa43a010ae2233b68c21ed53855"
+    "f24266c29830e664206c10b9695f5b7"
+    "c47728657f4b1145e4785ca02027dd9a0"
 )
 
 
@@ -122,6 +122,12 @@ def test_exact_managed_role_contract() -> None:
         "worker_runtime",
         "lifecycle_maintenance_runtime",
         "finance_config_runtime",
+        "finance_runtime",
+        "finance_payment_runtime",
+        "finance_refund_runtime",
+        "finance_reconciliation_runtime",
+        "finance_read_runtime",
+        "finance_maintenance_runtime",
     }
 
     migration_attributes = roles["migration_owner"]["attributes"]
@@ -153,6 +159,12 @@ def test_exact_managed_role_contract() -> None:
         "worker_runtime",
         "lifecycle_maintenance_runtime",
         "finance_config_runtime",
+        "finance_runtime",
+        "finance_payment_runtime",
+        "finance_refund_runtime",
+        "finance_reconciliation_runtime",
+        "finance_read_runtime",
+        "finance_maintenance_runtime",
     ):
         attributes = roles[role]["attributes"]
         assert attributes == {
@@ -197,6 +209,18 @@ def test_role_settings_are_exact() -> None:
     assert settings["worker_runtime"] == bounded_background_settings
     assert settings["lifecycle_maintenance_runtime"] == bounded_background_settings
     assert settings["finance_config_runtime"] == bounded_background_settings
+    assert settings["finance_payment_runtime"] == bounded_background_settings
+    assert settings["finance_refund_runtime"] == bounded_background_settings
+    assert settings["finance_reconciliation_runtime"] == bounded_background_settings
+    assert settings["finance_maintenance_runtime"] == bounded_background_settings
+    assert settings["finance_runtime"] == {
+        **bounded_background_settings,
+        "statement_timeout": "10s",
+    }
+    assert settings["finance_read_runtime"] == {
+        **bounded_background_settings,
+        "statement_timeout": "10s",
+    }
     assert "auth_runtime" in settings
 
     for role, values in settings.items():
@@ -205,6 +229,12 @@ def test_role_settings_are_exact() -> None:
             "worker_runtime",
             "lifecycle_maintenance_runtime",
             "finance_config_runtime",
+            "finance_runtime",
+            "finance_payment_runtime",
+            "finance_refund_runtime",
+            "finance_reconciliation_runtime",
+            "finance_read_runtime",
+            "finance_maintenance_runtime",
         }:
             assert values == {}
 
@@ -257,6 +287,12 @@ def test_runtime_capabilities_are_not_migration_owner_memberships() -> None:
         "worker_runtime",
         "lifecycle_maintenance_runtime",
         "finance_config_runtime",
+        "finance_runtime",
+        "finance_payment_runtime",
+        "finance_refund_runtime",
+        "finance_reconciliation_runtime",
+        "finance_read_runtime",
+        "finance_maintenance_runtime",
     }
     assert not any(
         row["granted_role"] in runtime_roles
@@ -265,7 +301,7 @@ def test_runtime_capabilities_are_not_migration_owner_memberships() -> None:
     )
     forbidden = set(bundle.memberships["forbidden_migration_owner_memberships"])
     assert runtime_roles.isdisjoint({row["granted_role"] for row in rows})
-    assert {"worker_runtime", "lifecycle_maintenance_runtime", "finance_config_runtime"} <= forbidden
+    assert runtime_roles <= forbidden
 
 
 def test_ownership_manifest_uses_only_allowed_owners() -> None:
@@ -292,7 +328,7 @@ def test_ownership_manifest_matches_reviewed_projection() -> None:
 
     ownership = json.loads(payload.decode("utf-8"))
     objects = ownership["objects"]
-    assert len(objects) == 157
+    assert len(objects) == 196
     assert not any(record["object"] == "IF" for record in objects)
     assert {
         "dynamic": False,
@@ -356,3 +392,60 @@ def test_validator_module_is_pure_and_read_only() -> None:
                 }
 
     assert imported_roots.isdisjoint(forbidden_import_roots)
+
+
+def test_pay2_finance_ownership_projection_is_exact():
+    bundle = load_contract_bundle()
+    objects = bundle.ownership["objects"]
+    by_name = {record["object"]: record for record in objects}
+    assert by_name["finance"]["target_owner"] == "migration_owner"
+    expected_tables = {
+        "finance.legal_entities",
+        "finance.gst_registrations",
+        "finance.divisions",
+        "finance.brands",
+        "finance.bank_accounts",
+        "finance.tax_codes",
+        "finance.ledger_accounts",
+        "finance.billing_parties",
+        "finance.branch_accounting_profiles",
+        "finance.membership_plan_tax_profiles",
+        "finance.invoice_series",
+        "finance.brand_ref_series",
+        "finance.invoices",
+        "finance.invoice_lines",
+        "finance.tax_records",
+        "finance.payments",
+        "finance.member_subscription_checkout_bindings",
+        "finance.refund_obligation_bindings",
+        "finance.payment_allocations",
+        "finance.payment_events",
+        "finance.refunds",
+        "finance.refund_execution_commands",
+        "finance.credit_notes",
+        "finance.credit_note_lines",
+        "finance.ledger_entries",
+        "finance.ledger_entry_lines",
+        "finance.audit_events",
+        "finance.idempotency_keys",
+        "finance.outbox_events"
+    }
+    assert expected_tables <= set(by_name)
+    assert all(by_name[name]["target_owner"] == "migration_owner" for name in expected_tables)
+    for name in (
+        "app_secure.pay2_reject_finance_immutable_history_mutation()",
+        "app_secure.pay2_guard_posted_finance_ledger_entry_mutation()",
+    ):
+        assert by_name[name]["target_owner"] == "app_security_owner"
+    forbidden = set(bundle.ownership["forbidden_object_owners"])
+    assert set(PAY2_FINANCE_CAPABILITY_ROLES_FOR_TEST) <= forbidden
+
+
+PAY2_FINANCE_CAPABILITY_ROLES_FOR_TEST = (
+    "finance_runtime",
+    "finance_payment_runtime",
+    "finance_refund_runtime",
+    "finance_reconciliation_runtime",
+    "finance_read_runtime",
+    "finance_maintenance_runtime",
+)

@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-2",
+  "date": "2026-09-19",
+  "branch": "hardening/pay2-financial-authority-database-security",
+  "inherited_pay1": {
+    "commit": "ba8d77d0e50907fd435d358697d9721a63bad64b",
+    "tree": "cd9500217b8230df2c0777b405b3d462b83e99ac",
+    "certification": "PAY1_FINAL=PASS"
+  },
+  "alembic": {
+    "predecessor": "zk07d8e9f0a45",
+    "head": "zl07d8e9f0a46"
+  },
+  "cluster_finance_roles": [
+    "finance_runtime",
+    "finance_payment_runtime",
+    "finance_refund_runtime",
+    "finance_reconciliation_runtime",
+    "finance_read_runtime",
+    "finance_maintenance_runtime"
+  ],
+  "rules": {
+    "cluster_roles_created_by_alembic": false,
+    "existing_cluster_expansion": "external_admin_fail_closed_additive",
+    "direct_finance_table_authority_for_runtime_roles": false,
+    "finance_runtime_object_ownership": false,
+    "immutable_history_tables": [
+      "audit_events",
+      "payment_events",
+      "ledger_entry_lines",
+      "tax_records",
+      "credit_note_lines"
+    ],
+    "posted_ledger_entries_immutable": true,
+    "migration_owner_is_only_explicit_trigger_bypass": true,
+    "live_money_movement": false,
+    "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+    "finance_runtime_deployment_bindings_created": false
+  },
+  "migration_safety": {
+    "additive_data_shape": true,
+    "table_rewrite": false,
+    "data_backfill": false,
+    "downgrade_data_loss": false,
+    "role_mutation_inside_alembic": false,
+    "populated_roundtrip_required": true,
+    "lock_rewrite_analysis": "trigger_ddl_only_no_table_rewrite",
+    "lock_timeout": "3s_transaction_local",
+    "statement_timeout": "30s_transaction_local",
+    "relfilenode_equality_proof": true
+  },
+  "next_phase": "PAY-3",
+  "required_terminal_markers": [
+    "PAY2_CLUSTER_ROLE_AUTHORITY=PASS",
+    "PAY2_FINANCE_OBJECT_OWNERSHIP=PASS",
+    "PAY2_IMMUTABLE_HISTORY=PASS",
+    "PAY2_DIRECT_DML_DENIAL=PASS",
+    "PAY2_MIGRATION_LIFECYCLE=PASS",
+    "PAY2_ZERO_TABLE_REWRITE=PASS",
+    "PAY2_PAY1_INHERITED=PASS",
+    "PAY2_LIVE_MONEY_MOVEMENT=DISABLED",
+    "PAY2_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED",
+    "PAY2_FINAL=PASS"
+  ],
+  "reserved_unbound_runtime_capabilities": [
+    "finance_runtime",
+    "finance_payment_runtime",
+    "finance_refund_runtime",
+    "finance_reconciliation_runtime",
+    "finance_read_runtime",
+    "finance_maintenance_runtime"
+  ]
+}

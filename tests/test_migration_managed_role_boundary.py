@@ -10,11 +10,16 @@ MIGRATIONS = (
     ROOT / "alembic/versions/0022_rbac_phase1_roles_extensions.py",
     ROOT / "alembic/versions/00f277c748ea_add_hyperscale_branch_name_and_address_.py",
     ROOT / "alembic/versions/f71f231fb001_rbac_hardening_phase_10_partitioned_.py",
+    ROOT / "alembic/versions/zl07d8e9f0a46_pay2_financial_authority_database_security.py",
 )
 MANAGED_ROLES = (
     "app_rls_executor", "app_runtime", "app_security_owner", "app_user",
     "audit_writer", "branch_admin", "branch_viewer", "migration_owner",
-    "ops_support", "readonly_analytics",
+    "ops_support", "readonly_analytics", "auth_runtime", "worker_runtime",
+    "lifecycle_maintenance_runtime", "finance_config_runtime",
+    "finance_runtime", "finance_payment_runtime", "finance_refund_runtime",
+    "finance_reconciliation_runtime", "finance_read_runtime",
+    "finance_maintenance_runtime",
 )
 MUTATIONS = (
     re.compile(r"\bCREATE\s+ROLE\b", re.IGNORECASE),
@@ -62,6 +67,11 @@ def test_all_migrations_validate_required_external_roles() -> None:
         "0022_rbac_phase1_roles_extensions.py": {"app_security_owner", "app_runtime", "audit_writer", "readonly_analytics"},
         "00f277c748ea_add_hyperscale_branch_name_and_address_.py": {"branch_admin", "branch_viewer", "ops_support"},
         "f71f231fb001_rbac_hardening_phase_10_partitioned_.py": {"app_security_owner", "audit_writer"},
+        "zl07d8e9f0a46_pay2_financial_authority_database_security.py": {
+            "finance_runtime", "finance_payment_runtime", "finance_refund_runtime",
+            "finance_reconciliation_runtime", "finance_read_runtime",
+            "finance_maintenance_runtime", "app_security_owner",
+        },
     }
     for path in MIGRATIONS:
         source = path.read_text(encoding="utf-8")

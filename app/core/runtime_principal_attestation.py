@@ -66,6 +66,7 @@ class RuntimeBindingContract:
     approved_grantors: tuple[str, ...]
     membership_options: Mapping[str, bool]
     bindings: Mapping[str, RuntimeBinding]
+    reserved_unbound_capabilities: tuple[str, ...]
     rules: Mapping[str, Any]
 
 
@@ -214,6 +215,11 @@ def load_runtime_binding_contract(
             ),
         )
 
+    reserved_unbound_capabilities = _string_tuple(
+        raw.get("reserved_unbound_capabilities"),
+        "reserved_unbound_capabilities",
+    )
+
     rules = raw.get("rules")
     if not isinstance(rules, Mapping):
         raise ValueError("rules must be an object")
@@ -222,6 +228,7 @@ def load_runtime_binding_contract(
         approved_grantors=approved_grantors,
         membership_options=dict(membership_options),
         bindings=bindings,
+        reserved_unbound_capabilities=reserved_unbound_capabilities,
         rules=dict(rules),
     )
 
@@ -247,12 +254,34 @@ def validate_runtime_binding_contract(
     runtime_capabilities = {
         binding.runtime_capability for binding in contract.bindings.values()
     }
-    if runtime_capabilities != peer_runtimes:
+    reserved_capabilities = set(contract.reserved_unbound_capabilities)
+
+    overlap = sorted(runtime_capabilities & reserved_capabilities)
+    if overlap:
+        violations.append(_violation(
+            "runtime.contract.reserved_binding_overlap",
+            "reserved_unbound_capabilities",
+            "Reserved capabilities must not already be bound to a deployment component; "
+            f"overlap={overlap!r}.",
+        ))
+
+    unknown_reserved = sorted(reserved_capabilities - managed)
+    if unknown_reserved:
+        violations.append(_violation(
+            "runtime.contract.unknown_reserved_capability",
+            "reserved_unbound_capabilities",
+            f"Reserved capabilities are not P2B managed roles: {unknown_reserved!r}.",
+        ))
+
+    covered_peer_runtimes = runtime_capabilities | reserved_capabilities
+    if covered_peer_runtimes != peer_runtimes:
         violations.append(_violation(
             "runtime.contract.p2c_runtime_coverage",
             "runtime_capabilities",
-            "P2D runtime capabilities must exactly match P2C peer runtime capabilities; "
-            f"expected={sorted(peer_runtimes)!r}, found={sorted(runtime_capabilities)!r}.",
+            "P2D bound plus explicitly reserved capabilities must exactly match "
+            "P2C peer runtime capabilities; "
+            f"expected={sorted(peer_runtimes)!r}, bound={sorted(runtime_capabilities)!r}, "
+            f"reserved={sorted(reserved_capabilities)!r}.",
         ))
 
     env_names = [
@@ -266,6 +295,16 @@ def validate_runtime_binding_contract(
         ))
 
     for binding in contract.bindings.values():
+        reserved_direct = sorted(
+            set(binding.direct_capabilities) & reserved_capabilities
+        )
+        if reserved_direct:
+            violations.append(_violation(
+                "runtime.contract.reserved_direct_capability",
+                binding.component,
+                "Reserved capabilities must remain unbound until a later reviewed phase; "
+                f"found={reserved_direct!r}.",
+            ))
         if binding.runtime_capability not in binding.direct_capabilities:
             violations.append(_violation(
                 "runtime.contract.primary_capability",
@@ -302,6 +341,7 @@ def validate_runtime_binding_contract(
         "require_baseline_current_user",
         "forbid_set_role_to_managed_roles",
         "reject_database_specific_settings",
+        "reserved_capabilities_remain_unbound",
     }
     disabled = sorted(
         rule for rule in required_rules if contract.rules.get(rule) is not True

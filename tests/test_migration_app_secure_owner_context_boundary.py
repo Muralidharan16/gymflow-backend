@@ -92,6 +92,15 @@ _P4D_AUDIT_PARTITION_MIGRATION = "ze07d8e9f0a3f_audit_partition_lifecycle.py"
 _P4E_OPERATIONAL_SNAPSHOTS_MIGRATION = "zf07d8e9f0a40_p4e_operational_snapshots.py"
 _P5E_PROVIDER_FENCE_MIGRATION = "zi07d8e9f0a43_p5e_provider_capability_fences.py"
 _P8_LIFECYCLE_SNAPSHOT_MIGRATION = "zk07d8e9f0a45_p8_lifecycle_dead_letter_snapshot.py"
+_PAY2_FINANCIAL_AUTHORITY_MIGRATION = (
+    "zl07d8e9f0a46_pay2_financial_authority_database_security.py"
+)
+_PAY3_MONETARY_COMMAND_MIGRATION = (
+    "zm07d8e9f0a47_pay3_monetary_command_protocol.py"
+)
+_PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION = (
+    "zn07d8e9f0a48_pay3_monetary_command_ambiguity_repair.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -130,6 +139,9 @@ APP_SECURE_FILES.update(
         _P4E_OPERATIONAL_SNAPSHOTS_MIGRATION,
         _P5E_PROVIDER_FENCE_MIGRATION,
         _P8_LIFECYCLE_SNAPSHOT_MIGRATION,
+        _PAY2_FINANCIAL_AUTHORITY_MIGRATION,
+        _PAY3_MONETARY_COMMAND_MIGRATION,
+        _PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION,
     }
 )
 
@@ -266,6 +278,15 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # migration references app_secure but does not add schema/view/policy DDL;
         # dedicated P8 contracts own the SECURITY DEFINER body and EXECUTE ACL.
         _P8_LIFECYCLE_SNAPSHOT_MIGRATION: set(),
+        # PAY-2 installs trigger functions and function ACLs only. This
+        # historical detector is deliberately schema/view/policy scoped.
+        _PAY2_FINANCIAL_AUTHORITY_MIGRATION: set(),
+        # PAY-3 introduces a Finance monetary-command RLS policy and drops it
+        # on downgrade; function ownership/ACL behavior is covered separately.
+        _PAY3_MONETARY_COMMAND_MIGRATION: {"create_policy", "drop_policy"},
+        # Repair only replaces reduced-owner functions and adds table columns;
+        # it does not broaden schema/view/policy DDL.
+        _PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {

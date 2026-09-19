@@ -38,6 +38,42 @@
       "lock_timeout": "2s",
       "row_security": "on",
       "statement_timeout": "15s"
+    },
+    "finance_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "10s"
+    },
+    "finance_payment_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "15s"
+    },
+    "finance_refund_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "15s"
+    },
+    "finance_reconciliation_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "15s"
+    },
+    "finance_read_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "10s"
+    },
+    "finance_maintenance_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "15s"
     }
   },
   "source_evidence": {
@@ -70,5 +106,16 @@
       "sha256": "38007e7b50e29feec729afa7b09f4f690d4996a5f83c2a88e77f94e42cfd0abb"
     }
   },
-  "unexpected_settings_forbidden": true
+  "unexpected_settings_forbidden": true,
+  "pay2_extension": {
+    "phase": "PAY-2",
+    "roles": [
+      "finance_runtime",
+      "finance_payment_runtime",
+      "finance_refund_runtime",
+      "finance_reconciliation_runtime",
+      "finance_read_runtime",
+      "finance_maintenance_runtime"
+    ]
+  }
 }

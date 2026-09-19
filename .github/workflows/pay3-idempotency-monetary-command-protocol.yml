@@ -1,0 +1,294 @@
+name: PAY-3 Idempotency Monetary Command Protocol
+
+on:
+  push:
+    branches:
+      - hardening/pay3-idempotency-monetary-command-protocol
+  pull_request:
+    branches:
+      - hardening/p10-performance-security-final-production-certification
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay3-monetary-command-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY3_BASE_SHA: f229e655ffd22500697d69fb6504ef48ecc827f1
+  PAY3_BASE_TREE: 33bae8741c16925681414bf58ff0be3133c98391
+  PAY3_PREDECESSOR: zl07d8e9f0a46
+  PAY3_HEAD: zn07d8e9f0a48
+  PAY3_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-3 static monetary command contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay3_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay3-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay3-static
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY3_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Exact PAY-3 scope and graph
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY3_BASE_SHA}^{tree}")" = "${PAY3_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY3_BASE_SHA}" HEAD
+          git diff --name-only "${PAY3_BASE_SHA}...HEAD" > /tmp/pay3-changed.txt
+          python - <<'PY_SCOPE'
+          from pathlib import Path
+          allowed={
+              ".github/workflows/pay3-idempotency-monetary-command-protocol.yml",
+              "alembic/versions/zm07d8e9f0a47_pay3_monetary_command_protocol.py",
+              "alembic/versions/zn07d8e9f0a48_pay3_monetary_command_ambiguity_repair.py",
+              "app/finance_core/domain/monetary_command.py",
+              "app/finance_core/models/__init__.py",
+              "app/finance_core/models/foundation.py",
+              "docs/architecture/PAY3_ACCEPTANCE_MATRIX.md",
+              "docs/architecture/PAY3_IDEMPOTENCY_MONETARY_COMMAND_PROTOCOL.md",
+              "docs/architecture/pay3_monetary_command_protocol_v1.json",
+              "security/cluster_role_bootstrap/ownership.v1.json",
+              "tests/finance_core/test_phase5b_foundation.py",
+              "tests/test_cluster_role_contract_manifests.py",
+              "tests/test_migration_app_secure_owner_context_boundary.py",
+              "tests/test_pay3_monetary_command_runtime.py",
+              "tests/test_pay3_monetary_command_static_contracts.py",
+          }
+          changed={line.strip() for line in Path('/tmp/pay3-changed.txt').read_text().splitlines() if line.strip()}
+          if changed != allowed:
+              raise SystemExit(f"PAY-3 exact scope mismatch: missing={sorted(allowed-changed)}, unexpected={sorted(changed-allowed)}")
+          migrations=sorted(p for p in changed if p.startswith('alembic/versions/'))
+          expected=[
+              'alembic/versions/zm07d8e9f0a47_pay3_monetary_command_protocol.py',
+              'alembic/versions/zn07d8e9f0a48_pay3_monetary_command_ambiguity_repair.py',
+          ]
+          if migrations != expected:
+              raise SystemExit(f"PAY-3 migration scope mismatch: {migrations}")
+          print(f"PAY-3 exact allowlist paths: {len(changed)}")
+          PY_SCOPE
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY3_HEAD}"
+      - name: PAY-3 contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile             app/finance_core/domain/monetary_command.py             alembic/versions/zm07d8e9f0a47_pay3_monetary_command_protocol.py             alembic/versions/zn07d8e9f0a48_pay3_monetary_command_ambiguity_repair.py
+          python -m json.tool docs/architecture/pay3_monetary_command_protocol_v1.json >/dev/null
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay3_monetary_command_static_contracts.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py
+          echo 'PAY3_MONETARY_COMMAND_PROTOCOL=PASS'
+          echo 'PAY3_DIRECT_DML_DENIAL=PASS'
+
+  protocol_pg16:
+    name: PAY-3 real PG16 replay ambiguity and migration proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay3-migration@127.0.0.1:5432/gymflow_pay3_test
+      PAY3_RUNTIME_DATABASE_URL: postgresql://pay3_finance_test:ci-pay3-finance@127.0.0.1:5432/gymflow_pay3_test
+      PAY3_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay3-postgres@127.0.0.1:5432/gymflow_pay3_test
+      SECRET_KEY: pay3-pg16-not-production
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay3-pg16
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY3_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Install PG16 and canonical roles
+        run: |
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE postgres PASSWORD 'ci-pay3-postgres';
+          ALTER ROLE migration_owner PASSWORD 'ci-pay3-migration';
+          CREATE ROLE pay3_finance_test LOGIN PASSWORD 'ci-pay3-finance'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT finance_runtime TO pay3_finance_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_pay3_test OWNER migration_owner;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_pay3_test
+      - name: Upgrade predecessor and capture existing Finance relfilenodes
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY3_PREDECESSOR}"
+          PGPASSWORD=ci-pay3-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay3_test <<'SQL'
+          INSERT INTO public.organizations(id,name,slug,tier,is_active)
+          VALUES (
+            '33000000-0000-4000-8000-000000000001',
+            'PAY3 Gym','pay3-gym','basic',TRUE
+          );
+          SQL
+          PGPASSWORD=ci-pay3-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay3_test -At <<'SQL'             > /tmp/pay3-before.txt
+          SELECT c.oid::regclass::text || '|' || c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname='finance' AND c.relkind IN ('r','p')
+          ORDER BY 1;
+          SQL
+      - name: Upgrade PAY-3 and temporarily expose only functions in disposable CI
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY3_HEAD}"
+          PGPASSWORD=ci-pay3-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay3_test -At <<'SQL'             > /tmp/pay3-after.txt
+          SELECT c.oid::regclass::text || '|' || c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname='finance'
+            AND c.relkind IN ('r','p')
+            AND c.relname <> 'monetary_commands'
+          ORDER BY 1;
+          SQL
+          diff -u /tmp/pay3-before.txt /tmp/pay3-after.txt
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_pay3_test <<'SQL'
+          GRANT USAGE ON SCHEMA app_secure TO finance_runtime;
+          GRANT EXECUTE ON FUNCTION app_secure.reserve_finance_monetary_command(text,text,text,text,uuid,text,text) TO finance_runtime;
+          GRANT EXECUTE ON FUNCTION app_secure.complete_finance_monetary_command(uuid,text) TO finance_runtime;
+          GRANT EXECUTE ON FUNCTION app_secure.mark_finance_monetary_command_unknown(uuid,text) TO finance_runtime;
+          GRANT EXECUTE ON FUNCTION app_secure.fail_finance_monetary_command(uuid,text) TO finance_runtime;
+          SQL
+          python -m pytest --noconftest -q tests/test_pay3_monetary_command_runtime.py
+          echo 'PAY3_IDEMPOTENT_REPLAY=PASS'
+          echo 'PAY3_UNKNOWN_OUTCOME_FENCING=PASS'
+          echo 'PAY3_CONCURRENCY_CRASH=PASS'
+      - name: Prove populated downgrade fails closed then empty lifecycle works
+        run: |
+          set -euo pipefail
+          set +e
+          OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY3_PREDECESSOR}" 2>&1)"
+          RC=$?
+          set -e
+          test "$RC" -ne 0
+          printf '%s\n' "$OUTPUT" | grep -F 'PAY-3 repair downgrade blocked: durable ambiguity evidence exists'
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_pay3_test             -c 'DELETE FROM finance.monetary_commands'
+          python -s -m alembic -c alembic.ini downgrade "${PAY3_PREDECESSOR}"
+          python -s -m alembic -c alembic.ini upgrade "${PAY3_HEAD}"
+          echo 'PAY3_DURABLE_EVIDENCE=PASS'
+          echo 'PAY3_MIGRATION_LIFECYCLE=PASS'
+
+  architecture:
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+  general_platform:
+    uses: ./.github/workflows/hardening-ci.yml
+  finance:
+    uses: ./.github/workflows/finance-hardening-ci.yml
+  migration_lifecycle:
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+  migration_preservation:
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+  migration_adversarial:
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+  migration_contracts:
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+  migration_semantics:
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+
+  certify:
+    name: Terminal immutable PAY-3 decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - protocol_pg16
+      - architecture
+      - general_platform
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all PAY-3 gates
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          data=json.loads(os.environ["RESULTS"])
+          bad={k:v["result"] for k,v in data.items() if v["result"]!="success"}
+          if bad:
+              raise SystemExit(f"PAY-3 prerequisite failure: {bad}")
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY3_CANDIDATE_SHA }}
+      - name: Bind exact PAY-3 candidate
+        run: |
+          set -euo pipefail
+          mkdir -p pay3-evidence
+          test "$(git rev-parse "${PAY3_BASE_SHA}^{tree}")" = "${PAY3_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY3_BASE_SHA}" HEAD
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          decision={
+            "phase":"PAY-3",
+            "candidate_sha":os.environ["PAY3_CANDIDATE_SHA"],
+            "candidate_tree":subprocess.check_output(["git","rev-parse","HEAD^{tree}"],text=True).strip(),
+            "inherited_pay2_sha":os.environ["PAY3_BASE_SHA"],
+            "alembic_head":os.environ["PAY3_HEAD"],
+            "live_money_movement":False,
+            "refund_provider_execution":"DEFERRED_FAIL_CLOSED",
+            "merge_authorized":False,
+            "release_authorized":False,
+            "deployment_authorized":False,
+            "decision":"PASS",
+          }
+          Path("pay3-evidence/decision.json").write_text(
+              json.dumps(decision,indent=2,sort_keys=True)+"\n"
+          )
+          PY
+          cat pay3-evidence/decision.json
+          echo 'PAY3_MONETARY_COMMAND_PROTOCOL=PASS'
+          echo 'PAY3_IDEMPOTENT_REPLAY=PASS'
+          echo 'PAY3_UNKNOWN_OUTCOME_FENCING=PASS'
+          echo 'PAY3_CONCURRENCY_CRASH=PASS'
+          echo 'PAY3_DIRECT_DML_DENIAL=PASS'
+          echo 'PAY3_DURABLE_EVIDENCE=PASS'
+          echo 'PAY3_MIGRATION_LIFECYCLE=PASS'
+          echo 'PAY3_PAY2_INHERITED=PASS'
+          echo 'PAY3_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY3_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+          echo 'PAY3_FINAL=PASS'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay3-final-${{ github.sha }}
+          path: pay3-evidence/
+          if-no-files-found: error
+          retention-days: 30

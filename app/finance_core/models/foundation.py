@@ -764,6 +764,100 @@ class FinanceIdempotencyKey(Base):
     expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
 
 
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
 class FinanceOutboxEvent(Base):
     __tablename__ = "outbox_events"
     __table_args__ = (

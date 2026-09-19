@@ -29,9 +29,16 @@
     "app_runtime",
     "app_user",
     "audit_writer",
+    "auth_runtime",
     "branch_admin",
     "branch_viewer",
     "finance_config_runtime",
+    "finance_maintenance_runtime",
+    "finance_payment_runtime",
+    "finance_read_runtime",
+    "finance_reconciliation_runtime",
+    "finance_refund_runtime",
+    "finance_runtime",
     "lifecycle_maintenance_runtime",
     "ops_support",
     "readonly_analytics",
@@ -76,5 +83,17 @@
     "parallel_rows_forbidden": true,
     "set_option_required": true,
     "wrong_grantor_forbidden": true
+  },
+  "pay2_extension": {
+    "phase": "PAY-2",
+    "rule": "All Finance capability roles remain peer-isolated and are forbidden migration_owner memberships.",
+    "roles": [
+      "finance_runtime",
+      "finance_payment_runtime",
+      "finance_refund_runtime",
+      "finance_reconciliation_runtime",
+      "finance_read_runtime",
+      "finance_maintenance_runtime"
+    ]
   }
 }

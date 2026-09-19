@@ -28,6 +28,7 @@ from app.finance_core.models import (
     FinanceLedgerEntry,
     FinanceLedgerEntryLine,
     FinanceMemberSubscriptionCheckoutBinding,
+    FinanceMonetaryCommand,
     FinanceMembershipPlanTaxProfile,
     FinanceLegalEntity,
     FinanceOutboxEvent,
@@ -75,6 +76,7 @@ FINANCE_TABLES = {
     "ledger_entry_lines",
     "audit_events",
     "idempotency_keys",
+    "monetary_commands",
     "outbox_events",
 }
 
@@ -99,6 +101,7 @@ MODEL_TABLES = {
         FinanceLedgerEntry,
         FinanceLedgerEntryLine,
         FinanceMemberSubscriptionCheckoutBinding,
+        FinanceMonetaryCommand,
         FinanceMembershipPlanTaxProfile,
         FinanceLegalEntity,
         FinanceOutboxEvent,

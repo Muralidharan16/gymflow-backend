@@ -8,7 +8,13 @@
     "worker_runtime",
     "lifecycle_maintenance_runtime",
     "finance_config_runtime",
-    "migration_owner"
+    "migration_owner",
+    "finance_runtime",
+    "finance_payment_runtime",
+    "finance_refund_runtime",
+    "finance_reconciliation_runtime",
+    "finance_read_runtime",
+    "finance_maintenance_runtime"
   ],
   "migration_helpers": [
     "app_rls_executor",
@@ -28,5 +34,16 @@
     "forbid_admin_option_on_protected_capability_grants": true,
     "migration_helpers_are_non_delegable": true,
     "prove_member_set_usage_semantics": true
+  },
+  "pay2_extension": {
+    "phase": "PAY-2",
+    "roles": [
+      "finance_runtime",
+      "finance_payment_runtime",
+      "finance_refund_runtime",
+      "finance_reconciliation_runtime",
+      "finance_read_runtime",
+      "finance_maintenance_runtime"
+    ]
   }
 }
