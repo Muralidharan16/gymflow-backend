@@ -267,7 +267,7 @@ def _install_functions() -> None:
                     last_error_code=NULL
                 FROM candidates c
                 WHERE e.id=c.id
-                RETURNING e.id,e.organization_id,e.idempotency_key,
+                RETURNING e.id,e.organization_id,e.idempotency_key::text,
                           e.attempt_count,e.max_attempts,e.lease_fence;
             END
             $function$
