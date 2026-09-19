@@ -25,6 +25,8 @@ FINANCE_TEST_TABLES: tuple[str, ...] = (
     "credit_notes",
     "refund_execution_commands",
     "refunds",
+    "member_subscription_finance_bindings",
+    "payment_contexts",
     "member_subscription_checkout_bindings",
     "refund_obligation_bindings",
     "payment_events",
