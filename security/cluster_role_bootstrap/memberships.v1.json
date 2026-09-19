@@ -29,6 +29,7 @@
     "app_runtime",
     "app_user",
     "audit_writer",
+    "auth_runtime",
     "branch_admin",
     "branch_viewer",
     "finance_config_runtime",

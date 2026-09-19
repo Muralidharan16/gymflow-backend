@@ -55,10 +55,21 @@ def test_pay2_migration_never_mutates_cluster_roles():
 
 def test_pay2_immutable_finance_evidence_is_database_enforced():
     source = MIGRATION.read_text(encoding="utf-8")
-    for table in (
+    namespace: dict[str, object] = {}
+    module = compile(source, str(MIGRATION), "exec", dont_inherit=True, optimize=0)
+    # Do not execute migration code; recover the tuple from the parsed assignment.
+    import ast
+    tree = ast.parse(source, filename=str(MIGRATION))
+    assignment = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "_IMMUTABLE_TABLES" for target in node.targets)
+    )
+    immutable_tables = ast.literal_eval(assignment.value)
+    assert set(immutable_tables) == {
         "audit_events","payment_events","ledger_entry_lines","tax_records","credit_note_lines"
-    ):
-        assert f'finance.{table}' in source
+    }
+    assert "BEFORE UPDATE OR DELETE ON finance.{table_name}" in source
     assert "pay2_reject_finance_immutable_history_mutation" in source
     assert "pay2_guard_posted_finance_ledger_entry_mutation" in source
     assert "BEFORE UPDATE OR DELETE" in source

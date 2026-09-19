@@ -6,7 +6,7 @@ Create Date: 2026-09-19
 
 The cluster-managed Finance capability roles are provisioned outside Alembic
 through security/cluster_role_bootstrap. This migration refuses to create,
-alter, repair or grant membership to PostgreSQL roles.
+alter, repair or modify PostgreSQL role-membership topology.
 
 PAY-2 keeps all dedicated Finance runtime capabilities table-blind. It adds
 database-level immutable-history guards to evidence that must never be rewritten
@@ -124,6 +124,30 @@ def _has_direct_finance_relation_authority(bind, role_name: str) -> bool:
     )
 
 
+def _function_row(bind, signature: str):
+    schema_name, remainder = signature.split(".", 1)
+    function_name, argument_text = remainder.split("(", 1)
+    normalized_args = argument_text.rstrip(")").replace(" ", "")
+    return bind.execute(
+        sa.text(
+            """
+            SELECT p.oid,owner.rolname AS owner,p.prosecdef,p.proconfig
+            FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+            JOIN pg_catalog.pg_roles owner ON owner.oid=p.proowner
+            WHERE n.nspname=:schema_name
+              AND p.proname=:function_name
+              AND replace(pg_catalog.oidvectortypes(p.proargtypes),' ','')=:normalized_args
+            """
+        ),
+        {
+            "schema_name": schema_name,
+            "function_name": function_name,
+            "normalized_args": normalized_args,
+        },
+    ).mappings().one_or_none()
+
+
 def _has_finance_object_ownership(bind, role_name: str) -> bool:
     return bool(
         bind.execute(
@@ -216,10 +240,7 @@ def _require_predecessor(bind) -> None:
             raise RuntimeError(f"PAY-2 refuses Finance/app_secure object ownership by runtime role: {role_name}")
 
     for signature in (_IMMUTABLE_FUNCTION, _LEDGER_FUNCTION):
-        if bind.execute(
-            sa.text("SELECT pg_catalog.to_regprocedure(:signature) IS NOT NULL"),
-            {"signature": signature},
-        ).scalar_one():
+        if _function_row(bind, signature) is not None:
             raise RuntimeError(f"PAY-2 predecessor unexpectedly contains {signature}")
 
 
@@ -324,18 +345,7 @@ def _install(bind) -> None:
 
 def _post_install_proof(bind) -> None:
     for signature in (_IMMUTABLE_FUNCTION, _LEDGER_FUNCTION):
-        row = bind.execute(
-            sa.text(
-                """
-                SELECT p.oid,owner.rolname AS owner,p.prosecdef,p.proconfig
-                FROM pg_catalog.pg_proc p
-                JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
-                JOIN pg_catalog.pg_roles owner ON owner.oid=p.proowner
-                WHERE p.oid=pg_catalog.to_regprocedure(:signature)
-                """
-            ),
-            {"signature": signature},
-        ).mappings().one_or_none()
+        row = _function_row(bind, signature)
         if row is None or row["owner"] != _SECURITY_OWNER or not bool(row["prosecdef"]):
             raise RuntimeError(f"PAY-2 hardened function metadata drift: {signature}")
         config = set(row["proconfig"] or ())
