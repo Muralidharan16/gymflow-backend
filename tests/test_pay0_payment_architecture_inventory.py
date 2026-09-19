@@ -83,17 +83,23 @@ def test_legacy_member_payment_contract_drift_is_explicitly_inventory_only():
     assert item["production_authority"] is False
 
 
-def test_member_subscription_payment_gap_is_frozen_not_changed():
+def test_member_subscription_payment_gap_is_historical_and_closed_by_pay4():
     service = (ROOT / "app/services/member_subscription_v2_service.py").read_text(encoding="utf-8")
+    checkout = (ROOT / "app/finance_core/services/member_subscription_checkout.py").read_text(encoding="utf-8")
     router = (ROOT / "app/routers/member_subscriptions_v2.py").read_text(encoding="utf-8")
     lifecycle = (ROOT / "app/domain/subscription_lifecycle.py").read_text(encoding="utf-8")
 
-    assert "status=ModernSubscriptionStatus.active" in service
-    assert "RazorpaySandboxAdapter" in router
-    assert 'pending_payment = "pending_payment"' in lifecycle
-
+    # PAY-0 remains immutable historical evidence of the original risk.
     item = next(x for x in _inventory()["components"] if x["id"] == "modern_member_subscription_v2")
     assert item["risk"] == "currently_active_before_authoritative_payment"
+
+    # PAY-4 is the controlled phase that closes that risk in current code.
+    assert "status=ModernSubscriptionStatus.active" not in service
+    assert "status=ModernSubscriptionStatus.pending" in service
+    assert "app_secure.create_member_subscription_pending_term" in service
+    assert "app_secure.record_member_subscription_finance_binding" in checkout
+    assert "RazorpaySandboxAdapter" in router
+    assert 'pending_payment = "pending_payment"' in lifecycle
 
 
 def test_platform_billing_real_provider_is_not_admitted():
