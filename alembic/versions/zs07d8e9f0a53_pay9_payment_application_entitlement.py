@@ -912,36 +912,21 @@ def downgrade() -> None:
             "payment application evidence exists"
         )
 
-    op.execute(f"REVOKE EXECUTE ON FUNCTION {_FUNCTION} FROM app_runtime")
-    op.execute(
-        f"REVOKE EXECUTE ON FUNCTION {_FUNCTION} "
-        "FROM finance_payment_runtime"
-    )
-
-    had_create = bool(
-        bind.execute(
-            sa.text(
-                """
-                SELECT pg_catalog.has_schema_privilege(
-                    'app_security_owner','app_secure','CREATE'
-                )
-                """
-            )
-        ).scalar_one()
-    )
-    if not had_create:
-        op.execute(
-            "GRANT CREATE ON SCHEMA app_secure TO app_security_owner"
-        )
+    # Function ACLs and ownership belong to app_security_owner. The reduced
+    # migration identity intentionally has no app_secure USAGE, so all
+    # function ACL teardown must run under the exact owner context.
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
+        op.execute(
+            f"REVOKE EXECUTE ON FUNCTION {_FUNCTION} FROM app_runtime"
+        )
+        op.execute(
+            f"REVOKE EXECUTE ON FUNCTION {_FUNCTION} "
+            "FROM finance_payment_runtime"
+        )
         op.execute(f"DROP FUNCTION {_FUNCTION}")
     finally:
         op.execute("RESET ROLE")
-    if not had_create:
-        op.execute(
-            "REVOKE CREATE ON SCHEMA app_secure FROM app_security_owner"
-        )
 
     op.execute(
         "DROP POLICY pay9_application_security_owner "
