@@ -222,6 +222,16 @@ class RefundProvider(Protocol):
     ) -> ProviderRefundResponse:
         """Reconcile one previously identified provider refund."""
 
+    async def discover_refund(
+        self,
+        request: ProviderRefundRequest,
+    ) -> ProviderRefundResponse | None:
+        """Recover a lost provider acknowledgement using stable Finance identity.
+
+        None means the bounded provider search completed without finding the
+        deterministic receipt. It is not permission to invent a new receipt.
+        """
+
 
 class RefundProviderRegistry:
     """Server-owned refund provider registry.
