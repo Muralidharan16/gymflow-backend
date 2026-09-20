@@ -252,13 +252,15 @@ jobs:
       - name: Populated downgrade fails closed
         run: |
           set -euo pipefail
-          PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test <<'SQL'
-          SET ROLE app_security_owner;
+          # Disposable-test cleanup is intentionally cluster-admin-only.
+          # app_security_owner keeps no TRUNCATE/DELETE authority.
+          PGPASSWORD=ci-pay10-postgres psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U postgres -d gymflow_pay10_test <<'SQL'
           TRUNCATE TABLE finance.refund_provider_evidence;
           DELETE FROM finance.refund_execution_commands
           WHERE logical_obligation_key =
             'finance-refund/c1000000-0000-4000-8000-000000000010';
-          RESET ROLE;
+          SQL
+          PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test <<'SQL'
           INSERT INTO finance.legal_entities(
             id,code,legal_name,status
           ) VALUES(
