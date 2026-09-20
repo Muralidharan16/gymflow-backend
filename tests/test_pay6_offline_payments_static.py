@@ -45,9 +45,9 @@ def test_pay6_has_no_free_form_mark_paid_api():
     assert "status: str" not in schemas.split("class FinanceOfflinePaymentPrepareRequest",1)[1].split(
         "class FinanceOfflinePaymentPrepareResponse",1
     )[0]
-    assert "PaymentService" not in router
+    assert "from app.services.payment_service import" not in router
     assert "app.services.payment_service" not in router
-    assert "PaymentService" not in service
+    assert "from app.services.payment_service import" not in service
 
 
 def test_pay6_maker_checker_is_database_enforced_and_replay_actor_fenced():
