@@ -1079,7 +1079,7 @@ def _install_functions() -> None:
                     v_payment.organization_id,v_payment.legal_entity_id,
                     v_payment.division_id,v_payment.brand_id,
                     'refund',v_refund.id,'finance.refund.completed',
-                    'pay10:'||v_command.command_id::text||':refund',
+                    'pay10/'||v_command.command_id::text||'/refund',
                     v_payload,v_hash,'pending'
                 )
                 ON CONFLICT ON CONSTRAINT uq_finance_outbox_events_idempotency
@@ -1114,7 +1114,7 @@ def _install_functions() -> None:
                     v_payment.division_id,v_payment.brand_id,
                     'payment',v_payment.id,
                     'finance.payment.refund_state.changed',
-                    'pay10:'||v_command.command_id::text||':payment',
+                    'pay10/'||v_command.command_id::text||'/payment',
                     v_payload,v_hash,'pending'
                 )
                 ON CONFLICT ON CONSTRAINT uq_finance_outbox_events_idempotency
@@ -1147,7 +1147,7 @@ def _install_functions() -> None:
                     v_payment.division_id,v_payment.brand_id,
                     'ledger_entry',v_ledger_id,
                     'finance.ledger.entry.posted',
-                    'pay10:'||v_command.command_id::text||':ledger',
+                    'pay10/'||v_command.command_id::text||'/ledger',
                     v_payload,v_hash,'pending'
                 )
                 ON CONFLICT ON CONSTRAINT uq_finance_outbox_events_idempotency
