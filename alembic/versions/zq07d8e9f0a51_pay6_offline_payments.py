@@ -436,7 +436,23 @@ def _install_schema() -> None:
     )
 
 
-def _install_functions() -> None:
+def _install_functions(bind) -> None:
+    had_create = bool(
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_schema_privilege("
+                ":role_name, 'app_secure', 'CREATE')"
+            ),
+            {"role_name": _SECURITY_OWNER},
+        ).scalar_one()
+    )
+    if not had_create:
+        bind.execute(
+            sa.text(
+                "GRANT CREATE ON SCHEMA app_secure TO app_security_owner"
+            )
+        )
+
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
         op.execute(
@@ -1205,6 +1221,13 @@ def _install_functions() -> None:
     finally:
         op.execute("RESET ROLE")
 
+    if not had_create:
+        bind.execute(
+            sa.text(
+                "REVOKE CREATE ON SCHEMA app_secure FROM app_security_owner"
+            )
+        )
+
     op.execute(
         """
         CREATE TRIGGER trg_pay6_offline_events_immutable
@@ -1232,7 +1255,7 @@ def upgrade() -> None:
 
     _install_acl_delta(bind)
     _install_schema()
-    _install_functions()
+    _install_functions(bind)
 
     for relation in (
         "finance.offline_payment_requests",
