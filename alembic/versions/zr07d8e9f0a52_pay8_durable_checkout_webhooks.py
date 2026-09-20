@@ -1824,33 +1824,32 @@ def downgrade() -> None:
             "PAY-8 downgrade blocked: durable provider evidence exists"
         )
 
-    op.execute(
-        f"REVOKE EXECUTE ON FUNCTION {_RECONCILE_OPERATION} "
-        "FROM finance_reconciliation_runtime"
-    )
-    for signature in (
-        _CLAIM_WEBHOOK,_CLAIM_NEXT_WEBHOOK,
-        _COMPLETE_WEBHOOK,_FAIL_WEBHOOK,
-    ):
-        op.execute(
-            f"REVOKE EXECUTE ON FUNCTION {signature} "
-            "FROM finance_payment_runtime"
-        )
-    for signature in (
-        _RESERVE_OPERATION,_CLAIM_OPERATION,_FINISH_OPERATION,
-        _RECORD_WEBHOOK,_CLAIM_WEBHOOK,_COMPLETE_WEBHOOK,
-        _FAIL_WEBHOOK,
-    ):
-        op.execute(
-            f"REVOKE EXECUTE ON FUNCTION {signature} FROM app_runtime"
-        )
-
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
+        op.execute(
+            f"REVOKE EXECUTE ON FUNCTION {_RECONCILE_OPERATION} "
+            "FROM finance_reconciliation_runtime"
+        )
+        for signature in (
+            _CLAIM_WEBHOOK,_CLAIM_NEXT_WEBHOOK,
+            _COMPLETE_WEBHOOK,_FAIL_WEBHOOK,
+        ):
+            op.execute(
+                f"REVOKE EXECUTE ON FUNCTION {signature} "
+                "FROM finance_payment_runtime"
+            )
+        for signature in (
+            _RESERVE_OPERATION,_CLAIM_OPERATION,_FINISH_OPERATION,
+            _RECORD_WEBHOOK,_CLAIM_WEBHOOK,_COMPLETE_WEBHOOK,
+            _FAIL_WEBHOOK,
+        ):
+            op.execute(
+                f"REVOKE EXECUTE ON FUNCTION {signature} FROM app_runtime"
+            )
         for signature in (
             _FAIL_WEBHOOK,_COMPLETE_WEBHOOK,_CLAIM_NEXT_WEBHOOK,
-            _CLAIM_WEBHOOK,_RECORD_WEBHOOK,_RECONCILE_OPERATION,_FINISH_OPERATION,
-            _CLAIM_OPERATION,_RESERVE_OPERATION,
+            _CLAIM_WEBHOOK,_RECORD_WEBHOOK,_RECONCILE_OPERATION,
+            _FINISH_OPERATION,_CLAIM_OPERATION,_RESERVE_OPERATION,
         ):
             op.execute(f"DROP FUNCTION {signature}")
     finally:
