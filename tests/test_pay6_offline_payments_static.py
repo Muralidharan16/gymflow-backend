@@ -70,7 +70,7 @@ def test_pay6_revalidates_invoice_balance_and_uses_canonical_payment_application
     assert "'manual'" in approve
     assert "'captured','offline_approved'" in approve
     assert "app_secure.apply_finance_confirmed_payment" in approve
-    assert "'offline-payment:'||v_request.id::text||':apply'" in approve
+    assert "'offline-payment/'||v_request.id::text||'/apply'" in approve
     assert "finance.payment_events" in approve
     assert "manual.payment.approved" in approve
 
