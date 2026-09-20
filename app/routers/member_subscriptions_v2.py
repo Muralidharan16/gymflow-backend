@@ -11,8 +11,12 @@ from app.schemas.member_subscription_v2 import SubscriptionCreate, SubscriptionL
 from app.finance_core.api.guards import require_finance_checkout_sandbox_enabled
 from app.finance_core.api.payment_boundary import get_razorpay_test_mode_config, get_razorpay_test_mode_transport
 from app.finance_core.api.schemas import FinanceCheckoutCreateResponse
-from app.finance_core.domain.provider_boundary import ProviderCheckoutIntentRequest
-from app.finance_core.domain.razorpay_sandbox import RazorpayProviderError, RazorpaySandboxConfig
+from app.finance_core.domain.provider_boundary import (
+    CheckoutProviderRegistry,
+    FinanceProviderOperationError,
+    ProviderCheckoutIntentRequest,
+)
+from app.finance_core.domain.razorpay_sandbox import RazorpaySandboxConfig
 from app.finance_core.services.member_subscription_checkout import (
     MemberSubscriptionCheckoutConfigurationError,
     SourceBoundMemberSubscriptionCheckoutService,
@@ -102,6 +106,14 @@ async def create_subscription_checkout_session(
     razorpay_transport: RazorpayTestModeTransport = Depends(get_razorpay_test_mode_transport),
 ):
     _enforce_path_org(org_id, staff)
+    client = RazorpayTestModeOrdersClient(
+        config=razorpay_config,
+        transport=razorpay_transport,
+    )
+    razorpay = RazorpaySandboxAdapter(config=razorpay_config, client=client)
+    registry = CheckoutProviderRegistry((razorpay,))
+    provider_adapter = registry.resolve(razorpay.provider_code)
+
     await update_session_context(
         db,
         principal_id=str(staff.id),
@@ -111,7 +123,11 @@ async def create_subscription_checkout_session(
     )
     service = SourceBoundMemberSubscriptionCheckoutService(db)
     try:
-        prepared = await service.prepare_local_checkout(organization_id=org_id, subscription_id=subscription_id)
+        prepared = await service.prepare_local_checkout(
+            organization_id=org_id,
+            subscription_id=subscription_id,
+            provider_code=provider_adapter.provider_code,
+        )
         await db.commit()
     except MemberSubscriptionCheckoutConfigurationError as exc:
         await db.rollback()
@@ -120,12 +136,10 @@ async def create_subscription_checkout_session(
         await db.rollback()
         raise
 
-    client = RazorpayTestModeOrdersClient(config=razorpay_config, transport=razorpay_transport)
-    adapter = RazorpaySandboxAdapter(config=razorpay_config, client=client)
     provider_order_ref = prepared.provider_order_ref
     if not provider_order_ref or provider_order_ref.startswith("intent_"):
         try:
-            provider_response = await adapter.create_checkout_intent(
+            provider_response = await provider_adapter.create_checkout_intent(
                 ProviderCheckoutIntentRequest(
                     invoice_id=prepared.finance_invoice_id,
                     amount=prepared.amount,
@@ -136,8 +150,35 @@ async def create_subscription_checkout_session(
             if provider_response.provider_order_ref is None:
                 raise MemberSubscriptionCheckoutConfigurationError("PROVIDER_ORDER_REQUIRED")
             provider_order_ref = provider_response.provider_order_ref
-        except (RazorpayProviderError, MemberSubscriptionCheckoutConfigurationError) as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "PROVIDER_ORDER_FAILED", "message": str(exc)})
+        except FinanceProviderOperationError as exc:
+            if exc.requires_reconciliation:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "PROVIDER_OUTCOME_UNKNOWN",
+                        "message": "Provider outcome requires reconciliation before retry.",
+                    },
+                ) from exc
+            if exc.automatic_retry_allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "code": "PROVIDER_RETRYABLE_FAILURE",
+                        "message": "Provider is temporarily unavailable; retry is safe.",
+                    },
+                ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "PROVIDER_FINAL_FAILURE",
+                    "message": "Provider rejected the checkout operation.",
+                },
+            ) from exc
+        except MemberSubscriptionCheckoutConfigurationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": str(exc), "message": str(exc)},
+            ) from exc
 
         await update_session_context(
             db,
@@ -160,7 +201,9 @@ async def create_subscription_checkout_session(
     return FinanceCheckoutCreateResponse(
         finance_invoice_id=prepared.finance_invoice_id,
         finance_checkout_intent_id=prepared.finance_checkout_intent_id,
-        checkout_fields=adapter.checkout_fields(order_id=provider_order_ref).to_browser_payload(),
+        checkout_fields=provider_adapter.build_checkout_fields(
+            provider_order_ref=provider_order_ref
+        ),
         display_amount=prepared.amount,
         display_currency=prepared.currency_code,
     )
