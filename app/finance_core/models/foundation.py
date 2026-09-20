@@ -1011,6 +1011,17 @@ class FinancePaymentApplicationRecord(Base):
             "OR invoice_outstanding_amount >= 0)",
             name="chk_pay9_application_amounts",
         ),
+        CheckConstraint(
+            "(decision_code IN ('applied_paid','applied_partial') "
+            "AND invoice_id IS NOT NULL AND allocation_id IS NOT NULL "
+            "AND allocated_amount > 0) OR "
+            "(decision_code = 'replayed_existing_allocation' "
+            "AND invoice_id IS NOT NULL AND allocation_id IS NOT NULL) OR "
+            "(decision_code NOT IN ('applied_paid','applied_partial',"
+            "'replayed_existing_allocation') "
+            "AND allocation_id IS NULL AND allocated_amount = 0)",
+            name="chk_pay9_application_shape",
+        ),
         Index(
             "ix_pay9_application_payment",
             "organization_id", "payment_id", "created_at", "id",
