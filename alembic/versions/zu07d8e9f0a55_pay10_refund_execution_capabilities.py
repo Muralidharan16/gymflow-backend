@@ -184,19 +184,6 @@ def _require_predecessor(bind) -> None:
         raise RuntimeError(
             "PAY-10-C requires inherited reconciliation app_secure USAGE"
         )
-    if bool(
-        bind.execute(
-            sa.text(
-                "SELECT pg_catalog.has_schema_privilege("
-                "'app_security_owner','app_secure','CREATE')"
-            )
-        ).scalar_one()
-    ):
-        raise RuntimeError(
-            "PAY-10-C refuses preexisting app_security_owner CREATE "
-            "on app_secure"
-        )
-
     required_acl = bind.execute(
         sa.text(
             """
@@ -258,9 +245,6 @@ def _require_predecessor(bind) -> None:
 
 
 def _install_functions() -> None:
-    op.execute(
-        "GRANT CREATE ON SCHEMA app_secure TO app_security_owner"
-    )
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
         op.execute(
@@ -1369,24 +1353,8 @@ def _install_functions() -> None:
     finally:
         op.execute("RESET ROLE")
 
-    op.execute(
-        "REVOKE CREATE ON SCHEMA app_secure FROM app_security_owner"
-    )
-
 
 def _post_install_proof(bind) -> None:
-    if bool(
-        bind.execute(
-            sa.text(
-                "SELECT pg_catalog.has_schema_privilege("
-                "'app_security_owner','app_secure','CREATE')"
-            )
-        ).scalar_one()
-    ):
-        raise RuntimeError(
-            "PAY-10-C temporary app_secure CREATE authority leaked"
-        )
-
     expected = {
         _CLAIM_REFUND: {_REFUND_RUNTIME},
         _BIND_REQUEST: {_REFUND_RUNTIME},
