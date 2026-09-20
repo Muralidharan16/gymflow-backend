@@ -71,6 +71,182 @@ class RazorpayOrderCreateResponse:
 
 
 @dataclass(frozen=True)
+class RazorpayRefundCreateRequest:
+    provider_payment_ref: str
+    amount_subunits: int
+    currency_code: str
+    receipt: str
+    notes: dict[str, str]
+
+    def to_provider_payload(self) -> dict[str, Any]:
+        return {
+            "amount": self.amount_subunits,
+            "speed": "normal",
+            "receipt": self.receipt,
+            "notes": self.notes,
+        }
+
+
+@dataclass(frozen=True)
+class RazorpayTestModeRefundResult:
+    provider_refund_id: str
+    provider_payment_id: str
+    amount_subunits: int
+    currency_code: str
+    receipt: str
+    status: Literal["pending", "processed", "failed"]
+    created_at: int | None
+
+    def to_safe_output(self) -> dict[str, str | int | None]:
+        return {
+            "provider_refund_id": self.provider_refund_id,
+            "provider_payment_id": self.provider_payment_id,
+            "amount_subunits": self.amount_subunits,
+            "currency_code": self.currency_code,
+            "receipt": self.receipt,
+            "status": self.status,
+            "created_at": self.created_at,
+        }
+
+
+def validate_razorpay_payment_ref(value: str) -> str:
+    normalized = value.strip() if isinstance(value, str) else ""
+    if (
+        not normalized.startswith("pay_")
+        or len(normalized) <= 4
+        or not normalized[4:].isalnum()
+    ):
+        raise RazorpayProviderError(
+            "RAZORPAY_PAYMENT_REF_INVALID",
+            "Razorpay payment reference is invalid.",
+            failure_class="final",
+            operation="refund",
+        )
+    return normalized
+
+
+def validate_razorpay_refund_ref(value: str) -> str:
+    normalized = value.strip() if isinstance(value, str) else ""
+    if (
+        not normalized.startswith("rfnd_")
+        or len(normalized) <= 5
+        or not normalized[5:].isalnum()
+    ):
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_REF_INVALID",
+            "Razorpay refund reference is invalid.",
+            failure_class="final",
+            operation="fetch_refund",
+        )
+    return normalized
+
+
+def build_razorpay_refund_receipt(command_id: str) -> str:
+    normalized = command_id.replace("-", "").lower()
+    if len(normalized) != 32 or not all(
+        character in "0123456789abcdef" for character in normalized
+    ):
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_COMMAND_ID_INVALID",
+            "Finance refund command identity is invalid.",
+            failure_class="final",
+            operation="refund",
+        )
+    return f"d10_{normalized}"
+
+
+def map_razorpay_refund_response(
+    *,
+    payload: dict[str, Any],
+    expected: RazorpayRefundCreateRequest,
+) -> RazorpayTestModeRefundResult:
+    try:
+        entity = str(payload["entity"])
+        refund_id = str(payload["id"])
+        payment_id = str(payload["payment_id"])
+        amount_subunits = int(payload["amount"])
+        currency_code = str(payload["currency"]).upper()
+        receipt = str(payload["receipt"])
+        status = str(payload["status"]).lower()
+        created_raw = payload.get("created_at")
+        created_at = int(created_raw) if created_raw is not None else None
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_RESPONSE_INVALID",
+            "Razorpay refund response was invalid.",
+            failure_class="unknown",
+            operation="refund",
+        ) from exc
+
+    if entity != "refund":
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_ENTITY_INVALID",
+            "Razorpay refund entity was invalid.",
+            failure_class="unknown",
+            operation="refund",
+        )
+    if not refund_id.startswith("rfnd_") or not refund_id[5:].isalnum():
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_ID_INVALID",
+            "Razorpay refund id was invalid.",
+            failure_class="unknown",
+            operation="refund",
+        )
+    if payment_id != expected.provider_payment_ref:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_PAYMENT_MISMATCH",
+            "Razorpay refund payment did not match Finance authority.",
+            failure_class="unknown",
+            operation="refund",
+        )
+    if amount_subunits != expected.amount_subunits:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_AMOUNT_MISMATCH",
+            "Razorpay refund amount did not match Finance authority.",
+            failure_class="unknown",
+            operation="refund",
+        )
+    if currency_code != expected.currency_code.upper():
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_CURRENCY_MISMATCH",
+            "Razorpay refund currency did not match Finance authority.",
+            failure_class="unknown",
+            operation="refund",
+        )
+    if receipt != expected.receipt:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_RECEIPT_MISMATCH",
+            "Razorpay refund receipt did not match Finance authority.",
+            failure_class="unknown",
+            operation="refund",
+        )
+    if status not in {"pending", "processed", "failed"}:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_STATUS_INVALID",
+            "Razorpay refund status was invalid.",
+            failure_class="unknown",
+            operation="refund",
+        )
+    if created_at is not None and created_at <= 0:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_CREATED_AT_INVALID",
+            "Razorpay refund creation timestamp was invalid.",
+            failure_class="unknown",
+            operation="refund",
+        )
+
+    return RazorpayTestModeRefundResult(
+        provider_refund_id=refund_id,
+        provider_payment_id=payment_id,
+        amount_subunits=amount_subunits,
+        currency_code=currency_code,
+        receipt=receipt,
+        status=status,
+        created_at=created_at,
+    )
+
+
+@dataclass(frozen=True)
 class RazorpayTestModeOrderResult:
     provider_order_id: str
     amount_subunits: int
@@ -105,9 +281,18 @@ def classify_razorpay_provider_failure(
         "RAZORPAY_URL_UNSAFE",
         "RAZORPAY_TIMEOUT_UNSAFE",
         "RAZORPAY_ORDER_NOTES_UNSAFE",
+        "RAZORPAY_PAYMENT_REF_INVALID",
+        "RAZORPAY_REFUND_REF_INVALID",
+        "RAZORPAY_REFUND_COMMAND_ID_INVALID",
+        "RAZORPAY_REFUND_CURRENCY_UNSUPPORTED",
+        "RAZORPAY_REFUND_NOTES_UNSAFE",
+        "RAZORPAY_REFUND_AMOUNT_INVALID",
     }:
         return "final"
-    if code == "RAZORPAY_CONNECT_FAILED":
+    if code in {
+        "RAZORPAY_CONNECT_FAILED",
+        "RAZORPAY_REFUND_CONNECT_FAILED",
+    }:
         return "retryable"
     if code == "RAZORPAY_HTTP_ERROR":
         if provider_status_code is not None and 400 <= provider_status_code < 500:
@@ -124,6 +309,19 @@ def classify_razorpay_provider_failure(
         "RAZORPAY_ORDER_AMOUNT_MISMATCH",
         "RAZORPAY_ORDER_CURRENCY_MISMATCH",
         "RAZORPAY_ORDER_RECEIPT_MISMATCH",
+        "RAZORPAY_REFUND_TIMEOUT",
+        "RAZORPAY_REFUND_NETWORK_ERROR",
+        "RAZORPAY_REFUND_RESPONSE_INVALID",
+        "RAZORPAY_REFUND_ENTITY_INVALID",
+        "RAZORPAY_REFUND_ID_INVALID",
+        "RAZORPAY_REFUND_PAYMENT_MISMATCH",
+        "RAZORPAY_REFUND_AMOUNT_MISMATCH",
+        "RAZORPAY_REFUND_CURRENCY_MISMATCH",
+        "RAZORPAY_REFUND_RECEIPT_MISMATCH",
+        "RAZORPAY_REFUND_STATUS_INVALID",
+        "RAZORPAY_REFUND_CREATED_AT_INVALID",
+        "RAZORPAY_REFUND_HTTP_ERROR",
+        "RAZORPAY_REFUND_NOT_FOUND",
     }:
         return "unknown"
     return "final"
