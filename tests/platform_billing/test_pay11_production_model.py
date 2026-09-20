@@ -222,13 +222,13 @@ async def test_pay11_provider_invoice_payment_credit_and_refund_invariants():
 
     await exec_sql(
         """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+
         INSERT INTO platform_provider_customers (
             id, organization_id, provider_code, external_customer_ref, status
         ) VALUES (
             :provider_customer, :org1, 'fake', 'fake_customer_pay11', 'active'
         );
-
-        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
 
         INSERT INTO platform_provider_subscriptions (
             id, organization_id, subscription_id, provider_customer_id,
