@@ -175,6 +175,101 @@ class CheckoutProviderRegistry:
         return tuple(sorted(self._adapters))
 
 
+ProviderRefundStatus = Literal["pending", "processed", "failed"]
+
+
+@dataclass(frozen=True)
+class ProviderRefundRequest:
+    command_id: uuid.UUID
+    refund_id: uuid.UUID
+    provider_payment_ref: str
+    amount: Decimal
+    currency_code: str
+
+
+@dataclass(frozen=True)
+class ProviderRefundResponse:
+    provider_code: str
+    provider_payment_ref: str
+    provider_refund_ref: str
+    status: ProviderRefundStatus
+    amount: Decimal
+    currency_code: str
+    receipt: str
+    provider_created_at: int | None = None
+
+
+class RefundProvider(Protocol):
+    @property
+    def provider_code(self) -> str:
+        ...
+
+    @property
+    def environment(self) -> ProviderEnvironment:
+        ...
+
+    async def create_refund(
+        self,
+        request: ProviderRefundRequest,
+    ) -> ProviderRefundResponse:
+        """Create a provider refund from server-derived Finance authority."""
+
+    async def fetch_refund(
+        self,
+        request: ProviderRefundRequest,
+        *,
+        provider_refund_ref: str,
+    ) -> ProviderRefundResponse:
+        """Reconcile one previously identified provider refund."""
+
+
+class RefundProviderRegistry:
+    """Server-owned refund provider registry.
+
+    PAY-10 accepts only sandbox/test adapters. Provider selection, payment
+    identity and refund amount remain server-side Finance authority.
+    """
+
+    def __init__(self, adapters: tuple[RefundProvider, ...]):
+        if not adapters:
+            raise FinanceProviderConfigError(
+                "At least one refund provider adapter is required."
+            )
+        mapping: dict[str, RefundProvider] = {}
+        for adapter in adapters:
+            code = adapter.provider_code
+            if (
+                not code
+                or code != code.lower()
+                or not code.replace("_", "").isalnum()
+            ):
+                raise FinanceProviderConfigError(
+                    "Refund provider code is invalid."
+                )
+            if adapter.environment not in {"sandbox", "test"}:
+                raise FinanceProviderConfigError(
+                    "PAY-10 refund registry accepts sandbox/test adapters only."
+                )
+            if code in mapping:
+                raise FinanceProviderConfigError(
+                    f"Duplicate refund provider adapter: {code}"
+                )
+            mapping[code] = adapter
+        self._adapters = mapping
+
+    def resolve(self, provider_code: str) -> RefundProvider:
+        try:
+            return self._adapters[provider_code]
+        except KeyError as exc:
+            raise FinanceProviderConfigError(
+                f"Refund provider is not registered: {provider_code}"
+            ) from exc
+
+    @property
+    def provider_codes(self) -> tuple[str, ...]:
+        return tuple(sorted(self._adapters))
+
+
 @dataclass(frozen=True)
 class ProviderSandboxConfig:
     provider_code: str
