@@ -223,6 +223,50 @@ Terminal processed evidence is applied once:
 The refund ledger is a cash/provider clearing movement only.  Revenue and tax
 reversal remain credit-note responsibility.
 
+## PAY-10-E worker and crash recovery
+
+PAY-10-E certifies the crash/replay orchestration around the already-certified
+B/C/D boundaries without activating a production refund worker or live provider.
+
+The processor transaction boundary is fixed:
+
+1. claim one durable refund command and commit the lease/fence;
+2. bind the deterministic server-authoritative provider request and commit;
+3. execute provider I/O with **no database transaction held open**;
+4. persist normalized provider evidence in a fresh transaction and commit;
+5. only then may the queue task be acknowledged.
+
+Crash/replay rules:
+
+- worker death after claim but before provider I/O leaves a bounded lease; after
+  expiry, a new worker reclaims the same logical attempt under a new fence;
+- worker death after provider effect but before database acknowledgement cannot
+  create local success. Redelivery reuses the same deterministic provider
+  request identity; provider-side idempotency/reconciliation prevents a second
+  logical refund effect;
+- database acknowledgement failure is propagated. The worker never converts a
+  database error into success merely because the provider call returned;
+- if database acknowledgement commits but the broker/task acknowledgement is
+  lost, redelivery observes provider_accepted/reconciliation_pending and
+  performs no second provider mutation;
+- duplicate delivery while a live lease exists cannot claim the command;
+- reclaimed in-flight work preserves attempt_count; only a fresh retry after
+  known non-acceptance increments the logical attempt;
+- provider unknown classification becomes reconciliation, retryable
+  non-acceptance becomes retry_pending, and final failure becomes terminal
+  dead-letter/rejection according to the C capability;
+- provider success remains non-financial. E never posts refund ledger entries,
+  emits financial outbox events, changes payment refund state, or calls D
+  finalization directly.
+
+The global Celery worker contract already uses late acknowledgement,
+task_reject_on_worker_lost=True, prefetch 1, broker reconnect, and publish
+retry. PAY-10-E inherits those mechanics but deliberately does **not** add
+FINANCE_REFUND_DATABASE_URL, a production process profile, a refund task
+route, live Razorpay credentials, or production provider egress. The
+finance_refund_runtime capability remains reserved/unbound in the production
+runtime-principal manifest until an explicitly reviewed activation phase.
+
 ## Failure and reversal handling
 
 A deterministic provider rejection is durable evidence and is surfaced as a
