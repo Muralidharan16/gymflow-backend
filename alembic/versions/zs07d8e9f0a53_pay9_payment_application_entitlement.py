@@ -466,7 +466,7 @@ def _install_function(bind) -> None:
                 WHERE a.payment_id=v_payment.id;
 
                 v_payment_available:=
-                    pg_catalog.greatest(
+                    GREATEST(
                         v_payment.amount-v_payment_allocated,
                         0::numeric
                     );
@@ -499,7 +499,7 @@ def _install_function(bind) -> None:
                     WHERE a.invoice_id=v_invoice.id;
 
                     v_invoice_outstanding:=
-                        pg_catalog.greatest(
+                        GREATEST(
                             v_invoice.grand_total_amount-v_invoice_allocated,
                             0::numeric
                         );
@@ -555,7 +555,7 @@ def _install_function(bind) -> None:
                             v_decision:='unapplied_invoice_not_payable';
                         ELSE
                             v_apply_amount:=
-                                pg_catalog.least(
+                                LEAST(
                                     v_payment_available,
                                     v_invoice_outstanding
                                 );
