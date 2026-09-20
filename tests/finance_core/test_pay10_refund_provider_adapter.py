@@ -316,7 +316,7 @@ async def test_pay10b_fetch_404_is_unknown_not_proof_of_non_acceptance():
 
 
 @pytest.mark.parametrize(
-    ("request", "expected_code"),
+    ("refund_request", "expected_code"),
     [
         (_request(currency="USD"), "RAZORPAY_REFUND_CURRENCY_UNSUPPORTED"),
         (_request(amount=Decimal("0.00")), "RAZORPAY_REFUND_AMOUNT_INVALID"),
@@ -325,12 +325,12 @@ async def test_pay10b_fetch_404_is_unknown_not_proof_of_non_acceptance():
 )
 @pytest.mark.asyncio
 async def test_pay10b_invalid_finance_to_provider_shape_fails_before_network(
-    request: ProviderRefundRequest,
+    refund_request: ProviderRefundRequest,
     expected_code: str,
 ):
     transport = FakeRefundTransport()
     with pytest.raises(RazorpayProviderError) as exc:
-        await _adapter(transport).create_refund(request)
+        await _adapter(transport).create_refund(refund_request)
 
     assert exc.value.code == expected_code
     assert exc.value.failure_class == "final"
