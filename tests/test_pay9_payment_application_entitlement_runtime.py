@@ -60,6 +60,18 @@ def _cleanup() -> None:
     if ADMIN_URL:
         with psycopg.connect(ADMIN_URL) as conn:
             with conn.cursor() as cur:
+                # PAY-2 immutable Finance history rejects row DELETE.
+                # This database is disposable and dedicated to PAY-9, so reset
+                # the FK-closed immutable evidence set explicitly without
+                # weakening production triggers or using CASCADE.
+                cur.execute(
+                    "TRUNCATE TABLE "
+                    "finance.payment_application_records, "
+                    "finance.provider_webhook_inbox, "
+                    "finance.payment_events, "
+                    "finance.ledger_entry_lines, "
+                    "finance.ledger_entries"
+                )
                 cur.execute(
                     "DELETE FROM finance.member_subscription_checkout_bindings "
                     "WHERE organization_id=%s",
@@ -74,18 +86,6 @@ def _cleanup() -> None:
                     "DELETE FROM finance.payment_allocations "
                     "WHERE invoice_id=%s",
                     (pay4.INVOICE,),
-                )
-                # PAY-2 immutable Finance history rejects row DELETE.
-                # This database is disposable and dedicated to PAY-9, so reset
-                # the FK-closed immutable evidence set explicitly without
-                # weakening production triggers or using CASCADE.
-                cur.execute(
-                    "TRUNCATE TABLE "
-                    "finance.payment_application_records, "
-                    "finance.provider_webhook_inbox, "
-                    "finance.payment_events, "
-                    "finance.ledger_entry_lines, "
-                    "finance.ledger_entries"
                 )
                 cur.execute(
                     "DELETE FROM finance.payments WHERE id IN (%s,%s)",
