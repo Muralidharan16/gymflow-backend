@@ -535,6 +535,7 @@ def _install_functions(bind) -> None:
                 v_org uuid;
                 v_payment finance.payments%ROWTYPE;
                 v_operation finance.provider_operations%ROWTYPE;
+                v_inserted_count integer:=0;
             BEGIN
                 IF NOT pg_catalog.pg_has_role(
                     session_user,'app_runtime','MEMBER'
@@ -593,6 +594,7 @@ def _install_functions(bind) -> None:
                     p_operation_type,p_idempotency_key,p_request_hash
                 )
                 ON CONFLICT DO NOTHING;
+                GET DIAGNOSTICS v_inserted_count=ROW_COUNT;
 
                 SELECT o.* INTO v_operation
                 FROM finance.provider_operations o
@@ -624,9 +626,7 @@ def _install_functions(bind) -> None:
                     v_operation.status::text,
                     v_operation.provider_object_id::text,
                     v_operation.attempt_count,
-                    v_operation.created_at <
-                        pg_catalog.clock_timestamp()
-                        - interval '1 microsecond';
+                    v_inserted_count=0;
             END
             $function$
             """
