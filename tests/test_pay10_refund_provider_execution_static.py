@@ -18,6 +18,9 @@ MACHINE = ROOT / "docs/architecture/pay10_refund_provider_execution_v1.json"
 PROVIDER_BOUNDARY = ROOT / "app/finance_core/domain/provider_boundary.py"
 RAZORPAY_DOMAIN = ROOT / "app/finance_core/domain/razorpay_sandbox.py"
 RAZORPAY_SERVICE = ROOT / "app/finance_core/services/razorpay_sandbox.py"
+REFUND_EXECUTION_SERVICE = (
+    ROOT / "app/finance_core/services/refund_provider_execution.py"
+)
 
 
 def _text(path: Path) -> str:
@@ -271,3 +274,156 @@ def test_pay10_b_adapter_does_not_gain_finance_database_mutation_authority():
     assert "requests.post(" not in service
     assert "httpx" not in service
     assert "aiohttp" not in service
+
+
+
+def test_pay10_c_installs_exact_fenced_execution_capability_split():
+    migration = _text(MIGRATION)
+    contract = json.loads(_text(MACHINE))
+    c_contract = contract["execution_reconciliation"]
+
+    signatures = (
+        "app_secure.claim_pay10_refund_provider_execution",
+        "app_secure.bind_pay10_refund_provider_request",
+        "app_secure.record_pay10_refund_provider_outcome",
+        "app_secure.record_pay10_refund_provider_unknown",
+        "app_secure.record_pay10_refund_provider_failure",
+        "app_secure.record_pay10_refund_external_evidence",
+    )
+    for signature in signatures:
+        assert f"CREATE FUNCTION {signature}" in migration
+
+    assert (
+        '"GRANT USAGE ON SCHEMA app_secure "'
+        '\n            "TO finance_refund_runtime"'
+    ) in migration
+    assert "TO finance_refund_runtime" in migration
+    assert "TO finance_reconciliation_runtime" in migration
+    assert c_contract["execution_role"] == "finance_refund_runtime"
+    assert c_contract["reconciliation_role"] == "finance_reconciliation_runtime"
+    assert c_contract["stale_fence_mutation"] is False
+    assert c_contract["direct_finance_table_dml"] is False
+
+
+def test_pay10_c_claim_and_binding_reuse_p4d_fence_and_finance_authority():
+    migration = _text(MIGRATION)
+
+    assert "c.lease_fence+1" in migration
+    assert "c.status='processing' AS reclaiming" in migration
+    assert "FOR UPDATE OF c SKIP LOCKED" in migration
+    assert (
+        "WHEN candidates.reclaiming"
+        "\n                            THEN c.attempt_count"
+        in migration
+    )
+    assert "v_command.leased_by IS DISTINCT FROM p_worker_id" in migration
+    assert "v_command.lease_fence IS DISTINCT FROM p_lease_fence" in migration
+    assert "v_command.leased_until<=pg_catalog.clock_timestamp()" in migration
+
+    for binding in (
+        "v_refund.payment_id IS DISTINCT FROM v_payment.id",
+        "v_command.organization_id",
+        "v_refund.organization_id",
+        "v_command.legal_entity_id",
+        "v_refund.legal_entity_id",
+        "v_command.division_id",
+        "v_refund.division_id",
+        "v_command.brand_id",
+        "v_refund.brand_id",
+        "v_command.amount IS DISTINCT FROM v_refund.amount",
+        "v_command.currency_code",
+        "v_refund.currency_code",
+    ):
+        assert binding in migration
+
+    assert "p_provider_code IS DISTINCT FROM v_payment.provider_code" in migration
+    assert "p_provider_payment_ref" in migration
+    assert "v_payment.provider_payment_ref" in migration
+    assert "p_amount IS DISTINCT FROM v_command.amount" in migration
+    assert "v_command.request_sha256<>p_request_sha256" in migration
+    assert "known provider refund must reconcile, not resubmit" in migration
+
+
+def test_pay10_c_refundable_reservation_and_unknown_outcome_fail_closed():
+    migration = _text(MIGRATION)
+    contract = json.loads(_text(MACHINE))["execution_reconciliation"]
+
+    assert "FROM finance.payment_allocations a" in migration
+    assert "v_reserved>v_allocated" in migration
+    assert "status='reconciliation_pending'" in migration
+    assert contract["unknown_provider_state_local_command_state"] == (
+        "reconciliation_pending"
+    )
+    assert contract["retry_rule"] == "known non-acceptance only"
+    assert contract["active_lease_blocks_reconciliation"] is True
+
+
+def test_pay10_c_processed_evidence_cannot_perform_financial_finalization():
+    migration = _text(MIGRATION)
+    c_start = migration.index(
+        "CREATE FUNCTION app_secure.claim_pay10_refund_provider_execution"
+    )
+    c_end = migration.index("def _post_install_proof", c_start)
+    c_functions = migration[c_start:c_end]
+    contract = json.loads(_text(MACHINE))["execution_reconciliation"]
+
+    assert "WHEN p_normalized_status='processed'" in c_functions
+    assert "THEN 'reconciliation_pending'" in c_functions
+    assert "WHEN v_has_processed" in c_functions
+    assert "THEN 'reconciliation_pending'" in c_functions
+
+    assert "SET status='succeeded'" not in c_functions
+    assert "SET status = 'succeeded'" not in c_functions
+    assert "INSERT INTO finance.ledger_entries" not in c_functions
+    assert "INSERT INTO finance.ledger_entry_lines" not in c_functions
+    assert "INSERT INTO finance.outbox_events" not in c_functions
+    assert "INSERT INTO finance.credit_notes" not in c_functions
+
+    assert contract["financial_finalization"] is False
+    assert contract["ledger_posting"] is False
+    assert contract["outbox_emission"] is False
+    assert contract["refund_success_transition"] is False
+
+
+def test_pay10_c_external_evidence_is_replay_safe_and_order_monotonic():
+    migration = _text(MIGRATION)
+
+    assert "PAY-10 conflicting provider event replay" in migration
+    assert "PAY-10 conflicting external evidence replay" in migration
+    assert "PAY-10 active refund lease blocks reconciliation" in migration
+    assert "v_payment.provider_payment_ref" in migration
+    assert "IS DISTINCT FROM p_provider_payment_ref" in migration
+    assert "SELECT EXISTS(" in migration
+    assert "e.normalized_status='processed'" in migration
+    assert "WHEN v_command.status='succeeded'" in migration
+    assert "THEN 'succeeded'" in migration
+    assert "WHEN v_has_processed" in migration
+    assert "THEN 'reconciliation_pending'" in migration
+
+
+def test_pay10_c_service_keeps_provider_io_outside_database_capability_layer():
+    service = _text(REFUND_EXECUTION_SERVICE).lower()
+
+    assert "class financerefundproviderexecutionservice:" in service
+    assert "does no provider network i/o" in service
+    assert "does not commit" in service
+    assert ".commit(" not in service
+    assert "http.client" not in service
+    assert "requests." not in service
+    assert "httpx" not in service
+    assert "aiohttp" not in service
+    assert "razorpaysandboxadapter" not in service
+    assert "claim_pay10_refund_provider_execution" in service
+    assert "bind_pay10_refund_provider_request" in service
+    assert "record_pay10_refund_external_evidence" in service
+
+
+def test_pay10_c_empty_downgrade_removes_capabilities_and_refund_runtime_usage():
+    migration = _text(MIGRATION)
+
+    assert (
+        '"REVOKE USAGE ON SCHEMA app_secure "'
+        '\n            "FROM finance_refund_runtime"'
+    ) in migration
+    assert "for signature in reversed(_PAY10_FUNCTIONS):" in migration
+    assert 'op.execute(f"DROP FUNCTION {signature}")' in migration
