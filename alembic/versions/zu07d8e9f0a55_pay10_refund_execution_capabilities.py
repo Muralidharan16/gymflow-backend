@@ -1517,8 +1517,7 @@ def _drop_functions() -> None:
             "FROM finance_reconciliation_runtime"
         )
         op.execute(
-            "REVOKE USAGE ON SCHEMA app_secure "
-            "FROM finance_refund_runtime"
+            "REVOKE USAGE ON SCHEMA app_secure FROM finance_refund_runtime"
         )
         for signature in reversed(_FUNCTIONS):
             op.execute(f"DROP FUNCTION {signature}")
