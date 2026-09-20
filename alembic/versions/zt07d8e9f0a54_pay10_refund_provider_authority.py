@@ -649,35 +649,43 @@ def downgrade() -> None:
     if tuple(identity) != (_MIGRATION_OWNER, _MIGRATION_OWNER):
         raise RuntimeError("PAY-10 downgrade requires migration_owner")
 
-    for table_name in _NEW_TABLES:
-        if _relation_exists(bind, f"finance.{table_name}"):
-            row_count = bind.execute(
-                sa.text(
-                    f"SELECT count(*) FROM finance.{table_name}"
-                )
-            ).scalar_one()
-            if int(row_count) != 0:
-                raise RuntimeError(
-                    "PAY-10 refuses populated downgrade: "
-                    f"finance.{table_name}"
-                )
+    # PAY-10 data tables are FORCE RLS and deliberately invisible to
+    # migration_owner.  Use only the pre-existing bounded SET edge to the
+    # NOLOGIN security owner for evidence inspection, then return to the
+    # migration identity before schema teardown.
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        for table_name in _NEW_TABLES:
+            if _relation_exists(bind, f"finance.{table_name}"):
+                row_count = bind.execute(
+                    sa.text(
+                        f"SELECT count(*) FROM finance.{table_name}"
+                    )
+                ).scalar_one()
+                if int(row_count) != 0:
+                    raise RuntimeError(
+                        "PAY-10 refuses populated downgrade: "
+                        f"finance.{table_name}"
+                    )
 
-    command_evidence = bind.execute(
-        sa.text(
-            """
-            SELECT count(*)
-            FROM finance.refund_execution_commands
-            WHERE request_sha256 IS NOT NULL
-               OR first_attempted_at IS NOT NULL
-               OR provider_accepted_at IS NOT NULL
-               OR completed_at IS NOT NULL
-            """
-        )
-    ).scalar_one()
-    if int(command_evidence) != 0:
-        raise RuntimeError(
-            "PAY-10 refuses downgrade with refund execution attempt evidence"
-        )
+        command_evidence = bind.execute(
+            sa.text(
+                """
+                SELECT count(*)
+                FROM finance.refund_execution_commands
+                WHERE request_sha256 IS NOT NULL
+                   OR first_attempted_at IS NOT NULL
+                   OR provider_accepted_at IS NOT NULL
+                   OR completed_at IS NOT NULL
+                """
+            )
+        ).scalar_one()
+        if int(command_evidence) != 0:
+            raise RuntimeError(
+                "PAY-10 refuses downgrade with refund execution attempt evidence"
+            )
+    finally:
+        op.execute("RESET ROLE")
 
     op.execute(
         f"""
