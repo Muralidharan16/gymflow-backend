@@ -79,6 +79,7 @@ jobs:
               "tests/finance_core/test_phase6ad_razorpay_real_transport.py",
               "tests/finance_core/test_phase6ag_checkout_signature_verification.py",
               "tests/finance_core/test_phase6b_razorpay_sandbox_adapter.py",
+              "tests/finance_core/test_phase6c_checkout_orchestration.py",
               "tests/finance_core/test_phase6d_razorpay_webhook_normalization.py",
               "tests/finance_core/test_phase6h_disabled_payment_api_routes.py",
               "tests/finance_core/test_phase6j_disabled_checkout_route_wiring.py",
