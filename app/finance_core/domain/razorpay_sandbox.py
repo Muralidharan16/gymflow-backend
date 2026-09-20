@@ -246,6 +246,74 @@ def map_razorpay_refund_response(
     )
 
 
+def map_razorpay_refund_collection(
+    *,
+    payload: dict[str, Any],
+    expected: RazorpayRefundCreateRequest,
+) -> RazorpayTestModeRefundResult | None:
+    try:
+        entity = str(payload["entity"])
+        items = payload["items"]
+        count = int(payload["count"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_COLLECTION_INVALID",
+            "Razorpay refund collection response was invalid.",
+            failure_class="unknown",
+            operation="discover_refund",
+        ) from exc
+
+    if entity != "collection" or not isinstance(items, list) or count < 0:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_COLLECTION_INVALID",
+            "Razorpay refund collection response was invalid.",
+            failure_class="unknown",
+            operation="discover_refund",
+        )
+    if count != len(items):
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_COLLECTION_COUNT_MISMATCH",
+            "Razorpay refund collection count was inconsistent.",
+            failure_class="unknown",
+            operation="discover_refund",
+        )
+
+    matches: list[RazorpayTestModeRefundResult] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise RazorpayProviderError(
+                "RAZORPAY_REFUND_COLLECTION_INVALID",
+                "Razorpay refund collection contained an invalid item.",
+                failure_class="unknown",
+                operation="discover_refund",
+            )
+        item_payment = str(item.get("payment_id", ""))
+        if item_payment and item_payment != expected.provider_payment_ref:
+            raise RazorpayProviderError(
+                "RAZORPAY_REFUND_COLLECTION_PAYMENT_MISMATCH",
+                "Razorpay refund collection crossed payment authority.",
+                failure_class="unknown",
+                operation="discover_refund",
+            )
+        if str(item.get("receipt", "")) != expected.receipt:
+            continue
+        matches.append(
+            map_razorpay_refund_response(
+                payload=item,
+                expected=expected,
+            )
+        )
+
+    if len(matches) > 1:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_DISCOVERY_AMBIGUOUS",
+            "Multiple Razorpay refunds matched the Finance receipt.",
+            failure_class="unknown",
+            operation="discover_refund",
+        )
+    return matches[0] if matches else None
+
+
 @dataclass(frozen=True)
 class RazorpayTestModeOrderResult:
     provider_order_id: str
@@ -322,6 +390,11 @@ def classify_razorpay_provider_failure(
         "RAZORPAY_REFUND_CREATED_AT_INVALID",
         "RAZORPAY_REFUND_HTTP_ERROR",
         "RAZORPAY_REFUND_NOT_FOUND",
+        "RAZORPAY_REFUND_COLLECTION_INVALID",
+        "RAZORPAY_REFUND_COLLECTION_COUNT_MISMATCH",
+        "RAZORPAY_REFUND_COLLECTION_PAYMENT_MISMATCH",
+        "RAZORPAY_REFUND_DISCOVERY_AMBIGUOUS",
+        "RAZORPAY_REFUND_DISCOVERY_OVERFLOW",
     }:
         return "unknown"
     return "final"
