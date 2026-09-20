@@ -63,6 +63,7 @@ jobs:
               ".github/workflows/pay8-durable-checkout-webhooks.yml",
               "alembic/versions/zr07d8e9f0a52_pay8_durable_checkout_webhooks.py",
               "app/finance_core/api/payment_boundary.py",
+              "app/finance_core/domain/checkout_callbacks.py",
               "app/finance_core/models/__init__.py",
               "app/finance_core/models/foundation.py",
               "app/finance_core/services/checkout_orchestration.py",
@@ -251,12 +252,15 @@ jobs:
               "WHERE idempotency_key='pay8:downgrade:evidence'"
           ) == 1
           PY
-          set +e
-          OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY8_PREDECESSOR}" 2>&1)"
-          RC=$?
-          set -e
-          printf '%s\n' "$OUTPUT"
-          test "$RC" -ne 0
+          if OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY8_PREDECESSOR}" 2>&1)"; then
+            printf '%s\n' "$OUTPUT"
+            echo 'PAY-8 populated downgrade unexpectedly succeeded' >&2
+            exit 1
+          else
+            RC=$?
+            printf '%s\n' "$OUTPUT"
+            test "$RC" -ne 0
+          fi
           python - <<'PY'
           from tests.test_pay8_durable_checkout_webhooks_runtime import (
               _admin_scalar,
