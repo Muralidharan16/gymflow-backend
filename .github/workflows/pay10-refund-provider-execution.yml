@@ -320,6 +320,31 @@ jobs:
           DELETE FROM public.organizations
           WHERE id='d1000000-0000-4000-8000-000000000001';
           SQL
+
+          # The upgrade non-rewrite proof already compared PAY-9 relfilenodes
+          # before and immediately after PAY-10 upgrade.  The disposable
+          # FK-closed TRUNCATE above intentionally creates fresh physical
+          # storage, so recapture the now-empty HEAD predecessor baseline
+          # before proving that PAY-10 downgrade itself rewrites nothing.
+          PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -At <<'SQL' \
+            > /tmp/pay10-rel-before.txt
+          SELECT n.nspname||'.'||c.relname||'|'||c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname IN ('public','finance')
+            AND c.relkind IN ('r','p')
+            AND NOT (
+              n.nspname='finance'
+              AND c.relname IN (
+                'credit_note_series',
+                'refund_credit_note_links',
+                'refund_provider_evidence'
+              )
+            )
+          ORDER BY 1;
+          SQL
+
           PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test <<'SQL'
           INSERT INTO finance.legal_entities(
             id,code,legal_name,status
