@@ -191,6 +191,7 @@ def _install_tables() -> None:
             provider_object_id VARCHAR(200) NULL,
             provider_evidence_sha256 CHAR(64) NULL,
             attempt_count INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 5,
             lease_owner UUID NULL,
             lease_until TIMESTAMPTZ NULL,
             lease_fence BIGINT NOT NULL DEFAULT 0,
@@ -238,7 +239,12 @@ def _install_tables() -> None:
                     OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'
                 ),
             CONSTRAINT chk_pay8_provider_operation_attempts
-                CHECK(attempt_count >= 0 AND lease_fence >= 0),
+                CHECK(
+                    attempt_count >= 0
+                    AND max_attempts BETWEEN 1 AND 20
+                    AND attempt_count <= max_attempts
+                    AND lease_fence >= 0
+                ),
             CONSTRAINT chk_pay8_provider_operation_lease
                 CHECK(
                     (status='in_flight') =
@@ -311,6 +317,7 @@ def _install_tables() -> None:
                 REFERENCES finance.payment_events(id) ON DELETE RESTRICT,
             status VARCHAR(24) NOT NULL DEFAULT 'received',
             processing_attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 15,
             lease_owner UUID NULL,
             lease_until TIMESTAMPTZ NULL,
             lease_fence BIGINT NOT NULL DEFAULT 0,
@@ -358,7 +365,12 @@ def _install_tables() -> None:
                     'retry','dead_letter'
                 )),
             CONSTRAINT chk_pay8_webhook_attempts
-                CHECK(processing_attempts >= 0 AND lease_fence >= 0),
+                CHECK(
+                    processing_attempts >= 0
+                    AND max_attempts BETWEEN 1 AND 50
+                    AND processing_attempts <= max_attempts
+                    AND lease_fence >= 0
+                ),
             CONSTRAINT chk_pay8_webhook_lease
                 CHECK(
                     (status='processing') =
@@ -701,6 +713,24 @@ def _install_functions(bind) -> None:
                         lease_owner=NULL,
                         lease_until=NULL,
                         last_error_code='lease_expired_unknown',
+                        updated_at=pg_catalog.clock_timestamp()
+                    WHERE id=v_operation.id
+                    RETURNING * INTO v_operation;
+                    RETURN QUERY SELECT
+                        v_operation.id,v_operation.status::text,
+                        v_operation.lease_fence,
+                        v_operation.provider_object_id::text,
+                        v_operation.attempt_count,false;
+                    RETURN;
+                END IF;
+
+                IF v_operation.status='failed_retryable'
+                   AND v_operation.attempt_count>=v_operation.max_attempts
+                THEN
+                    UPDATE finance.provider_operations
+                    SET status='failed_final',
+                        last_error_code='retry_exhausted',
+                        completed_at=pg_catalog.clock_timestamp(),
                         updated_at=pg_catalog.clock_timestamp()
                     WHERE id=v_operation.id
                     RETURNING * INTO v_operation;
@@ -1219,7 +1249,22 @@ def _install_functions(bind) -> None:
                 status text,
                 lease_fence bigint,
                 processing_attempts integer,
-                claimed boolean
+                claimed boolean,
+                provider_code text,
+                environment text,
+                provider_event_id text,
+                payload_sha256 text,
+                event_type text,
+                provider_order_ref text,
+                provider_payment_ref text,
+                provider_amount_subunits bigint,
+                provider_currency text,
+                provider_payment_status text,
+                provider_captured boolean,
+                provider_payment_order_ref text,
+                provider_order_entity_ref text,
+                provider_order_status text,
+                provider_event_timestamp bigint
             )
             LANGUAGE plpgsql
             SECURITY DEFINER
@@ -1229,11 +1274,16 @@ def _install_functions(bind) -> None:
             DECLARE
                 v_row finance.provider_webhook_inbox%ROWTYPE;
             BEGIN
-                IF NOT pg_catalog.pg_has_role(
-                    session_user,'app_runtime','MEMBER'
+                IF NOT (
+                    pg_catalog.pg_has_role(
+                        session_user,'app_runtime','MEMBER'
+                    )
+                    OR pg_catalog.pg_has_role(
+                        session_user,'worker_runtime','MEMBER'
+                    )
                 ) THEN
                     RAISE EXCEPTION
-                        'PAY-8 webhook claim requires app_runtime'
+                        'PAY-8 webhook claim requires app/worker runtime'
                         USING ERRCODE='42501';
                 END IF;
                 IF p_inbox_id IS NULL OR p_lease_owner IS NULL THEN
@@ -1269,7 +1319,55 @@ def _install_functions(bind) -> None:
                     RETURN QUERY SELECT
                         v_row.id,v_row.status::text,
                         v_row.lease_fence,
-                        v_row.processing_attempts,false;
+                        v_row.processing_attempts,false,
+                        v_row.provider_code::text,
+                        v_row.environment::text,
+                        v_row.provider_event_id::text,
+                        v_row.payload_sha256::text,
+                        v_row.event_type::text,
+                        v_row.provider_order_ref::text,
+                        v_row.provider_payment_ref::text,
+                        v_row.provider_amount_subunits,
+                        v_row.provider_currency::text,
+                        v_row.provider_payment_status::text,
+                        v_row.provider_captured,
+                        v_row.provider_payment_order_ref::text,
+                        v_row.provider_order_entity_ref::text,
+                        v_row.provider_order_status::text,
+                        v_row.provider_event_timestamp;
+                    RETURN;
+                END IF;
+
+                IF v_row.status='retry'
+                   AND v_row.processing_attempts>=v_row.max_attempts
+                THEN
+                    UPDATE finance.provider_webhook_inbox
+                    SET status='dead_letter',
+                        lease_owner=NULL,
+                        lease_until=NULL,
+                        last_error_code='retry_exhausted',
+                        updated_at=pg_catalog.clock_timestamp()
+                    WHERE id=v_row.id
+                    RETURNING * INTO v_row;
+                    RETURN QUERY SELECT
+                        v_row.id,v_row.status::text,
+                        v_row.lease_fence,
+                        v_row.processing_attempts,false,
+                        v_row.provider_code::text,
+                        v_row.environment::text,
+                        v_row.provider_event_id::text,
+                        v_row.payload_sha256::text,
+                        v_row.event_type::text,
+                        v_row.provider_order_ref::text,
+                        v_row.provider_payment_ref::text,
+                        v_row.provider_amount_subunits,
+                        v_row.provider_currency::text,
+                        v_row.provider_payment_status::text,
+                        v_row.provider_captured,
+                        v_row.provider_payment_order_ref::text,
+                        v_row.provider_order_entity_ref::text,
+                        v_row.provider_order_status::text,
+                        v_row.provider_event_timestamp;
                     RETURN;
                 END IF;
 
@@ -1288,7 +1386,22 @@ def _install_functions(bind) -> None:
                 RETURN QUERY SELECT
                     v_row.id,v_row.status::text,
                     v_row.lease_fence,
-                    v_row.processing_attempts,true;
+                    v_row.processing_attempts,true,
+                    v_row.provider_code::text,
+                    v_row.environment::text,
+                    v_row.provider_event_id::text,
+                    v_row.payload_sha256::text,
+                    v_row.event_type::text,
+                    v_row.provider_order_ref::text,
+                    v_row.provider_payment_ref::text,
+                    v_row.provider_amount_subunits,
+                    v_row.provider_currency::text,
+                    v_row.provider_payment_status::text,
+                    v_row.provider_captured,
+                    v_row.provider_payment_order_ref::text,
+                    v_row.provider_order_entity_ref::text,
+                    v_row.provider_order_status::text,
+                    v_row.provider_event_timestamp;
             END
             $function$
             """
@@ -1318,11 +1431,16 @@ def _install_functions(bind) -> None:
                 v_event finance.payment_events%ROWTYPE;
                 v_payment finance.payments%ROWTYPE;
             BEGIN
-                IF NOT pg_catalog.pg_has_role(
-                    session_user,'app_runtime','MEMBER'
+                IF NOT (
+                    pg_catalog.pg_has_role(
+                        session_user,'app_runtime','MEMBER'
+                    )
+                    OR pg_catalog.pg_has_role(
+                        session_user,'worker_runtime','MEMBER'
+                    )
                 ) THEN
                     RAISE EXCEPTION
-                        'PAY-8 webhook completion requires app_runtime'
+                        'PAY-8 webhook completion requires app/worker runtime'
                         USING ERRCODE='42501';
                 END IF;
                 SELECT w.* INTO v_row
@@ -1407,11 +1525,16 @@ def _install_functions(bind) -> None:
             DECLARE
                 v_row finance.provider_webhook_inbox%ROWTYPE;
             BEGIN
-                IF NOT pg_catalog.pg_has_role(
-                    session_user,'app_runtime','MEMBER'
+                IF NOT (
+                    pg_catalog.pg_has_role(
+                        session_user,'app_runtime','MEMBER'
+                    )
+                    OR pg_catalog.pg_has_role(
+                        session_user,'worker_runtime','MEMBER'
+                    )
                 ) THEN
                     RAISE EXCEPTION
-                        'PAY-8 webhook failure requires app_runtime'
+                        'PAY-8 webhook failure requires app/worker runtime'
                         USING ERRCODE='42501';
                 END IF;
                 IF p_error_code !~ '^[a-z][a-z0-9_]{0,79}$'
@@ -1439,7 +1562,9 @@ def _install_functions(bind) -> None:
 
                 UPDATE finance.provider_webhook_inbox
                 SET status=CASE
-                        WHEN p_retryable THEN 'retry'
+                        WHEN p_retryable
+                             AND processing_attempts<max_attempts
+                        THEN 'retry'
                         ELSE 'dead_letter'
                     END,
                     lease_owner=NULL,
@@ -1477,6 +1602,12 @@ def _install_functions(bind) -> None:
             f"GRANT EXECUTE ON FUNCTION {_RECONCILE_OPERATION} "
             "TO worker_runtime"
         )
+        for signature in (
+            _CLAIM_WEBHOOK,_COMPLETE_WEBHOOK,_FAIL_WEBHOOK,
+        ):
+            op.execute(
+                f"GRANT EXECUTE ON FUNCTION {signature} TO worker_runtime"
+            )
     finally:
         op.execute("RESET ROLE")
 
@@ -1556,10 +1687,13 @@ def downgrade() -> None:
             "PAY-8 downgrade blocked: durable provider evidence exists"
         )
 
-    op.execute(
-        f"REVOKE EXECUTE ON FUNCTION {_RECONCILE_OPERATION} "
-        "FROM worker_runtime"
-    )
+    for signature in (
+        _RECONCILE_OPERATION,_CLAIM_WEBHOOK,
+        _COMPLETE_WEBHOOK,_FAIL_WEBHOOK,
+    ):
+        op.execute(
+            f"REVOKE EXECUTE ON FUNCTION {signature} FROM worker_runtime"
+        )
     for signature in (
         _RESERVE_OPERATION,_CLAIM_OPERATION,_FINISH_OPERATION,
         _RECORD_WEBHOOK,_CLAIM_WEBHOOK,_COMPLETE_WEBHOOK,
