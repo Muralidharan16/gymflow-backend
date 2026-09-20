@@ -41,7 +41,8 @@ def test_pay9_application_derives_authority_instead_of_accepting_invoice_or_amou
 
 def test_pay9_supports_partial_overpayment_and_unapplied_outcomes_without_second_ledger():
     source = _text(MIGRATION)
-    assert "pg_catalog.least(" in source
+    assert "LEAST(" in source
+    assert "GREATEST(" in source
     assert "v_payment_available" in source
     assert "v_invoice_outstanding" in source
     assert "'applied_paid'" in source
