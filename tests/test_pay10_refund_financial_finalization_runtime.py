@@ -74,7 +74,11 @@ def _admin_row(sql: str, params=()):
             return row
 
 
-def _reset_state(refund_amount: Decimal = Decimal("25.00")) -> None:
+def _reset_state(
+    refund_amount: Decimal = Decimal("25.00"),
+    *,
+    include_credit_accounting: bool = True,
+) -> None:
     with _connect(ADMIN_URL) as conn:
         with conn.cursor() as cur:
             # Match the canonical Finance integration-test reset contract:
@@ -405,44 +409,45 @@ def _reset_state(refund_amount: Decimal = Decimal("25.00")) -> None:
                 """,
                 (CREDIT_NOTE_ID, refund_amount),
             )
-            cur.execute(
-                """
-                INSERT INTO finance.ledger_entries(
-                    id,legal_entity_id,division_id,brand_id,
-                    entry_type,source_type,source_id,status,posted_at
+            if include_credit_accounting:
+                cur.execute(
+                    """
+                    INSERT INTO finance.ledger_entries(
+                        id,legal_entity_id,division_id,brand_id,
+                        entry_type,source_type,source_id,status,posted_at
+                    )
+                    VALUES(
+                        %s,%s,%s,%s,'credit_note','credit_note',
+                        %s,'posted',clock_timestamp()
+                    )
+                    """,
+                    (
+                        CREDIT_LEDGER_ID,
+                        ENTITY_ID,
+                        DIVISION_ID,
+                        BRAND_ID,
+                        CREDIT_NOTE_ID,
+                    ),
                 )
-                VALUES(
-                    %s,%s,%s,%s,'credit_note','credit_note',
-                    %s,'posted',clock_timestamp()
+                cur.execute(
+                    """
+                    INSERT INTO finance.ledger_entry_lines(
+                        ledger_entry_id,ledger_account_id,
+                        debit_amount,credit_amount,memo
+                    )
+                    VALUES
+                        (%s,%s,%s,0,'Credit note revenue reversal'),
+                        (%s,%s,0,%s,'Credit note receivable reduction')
+                    """,
+                    (
+                        CREDIT_LEDGER_ID,
+                        REVENUE_ACCOUNT_ID,
+                        refund_amount,
+                        CREDIT_LEDGER_ID,
+                        AR_ACCOUNT_ID,
+                        refund_amount,
+                    ),
                 )
-                """,
-                (
-                    CREDIT_LEDGER_ID,
-                    ENTITY_ID,
-                    DIVISION_ID,
-                    BRAND_ID,
-                    CREDIT_NOTE_ID,
-                ),
-            )
-            cur.execute(
-                """
-                INSERT INTO finance.ledger_entry_lines(
-                    ledger_entry_id,ledger_account_id,
-                    debit_amount,credit_amount,memo
-                )
-                VALUES
-                    (%s,%s,%s,0,'Credit note revenue reversal'),
-                    (%s,%s,0,%s,'Credit note receivable reduction')
-                """,
-                (
-                    CREDIT_LEDGER_ID,
-                    REVENUE_ACCOUNT_ID,
-                    refund_amount,
-                    CREDIT_LEDGER_ID,
-                    AR_ACCOUNT_ID,
-                    refund_amount,
-                ),
-            )
         conn.commit()
 
 
@@ -755,19 +760,10 @@ def test_pay10d_atomic_finalization_and_replay(
 
 
 def test_pay10d_rejects_credit_note_without_posted_accounting_reversal():
+    # Seed the negative state directly. Never delete immutable Finance history
+    # just to manufacture the test condition.
+    _reset_state(include_credit_accounting=False)
     _prepare_processed()
-    with _connect(ADMIN_URL) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM finance.ledger_entry_lines "
-                "WHERE ledger_entry_id=%s",
-                (CREDIT_LEDGER_ID,),
-            )
-            cur.execute(
-                "DELETE FROM finance.ledger_entries WHERE id=%s",
-                (CREDIT_LEDGER_ID,),
-            )
-        conn.commit()
 
     with _connect(REFUND_URL) as conn:
         with pytest.raises(CheckViolation):
