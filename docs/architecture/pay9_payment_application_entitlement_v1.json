@@ -1,0 +1,41 @@
+{
+  "phase": "PAY-9",
+  "title": "Payment Application, Invoice Settlement and Entitlement",
+  "inherited_pay8_sha": "ad0292e48bccc8b5e99c1082d6b0f7933f42789c",
+  "inherited_pay8_tree": "1508c5ac9936e4d462160e2e8bd246afb97b77ec",
+  "alembic_predecessor": "zr07d8e9f0a52",
+  "alembic_head": "zs07d8e9f0a53",
+  "authority": {
+    "provider_capture": "external_money_evidence_only",
+    "finance_allocation": "finance.payment_allocations",
+    "invoice_state": "finance.invoices",
+    "accounting": "finance.ledger_entries",
+    "entitlement": "PAY-5 durable event consumption + PAY-4 revalidation",
+    "bank_settlement": "not_required_for_entitlement_after_verified_capture"
+  },
+  "application_formula": "min(payment_available, invoice_outstanding)",
+  "canonical_target": "member_subscription_checkout_binding -> PAY-4 finance binding",
+  "supported": [
+    "full_payment",
+    "partial_payment",
+    "multiple_payments",
+    "split_tender",
+    "overpayment",
+    "credit_balance",
+    "underpayment",
+    "wrong_invoice_fail_closed",
+    "unapplied_payment"
+  ],
+  "safety": {
+    "browser_financial_authority": false,
+    "webhook_alone_entitlement_authority": false,
+    "operator_financial_success_authority": false,
+    "live_provider": false,
+    "live_money_movement": false,
+    "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+    "merge_authorized": false,
+    "release_authorized": false,
+    "deployment_authorized": false
+  },
+  "terminal_gate": "PAY9_SETTLEMENT_AND_ENTITLEMENT=PASS"
+}\n
