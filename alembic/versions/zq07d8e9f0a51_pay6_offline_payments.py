@@ -875,6 +875,14 @@ def _install_functions() -> None:
                     WHERE c.id=v_request.approval_command_id;
                     IF NOT FOUND
                        OR v_cmd.idempotency_key IS DISTINCT FROM p_idempotency_key
+                       OR v_cmd.actor_type IS DISTINCT FROM v_actor_type
+                       OR v_cmd.actor_ref_sha256::text IS DISTINCT FROM
+                          pg_catalog.encode(
+                              pg_catalog.sha256(
+                                  pg_catalog.convert_to(v_actor::text,'UTF8')
+                              ),
+                              'hex'
+                          )
                     THEN
                         RAISE EXCEPTION 'PAY-6 offline payment already approved'
                             USING ERRCODE='23505';
@@ -1109,6 +1117,14 @@ def _install_functions() -> None:
                     WHERE c.id=v_request.rejection_command_id;
                     IF NOT FOUND
                        OR v_cmd.idempotency_key IS DISTINCT FROM p_idempotency_key
+                       OR v_cmd.actor_type IS DISTINCT FROM v_actor_type
+                       OR v_cmd.actor_ref_sha256::text IS DISTINCT FROM
+                          pg_catalog.encode(
+                              pg_catalog.sha256(
+                                  pg_catalog.convert_to(v_actor::text,'UTF8')
+                              ),
+                              'hex'
+                          )
                        OR v_request.rejection_reason_code IS DISTINCT FROM v_reason
                     THEN
                         RAISE EXCEPTION 'PAY-6 offline payment already rejected'
