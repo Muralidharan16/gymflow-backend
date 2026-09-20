@@ -29,6 +29,8 @@ _MIGRATION_OWNER = "migration_owner"
 _SECURITY_OWNER = "app_security_owner"
 _APP = "app_runtime"
 _WORKER = "worker_runtime"
+_PAYMENT_RUNTIME = "finance_payment_runtime"
+_RECON_RUNTIME = "finance_reconciliation_runtime"
 _TENANT = "NULLIF(pg_catalog.current_setting('app.current_org_id',true),'')::uuid"
 
 _RESERVE_OPERATION = (
@@ -89,6 +91,8 @@ def _require_identity(bind) -> None:
     _require_role(bind, _SECURITY_OWNER)
     _require_role(bind, _APP)
     _require_role(bind, _WORKER)
+    _require_role(bind, _PAYMENT_RUNTIME)
+    _require_role(bind, _RECON_RUNTIME)
     identity = bind.execute(
         sa.text("SELECT session_user::text,current_user::text")
     ).one()
@@ -101,7 +105,9 @@ def _require_identity(bind) -> None:
         raise RuntimeError(
             "PAY-8 requires migration_owner SET edge to app_security_owner"
         )
-    for runtime in (_APP, _WORKER):
+    for runtime in (
+        _APP,_WORKER,_PAYMENT_RUNTIME,_RECON_RUNTIME
+    ):
         if bind.execute(
             sa.text(
                 "SELECT pg_catalog.pg_has_role(:member,:target,'MEMBER') "
@@ -979,10 +985,10 @@ def _install_functions(bind) -> None:
                 v_payment finance.payments%ROWTYPE;
             BEGIN
                 IF NOT pg_catalog.pg_has_role(
-                    session_user,'worker_runtime','MEMBER'
+                    session_user,'finance_reconciliation_runtime','MEMBER'
                 ) THEN
                     RAISE EXCEPTION
-                        'PAY-8 provider reconciliation requires worker_runtime'
+                        'PAY-8 provider reconciliation requires finance_reconciliation_runtime'
                         USING ERRCODE='42501';
                 END IF;
                 BEGIN
@@ -1280,11 +1286,11 @@ def _install_functions(bind) -> None:
                         session_user,'app_runtime','MEMBER'
                     )
                     OR pg_catalog.pg_has_role(
-                        session_user,'worker_runtime','MEMBER'
+                        session_user,'finance_payment_runtime','MEMBER'
                     )
                 ) THEN
                     RAISE EXCEPTION
-                        'PAY-8 webhook claim requires app/worker runtime'
+                        'PAY-8 webhook claim requires app/finance-payment runtime'
                         USING ERRCODE='42501';
                 END IF;
                 IF p_inbox_id IS NULL OR p_lease_owner IS NULL THEN
@@ -1443,10 +1449,10 @@ def _install_functions(bind) -> None:
                 v_inbox_id uuid;
             BEGIN
                 IF NOT pg_catalog.pg_has_role(
-                    session_user,'worker_runtime','MEMBER'
+                    session_user,'finance_payment_runtime','MEMBER'
                 ) THEN
                     RAISE EXCEPTION
-                        'PAY-8 webhook recovery requires worker_runtime'
+                        'PAY-8 webhook recovery requires finance_payment_runtime'
                         USING ERRCODE='42501';
                 END IF;
                 IF p_lease_owner IS NULL THEN
@@ -1509,11 +1515,11 @@ def _install_functions(bind) -> None:
                         session_user,'app_runtime','MEMBER'
                     )
                     OR pg_catalog.pg_has_role(
-                        session_user,'worker_runtime','MEMBER'
+                        session_user,'finance_payment_runtime','MEMBER'
                     )
                 ) THEN
                     RAISE EXCEPTION
-                        'PAY-8 webhook completion requires app/worker runtime'
+                        'PAY-8 webhook completion requires app/finance-payment runtime'
                         USING ERRCODE='42501';
                 END IF;
                 SELECT w.* INTO v_row
@@ -1603,11 +1609,11 @@ def _install_functions(bind) -> None:
                         session_user,'app_runtime','MEMBER'
                     )
                     OR pg_catalog.pg_has_role(
-                        session_user,'worker_runtime','MEMBER'
+                        session_user,'finance_payment_runtime','MEMBER'
                     )
                 ) THEN
                     RAISE EXCEPTION
-                        'PAY-8 webhook failure requires app/worker runtime'
+                        'PAY-8 webhook failure requires app/finance-payment runtime'
                         USING ERRCODE='42501';
                 END IF;
                 IF p_error_code !~ '^[a-z][a-z0-9_]{0,79}$'
@@ -1673,14 +1679,14 @@ def _install_functions(bind) -> None:
             )
         op.execute(
             f"GRANT EXECUTE ON FUNCTION {_RECONCILE_OPERATION} "
-            "TO worker_runtime"
+            "TO finance_reconciliation_runtime"
         )
         for signature in (
             _CLAIM_WEBHOOK,_CLAIM_NEXT_WEBHOOK,
             _COMPLETE_WEBHOOK,_FAIL_WEBHOOK,
         ):
             op.execute(
-                f"GRANT EXECUTE ON FUNCTION {signature} TO worker_runtime"
+                f"GRANT EXECUTE ON FUNCTION {signature} TO finance_payment_runtime"
             )
     finally:
         op.execute("RESET ROLE")
@@ -1761,12 +1767,17 @@ def downgrade() -> None:
             "PAY-8 downgrade blocked: durable provider evidence exists"
         )
 
+    op.execute(
+        f"REVOKE EXECUTE ON FUNCTION {_RECONCILE_OPERATION} "
+        "FROM finance_reconciliation_runtime"
+    )
     for signature in (
-        _RECONCILE_OPERATION,_CLAIM_WEBHOOK,_CLAIM_NEXT_WEBHOOK,
+        _CLAIM_WEBHOOK,_CLAIM_NEXT_WEBHOOK,
         _COMPLETE_WEBHOOK,_FAIL_WEBHOOK,
     ):
         op.execute(
-            f"REVOKE EXECUTE ON FUNCTION {signature} FROM worker_runtime"
+            f"REVOKE EXECUTE ON FUNCTION {signature} "
+            "FROM finance_payment_runtime"
         )
     for signature in (
         _RESERVE_OPERATION,_CLAIM_OPERATION,_FINISH_OPERATION,
