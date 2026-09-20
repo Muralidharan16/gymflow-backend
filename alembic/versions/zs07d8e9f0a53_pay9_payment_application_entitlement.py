@@ -384,8 +384,7 @@ def _install_function(bind) -> None:
                 INTO v_event
                 FROM finance.payment_events e
                 WHERE e.id=p_payment_event_id
-                  AND e.payment_id=p_payment_id
-                FOR SHARE;
+                  AND e.payment_id=p_payment_id;
                 IF NOT FOUND
                    OR v_event.event_type NOT IN (
                        'payment.captured','order.paid'
