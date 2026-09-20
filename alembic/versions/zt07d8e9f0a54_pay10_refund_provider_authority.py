@@ -217,16 +217,29 @@ def _require_predecessor(bind) -> None:
                 f"PAY-10 predecessor unexpectedly has {constraint_name}"
             )
 
-    if not bool(
-        bind.execute(
-            sa.text(
-                "SELECT pg_catalog.has_table_privilege("
-                "'app_security_owner',"
-                "'finance.refund_execution_commands',"
-                "'SELECT,INSERT,UPDATE')"
-            )
-        ).scalar_one()
-    ):
+    inherited_command_acl = bind.execute(
+        sa.text(
+            """
+            SELECT
+                pg_catalog.has_table_privilege(
+                    'app_security_owner',
+                    'finance.refund_execution_commands',
+                    'SELECT'
+                )
+                AND pg_catalog.has_table_privilege(
+                    'app_security_owner',
+                    'finance.refund_execution_commands',
+                    'INSERT'
+                )
+                AND pg_catalog.has_table_privilege(
+                    'app_security_owner',
+                    'finance.refund_execution_commands',
+                    'UPDATE'
+                )
+            """
+        )
+    ).scalar_one()
+    if not bool(inherited_command_acl):
         raise RuntimeError(
             "PAY-10 requires inherited P4D refund command owner authority"
         )
