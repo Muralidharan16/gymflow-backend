@@ -232,6 +232,7 @@ async def test_pay10_b_normalizes_only_documented_refund_states(status: str):
     ("field", "bad_value", "expected_code"),
     [
         ("id", "pay_not_refund", "RAZORPAY_REFUND_ID_INVALID"),
+        ("id", "rfnd_bad/path", "RAZORPAY_REFUND_ID_INVALID"),
         ("payment_id", "pay_wrong", "RAZORPAY_REFUND_PAYMENT_MISMATCH"),
         ("amount", 1, "RAZORPAY_REFUND_AMOUNT_MISMATCH"),
         ("currency", "USD", "RAZORPAY_REFUND_CURRENCY_MISMATCH"),
@@ -382,7 +383,9 @@ async def test_pay10_b_fetch_refuses_provider_refund_identity_substitution():
     [
         provider_refund_request(provider_payment_ref="../refund"),
         provider_refund_request(provider_payment_ref="pay_"),
+        provider_refund_request(provider_payment_ref="pay_ValidRef "),
         provider_refund_request(amount=Decimal("0")),
+        provider_refund_request(amount=Decimal("0.001")),
         provider_refund_request(amount=Decimal("-1.00")),
         provider_refund_request(currency_code="INR/../"),
     ],
