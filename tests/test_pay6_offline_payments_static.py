@@ -102,6 +102,19 @@ def test_pay6_audit_events_are_append_only():
         assert event in source
 
 
+def test_pay6_function_install_uses_temporary_schema_create_only():
+    source=MIGRATION.read_text(encoding="utf-8")
+    install=source.split("def _install_functions(bind)",1)[1].split("def upgrade()",1)[0]
+    assert "has_schema_privilege" in install
+    assert "GRANT CREATE ON SCHEMA app_secure TO app_security_owner" in install
+    assert "SET LOCAL ROLE app_security_owner" in install
+    assert "RESET ROLE" in install
+    assert "REVOKE CREATE ON SCHEMA app_secure FROM app_security_owner" in install
+    assert install.index("RESET ROLE") < install.index(
+        "REVOKE CREATE ON SCHEMA app_secure FROM app_security_owner"
+    )
+
+
 def test_pay6_application_runtime_is_capability_only():
     source=MIGRATION.read_text(encoding="utf-8")
     for signature in (
