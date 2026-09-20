@@ -452,7 +452,7 @@ def _install_function(bind) -> None:
                         v_existing.allocated_amount,
                         v_existing.unapplied_amount,
                         v_existing.invoice_outstanding_amount,
-                        v_existing.invoice_status,
+                        v_existing.invoice_status::text,
                         v_existing.decision_code::text,
                         true;
                     RETURN;
@@ -794,7 +794,7 @@ def _install_function(bind) -> None:
                     v_record.allocated_amount,
                     v_record.unapplied_amount,
                     v_record.invoice_outstanding_amount,
-                    v_record.invoice_status,
+                    v_record.invoice_status::text,
                     v_record.decision_code::text,
                     false;
             END
