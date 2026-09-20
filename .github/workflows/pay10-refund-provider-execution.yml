@@ -1,0 +1,412 @@
+name: PAY-10 Refund Provider Execution
+
+on:
+  push:
+    branches:
+      - hardening/pay10-refund-credit-note-provider-execution
+  pull_request:
+    branches:
+      - hardening/pay9-payment-application-entitlement
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay10-refund-provider-execution-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY10_BASE_SHA: 581c3d83a1e78ba59213c90309166913fedf9c3e
+  PAY10_BASE_TREE: 84237255e6d176a9aa6dfd7aeed1c8a430d0853b
+  PAY10_PREDECESSOR: zs07d8e9f0a53
+  PAY10_HEAD: zt07d8e9f0a54
+  PAY10_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-10-A static authority and evidence contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay10_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay10-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay10-static
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY10_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Exact PAY-10-A scope and graph
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY10_BASE_SHA}^{tree}")" = "${PAY10_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY10_BASE_SHA}" HEAD
+          git diff --name-only "${PAY10_BASE_SHA}...HEAD" > /tmp/pay10-changed.txt
+          python - <<'PY_SCOPE'
+          from pathlib import Path
+          allowed={
+              ".github/workflows/pay10-refund-provider-execution.yml",
+              "alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py",
+              "app/finance_core/models/__init__.py",
+              "app/finance_core/models/foundation.py",
+              "docs/architecture/PAY10_ACCEPTANCE_MATRIX.md",
+              "docs/architecture/PAY10_REFUND_CREDIT_NOTE_PROVIDER_EXECUTION.md",
+              "docs/architecture/pay10_refund_provider_execution_v1.json",
+              "tests/finance_core/admin_database.py",
+              "tests/finance_core/test_phase5b_foundation.py",
+              "tests/test_migration_app_secure_owner_context_boundary.py",
+              "tests/test_pay10_refund_provider_authority_runtime.py",
+              "tests/test_pay10_refund_provider_execution_static.py",
+          }
+          changed={
+              x.strip()
+              for x in Path("/tmp/pay10-changed.txt").read_text().splitlines()
+              if x.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-10-A exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          migrations=sorted(
+              x for x in changed if x.startswith("alembic/versions/")
+          )
+          expected=[
+              "alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py"
+          ]
+          if migrations != expected:
+              raise SystemExit(f"PAY-10-A migration scope mismatch: {migrations}")
+          print(f"PAY-10-A exact allowlist paths: {len(changed)}")
+          PY_SCOPE
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY10_HEAD}"
+      - name: PAY-10-A focused static contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile             alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py             app/finance_core/models/foundation.py             app/finance_core/models/__init__.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py
+          python -m json.tool             docs/architecture/pay10_refund_provider_execution_v1.json             >/dev/null
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay10_refund_provider_execution_static.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
+          echo 'PAY10_A_AUTHORITY_SCHEMA=PASS'
+          echo 'PAY10_A_EVIDENCE_IMMUTABILITY=PASS'
+          echo 'PAY10_A_TABLE_BLIND_RUNTIME=PASS'
+
+  protocol_pg16:
+    name: PAY-10-A real PG16 authority and migration proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay10-migration@127.0.0.1:5432/gymflow_pay10_test
+      PAY10_APP_DATABASE_URL: postgresql://pay10_app_test:ci-pay10-app@127.0.0.1:5432/gymflow_pay10_test
+      PAY10_REFUND_DATABASE_URL: postgresql://pay10_refund_test:ci-pay10-refund@127.0.0.1:5432/gymflow_pay10_test
+      PAY10_RECON_DATABASE_URL: postgresql://pay10_recon_test:ci-pay10-recon@127.0.0.1:5432/gymflow_pay10_test
+      PAY10_WORKER_DATABASE_URL: postgresql://pay10_worker_test:ci-pay10-worker@127.0.0.1:5432/gymflow_pay10_test
+      PAY10_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay10-postgres@127.0.0.1:5432/gymflow_pay10_test
+      PAY10_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay10-migration@127.0.0.1:5432/gymflow_pay10_test
+      SECRET_KEY: pay10-pg16-not-production
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay10-pg16
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY10_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Install PG16 and PAY-10 reduced test identities
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE postgres PASSWORD 'ci-pay10-postgres';
+          ALTER ROLE migration_owner PASSWORD 'ci-pay10-migration';
+          CREATE ROLE pay10_app_test LOGIN PASSWORD 'ci-pay10-app'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay10_refund_test LOGIN PASSWORD 'ci-pay10-refund'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay10_recon_test LOGIN PASSWORD 'ci-pay10-recon'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay10_worker_test LOGIN PASSWORD 'ci-pay10-worker'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT app_runtime TO pay10_app_test
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_refund_runtime TO pay10_refund_test
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_reconciliation_runtime TO pay10_recon_test
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO pay10_worker_test
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_pay10_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_pay10_test
+            TO pay10_app_test,pay10_refund_test,pay10_recon_test,pay10_worker_test;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_pay10_test
+      - name: Upgrade certified PAY-9 predecessor and fingerprint
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY10_PREDECESSOR}"
+          PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -At <<'SQL'             > /tmp/pay10-rel-before.txt
+          SELECT n.nspname||'.'||c.relname||'|'||c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname IN ('public','finance')
+            AND c.relkind IN ('r','p')
+          ORDER BY 1;
+          SQL
+          PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -At <<'SQL'             > /tmp/pay10-acl-before.txt
+          SELECT table_schema||'.'||table_name||'|'||grantee||'|'||privilege_type
+          FROM information_schema.role_table_grants
+          WHERE table_schema IN ('public','finance')
+            AND grantee IN (
+              'app_security_owner','app_runtime','worker_runtime',
+              'finance_payment_runtime','finance_refund_runtime',
+              'finance_reconciliation_runtime','finance_read_runtime',
+              'finance_maintenance_runtime'
+            )
+          UNION ALL
+          SELECT table_schema||'.'||table_name||'.'||column_name||'|'||
+                 grantee||'|'||privilege_type
+          FROM information_schema.column_privileges
+          WHERE table_schema IN ('public','finance')
+            AND grantee IN (
+              'app_security_owner','app_runtime','worker_runtime',
+              'finance_payment_runtime','finance_refund_runtime',
+              'finance_reconciliation_runtime','finance_read_runtime',
+              'finance_maintenance_runtime'
+            )
+          ORDER BY 1;
+          SQL
+      - name: Upgrade PAY-10-A without rewriting predecessor tables
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY10_HEAD}"
+          PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -At <<'SQL'             > /tmp/pay10-rel-after.txt
+          SELECT n.nspname||'.'||c.relname||'|'||c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname IN ('public','finance')
+            AND c.relkind IN ('r','p')
+            AND NOT (
+              n.nspname='finance'
+              AND c.relname IN (
+                'credit_note_series',
+                'refund_credit_note_links',
+                'refund_provider_evidence'
+              )
+            )
+          ORDER BY 1;
+          SQL
+          diff -u /tmp/pay10-rel-before.txt /tmp/pay10-rel-after.txt
+      - name: Real PAY-10-A authority proof
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay10_refund_provider_authority_runtime.py
+          echo 'PAY10_A_FORCE_RLS=PASS'
+          echo 'PAY10_A_DIRECT_DML_DENIAL=PASS'
+          echo 'PAY10_A_IMMUTABLE_EVIDENCE_TRIGGER=PASS'
+      - name: Populated downgrade fails closed
+        run: |
+          set -euo pipefail
+          PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test <<'SQL'
+          INSERT INTO finance.legal_entities(
+            code,legal_name,status
+          ) VALUES(
+            'PAY10CI','PAY-10 CI Legal Entity','active'
+          );
+          INSERT INTO finance.gst_registrations(
+            legal_entity_id,gstin,state_code,state_name,
+            registered_address,status
+          )
+          SELECT id,'33ABCDE1234F1Z5','33','Tamil Nadu',
+                 'PAY-10 disposable CI','active'
+          FROM finance.legal_entities
+          WHERE code='PAY10CI';
+          INSERT INTO finance.credit_note_series(
+            legal_entity_id,gst_registration_id,financial_year,
+            series_code,prefix,last_number,status
+          )
+          SELECT le.id,gr.id,'2026','DEFAULT','CN',0,'active'
+          FROM finance.legal_entities le
+          JOIN finance.gst_registrations gr
+            ON gr.legal_entity_id=le.id
+          WHERE le.code='PAY10CI';
+          SQL
+          if OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY10_PREDECESSOR}" 2>&1)"; then
+            printf '%s\n' "$OUTPUT"
+            echo 'PAY-10-A populated downgrade unexpectedly succeeded' >&2
+            exit 1
+          else
+            RC=$?
+            printf '%s\n' "$OUTPUT"
+            test "$RC" -ne 0
+          fi
+          PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -At <<'SQL'
+          SELECT version_num FROM public.alembic_version;
+          SELECT count(*) FROM finance.credit_note_series;
+          SELECT pg_catalog.to_regclass('finance.refund_provider_evidence') IS NOT NULL;
+          SQL
+          test "$(PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -Atc             'SELECT version_num FROM public.alembic_version')" = "${PAY10_HEAD}"
+          test "$(PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -Atc             'SELECT count(*) FROM finance.credit_note_series')" = "1"
+          echo 'PAY10_A_POPULATED_DOWNGRADE_FAIL_CLOSED=PASS'
+      - name: Empty downgrade restores exact PAY-9 schema ACL surface
+        run: |
+          set -euo pipefail
+          PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test <<'SQL'
+          DELETE FROM finance.credit_note_series;
+          SQL
+          python -s -m alembic -c alembic.ini downgrade "${PAY10_PREDECESSOR}"
+          PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -At <<'SQL'             > /tmp/pay10-rel-restored.txt
+          SELECT n.nspname||'.'||c.relname||'|'||c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname IN ('public','finance')
+            AND c.relkind IN ('r','p')
+          ORDER BY 1;
+          SQL
+          PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -At <<'SQL'             > /tmp/pay10-acl-restored.txt
+          SELECT table_schema||'.'||table_name||'|'||grantee||'|'||privilege_type
+          FROM information_schema.role_table_grants
+          WHERE table_schema IN ('public','finance')
+            AND grantee IN (
+              'app_security_owner','app_runtime','worker_runtime',
+              'finance_payment_runtime','finance_refund_runtime',
+              'finance_reconciliation_runtime','finance_read_runtime',
+              'finance_maintenance_runtime'
+            )
+          UNION ALL
+          SELECT table_schema||'.'||table_name||'.'||column_name||'|'||
+                 grantee||'|'||privilege_type
+          FROM information_schema.column_privileges
+          WHERE table_schema IN ('public','finance')
+            AND grantee IN (
+              'app_security_owner','app_runtime','worker_runtime',
+              'finance_payment_runtime','finance_refund_runtime',
+              'finance_reconciliation_runtime','finance_read_runtime',
+              'finance_maintenance_runtime'
+            )
+          ORDER BY 1;
+          SQL
+          diff -u /tmp/pay10-rel-before.txt /tmp/pay10-rel-restored.txt
+          diff -u /tmp/pay10-acl-before.txt /tmp/pay10-acl-restored.txt
+          test "$(PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -Atc             'SELECT version_num FROM public.alembic_version')" = "${PAY10_PREDECESSOR}"
+          python -s -m alembic -c alembic.ini upgrade "${PAY10_HEAD}"
+          echo 'PAY10_A_MIGRATION_LIFECYCLE=PASS'
+
+  architecture:
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+
+  general_platform:
+    uses: ./.github/workflows/hardening-ci.yml
+
+  finance:
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  migration_lifecycle:
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+
+  migration_preservation:
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+
+  migration_adversarial:
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+
+  migration_contracts:
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+
+  migration_semantics:
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+
+  certify_a:
+    name: PAY-10-A authority/evidence decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - protocol_pg16
+      - architecture
+      - general_platform
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every PAY-10-A gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          data=json.loads(os.environ["RESULTS"])
+          bad={
+              key:value["result"]
+              for key,value in data.items()
+              if value["result"] != "success"
+          }
+          if bad:
+              raise SystemExit(f"PAY-10-A prerequisite failure: {bad}")
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY10_CANDIDATE_SHA }}
+      - name: Bind exact PAY-10-A candidate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY10_BASE_SHA}^{tree}")" = "${PAY10_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY10_BASE_SHA}" HEAD
+          python - <<'PY'
+          import json,os,subprocess
+          decision={
+              "phase":"PAY-10-A",
+              "candidate_sha":os.environ["PAY10_CANDIDATE_SHA"],
+              "candidate_tree":subprocess.check_output(
+                  ["git","rev-parse","HEAD^{tree}"],text=True
+              ).strip(),
+              "inherited_pay9_sha":os.environ["PAY10_BASE_SHA"],
+              "alembic_head":os.environ["PAY10_HEAD"],
+              "live_provider":False,
+              "live_money_movement":False,
+              "merge_authorized":False,
+              "release_authorized":False,
+              "deployment_authorized":False,
+              "decision":"SCHEMA_PASS",
+          }
+          print(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+          echo 'PAY10_A_AUTHORITY_SCHEMA=PASS'
+          echo 'PAY10_A_EVIDENCE_IMMUTABILITY=PASS'
+          echo 'PAY10_A_DIRECT_DML_DENIAL=PASS'
+          echo 'PAY10_A_MIGRATION_LIFECYCLE=PASS'
+          echo 'PAY10_A_PAY9_INHERITED=PASS'
+          echo 'PAY10_LIVE_PROVIDER=DISABLED'
+          echo 'PAY10_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY10_MERGE=NOT_AUTHORIZED'
