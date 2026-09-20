@@ -3,7 +3,7 @@
 | ID | Gate | Required result |
 |---|---|---|
 | P10-A01 | Exact predecessor | PAY-10 is an exact descendant of certified PAY-9 SHA `581c3d83a1e78ba59213c90309166913fedf9c3e`. |
-| P10-A02 | Alembic graph | Single head; PAY-10 directly revises `zs07d8e9f0a53`. |
+| P10-A02 | Alembic graph | Single head; PAY-10-A `zt07d8e9f0a54` directly revises `zs07d8e9f0a53`; later PAY-10 revisions are append-only exact successors and never rewrite a certified migration. |
 | P10-A03 | Reduced identities | No runtime role becomes LOGIN, owner, SUPERUSER, BYPASSRLS, or gains migration-owner reachability. |
 | P10-A04 | Direct DML denial | Refund/payment/credit-note/provider-evidence mutation remains capability-bound. |
 | P10-A05 | Evidence immutability | Runtime UPDATE/DELETE of provider evidence is rejected. |
@@ -31,3 +31,13 @@
 | P10-A27 | Inherited regression | General, Finance, migration lifecycle, preservation, adversarial and architecture suites pass. |
 | P10-A28 | Test-mode only | No live Razorpay credentials, live provider environment, production money movement, merge, release or deploy. |
 | P10-A29 | Exact candidate | Final decision binds one commit SHA and tree with every required gate green. |
+| P10-C01 | Certified migration immutability | PAY-10-C adds `zu07d8e9f0a55` after certified `zt07d8e9f0a54`; zt content/identity is unchanged. |
+| P10-C02 | Claim mode | Durable claim returns exactly one of `submit`, `discover`, or `fetch` from server-side command state. |
+| P10-C03 | Per-lease preparation fence | Provider submission preparation binds the request hash to the live lease fence; stale/reclaimed prepared attempts cannot be blindly re-submitted. |
+| P10-C04 | Known pre-send failure | Only a classified retryable/pre-send failure may return to submission retry. |
+| P10-C05 | Unknown outcome | Timeout/network/ack ambiguity enters reconciliation and cannot return directly to provider submission. |
+| P10-C06 | Lost refund id | Ambiguous attempt without a provider refund id uses payment+deterministic-receipt discovery. |
+| P10-C07 | Known refund id | Reconciliation with a provider refund id uses specific refund fetch. |
+| P10-C08 | Reconciliation bounds | Reconciliation attempts are separately counted, back off, and eventually dead-letter rather than loop forever. |
+| P10-C09 | Evidence fencing | Provider evidence can be recorded only against the current live claim fence and exact request hash. |
+| P10-C10 | Refund reservation | Provider failure/dead-letter never silently releases the Finance refund reservation. |
