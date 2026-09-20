@@ -67,5 +67,21 @@
     "outbox_emission": false,
     "refund_success_transition": false
   },
-  "execution_revision": "zu07d8e9f0a55"
+  "execution_revision": "zu07d8e9f0a55",
+  "finalization_revision": "zv07d8e9f0a56",
+  "finalization": {
+    "credit_note_binding_capability": "app_secure.link_pay10_refund_credit_note(uuid,uuid)",
+    "finalization_capability": "app_secure.finalize_pay10_refund(uuid)",
+    "refund_ledger": {
+      "debit": "AR",
+      "credit": "PAYMENT_CLEARING"
+    },
+    "revenue_tax_reversal_authority": "credit_note_only",
+    "terminal_credit_note_backing": "exact_issued_backing",
+    "outbox_events": [
+      "finance.refund.completed",
+      "finance.payment.refund_state.changed",
+      "finance.ledger.entry.posted"
+    ]
+  }
 }
