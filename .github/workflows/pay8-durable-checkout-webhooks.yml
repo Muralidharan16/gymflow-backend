@@ -242,15 +242,20 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from tests.test_pay8_durable_checkout_webhooks_runtime import (
-              _cleanup_and_seed, _reserve, PAYMENT_A
+              _admin_scalar, _cleanup_and_seed, _reserve, PAYMENT_A
           )
           _cleanup_and_seed()
           _reserve(PAYMENT_A, key="pay8:downgrade:evidence")
+          assert _admin_scalar(
+              "SELECT count(*) FROM finance.provider_operations "
+              "WHERE idempotency_key='pay8:downgrade:evidence'"
+          ) == 1
           PY
           set +e
           OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY8_PREDECESSOR}" 2>&1)"
           RC=$?
           set -e
+          printf '%s\n' "$OUTPUT"
           test "$RC" -ne 0
           printf '%s\n' "$OUTPUT" | grep -F \
             'PAY-8 downgrade blocked: durable provider evidence exists'
