@@ -710,7 +710,7 @@ class FinanceProviderWebhookInbox(Base):
     provider_amount_subunits: Mapped[int] = mapped_column(BigInteger, nullable=False)
     provider_currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)
     provider_payment_status: Mapped[str] = mapped_column(String(80), nullable=False)
-    provider_captured: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    provider_captured: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     provider_payment_order_ref: Mapped[str] = mapped_column(String(200), nullable=False)
     provider_order_entity_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
     provider_order_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
