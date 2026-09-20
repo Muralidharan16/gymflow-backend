@@ -96,6 +96,7 @@ from app.platform_billing.api import checkout_options as platform_billing_checko
 from app.platform_billing.api import checkout as platform_billing_checkout
 from app.platform_billing.api import checkout_simulation as platform_billing_checkout_simulation
 from app.finance_core.api import payment_boundary as finance_payment_boundary
+from app.finance_core.api import offline_payments as finance_offline_payments
 
 
 # Resend is not a tenant/JWT caller. The exact webhook path bypasses tenant auth,
@@ -231,6 +232,7 @@ app.include_router(platform_billing_checkout_options.router)
 app.include_router(platform_billing_checkout.router)
 app.include_router(platform_billing_checkout_simulation.router)
 app.include_router(finance_payment_boundary.router)
+app.include_router(finance_offline_payments.router)
 
 
 # ── Public root ────────────────────────────────────────────────────────────
