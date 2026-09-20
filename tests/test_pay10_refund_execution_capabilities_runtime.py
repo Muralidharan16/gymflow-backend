@@ -377,6 +377,23 @@ def test_pay10c_exact_execute_acl_and_direct_table_blindness():
         "worker": WORKER_URL,
     }
 
+    relations = (
+        "finance.refund_execution_commands",
+        "finance.refunds",
+        "finance.payments",
+        "finance.payment_allocations",
+        "finance.refund_provider_evidence",
+    )
+    with _connect(ADMIN_URL, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            relation_oids = {}
+            for relation in relations:
+                cur.execute(
+                    "SELECT %s::regclass::oid",
+                    (relation,),
+                )
+                relation_oids[relation] = cur.fetchone()[0]
+
     for label, url in identities.items():
         with _connect(url, autocommit=True) as conn:
             with conn.cursor() as cur:
@@ -391,21 +408,19 @@ def test_pay10c_exact_execute_acl_and_direct_table_blindness():
                     )
                     assert cur.fetchone()[0] is (label in allowed)
 
-                for relation in (
-                    "finance.refund_execution_commands",
-                    "finance.refunds",
-                    "finance.payments",
-                    "finance.payment_allocations",
-                    "finance.refund_provider_evidence",
-                ):
+                # Resolve relation names only under the test administrator.
+                # Table-blind runtimes are expected to lack finance schema
+                # visibility, so the actual privilege query uses stable OIDs.
+                for relation in relations:
+                    relation_oid = relation_oids[relation]
                     for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
                         cur.execute(
                             """
                             SELECT pg_catalog.has_table_privilege(
-                                current_user,%s,%s
+                                current_user,%s::oid,%s
                             )
                             """,
-                            (relation, privilege),
+                            (relation_oid, privilege),
                         )
                         assert cur.fetchone()[0] is False
 
