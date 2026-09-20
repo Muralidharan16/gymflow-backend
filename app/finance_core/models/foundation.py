@@ -1231,6 +1231,9 @@ class FinanceOutboxEvent(Base):
     attempt_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("5")
+    )
     lease_owner: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     lease_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     lease_fence: Mapped[int] = mapped_column(
@@ -1321,6 +1324,9 @@ class FinanceProviderWebhookInbox(Base):
     )
     processing_attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("15")
     )
     lease_owner: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     lease_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
