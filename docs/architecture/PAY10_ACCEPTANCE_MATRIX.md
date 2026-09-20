@@ -3,7 +3,7 @@
 | ID | Gate | Required result |
 |---|---|---|
 | P10-A01 | Exact predecessor | PAY-10 is an exact descendant of certified PAY-9 SHA `581c3d83a1e78ba59213c90309166913fedf9c3e`. |
-| P10-A02 | Alembic graph | Single head; PAY-10 directly revises `zs07d8e9f0a53`. |
+| P10-A02 | Alembic graph | Single head; PAY-10-A/B revision `zt07d8e9f0a54` revises `zs07d8e9f0a53`, and PAY-10-C revision `zu07d8e9f0a55` revises `zt07d8e9f0a54`. |
 | P10-A03 | Reduced identities | No runtime role becomes LOGIN, owner, SUPERUSER, BYPASSRLS, or gains migration-owner reachability. |
 | P10-A04 | Direct DML denial | Refund/payment/credit-note/provider-evidence mutation remains capability-bound. |
 | P10-A05 | Evidence immutability | Runtime UPDATE/DELETE of provider evidence is rejected. |
@@ -54,4 +54,4 @@
 | P10-C14 | Processed is not final | Provider processed evidence stops at reconciliation_pending; C cannot set refund/command succeeded. |
 | P10-C15 | No financial side effects | C does not issue credit notes, change payment refund status, post ledger entries, or emit financial outbox events. |
 | P10-C16 | Least privilege | finance_refund_runtime and finance_reconciliation_runtime remain direct-table blind and receive only their exact app_secure capabilities. |
-| P10-C17 | Capability lifecycle | Empty downgrade removes PAY-10-C functions/ACLs and restores the PAY-9/PAY-10 predecessor security surface. |
+| P10-C17 | Capability lifecycle | Empty `zu07d8e9f0a55 -> zt07d8e9f0a54` downgrade removes PAY-10-C functions/ACLs while preserving A/B; full empty PAY-10 downgrade restores PAY-9. |
