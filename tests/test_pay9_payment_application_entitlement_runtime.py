@@ -73,6 +73,11 @@ def _cleanup() -> None:
                     "finance.ledger_entries"
                 )
                 cur.execute(
+                    "DELETE FROM public.member_subscription_finance_event_consumptions "
+                    "WHERE org_id=%s",
+                    (pay4.ORG,),
+                )
+                cur.execute(
                     "DELETE FROM finance.member_subscription_checkout_bindings "
                     "WHERE organization_id=%s",
                     (pay4.ORG,),
