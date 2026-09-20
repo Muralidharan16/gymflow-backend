@@ -18,6 +18,8 @@ _FINANCE_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
 # below is the authority on whether this set remains safe to truncate.
 FINANCE_TEST_TABLES: tuple[str, ...] = (
     "outbox_events",
+    "offline_payment_events",
+    "offline_payment_requests",
     "audit_events",
     "ledger_entry_lines",
     "ledger_entries",
@@ -35,6 +37,7 @@ FINANCE_TEST_TABLES: tuple[str, ...] = (
     "tax_records",
     "invoice_lines",
     "invoices",
+    "monetary_commands",
     "idempotency_keys",
     "brand_ref_series",
     "invoice_series",
