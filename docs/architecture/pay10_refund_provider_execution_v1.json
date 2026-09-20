@@ -83,5 +83,27 @@
       "finance.payment.refund_state.changed",
       "finance.ledger.entry.posted"
     ]
+  },
+  "worker_recovery": {
+    "processor": "app.finance_core.services.refund_provider_worker.RefundProviderExecutionProcessor",
+    "transaction_boundary": [
+      "claim_commit",
+      "request_bind_commit",
+      "provider_io",
+      "outcome_commit",
+      "task_ack"
+    ],
+    "crash_points": [
+      "after_claim_commit",
+      "after_bind_commit",
+      "after_provider_effect",
+      "after_outcome_commit"
+    ],
+    "provider_success_db_ack_loss": "same_identity_redelivery_or_reconciliation",
+    "db_commit_broker_ack_loss": "durable_state_noop_redelivery",
+    "celery_late_ack": true,
+    "reject_on_worker_lost": true,
+    "prefetch_multiplier": 1,
+    "production_runtime_binding": false
   }
 }
