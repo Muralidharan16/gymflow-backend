@@ -972,6 +972,106 @@ class FinancePaymentAllocation(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
 
 
+class FinancePaymentApplicationRecord(Base):
+    __tablename__ = "payment_application_records"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["payment_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_pay9_application_payment_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay9_application_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "payment_event_id",
+            name="uq_pay9_application_event",
+        ),
+        CheckConstraint(
+            "decision_code IN ("
+            "'applied_paid','applied_partial',"
+            "'replayed_existing_allocation',"
+            "'unapplied_no_checkout_binding',"
+            "'unapplied_subscription_binding_missing',"
+            "'unapplied_invoice_not_payable',"
+            "'unapplied_invoice_already_paid',"
+            "'unapplied_currency_mismatch',"
+            "'unapplied_relationship_mismatch',"
+            "'unapplied_payment_exhausted'"
+            ")",
+            name="chk_pay9_application_decision",
+        ),
+        CheckConstraint(
+            "allocated_amount >= 0 AND unapplied_amount >= 0 "
+            "AND (invoice_outstanding_amount IS NULL "
+            "OR invoice_outstanding_amount >= 0)",
+            name="chk_pay9_application_amounts",
+        ),
+        Index(
+            "ix_pay9_application_payment",
+            "organization_id", "payment_id", "created_at", "id",
+        ),
+        Index(
+            "ix_pay9_application_invoice",
+            "organization_id", "invoice_id", "created_at", "id",
+            postgresql_where=text("invoice_id IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    payment_event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.payment_events.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    payment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+    )
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+    )
+    allocation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.payment_allocations.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    decision_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, server_default=text("0")
+    )
+    unapplied_amount: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, server_default=text("0")
+    )
+    invoice_outstanding_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    invoice_status: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
 class FinancePaymentEvent(Base):
     __tablename__ = "payment_events"
     __table_args__ = (
