@@ -145,9 +145,14 @@ def _require_predecessor(bind) -> None:
     if bind.execute(
         sa.text(
             """
-            SELECT pg_catalog.to_regprocedure(
-                'app_secure.apply_verified_provider_payment(uuid,uuid)'
-            ) IS NOT NULL
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_proc p
+                JOIN pg_catalog.pg_namespace n
+                  ON n.oid=p.pronamespace
+                WHERE n.nspname='app_secure'
+                  AND p.proname='apply_verified_provider_payment'
+            )
             """
         )
     ).scalar_one():
