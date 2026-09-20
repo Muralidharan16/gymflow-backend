@@ -240,7 +240,7 @@ def test_finance_capability_roles_get_bounded_app_secure_usage_only():
 
 def test_pay8_models_and_migration_enforce_tenant_payment_composites():
     source = MIGRATION.read_text(encoding="utf-8")
-    model = FOUNDATION.read_text(encoding="utf-8")
+    model = MODELS.read_text(encoding="utf-8")
     for constraint in (
         "fk_pay8_provider_operation_payment_org",
         "fk_pay8_webhook_payment_org",
