@@ -1700,7 +1700,9 @@ def _install_functions(bind) -> None:
 
 
 def _assert_runtime_denials(bind) -> None:
-    for role in (_APP, _WORKER):
+    for role in (
+        _APP,_WORKER,_PAYMENT_RUNTIME,_RECON_RUNTIME
+    ):
         leaked = bind.execute(
             sa.text(
                 """
