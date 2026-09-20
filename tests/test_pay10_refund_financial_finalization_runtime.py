@@ -8,6 +8,8 @@ import psycopg
 import pytest
 from psycopg.errors import CheckViolation
 
+from tests.finance_core.admin_database import FINANCE_TEST_TABLES
+
 
 ADMIN_URL = os.environ.get("PAY10_ADMIN_DATABASE_URL")
 REFUND_URL = os.environ.get("PAY10_REFUND_DATABASE_URL")
@@ -75,6 +77,17 @@ def _admin_row(sql: str, params=()):
 def _reset_state(refund_amount: Decimal = Decimal("25.00")) -> None:
     with _connect(ADMIN_URL) as conn:
         with conn.cursor() as cur:
+            # Match the canonical Finance integration-test reset contract:
+            # explicit FK-closed TRUNCATE on the disposable admin identity.
+            # Row-level immutable-history guards remain fully enforced for all
+            # runtime identities and are never disabled.
+            relations = ", ".join(
+                f'finance."{name}"'
+                for name in FINANCE_TEST_TABLES
+            )
+            cur.execute(
+                f"TRUNCATE TABLE {relations} RESTART IDENTITY"
+            )
             cur.execute("TRUNCATE TABLE finance.refund_provider_evidence")
             cur.execute(
                 "DELETE FROM finance.outbox_events "
