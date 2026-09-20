@@ -204,7 +204,7 @@ def _reset_state(refund_amount: Decimal = Decimal("25.00")) -> None:
                 INSERT INTO finance.divisions(
                     id,legal_entity_id,code,name,status
                 )
-                VALUES(%s,%s,'VD','PAY10D Division','active')
+                VALUES(%s,%s,'VS','PAY10D Division','active')
                 """,
                 (DIVISION_ID, ENTITY_ID),
             )
@@ -213,7 +213,7 @@ def _reset_state(refund_amount: Decimal = Decimal("25.00")) -> None:
                 INSERT INTO finance.brands(
                     id,legal_entity_id,division_id,code,name,status
                 )
-                VALUES(%s,%s,%s,'DD','PAY10D Brand','active')
+                VALUES(%s,%s,%s,'DS','PAY10D Brand','active')
                 """,
                 (BRAND_ID, ENTITY_ID, DIVISION_ID),
             )
@@ -255,6 +255,7 @@ def _reset_state(refund_amount: Decimal = Decimal("25.00")) -> None:
                 INSERT INTO finance.invoices(
                     id,organization_id,billing_party_id,legal_entity_id,
                     gst_registration_id,division_id,brand_id,financial_year,
+                    official_invoice_number,issued_at,
                     status,currency_code,seller_legal_name,seller_gstin,
                     seller_registered_address,seller_state_code,
                     buyer_billing_name,buyer_address,
@@ -264,6 +265,7 @@ def _reset_state(refund_amount: Decimal = Decimal("25.00")) -> None:
                 )
                 VALUES(
                     %s,%s,%s,%s,%s,%s,%s,'2026',
+                    'INV-PAY10D-001',clock_timestamp(),
                     'paid','INR','PAY10D Seller','33ABCDE1234F1Z5',
                     'PAY10D Seller Address','33',
                     'PAY10D Buyer','PAY10D Buyer Address',
