@@ -569,7 +569,7 @@ def _install_functions(bind) -> None:
                        AND v_existing.response_ref IS NOT NULL
                     THEN
                         RETURN QUERY SELECT
-                            v_existing.id,v_existing.response_ref,false;
+                            v_existing.id,v_existing.response_ref::text,false;
                         RETURN;
                     END IF;
                     RAISE EXCEPTION 'PAY-6 offline payment command already processing'
@@ -774,7 +774,8 @@ def _install_functions(bind) -> None:
                     RETURN QUERY SELECT
                         v_request.id,v_request.invoice_id,v_request.status,
                         v_request.amount,v_request.currency_code::text,
-                        v_request.payment_method,v_request.reference_code,
+                        v_request.payment_method::text,
+                        v_request.reference_code::text,
                         v_request.prepared_actor_id,true;
                     RETURN;
                 END IF;
@@ -806,7 +807,8 @@ def _install_functions(bind) -> None:
                 RETURN QUERY SELECT
                     v_request.id,v_request.invoice_id,v_request.status,
                     v_request.amount,v_request.currency_code::text,
-                    v_request.payment_method,v_request.reference_code,
+                    v_request.payment_method::text,
+                    v_request.reference_code::text,
                     v_request.prepared_actor_id,false;
             END
             $function$
@@ -1148,7 +1150,7 @@ def _install_functions(bind) -> None:
                     END IF;
                     RETURN QUERY SELECT
                         v_request.id,v_request.status,
-                        v_request.rejection_reason_code,true;
+                        v_request.rejection_reason_code::text,true;
                     RETURN;
                 END IF;
                 IF v_request.status<>'prepared'
