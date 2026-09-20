@@ -151,20 +151,14 @@ def test_pay6_application_runtime_is_capability_only():
 def test_pay6_downgrade_is_fail_closed_and_acl_delta_reversible():
     source=MIGRATION.read_text(encoding="utf-8")
     downgrade=source.split("def downgrade()",1)[1]
-    no_force=(
-        "ALTER TABLE finance.offline_payment_requests "
-        "NO FORCE ROW LEVEL SECURITY"
-    )
-    force=(
-        "ALTER TABLE finance.offline_payment_requests "
-        "FORCE ROW LEVEL SECURITY"
-    )
-    assert no_force in downgrade
-    assert force in downgrade
-    assert downgrade.index(no_force) < downgrade.index(
-        "SELECT EXISTS("
-    ) < downgrade.index(force)
-    probe=downgrade.split(no_force,1)[1].split(force,1)[0]
+    assert '"ALTER TABLE finance.offline_payment_requests "' in downgrade
+    assert '"NO FORCE ROW LEVEL SECURITY"' in downgrade
+    assert '"FORCE ROW LEVEL SECURITY"' in downgrade
+    no_force_index=downgrade.index('"NO FORCE ROW LEVEL SECURITY"')
+    probe_index=downgrade.index("SELECT EXISTS(")
+    force_index=downgrade.index('"FORCE ROW LEVEL SECURITY"')
+    assert no_force_index < probe_index < force_index
+    probe=downgrade[no_force_index:force_index]
     assert "SET LOCAL ROLE app_security_owner" not in probe
     assert "PAY-6 downgrade blocked: offline payment evidence exists" in source
     assert "app_private.pay6_offline_payment_acl_delta" in source
