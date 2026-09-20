@@ -235,27 +235,30 @@ jobs:
           set -euo pipefail
           PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test <<'SQL'
           INSERT INTO finance.legal_entities(
-            code,legal_name,status
+            id,code,legal_name,status
           ) VALUES(
+            'a1000000-0000-4000-8000-000000000010',
             'PAY10CI','PAY-10 CI Legal Entity','active'
           );
           INSERT INTO finance.gst_registrations(
-            legal_entity_id,gstin,state_code,state_name,
+            id,legal_entity_id,gstin,state_code,state_name,
             registered_address,status
-          )
-          SELECT id,'33ABCDE1234F1Z5','33','Tamil Nadu',
-                 'PAY-10 disposable CI','active'
-          FROM finance.legal_entities
-          WHERE code='PAY10CI';
+          ) VALUES(
+            'a1000000-0000-4000-8000-000000000011',
+            'a1000000-0000-4000-8000-000000000010',
+            '33ABCDE1234F1Z5','33','Tamil Nadu',
+            'PAY-10 disposable CI','active'
+          );
+          SET ROLE app_security_owner;
           INSERT INTO finance.credit_note_series(
             legal_entity_id,gst_registration_id,financial_year,
             series_code,prefix,last_number,status
-          )
-          SELECT le.id,gr.id,'2026','DEFAULT','CN',0,'active'
-          FROM finance.legal_entities le
-          JOIN finance.gst_registrations gr
-            ON gr.legal_entity_id=le.id
-          WHERE le.code='PAY10CI';
+          ) VALUES(
+            'a1000000-0000-4000-8000-000000000010',
+            'a1000000-0000-4000-8000-000000000011',
+            '2026','DEFAULT','CN',0,'active'
+          );
+          RESET ROLE;
           SQL
           if OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY10_PREDECESSOR}" 2>&1)"; then
             printf '%s\n' "$OUTPUT"
@@ -278,7 +281,7 @@ jobs:
         run: |
           set -euo pipefail
           PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test <<'SQL'
-          DELETE FROM finance.credit_note_series;
+          TRUNCATE TABLE finance.credit_note_series;
           SQL
           python -s -m alembic -c alembic.ini downgrade "${PAY10_PREDECESSOR}"
           PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -At <<'SQL'             > /tmp/pay10-rel-restored.txt
