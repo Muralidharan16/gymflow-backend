@@ -163,7 +163,10 @@ jobs:
           test "$(git rev-parse "${PAY7_BASE_SHA}^{tree}")" = "${PAY7_BASE_TREE}"
           git merge-base --is-ancestor "${PAY7_BASE_SHA}" HEAD
           git diff --quiet "${PAY7_BASE_SHA}...HEAD" -- alembic/versions
-          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY7_ALEMBIC_HEAD}"
+          # The focused contract already verifies the Alembic head using the
+          # installed test toolchain, and all migration jobs are terminal
+          # prerequisites. This dependency-free terminal bind only proves the
+          # certified base plus zero migration delta on the exact candidate.
           python - <<'PY'
           import json,os,subprocess
           from pathlib import Path
