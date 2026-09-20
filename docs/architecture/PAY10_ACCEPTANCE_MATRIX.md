@@ -55,3 +55,19 @@
 | P10-C15 | No financial side effects | C does not issue credit notes, change payment refund status, post ledger entries, or emit financial outbox events. |
 | P10-C16 | Least privilege | finance_refund_runtime and finance_reconciliation_runtime remain direct-table blind and receive only their exact app_secure capabilities. |
 | P10-C17 | Capability lifecycle | Empty `zu07d8e9f0a55 -> zt07d8e9f0a54` downgrade removes PAY-10-C functions/ACLs while preserving A/B; full empty PAY-10 downgrade restores PAY-9. |
+
+| P10-D01 | Issued credit-note provenance | Refund backing can reference only issued, numbered credit notes with posted balanced accounting reversal. |
+| P10-D02 | Payment/invoice authority | Every backing credit note belongs to an invoice actually allocated to the same payment, organization, entity, division, brand and currency. |
+| P10-D03 | Server-derived link amount | Link amount is computed from remaining refund backing and credit-note value; caller cannot choose the monetary amount. |
+| P10-D04 | Exact backing gate | Terminal finalization requires aggregate immutable credit-note links to equal the refund amount exactly. |
+| P10-D05 | Processed evidence gate | Finalization requires the exact processed provider evidence hash/ref bound to the durable command. |
+| P10-D06 | Atomic terminal state | Refund succeeded, command succeeded/completed, payment refund state, ledger and outbox commit in one database transaction. |
+| P10-D07 | Refund ledger | Exactly one posted refund ledger exists; it debits AR and credits PAYMENT_CLEARING for the refund amount. |
+| P10-D08 | No double revenue reversal | Refund finalization never posts revenue/GST reversal; credit-note accounting remains sole authority. |
+| P10-D09 | Payment state derivation | Cumulative successful refund total derives partially_refunded vs refunded and cannot exceed allocated or paid value. |
+| P10-D10 | Exactly-once outbox | Refund completion, payment refund-state change and ledger-posted events each use deterministic logical idempotency. |
+| P10-D11 | Replay safety | Re-finalization of a succeeded command returns the same ledger result and cannot duplicate ledger/outbox effects. |
+| P10-D12 | Ledger uniqueness | A partial unique index prevents duplicate posted refund ledgers for the same refund. |
+| P10-D13 | Least privilege | Only finance_refund_runtime can execute D capabilities; runtime identities remain direct-table blind. |
+| P10-D14 | Reversible owner ACL delta | Any owner column authority added for D is recorded exactly and removed on empty downgrade. |
+| P10-D15 | Populated downgrade | D -> C downgrade refuses after durable finalized refund effects exist. |
