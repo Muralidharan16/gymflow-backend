@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - hardening/pay10-refund-credit-note-provider-execution
+      - hardening/pay10b-refund-provider-adapter
   pull_request:
     branches:
       - hardening/pay9-payment-application-entitlement
@@ -62,12 +63,16 @@ jobs:
           allowed={
               ".github/workflows/pay10-refund-provider-execution.yml",
               "alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py",
+              "app/finance_core/domain/provider_boundary.py",
+              "app/finance_core/domain/razorpay_sandbox.py",
               "app/finance_core/models/__init__.py",
               "app/finance_core/models/foundation.py",
+              "app/finance_core/services/razorpay_sandbox.py",
               "docs/architecture/PAY10_ACCEPTANCE_MATRIX.md",
               "docs/architecture/PAY10_REFUND_CREDIT_NOTE_PROVIDER_EXECUTION.md",
               "docs/architecture/pay10_refund_provider_execution_v1.json",
               "tests/finance_core/admin_database.py",
+              "tests/finance_core/test_pay10_refund_provider_adapter.py",
               "tests/finance_core/test_phase5b_foundation.py",
               "tests/test_migration_app_secure_owner_context_boundary.py",
               "tests/test_pay10_refund_provider_authority_runtime.py",
@@ -98,12 +103,15 @@ jobs:
       - name: PAY-10-A focused static contracts
         run: |
           set -euo pipefail
-          python -m py_compile             alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py             app/finance_core/models/foundation.py             app/finance_core/models/__init__.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py
+          python -m py_compile             alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py             app/finance_core/domain/provider_boundary.py             app/finance_core/domain/razorpay_sandbox.py             app/finance_core/models/foundation.py             app/finance_core/models/__init__.py             app/finance_core/services/razorpay_sandbox.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py
           python -m json.tool             docs/architecture/pay10_refund_provider_execution_v1.json             >/dev/null
-          python -m pytest --noconftest -q --maxfail=1             tests/test_pay10_refund_provider_execution_static.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay10_refund_provider_execution_static.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
           echo 'PAY10_A_AUTHORITY_SCHEMA=PASS'
           echo 'PAY10_A_EVIDENCE_IMMUTABILITY=PASS'
           echo 'PAY10_A_TABLE_BLIND_RUNTIME=PASS'
+          echo 'PAY10_B_PROVIDER_ADAPTER=PASS'
+          echo 'PAY10_B_AMBIGUITY_RECONCILIATION=PASS'
+          echo 'PAY10_B_NO_ROUTE_WIRING=PASS'
 
   protocol_pg16:
     name: PAY-10-A real PG16 authority and migration proof
@@ -357,7 +365,7 @@ jobs:
     uses: ./.github/workflows/migration-semantics-inventory.yml
 
   certify_a:
-    name: PAY-10-A authority/evidence decision
+    name: PAY-10 A+B checkpoint decision
     if: ${{ always() }}
     needs:
       - contract
@@ -400,7 +408,7 @@ jobs:
           python - <<'PY'
           import json,os,subprocess
           decision={
-              "phase":"PAY-10-A",
+              "phase":"PAY-10-A+B",
               "candidate_sha":os.environ["PAY10_CANDIDATE_SHA"],
               "candidate_tree":subprocess.check_output(
                   ["git","rev-parse","HEAD^{tree}"],text=True
@@ -412,7 +420,9 @@ jobs:
               "merge_authorized":False,
               "release_authorized":False,
               "deployment_authorized":False,
-              "decision":"SCHEMA_PASS",
+              "provider_adapter":"TEST_MODE_ONLY",
+              "route_wiring":false,
+              "decision":"A_B_CHECKPOINT_PASS",
           }
           print(json.dumps(decision,indent=2,sort_keys=True))
           PY
@@ -421,6 +431,9 @@ jobs:
           echo 'PAY10_A_DIRECT_DML_DENIAL=PASS'
           echo 'PAY10_A_MIGRATION_LIFECYCLE=PASS'
           echo 'PAY10_A_PAY9_INHERITED=PASS'
+          echo 'PAY10_B_PROVIDER_ADAPTER=PASS'
+          echo 'PAY10_B_AMBIGUITY_RECONCILIATION=PASS'
+          echo 'PAY10_B_NO_ROUTE_WIRING=PASS'
           echo 'PAY10_LIVE_PROVIDER=DISABLED'
           echo 'PAY10_LIVE_MONEY_MOVEMENT=DISABLED'
           echo 'PAY10_MERGE=NOT_AUTHORIZED'
