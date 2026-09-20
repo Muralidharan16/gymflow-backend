@@ -797,12 +797,21 @@ def _install_functions() -> None:
                         USING ERRCODE='23514';
                 END IF;
 
-                SELECT count(*),min(le.id)
-                INTO v_ledger_count,v_ledger_id
+                SELECT count(*)
+                INTO v_ledger_count
                 FROM finance.ledger_entries le
                 WHERE le.source_type='refund'
                   AND le.source_id=v_refund.id
                   AND le.status='posted';
+
+                IF v_ledger_count=1 THEN
+                    SELECT le.id
+                    INTO v_ledger_id
+                    FROM finance.ledger_entries le
+                    WHERE le.source_type='refund'
+                      AND le.source_id=v_refund.id
+                      AND le.status='posted';
+                END IF;
 
                 IF v_command.status='succeeded' THEN
                     IF v_refund.status<>'succeeded'
