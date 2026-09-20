@@ -810,18 +810,18 @@ def _install_functions(bind) -> None:
                     RETURN;
                 END IF;
 
-                UPDATE finance.provider_operations
+                UPDATE finance.provider_operations AS po
                 SET status='in_flight',
-                    attempt_count=attempt_count+1,
+                    attempt_count=po.attempt_count+1,
                     lease_owner=p_lease_owner,
                     lease_until=
                         pg_catalog.clock_timestamp()+interval '30 seconds',
-                    lease_fence=lease_fence+1,
+                    lease_fence=po.lease_fence+1,
                     last_error_code=NULL,
                     last_started_at=pg_catalog.clock_timestamp(),
                     updated_at=pg_catalog.clock_timestamp()
-                WHERE id=v_operation.id
-                RETURNING * INTO v_operation;
+                WHERE po.id=v_operation.id
+                RETURNING po.* INTO v_operation;
 
                 RETURN QUERY SELECT
                     v_operation.id,v_operation.status::text,
@@ -1428,17 +1428,17 @@ def _install_functions(bind) -> None:
                     RETURN;
                 END IF;
 
-                UPDATE finance.provider_webhook_inbox
+                UPDATE finance.provider_webhook_inbox AS wi
                 SET status='processing',
-                    processing_attempts=processing_attempts+1,
+                    processing_attempts=wi.processing_attempts+1,
                     lease_owner=p_lease_owner,
                     lease_until=
                         pg_catalog.clock_timestamp()+interval '30 seconds',
-                    lease_fence=lease_fence+1,
+                    lease_fence=wi.lease_fence+1,
                     last_error_code=NULL,
                     updated_at=pg_catalog.clock_timestamp()
-                WHERE id=v_row.id
-                RETURNING * INTO v_row;
+                WHERE wi.id=v_row.id
+                RETURNING wi.* INTO v_row;
 
                 RETURN QUERY SELECT
                     v_row.id,v_row.status::text,
