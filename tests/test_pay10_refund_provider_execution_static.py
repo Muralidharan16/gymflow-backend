@@ -15,6 +15,9 @@ ARCHITECTURE = (
     / "docs/architecture/PAY10_REFUND_CREDIT_NOTE_PROVIDER_EXECUTION.md"
 )
 MACHINE = ROOT / "docs/architecture/pay10_refund_provider_execution_v1.json"
+PROVIDER_BOUNDARY = ROOT / "app/finance_core/domain/provider_boundary.py"
+RAZORPAY_DOMAIN = ROOT / "app/finance_core/domain/razorpay_sandbox.py"
+RAZORPAY_SERVICE = ROOT / "app/finance_core/services/razorpay_sandbox.py"
 
 
 def _text(path: Path) -> str:
@@ -180,3 +183,91 @@ def test_pay10_a_contains_no_live_provider_secret_or_money_execution():
     assert "httpx.post(" not in combined
     assert "requests.post(" not in combined
     assert "aiohttp" not in combined
+
+
+def test_pay10_b_provider_boundary_is_server_authoritative_and_provider_neutral():
+    source = _text(PROVIDER_BOUNDARY)
+    assert "class ProviderRefundRequest:" in source
+    assert "command_id: uuid.UUID" in source
+    assert "refund_id: uuid.UUID" in source
+    assert "payment_id: uuid.UUID" in source
+    assert "provider_payment_ref: str" in source
+    assert "amount: Decimal" in source
+    assert "currency_code: str" in source
+    assert 'ProviderRefundStatus = Literal["pending", "processed", "failed"]' in source
+    assert "class RefundProvider(Protocol):" in source
+    assert "async def submit_refund(" in source
+    assert "async def fetch_refund(" in source
+
+
+def test_pay10_b_razorpay_adapter_has_submit_fetch_and_stable_receipt_contract():
+    domain = _text(RAZORPAY_DOMAIN)
+    service = _text(RAZORPAY_SERVICE)
+    contract = json.loads(_text(MACHINE))
+
+    assert "class RazorpayRefundRequest:" in domain
+    assert "class RazorpayRefundResponse:" in domain
+    assert "def map_razorpay_refund_response(" in domain
+    assert '"pending", "processed", "failed"' in domain
+
+    assert "class RazorpayTestModeRefundsClient:" in service
+    assert 'f"{request.provider_payment_id}/refund"' in service
+    assert 'f"{request.provider_payment_id}/refunds/{provider_refund_id}"' in service
+    assert 'receipt_seed = f"{request.command_id}:{request.refund_id}"' in service
+    assert '"rf_"' in service
+    assert "hashlib.sha256" in service
+
+    adapter = contract["provider_adapter"]
+    assert adapter["provider_code"] == "razorpay_sandbox"
+    assert adapter["environments"] == ["sandbox", "test"]
+    assert adapter["normalized_states"] == ["pending", "processed", "failed"]
+    assert adapter["duplicate_receipt_http_400"] == "reconciliation_required"
+    assert adapter["automatic_retry"] == "known non-acceptance only"
+    assert adapter["database_mutation"] is False
+
+
+def test_pay10_b_unknown_refund_outcomes_reconcile_instead_of_blind_retry():
+    domain = _text(RAZORPAY_DOMAIN)
+    service = _text(RAZORPAY_SERVICE)
+
+    assert 'operation == "submit_refund" and provider_status_code == 400' in domain
+    for code in (
+        "RAZORPAY_REFUND_RESPONSE_INVALID",
+        "RAZORPAY_REFUND_ID_INVALID",
+        "RAZORPAY_REFUND_PAYMENT_MISMATCH",
+        "RAZORPAY_REFUND_AMOUNT_MISMATCH",
+        "RAZORPAY_REFUND_CURRENCY_MISMATCH",
+        "RAZORPAY_REFUND_RECEIPT_MISMATCH",
+        "RAZORPAY_REFUND_STATUS_INVALID",
+    ):
+        assert code in domain
+
+    assert '"RAZORPAY_CONNECT_FAILED"' in domain
+    assert 'return "retryable"' in domain
+    assert '"RAZORPAY_TIMEOUT"' in domain
+    assert 'return "unknown"' in domain
+
+    assert "await self._transport.get_json(" in service
+    assert "await self._transport.post_json(" in service
+
+
+def test_pay10_b_adapter_does_not_gain_finance_database_mutation_authority():
+    service = _text(RAZORPAY_SERVICE).lower()
+    for forbidden in (
+        "asyncsession",
+        "session.execute",
+        "insert(",
+        "update(",
+        "delete(",
+        "finance.refunds",
+        "finance.refund_execution_commands",
+        "finance.refund_provider_evidence",
+        "finance.payments",
+        "finance.ledger",
+    ):
+        assert forbidden not in service
+
+    assert "rzp_live_" not in service
+    assert "requests.post(" not in service
+    assert "httpx" not in service
+    assert "aiohttp" not in service
