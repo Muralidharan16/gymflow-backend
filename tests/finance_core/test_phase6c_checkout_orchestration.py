@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.database import AsyncSessionLocal
+from app.core.database import AsyncSessionLocal, update_session_context
 from app.finance_core.domain.checkout_orchestration import (
     CheckoutPlanSelector,
     CreateCheckoutSessionCommand,
@@ -93,7 +93,10 @@ async def orchestrate(command_: CreateCheckoutSessionCommand, *, client: FakeRaz
     """Exercise the same staged PAY-8 boundary as the HTTP composition path."""
     client = client or FakeRazorpayClient()
     async with AsyncSessionLocal() as session:
-        await set_current_org_context(session)
+        await update_session_context(
+            session,
+            org_id=str(ORG_ID),
+        )
         service = FinanceCheckoutOrchestrationService(
             session,
             plan_resolver=FakePlanResolver(),
