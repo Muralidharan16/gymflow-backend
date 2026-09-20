@@ -107,6 +107,9 @@ _PAY4_MEMBER_FINANCE_BINDING_MIGRATION = (
 _PAY5_FINANCE_EVENT_DELIVERY_MIGRATION = (
     "zp07d8e9f0a50_pay5_finance_event_delivery.py"
 )
+_PAY6_OFFLINE_PAYMENT_MIGRATION = (
+    "zq07d8e9f0a51_pay6_offline_payments.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -150,6 +153,7 @@ APP_SECURE_FILES.update(
         _PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION,
         _PAY4_MEMBER_FINANCE_BINDING_MIGRATION,
         _PAY5_FINANCE_EVENT_DELIVERY_MIGRATION,
+        _PAY6_OFFLINE_PAYMENT_MIGRATION,
     }
 )
 
@@ -306,6 +310,12 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # PAY-5 adds the product consumed-event RLS policies plus reduced-owner
         # delivery functions; no schema exposure is broadened.
         _PAY5_FINANCE_EVENT_DELIVERY_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+        },
+        # PAY-6 adds tenant RLS for offline request/audit evidence. Function
+        # ownership and EXECUTE partition are covered by dedicated PAY-6 tests.
+        _PAY6_OFFLINE_PAYMENT_MIGRATION: {
             "create_policy",
             "drop_policy",
         },
