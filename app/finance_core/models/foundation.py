@@ -1516,6 +1516,14 @@ class FinanceLedgerEntry(Base):
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
         CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        Index(
+            "uq_pay10_refund_ledger_source",
+            "source_id",
+            unique=True,
+            postgresql_where=text(
+                "source_type = 'refund' AND status = 'posted'"
+            ),
+        ),
         {"schema": SCHEMA},
     )
 
