@@ -428,6 +428,13 @@ class RazorpaySandboxAdapter:
                 "Refund currency code was invalid.",
                 operation="submit_refund",
             )
+        amount_subunits = amount_to_razorpay_subunits(request.amount)
+        if amount_subunits <= 0:
+            raise RazorpayProviderError(
+                "RAZORPAY_REFUND_AMOUNT_INVALID",
+                "Refund amount must be at least one provider currency subunit.",
+                operation="submit_refund",
+            )
         receipt_seed = f"{request.command_id}:{request.refund_id}"
         receipt = (
             "rf_"
@@ -435,7 +442,7 @@ class RazorpaySandboxAdapter:
         )
         refund_request = RazorpayRefundRequest(
             provider_payment_id=request.provider_payment_ref,
-            amount_subunits=amount_to_razorpay_subunits(request.amount),
+            amount_subunits=amount_subunits,
             currency_code=currency_code,
             receipt=receipt,
             notes={
@@ -472,7 +479,8 @@ class RazorpaySandboxAdapter:
     def _validate_provider_payment_ref(provider_payment_ref: str) -> None:
         value = provider_payment_ref.strip()
         if (
-            not value.startswith("pay_")
+            value != provider_payment_ref
+            or not value.startswith("pay_")
             or len(value) <= 4
             or not value.replace("_", "").isalnum()
         ):
@@ -486,7 +494,8 @@ class RazorpaySandboxAdapter:
     def _validate_provider_refund_ref(provider_refund_ref: str) -> None:
         value = provider_refund_ref.strip()
         if (
-            not value.startswith("rfnd_")
+            value != provider_refund_ref
+            or not value.startswith("rfnd_")
             or len(value) <= 5
             or not value.replace("_", "").isalnum()
         ):
