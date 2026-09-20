@@ -70,7 +70,9 @@ def test_pay10_provider_evidence_is_immutable_and_redacted_by_shape():
     )
     table_body = source.split(
         "CREATE TABLE finance.refund_provider_evidence", 1
-    )[1].split(")", 1)[0].lower()
+    )[1].split(
+        "CREATE UNIQUE INDEX uq_pay10_refund_provider_event", 1
+    )[0].lower()
     for name in forbidden_columns:
         assert name not in table_body
 
