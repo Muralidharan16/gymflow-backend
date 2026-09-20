@@ -341,6 +341,7 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # CREATE only while app_security_owner installs the bounded capability.
         _PAY9_PAYMENT_APPLICATION_MIGRATION: {
             "create_policy",
+            "drop_policy",
             "grant_schema",
             "revoke_schema",
         },
