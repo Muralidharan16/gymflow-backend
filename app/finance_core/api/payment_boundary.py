@@ -49,7 +49,9 @@ from app.finance_core.domain.payment_ledger import (
 )
 from app.finance_core.domain.provider_capture_confirmation import FinanceProviderEvidenceError
 from app.finance_core.domain.provider_boundary import (
+    CheckoutProviderRegistry,
     FinanceProviderConfigError,
+    FinanceProviderOperationError,
     FinancePaymentStateTransitionError,
     ProviderSandboxConfig,
     validate_sandbox_provider_config,
@@ -142,10 +144,12 @@ def get_checkout_orchestration_service(
                 "message": "Finance checkout provider configuration is unsafe.",
             },
         )
+    registry = CheckoutProviderRegistry((adapter,))
+    provider_adapter = registry.resolve(adapter.provider_code)
     return FinanceCheckoutOrchestrationService(
         db,
         plan_resolver=plan_resolver,
-        razorpay_adapter=adapter,
+        provider_adapter=provider_adapter,
     )
 
 
@@ -233,7 +237,32 @@ async def create_checkout_session(
     checkout_service: FinanceCheckoutOrchestrationService = Depends(get_checkout_orchestration_service),
 ) -> FinanceCheckoutCreateResponse:
     command = build_checkout_session_command(request, actor=actor, idempotency_key=x_idempotency_key)
-    result = await checkout_service.create_checkout_session(command)
+    try:
+        result = await checkout_service.create_checkout_session(command)
+    except FinanceProviderOperationError as exc:
+        if exc.requires_reconciliation:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "FINANCE_PROVIDER_OUTCOME_UNKNOWN",
+                    "message": "Provider outcome is unknown and requires reconciliation before retry.",
+                },
+            ) from exc
+        if exc.automatic_retry_allowed:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "FINANCE_PROVIDER_RETRYABLE_FAILURE",
+                    "message": "Provider is temporarily unavailable; retry is safe.",
+                },
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "FINANCE_PROVIDER_FINAL_FAILURE",
+                "message": "Provider rejected the checkout operation.",
+            },
+        ) from exc
     return map_checkout_session_response(result)
 
 
