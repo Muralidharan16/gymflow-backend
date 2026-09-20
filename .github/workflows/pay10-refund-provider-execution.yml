@@ -269,17 +269,23 @@ jobs:
             printf '%s\n' "$OUTPUT"
             test "$RC" -ne 0
           fi
-          test "$(PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -Atc             'SELECT version_num FROM public.alembic_version')" = "${PAY10_HEAD}"
-          test "$(PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -Atc             "SELECT pg_catalog.to_regclass('finance.refund_provider_evidence') IS NOT NULL")" = "t"
-          test "$(PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -Atc             'SELECT count(*) FROM finance.credit_note_series')" = "0"
-          test "$(PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test -At <<'SQL'
+          VERSION="$(PGPASSWORD=ci-pay10-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test             -c 'SELECT version_num FROM public.alembic_version')"
+          test "$VERSION" = "${PAY10_HEAD}"
+
+          TABLE_EXISTS="$(PGPASSWORD=ci-pay10-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test             -c "SELECT pg_catalog.to_regclass('finance.refund_provider_evidence') IS NOT NULL")"
+          test "$TABLE_EXISTS" = "t"
+
+          MIGRATION_VISIBLE_COUNT="$(PGPASSWORD=ci-pay10-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test             -c 'SELECT count(*) FROM finance.credit_note_series')"
+          test "$MIGRATION_VISIBLE_COUNT" = "0"
+
+          OWNER_VISIBLE_COUNT="$(
+            PGPASSWORD=ci-pay10-migration psql -X -qAt -v ON_ERROR_STOP=1               -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test <<'SQL'
           SET ROLE app_security_owner;
           SELECT count(*) FROM finance.credit_note_series;
           RESET ROLE;
           SQL
-          )" = "SET
-1
-RESET"
+          )"
+          test "$OWNER_VISIBLE_COUNT" = "1"
           echo 'PAY10_A_FORCE_RLS_MIGRATION_OWNER_BLIND=PASS'
           echo 'PAY10_A_POPULATED_DOWNGRADE_FAIL_CLOSED=PASS'
       - name: Empty downgrade restores exact PAY-9 schema ACL surface
