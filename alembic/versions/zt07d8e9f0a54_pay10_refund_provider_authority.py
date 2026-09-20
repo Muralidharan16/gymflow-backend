@@ -39,6 +39,39 @@ _NEW_TABLES = (
     "refund_provider_evidence",
 )
 _EVIDENCE_TRIGGER = "pay10_immutable_refund_provider_evidence"
+_REFUND_RUNTIME = "finance_refund_runtime"
+_RECON_RUNTIME = "finance_reconciliation_runtime"
+_CLAIM_REFUND = (
+    "app_secure.claim_pay10_refund_provider_execution(uuid,integer)"
+)
+_BIND_REQUEST = (
+    "app_secure.bind_pay10_refund_provider_request("
+    "uuid,uuid,bigint,text,text,numeric,text,text)"
+)
+_RECORD_OUTCOME = (
+    "app_secure.record_pay10_refund_provider_outcome("
+    "uuid,uuid,bigint,text,text,text,timestamp with time zone)"
+)
+_RECORD_UNKNOWN = (
+    "app_secure.record_pay10_refund_provider_unknown("
+    "uuid,uuid,bigint,text)"
+)
+_RECORD_FAILURE = (
+    "app_secure.record_pay10_refund_provider_failure("
+    "uuid,uuid,bigint,text,boolean)"
+)
+_RECORD_EXTERNAL = (
+    "app_secure.record_pay10_refund_external_evidence("
+    "uuid,text,text,text,text,text,text,timestamp with time zone)"
+)
+_PAY10_FUNCTIONS = (
+    _CLAIM_REFUND,
+    _BIND_REQUEST,
+    _RECORD_OUTCOME,
+    _RECORD_UNKNOWN,
+    _RECORD_FAILURE,
+    _RECORD_EXTERNAL,
+)
 
 
 def _require_reduced_role(bind, role_name: str, *, login: bool = False) -> None:
@@ -243,6 +276,76 @@ def _require_predecessor(bind) -> None:
         raise RuntimeError(
             "PAY-10 requires inherited P4D refund command owner authority"
         )
+
+    owner_finance_acl = bind.execute(
+        sa.text(
+            """
+            SELECT
+                pg_catalog.has_table_privilege(
+                    'app_security_owner','finance.payments','SELECT'
+                )
+                AND pg_catalog.has_table_privilege(
+                    'app_security_owner','finance.refunds','SELECT'
+                )
+                AND pg_catalog.has_table_privilege(
+                    'app_security_owner','finance.refunds','UPDATE'
+                )
+            """
+        )
+    ).scalar_one()
+    if not bool(owner_finance_acl):
+        raise RuntimeError(
+            "PAY-10-C requires inherited payment/refund owner authority"
+        )
+
+    if bool(
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_schema_privilege("
+                ":role,'app_secure','USAGE')"
+            ),
+            {"role": _REFUND_RUNTIME},
+        ).scalar_one()
+    ):
+        raise RuntimeError(
+            "PAY-10-C refuses preexisting app_secure USAGE for "
+            "finance_refund_runtime"
+        )
+    if not bool(
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_schema_privilege("
+                ":role,'app_secure','USAGE')"
+            ),
+            {"role": _RECON_RUNTIME},
+        ).scalar_one()
+    ):
+        raise RuntimeError(
+            "PAY-10-C requires inherited PAY-8 app_secure USAGE for "
+            "finance_reconciliation_runtime"
+        )
+    if bool(
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_schema_privilege("
+                "'app_security_owner','app_secure','CREATE')"
+            )
+        ).scalar_one()
+    ):
+        raise RuntimeError(
+            "PAY-10-C refuses preexisting app_security_owner CREATE on app_secure"
+        )
+
+    for signature in _PAY10_FUNCTIONS:
+        if bind.execute(
+            sa.text(
+                "SELECT pg_catalog.to_regprocedure(:signature) IS NOT NULL"
+            ),
+            {"signature": signature},
+        ).scalar_one():
+            raise RuntimeError(
+                f"PAY-10-C predecessor unexpectedly has {signature}"
+            )
 
 
 def _install() -> None:
