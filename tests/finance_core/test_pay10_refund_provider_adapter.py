@@ -138,6 +138,14 @@ def _provider_payload(
     }
 
 
+def _collection(*items: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "entity": "collection",
+        "count": len(items),
+        "items": list(items),
+    }
+
+
 def _adapter(
     transport: FakeRefundTransport,
 ) -> RazorpaySandboxRefundAdapter:
@@ -315,6 +323,68 @@ async def test_pay10b_fetch_404_is_unknown_not_proof_of_non_acceptance():
     assert exc.value.requires_reconciliation is True
 
 
+@pytest.mark.asyncio
+async def test_pay10b_lost_ack_discovery_matches_deterministic_receipt():
+    unrelated = _provider_payload(
+        refund_ref="rfnd_OTHER123",
+        amount=100,
+        receipt="other_receipt",
+        status="processed",
+    )
+    expected = _provider_payload(status="processed")
+    transport = FakeRefundTransport(
+        get_response=_collection(unrelated, expected)
+    )
+
+    response = await _adapter(transport).discover_refund(_request())
+
+    assert response is not None
+    assert response.provider_refund_ref == REFUND_REF
+    assert response.receipt == build_razorpay_refund_receipt(str(COMMAND_ID))
+    assert len(transport.posts) == 0
+    assert len(transport.gets) == 1
+    assert transport.gets[0]["url"] == (
+        "https://api.razorpay.com/v1/payments/"
+        f"{PAYMENT_REF}/refunds?count=100&skip=0"
+    )
+
+
+@pytest.mark.asyncio
+async def test_pay10b_lost_ack_discovery_none_does_not_submit_again():
+    transport = FakeRefundTransport(
+        get_response=_collection(
+            _provider_payload(
+                refund_ref="rfnd_OTHER123",
+                amount=100,
+                receipt="other_receipt",
+            )
+        )
+    )
+
+    response = await _adapter(transport).discover_refund(_request())
+
+    assert response is None
+    assert transport.posts == []
+    assert len(transport.gets) == 1
+
+
+@pytest.mark.asyncio
+async def test_pay10b_duplicate_receipt_discovery_fails_ambiguous():
+    first = _provider_payload(refund_ref="rfnd_MATCH111")
+    second = _provider_payload(refund_ref="rfnd_MATCH222")
+    transport = FakeRefundTransport(
+        get_response=_collection(first, second)
+    )
+
+    with pytest.raises(RazorpayProviderError) as exc:
+        await _adapter(transport).discover_refund(_request())
+
+    assert exc.value.code == "RAZORPAY_REFUND_DISCOVERY_AMBIGUOUS"
+    assert exc.value.failure_class == "unknown"
+    assert exc.value.requires_reconciliation is True
+    assert transport.posts == []
+
+
 @pytest.mark.parametrize(
     ("refund_request", "expected_code"),
     [
@@ -355,6 +425,9 @@ def test_pay10b_refund_registry_is_server_owned_and_test_mode_only():
             raise AssertionError
 
         async def fetch_refund(self, request, *, provider_refund_ref):
+            raise AssertionError
+
+        async def discover_refund(self, request):
             raise AssertionError
 
     with pytest.raises(FinanceProviderConfigError):
