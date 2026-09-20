@@ -81,6 +81,7 @@ jobs:
               "tests/test_migration_app_secure_owner_context_boundary.py",
               "tests/test_pay8_durable_checkout_webhooks_runtime.py",
               "tests/test_pay8_durable_checkout_webhooks_static.py",
+              "tests/test_p4d_refund_authority_static_contracts.py",
           }
           changed={x.strip() for x in Path("/tmp/pay8-changed.txt").read_text().splitlines() if x.strip()}
           if changed != allowed:
