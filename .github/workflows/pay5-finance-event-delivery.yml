@@ -239,7 +239,31 @@ jobs:
       - name: Empty downgrade restores exact predecessor then re-upgrade
         run: |
           set -euo pipefail
+
+          # Runtime characterization intentionally TRUNCATEs disposable PAY-4
+          # fixture tables during cleanup. TRUNCATE assigns new relfilenodes,
+          # so the original pre-runtime fingerprint is not valid evidence for
+          # the later PAY-5 downgrade. Upgrade rewrite safety was already
+          # proven before runtime tests. Re-fingerprint the predecessor-owned
+          # relations immediately before downgrade, excluding only PAY-5's new
+          # product consumption table, then prove the downgrade itself causes
+          # no predecessor relation rewrite.
+          PGPASSWORD=ci-pay5-migration psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d gymflow_pay5_test -At <<'SQL' > /tmp/pay5-rel-pre-downgrade.txt
+          SELECT n.nspname||'.'||c.relname||'|'||c.relfilenode
+          FROM pg_catalog.pg_class c
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname IN ('public','finance')
+            AND c.relkind IN ('r','p')
+            AND NOT (
+              n.nspname='public'
+              AND c.relname='member_subscription_finance_event_consumptions'
+            )
+          ORDER BY 1;
+          SQL
+
           python -s -m alembic -c alembic.ini downgrade "${PAY5_PREDECESSOR}"
+
           PGPASSWORD=ci-pay5-migration psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_pay5_test -At <<'SQL' > /tmp/pay5-rel-restored.txt
           SELECT n.nspname||'.'||c.relname||'|'||c.relfilenode
@@ -262,7 +286,7 @@ jobs:
             AND grantee IN ('app_security_owner','app_runtime','worker_runtime')
           ORDER BY 1;
           SQL
-          diff -u /tmp/pay5-rel-before.txt /tmp/pay5-rel-restored.txt
+          diff -u /tmp/pay5-rel-pre-downgrade.txt /tmp/pay5-rel-restored.txt
           diff -u /tmp/pay5-acl-before.txt /tmp/pay5-acl-restored.txt
           python -s -m alembic -c alembic.ini upgrade "${PAY5_HEAD}"
           echo 'PAY5_MIGRATION_LIFECYCLE=PASS'
