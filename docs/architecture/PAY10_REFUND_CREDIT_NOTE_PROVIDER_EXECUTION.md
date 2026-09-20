@@ -239,7 +239,7 @@ PAY-13 remains the authority for dispute/chargeback semantics.
 
 ## Migration safety
 
-PAY-10-A/B use `zt07d8e9f0a54` directly after `zs07d8e9f0a53`. PAY-10-C is additive in `zu07d8e9f0a55`, revising `zt07d8e9f0a54`, so the certified A/B migration remains unchanged.
+PAY-10-A/B use `zt07d8e9f0a54` directly after `zs07d8e9f0a53`. PAY-10-C is additive in `zu07d8e9f0a55`, revising `zt07d8e9f0a54`. PAY-10-D is additive in `zv07d8e9f0a56`, revising `zu07d8e9f0a55`, so certified predecessor slices remain unchanged.
 
 Upgrade rules:
 
@@ -253,7 +253,7 @@ Upgrade rules:
 
 Downgrade rules:
 
-- empty PAY-10-C state must remove only C capabilities and return to `zt07d8e9f0a54`; a full empty PAY-10 downgrade then returns exactly to PAY-9;
+- empty PAY-10-D state must remove D capabilities/index/ACL delta and return to `zu07d8e9f0a55`; empty PAY-10-C then returns to `zt07d8e9f0a54`; a full empty PAY-10 downgrade returns exactly to PAY-9;
 - downgrade refuses when PAY-10 provider evidence, refund-credit-note
   provenance, credit-note series state, or PAY-10 execution metadata exists;
 - no CASCADE is used to hide dependency loss.
