@@ -257,19 +257,28 @@ jobs:
           set -e
           printf '%s\n' "$OUTPUT"
           test "$RC" -ne 0
-          PGPASSWORD=ci-pay8-migration psql -X -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -U migration_owner -d gymflow_pay8_test -At <<'SQL' \
-            | grep -Fx 'zr07d8e9f0a52|1|1|1'
-          SELECT
-            (SELECT version_num FROM public.alembic_version)
-            ||'|'||
-            (SELECT count(*) FROM finance.provider_operations
-             WHERE idempotency_key='pay8:downgrade:evidence')
-            ||'|'||
-            (pg_catalog.to_regclass('finance.provider_operations') IS NOT NULL)::int
-            ||'|'||
-            (pg_catalog.to_regclass('finance.provider_webhook_inbox') IS NOT NULL)::int;
-          SQL
+          python - <<'PY'
+          from tests.test_pay8_durable_checkout_webhooks_runtime import (
+              _admin_scalar,
+          )
+          state = (
+              _admin_scalar("SELECT version_num FROM public.alembic_version"),
+              _admin_scalar(
+                  "SELECT count(*) FROM finance.provider_operations "
+                  "WHERE idempotency_key='pay8:downgrade:evidence'"
+              ),
+              _admin_scalar(
+                  "SELECT pg_catalog.to_regclass("
+                  "'finance.provider_operations') IS NOT NULL"
+              ),
+              _admin_scalar(
+                  "SELECT pg_catalog.to_regclass("
+                  "'finance.provider_webhook_inbox') IS NOT NULL"
+              ),
+          )
+          print(f"PAY8_POST_FAILED_DOWNGRADE_STATE={state!r}")
+          assert state == ("zr07d8e9f0a52", 1, True, True)
+          PY
           echo 'PAY8_POPULATED_DOWNGRADE_FAIL_CLOSED=PASS'
           python - <<'PY'
           from tests.test_pay8_durable_checkout_webhooks_runtime import _cleanup_and_seed
