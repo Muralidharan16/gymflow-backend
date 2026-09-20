@@ -169,9 +169,15 @@ class RazorpaySandboxAdapter:
         order_request = self.build_order_request(request)
         order_response = await self._client.create_order(order_request)
         if order_response.amount_subunits != order_request.amount_subunits:
-            raise ValueError("Razorpay order response amount mismatch")
+            raise RazorpayProviderError(
+                "RAZORPAY_ORDER_AMOUNT_MISMATCH",
+                "Razorpay order amount did not match the server invoice.",
+            )
         if order_response.currency_code.upper() != order_request.currency_code:
-            raise ValueError("Razorpay order response currency mismatch")
+            raise RazorpayProviderError(
+                "RAZORPAY_ORDER_CURRENCY_MISMATCH",
+                "Razorpay order currency did not match the server invoice.",
+            )
         return ProviderCheckoutIntentResponse(
             provider_code=self.provider_code,
             provider_order_ref=order_response.order_id,
