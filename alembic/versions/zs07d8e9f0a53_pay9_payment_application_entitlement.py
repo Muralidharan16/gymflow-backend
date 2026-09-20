@@ -673,8 +673,8 @@ def _install_function(bind) -> None:
                                 v_payment.brand_id,
                                 'payment_allocation',v_allocation.id,
                                 'finance.payment.applied',
-                                'pay9:'||p_payment_event_id::text||
-                                    ':payment',
+                                'pay9-'||p_payment_event_id::text||
+                                    '-payment',
                                 v_payment_payload,v_payment_hash,'pending'
                             );
 
@@ -711,8 +711,8 @@ def _install_function(bind) -> None:
                                     THEN 'finance.invoice.paid'
                                     ELSE 'finance.invoice.partially_paid'
                                 END,
-                                'pay9:'||p_payment_event_id::text||
-                                    ':invoice',
+                                'pay9-'||p_payment_event_id::text||
+                                    '-invoice',
                                 v_invoice_payload,v_invoice_hash,'pending'
                             );
 
@@ -747,8 +747,8 @@ def _install_function(bind) -> None:
                                 v_payment.brand_id,
                                 'ledger_entry',v_ledger_entry,
                                 'finance.ledger.entry.posted',
-                                'pay9:'||p_payment_event_id::text||
-                                    ':ledger',
+                                'pay9-'||p_payment_event_id::text||
+                                    '-ledger',
                                 v_ledger_payload,v_ledger_hash,'pending'
                             );
 
