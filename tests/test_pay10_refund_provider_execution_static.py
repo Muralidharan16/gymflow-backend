@@ -123,7 +123,7 @@ def test_pay10_model_metadata_matches_new_schema_and_tenant_fk_prerequisites():
     assert 'name="uq_pay10_credit_notes_id_org"' in source
     assert 'name="fk_pay10_refund_credit_link_refund_org"' in source
     assert 'name="fk_pay10_refund_credit_link_credit_org"' in source
-    assert 'name="uq_pay10_refund_command_provider_ref"' in source
+    assert '"uq_pay10_refund_command_provider_ref",' in source
     assert 'name="chk_pay10_refund_command_request_hash"' in source
 
 
