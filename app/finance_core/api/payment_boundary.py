@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, Response, status
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -374,7 +375,10 @@ async def receive_razorpay_webhook(
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
     _actor: None = Depends(webhook_actor_dependency),
     _sandbox_enabled: None = Depends(require_finance_webhook_sandbox_enabled),
-    webhook_service: RazorpayWebhookConfirmationService = Depends(get_razorpay_webhook_confirmation_service),
+    db: AsyncSession = Depends(get_db),
+    webhook_service: RazorpayWebhookConfirmationService = Depends(
+        get_razorpay_webhook_confirmation_service
+    ),
 ) -> dict[str, str]:
     webhook = build_razorpay_webhook_input(
         raw_body=await request.body(),
@@ -382,23 +386,107 @@ async def receive_razorpay_webhook(
         provider_event_id=x_razorpay_event_id,
         idempotency_key=x_idempotency_key,
     )
+
     try:
-        await webhook_service.confirm_payment_event(webhook)
-    except FinanceWebhookSignatureError:
+        receipt = await webhook_service.record_verified_webhook(webhook)
+        # A verified normalized inbox row is durable before Finance state changes.
+        await db.commit()
+    except FinanceWebhookSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "FINANCE_WEBHOOK_SIGNATURE_INVALID", "message": "Webhook signature is invalid."},
-        )
-    except (FinanceWebhookNormalizationError, FinanceProviderEvidenceError):
+            detail={
+                "code": "FINANCE_WEBHOOK_SIGNATURE_INVALID",
+                "message": "Webhook signature is invalid.",
+            },
+        ) from exc
+    except FinanceWebhookNormalizationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "FINANCE_WEBHOOK_PAYLOAD_INVALID", "message": "Webhook payload is invalid."},
+            detail={
+                "code": "FINANCE_WEBHOOK_PAYLOAD_INVALID",
+                "message": "Webhook payload is invalid.",
+            },
+        ) from exc
+
+    if receipt.status == "processed":
+        return {"status": "accepted"}
+    if receipt.status == "dead_letter":
+        # Durable terminal evidence already exists; acknowledge replay without
+        # re-running a known-invalid financial transition.
+        return {"status": "accepted"}
+
+    lease_owner = uuid.uuid4()
+    claimed = await webhook_service.claim_recorded_webhook(
+        inbox_id=receipt.inbox_id,
+        lease_owner=lease_owner,
+    )
+    # Claim/fence is durable before Finance evidence application.
+    await db.commit()
+
+    if not claimed.claimed:
+        return {
+            "status": (
+                "accepted"
+                if claimed.status in {"processed", "dead_letter"}
+                else "processing"
+            )
+        }
+
+    try:
+        result = await webhook_service.process_claimed_webhook(claimed)
+        await webhook_service.complete_claimed_webhook(
+            claimed=claimed,
+            lease_owner=lease_owner,
+            payment_event_id=result.payment_event_id,
         )
-    except (FinancePaymentStateTransitionError, FinancePaymentConflictError):
+        # Payment state + payment_event + outbox + inbox completion commit
+        # together. Crash before commit leaves the durable inbox reclaimable.
+        await db.commit()
+    except FinanceProviderEvidenceError as exc:
+        await db.rollback()
+        await webhook_service.fail_claimed_webhook(
+            claimed=claimed,
+            lease_owner=lease_owner,
+            error_code="provider_evidence_invalid",
+            retryable=False,
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "FINANCE_WEBHOOK_PAYLOAD_INVALID",
+                "message": "Webhook payload is invalid.",
+            },
+        ) from exc
+    except (FinancePaymentStateTransitionError, FinancePaymentConflictError) as exc:
+        await db.rollback()
+        await webhook_service.fail_claimed_webhook(
+            claimed=claimed,
+            lease_owner=lease_owner,
+            error_code="provider_state_conflict",
+            retryable=False,
+        )
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "FINANCE_WEBHOOK_STATE_CONFLICT", "message": "Webhook state transition is invalid."},
+            detail={
+                "code": "FINANCE_WEBHOOK_STATE_CONFLICT",
+                "message": "Webhook state transition is invalid.",
+            },
+        ) from exc
+    except (DBAPIError, FinanceOperationalGuardError):
+        await db.rollback()
+        await webhook_service.fail_claimed_webhook(
+            claimed=claimed,
+            lease_owner=lease_owner,
+            error_code="provider_processing_retry",
+            retryable=True,
         )
+        await db.commit()
+        # The provider delivery is durably accepted. Recovery can be driven by
+        # a later provider replay or the dedicated finance-payment capability.
+        return {"status": "queued"}
+
     return {"status": "accepted"}
 
 
