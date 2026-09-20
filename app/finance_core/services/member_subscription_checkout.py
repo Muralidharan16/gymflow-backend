@@ -175,6 +175,10 @@ class SourceBoundMemberSubscriptionCheckoutService:
         provider_order_ref = intent.provider_order_ref
         provider_operation: ProviderOperationReservation | None = None
         if not provider_order_ref or provider_order_ref.startswith("intent_"):
+            # Internal intent_* values are Finance-local placeholders, not
+            # provider objects. Keep the staged route on the durable external
+            # operation path until a real provider reference is acknowledged.
+            provider_order_ref = None
             provider_operation = await self._provider_operations.reserve_checkout(
                 payment_id=intent.intent_id,
                 provider_code=provider_code,
