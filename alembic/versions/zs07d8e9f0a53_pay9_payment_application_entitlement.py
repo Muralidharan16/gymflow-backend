@@ -328,7 +328,7 @@ def _install_function(bind) -> None:
             DECLARE
                 v_existing_org uuid;
                 v_payment finance.payments%ROWTYPE;
-                v_event finance.payment_events%ROWTYPE;
+                v_event record;
                 v_checkout finance.member_subscription_checkout_bindings%ROWTYPE;
                 v_binding finance.member_subscription_finance_bindings%ROWTYPE;
                 v_invoice finance.invoices%ROWTYPE;
@@ -380,7 +380,8 @@ def _install_function(bind) -> None:
                         USING ERRCODE='22023';
                 END IF;
 
-                SELECT e.* INTO v_event
+                SELECT e.id,e.payment_id,e.event_type
+                INTO v_event
                 FROM finance.payment_events e
                 WHERE e.id=p_payment_event_id
                   AND e.payment_id=p_payment_id
