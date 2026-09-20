@@ -9,10 +9,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.finance_core.domain.invoice_engine import CreateDraftInvoiceCommand, InvoiceLineInput, IssueInvoiceCommand, money
-from app.finance_core.domain.provider_boundary import CreateCheckoutIntentCommand, ProviderCheckoutIntentRequest
+from app.finance_core.domain.provider_boundary import (
+    CheckoutIntentProvider,
+    CreateCheckoutIntentCommand,
+    FinanceProviderConfigError,
+    ProviderCheckoutIntentRequest,
+)
 from app.finance_core.services.checkout_intents import FinanceCheckoutIntentService
 from app.finance_core.services.invoice_engine import FinanceInvoiceEngine
-from app.finance_core.services.razorpay_sandbox import RazorpaySandboxAdapter
 
 
 class MemberSubscriptionCheckoutConfigurationError(Exception):
@@ -52,6 +56,7 @@ class SourceBoundMemberSubscriptionCheckoutService:
         *,
         organization_id: uuid.UUID,
         subscription_id: uuid.UUID,
+        provider_code: str,
     ) -> MemberSubscriptionCheckoutPreparation:
         inputs = await self._resolve_inputs(subscription_id)
         if inputs["organization_id"] != organization_id:
@@ -105,7 +110,7 @@ class SourceBoundMemberSubscriptionCheckoutService:
             CreateCheckoutIntentCommand(
                 organization_id=organization_id,
                 invoice_id=invoice["id"],
-                provider_code=RazorpaySandboxAdapter.provider_code,
+                provider_code=provider_code,
                 amount=amount,
                 currency_code=invoice["currency_code"],
                 idempotency_key=f"{source_key}:checkout_intent",
@@ -187,20 +192,40 @@ class SourceBoundMemberSubscriptionCheckoutService:
         self,
         *,
         prepared: MemberSubscriptionCheckoutPreparation,
-        razorpay_adapter: RazorpaySandboxAdapter,
+        provider_adapter: CheckoutIntentProvider | None = None,
+        razorpay_adapter: CheckoutIntentProvider | None = None,
     ) -> MemberSubscriptionCheckoutResult:
+        if provider_adapter is not None and razorpay_adapter is not None:
+            raise FinanceProviderConfigError(
+                "Member checkout accepts one provider adapter only."
+            )
+        adapter = provider_adapter or razorpay_adapter
+        if adapter is None:
+            raise FinanceProviderConfigError(
+                "Member checkout requires a provider adapter."
+            )
+        if adapter.environment not in {"sandbox", "test"}:
+            raise FinanceProviderConfigError(
+                "PAY-7 member checkout accepts sandbox/test adapters only."
+            )
+
         provider_order_ref = prepared.provider_order_ref
         if not provider_order_ref or provider_order_ref.startswith("intent_"):
-            provider_response = await razorpay_adapter.create_checkout_intent(
+            provider_response = await adapter.create_checkout_intent(
                 ProviderCheckoutIntentRequest(
                     invoice_id=prepared.finance_invoice_id,
                     amount=prepared.amount,
                     currency_code=prepared.currency_code,
-                    idempotency_key=f"member-subscription-checkout:{prepared.subscription_id}:razorpay_order",
+                    idempotency_key=(
+                        f"member-subscription-checkout:"
+                        f"{prepared.subscription_id}:provider_order"
+                    ),
                 )
             )
             if provider_response.provider_order_ref is None:
-                raise MemberSubscriptionCheckoutConfigurationError("Razorpay sandbox adapter did not return an order id")
+                raise MemberSubscriptionCheckoutConfigurationError(
+                    "PROVIDER_ORDER_REQUIRED"
+                )
             provider_order_ref = provider_response.provider_order_ref
             await self.attach_provider_order(
                 subscription_id=prepared.subscription_id,
@@ -211,7 +236,9 @@ class SourceBoundMemberSubscriptionCheckoutService:
         return MemberSubscriptionCheckoutResult(
             finance_invoice_id=prepared.finance_invoice_id,
             finance_checkout_intent_id=prepared.finance_checkout_intent_id,
-            checkout_fields=razorpay_adapter.checkout_fields(order_id=provider_order_ref).to_browser_payload(),
+            checkout_fields=adapter.build_checkout_fields(
+                provider_order_ref=provider_order_ref
+            ),
             display_amount=prepared.amount,
             display_currency=prepared.currency_code,
             replayed=prepared.replayed,
