@@ -532,8 +532,7 @@ def _install_functions() -> None:
 
                 IF v_command.provider_refund_ref IS NOT NULL THEN
                     RAISE EXCEPTION
-                        'PAY-10 known provider refund must reconcile, '
-                        'not resubmit'
+                        'PAY-10 known provider refund must reconcile, not resubmit'
                         USING ERRCODE='23514';
                 END IF;
                 IF v_command.provider_code IS NOT NULL
