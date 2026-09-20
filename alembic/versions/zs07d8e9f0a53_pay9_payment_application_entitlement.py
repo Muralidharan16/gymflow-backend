@@ -467,7 +467,8 @@ def _install_function(bind) -> None:
 
                 v_payment_available:=
                     pg_catalog.greatest(
-                        v_payment.amount-v_payment_allocated,0
+                        v_payment.amount-v_payment_allocated,
+                        0::numeric
                     );
                 v_after_unapplied:=v_payment_available;
 
@@ -500,7 +501,7 @@ def _install_function(bind) -> None:
                     v_invoice_outstanding:=
                         pg_catalog.greatest(
                             v_invoice.grand_total_amount-v_invoice_allocated,
-                            0
+                            0::numeric
                         );
                     v_after_outstanding:=v_invoice_outstanding;
                     v_invoice_status:=v_invoice.status::text;
