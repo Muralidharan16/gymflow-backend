@@ -36,11 +36,11 @@ _MIGRATION_OWNER = "migration_owner"
 _FUNCTION = "app_secure.apply_verified_provider_payment(uuid,uuid)"
 
 
-def _require_role(bind, role: str, *, login: bool) -> None:
+def _require_role(bind, role: str, *, login: bool = False) -> None:
     row = bind.execute(
         sa.text(
             """
-            SELECT rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,
+            SELECT rolcanlogin,rolsuper,rolinherit,rolcreatedb,rolcreaterole,
                    rolreplication,rolbypassrls
             FROM pg_catalog.pg_roles
             WHERE rolname=:role
@@ -49,40 +49,49 @@ def _require_role(bind, role: str, *, login: bool) -> None:
         {"role": role},
     ).mappings().one_or_none()
     if row is None:
-        raise RuntimeError(f"PAY-9 required role missing: {role}")
+        raise RuntimeError(f"PAY-9 missing externally managed role: {role}")
     if bool(row["rolcanlogin"]) is not login:
         raise RuntimeError(f"PAY-9 role login posture drift: {role}")
-    if any(
-        bool(row[name])
-        for name in (
-            "rolsuper",
-            "rolcreatedb",
-            "rolcreaterole",
-            "rolreplication",
-            "rolbypassrls",
-        )
+    for key in (
+        "rolsuper","rolinherit","rolcreatedb","rolcreaterole",
+        "rolreplication","rolbypassrls",
     ):
-        raise RuntimeError(f"PAY-9 privileged role posture drift: {role}")
+        if bool(row[key]):
+            raise RuntimeError(f"PAY-9 reduced-role drift: {role}.{key}")
 
 
 def _require_identity(bind) -> None:
-    _require_role(bind, _APP, login=True)
-    _require_role(bind, _PAYMENT_RUNTIME, login=True)
-    _require_role(bind, _SECURITY_OWNER, login=False)
     _require_role(bind, _MIGRATION_OWNER, login=True)
+    _require_role(bind, _SECURITY_OWNER)
+    _require_role(bind, _APP)
+    _require_role(bind, _PAYMENT_RUNTIME)
+
+    identity = bind.execute(
+        sa.text("SELECT session_user::text,current_user::text")
+    ).one()
+    if tuple(identity) != (_MIGRATION_OWNER, _MIGRATION_OWNER):
+        raise RuntimeError("PAY-9 migration requires migration_owner")
+
+    if not bind.execute(
+        sa.text(
+            "SELECT pg_catalog.pg_has_role(:member,:target,'SET')"
+        ),
+        {"member": _MIGRATION_OWNER, "target": _SECURITY_OWNER},
+    ).scalar_one():
+        raise RuntimeError(
+            "PAY-9 requires migration_owner SET edge to app_security_owner"
+        )
+
     for runtime in (_APP, _PAYMENT_RUNTIME):
         if bind.execute(
             sa.text(
-                """
-                SELECT pg_catalog.pg_has_role(
-                    :runtime,'app_security_owner','MEMBER'
-                )
-                """
+                "SELECT pg_catalog.pg_has_role(:member,:target,'MEMBER') "
+                "OR pg_catalog.pg_has_role(:member,:target,'SET')"
             ),
-            {"runtime": runtime},
+            {"member": runtime, "target": _SECURITY_OWNER},
         ).scalar_one():
             raise RuntimeError(
-                f"PAY-9 runtime may SET ROLE app_security_owner: {runtime}"
+                f"PAY-9 runtime may reach app_security_owner: {runtime}"
             )
 
 
