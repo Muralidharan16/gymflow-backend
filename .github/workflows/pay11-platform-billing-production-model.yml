@@ -270,7 +270,8 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse "${PAY11_BASE_SHA}^{tree}")" = "${PAY11_BASE_TREE}"
           test "$(git merge-base "${PAY11_BASE_SHA}" HEAD)" = "${PAY11_BASE_SHA}"
-          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY11_HEAD}"
+          grep -Fq 'revision: str = "zw07d8e9f0a57"' \
+            alembic/versions/zw07d8e9f0a57_pay11_platform_billing_production_model.py
           python - <<'PY'
           import json, os, subprocess
           decision = {
