@@ -226,6 +226,7 @@ def _record_webhook(
     event_type: str = "payment.captured",
     order_ref: str = "order_pay8_webhook",
     payment_ref: str = "pay_pay8_webhook",
+    captured: bool | None = True,
 ):
     assert APP_URL
     with psycopg.connect(APP_URL) as conn:
@@ -235,7 +236,7 @@ def _record_webhook(
                 SELECT *
                 FROM app_secure.record_finance_provider_webhook(
                     'razorpay_sandbox','test',%s,%s,%s,%s,%s,%s,
-                    10000,'INR','captured',true,%s,NULL,NULL,1784100000
+                    10000,'INR','captured',%s,%s,NULL,NULL,1784100000
                 )
                 """,
                 (
@@ -245,6 +246,7 @@ def _record_webhook(
                     event_type,
                     order_ref,
                     payment_ref,
+                    captured,
                     order_ref,
                 ),
             )
@@ -564,6 +566,23 @@ def test_same_provider_object_cannot_be_bound_to_two_payments():
         "SELECT count(*) FROM finance.provider_operations "
         "WHERE provider_object_id='order_pay8_unique'"
     ) == 1
+
+
+def test_webhook_inbox_preserves_optional_captured_evidence():
+    row = _record_webhook(
+        event_id="evt_pay8_captured_optional",
+        captured=None,
+    )
+    assert row is not None
+    inbox_id = row[0]
+
+    owner = uuid.uuid4()
+    claimed = _claim_webhook(inbox_id, owner)
+    assert claimed is not None
+    assert claimed[4] is True
+    # Missing captured evidence remains NULL. PAY-8 must preserve signed
+    # normalized uncertainty rather than fabricate provider truth.
+    assert claimed[15] is None
 
 
 def test_webhook_inbox_exact_replay_is_idempotent_and_changed_replay_conflicts():
