@@ -19,7 +19,6 @@ APP_SECURE_FILES = {
     "0027_rbac_p6_perm_snapshots.py",
     "0029_rbac_p8_contract.py",
     "6f708192a3b4_address_runtime_privilege_boundary.py",
-    "zs07d8e9f0a53_pay9_payment_application_entitlement.py",
     A1.name,
 }
 
@@ -483,10 +482,6 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         "0027_rbac_p6_perm_snapshots.py": view_contract,
         "0029_rbac_p8_contract.py": view_contract,
         "6f708192a3b4_address_runtime_privilege_boundary.py": {
-            "grant_schema",
-            "revoke_schema",
-        },
-        "zs07d8e9f0a53_pay9_payment_application_entitlement.py": {
             "grant_schema",
             "revoke_schema",
         },
