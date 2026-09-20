@@ -167,10 +167,14 @@ def test_pay10d_model_contract_has_refund_ledger_uniqueness():
 
 def test_pay10d_architecture_keeps_live_money_movement_disabled():
     architecture = _text(ARCH)
+    normalized_architecture = " ".join(architecture.split())
     matrix = _text(MATRIX)
     contract = _text(CONTRACT)
     assert "D — financial finalization" in architecture
-    assert "Revenue and tax reversal remain credit-note responsibility" in architecture
+    assert (
+        "Revenue and tax reversal remain credit-note responsibility"
+        in normalized_architecture
+    )
     assert "P10-D" in matrix
     assert '"live_provider": false' in contract
     assert '"live_money_movement": false' in contract
