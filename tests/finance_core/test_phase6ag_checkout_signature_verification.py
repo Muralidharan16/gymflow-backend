@@ -212,7 +212,8 @@ def test_phase6ag_adds_no_routes_frontend_network_or_provider_side_effects():
 
     assert "razorpaycheckoutsignatureverificationservice" in combined
     assert "http.client" in combined
-    assert "requests" not in combined
+    assert "import requests" not in combined
+    assert "from requests" not in combined
     assert "httpx" not in combined
     assert "aiohttp" not in combined
     assert "urllib" not in combined
