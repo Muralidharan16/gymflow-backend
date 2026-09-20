@@ -9,6 +9,7 @@ from app.finance_core.domain.provider_boundary import (
     FinanceProviderConfigError,
     FinanceProviderOperationError,
     ProviderFailureClass,
+    ProviderRefundStatus,
 )
 
 
@@ -18,6 +19,22 @@ RazorpaySandboxMode = Literal["sandbox", "test"]
 class RazorpaySandboxClient(Protocol):
     async def create_order(self, request: RazorpayOrderCreateRequest) -> RazorpayOrderCreateResponse:
         """Injected test/sandbox client boundary. Production clients are not part of Phase 6B."""
+
+
+class RazorpaySandboxRefundClient(Protocol):
+    async def submit_refund(
+        self,
+        request: RazorpayRefundRequest,
+    ) -> RazorpayRefundResponse:
+        """Submit a test/sandbox refund using one deterministic receipt."""
+
+    async def fetch_refund(
+        self,
+        request: RazorpayRefundRequest,
+        *,
+        provider_refund_id: str,
+    ) -> RazorpayRefundResponse:
+        """Fetch an already-known test/sandbox refund for reconciliation."""
 
 
 @dataclass(frozen=True)
@@ -90,26 +107,74 @@ class RazorpayTestModeOrderResult:
         }
 
 
+@dataclass(frozen=True)
+class RazorpayRefundRequest:
+    provider_payment_id: str
+    amount_subunits: int
+    currency_code: str
+    receipt: str
+    notes: dict[str, str]
+
+    def to_provider_payload(self) -> dict[str, Any]:
+        return {
+            "amount": self.amount_subunits,
+            "speed": "normal",
+            "receipt": self.receipt,
+            "notes": self.notes,
+        }
+
+
+@dataclass(frozen=True)
+class RazorpayRefundResponse:
+    provider_refund_id: str
+    provider_payment_id: str
+    amount_subunits: int
+    currency_code: str
+    receipt: str
+    status: ProviderRefundStatus
+
+    def to_safe_output(self) -> dict[str, str | int]:
+        return {
+            "provider_refund_id": self.provider_refund_id,
+            "provider_payment_id": self.provider_payment_id,
+            "amount_subunits": self.amount_subunits,
+            "currency_code": self.currency_code,
+            "receipt": self.receipt,
+            "status": self.status,
+        }
+
+
 def classify_razorpay_provider_failure(
     *,
     code: str,
     provider_status_code: int | None = None,
+    operation: str = "create_checkout",
 ) -> ProviderFailureClass:
-    """Classify outbound checkout failures conservatively.
+    """Classify outbound provider failures conservatively.
 
-    Unknown means the POST may have reached Razorpay and must be reconciled
-    before another provider-side create is attempted.
+    Unknown means a mutating request may have reached Razorpay and must be
+    reconciled before another provider-side mutation is attempted.
     """
 
     if code in {
         "RAZORPAY_URL_UNSAFE",
         "RAZORPAY_TIMEOUT_UNSAFE",
         "RAZORPAY_ORDER_NOTES_UNSAFE",
+        "RAZORPAY_REFUND_NOTES_UNSAFE",
+        "RAZORPAY_REFUND_PAYMENT_REF_INVALID",
+        "RAZORPAY_REFUND_REF_INVALID",
+        "RAZORPAY_REFUND_AMOUNT_INVALID",
+        "RAZORPAY_REFUND_CURRENCY_INVALID",
     }:
         return "final"
     if code == "RAZORPAY_CONNECT_FAILED":
         return "retryable"
     if code == "RAZORPAY_HTTP_ERROR":
+        # Razorpay can answer refund submission with HTTP 400 when the
+        # deterministic receipt already exists. That is an idempotency /
+        # reconciliation signal, not proof that no provider effect exists.
+        if operation == "submit_refund" and provider_status_code == 400:
+            return "unknown"
         if provider_status_code is not None and 400 <= provider_status_code < 500:
             if provider_status_code not in {408, 409, 425, 429}:
                 return "final"
@@ -124,6 +189,13 @@ def classify_razorpay_provider_failure(
         "RAZORPAY_ORDER_AMOUNT_MISMATCH",
         "RAZORPAY_ORDER_CURRENCY_MISMATCH",
         "RAZORPAY_ORDER_RECEIPT_MISMATCH",
+        "RAZORPAY_REFUND_RESPONSE_INVALID",
+        "RAZORPAY_REFUND_ID_INVALID",
+        "RAZORPAY_REFUND_PAYMENT_MISMATCH",
+        "RAZORPAY_REFUND_AMOUNT_MISMATCH",
+        "RAZORPAY_REFUND_CURRENCY_MISMATCH",
+        "RAZORPAY_REFUND_RECEIPT_MISMATCH",
+        "RAZORPAY_REFUND_STATUS_INVALID",
     }:
         return "unknown"
     return "final"
@@ -147,6 +219,7 @@ class RazorpayProviderError(FinanceProviderOperationError):
             or classify_razorpay_provider_failure(
                 code=code,
                 provider_status_code=provider_status_code,
+                operation=operation,
             ),
             message=message,
             provider_status_code=provider_status_code,
@@ -204,6 +277,72 @@ def validate_razorpay_sandbox_config(config: RazorpaySandboxConfig) -> RazorpayS
 def amount_to_razorpay_subunits(amount: Decimal) -> int:
     quantized = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return int(quantized * 100)
+
+
+def map_razorpay_refund_response(
+    *,
+    payload: dict[str, Any],
+    expected: RazorpayRefundRequest,
+) -> RazorpayRefundResponse:
+    try:
+        provider_refund_id = str(payload["id"])
+        provider_payment_id = str(payload["payment_id"])
+        amount_subunits = int(payload["amount"])
+        currency_code = str(payload["currency"]).upper()
+        receipt = str(payload["receipt"])
+        status = str(payload["status"]).lower()
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_RESPONSE_INVALID",
+            "Razorpay refund response was invalid.",
+            operation="refund_response",
+        ) from exc
+
+    if not provider_refund_id.startswith("rfnd_"):
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_ID_INVALID",
+            "Razorpay refund id was invalid.",
+            operation="refund_response",
+        )
+    if provider_payment_id != expected.provider_payment_id:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_PAYMENT_MISMATCH",
+            "Razorpay refund payment did not match Finance truth.",
+            operation="refund_response",
+        )
+    if amount_subunits != expected.amount_subunits:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_AMOUNT_MISMATCH",
+            "Razorpay refund amount did not match Finance truth.",
+            operation="refund_response",
+        )
+    if currency_code != expected.currency_code.upper():
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_CURRENCY_MISMATCH",
+            "Razorpay refund currency did not match Finance truth.",
+            operation="refund_response",
+        )
+    if receipt != expected.receipt:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_RECEIPT_MISMATCH",
+            "Razorpay refund receipt did not match the logical Finance refund.",
+            operation="refund_response",
+        )
+    if status not in {"pending", "processed", "failed"}:
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_STATUS_INVALID",
+            "Razorpay refund status was invalid.",
+            operation="refund_response",
+        )
+
+    return RazorpayRefundResponse(
+        provider_refund_id=provider_refund_id,
+        provider_payment_id=provider_payment_id,
+        amount_subunits=amount_subunits,
+        currency_code=currency_code,
+        receipt=receipt,
+        status=status,  # type: ignore[arg-type]
+    )
 
 
 def map_razorpay_order_response(
