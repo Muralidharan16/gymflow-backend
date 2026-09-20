@@ -18,6 +18,7 @@ from app.finance_core.domain.razorpay_sandbox import (
     RazorpayOrderCreateRequest,
     RazorpayOrderCreateResponse,
     RazorpayProviderError,
+    RazorpaySandboxConfig,
     classify_razorpay_provider_failure,
 )
 from app.finance_core.services.razorpay_sandbox import (
@@ -25,10 +26,26 @@ from app.finance_core.services.razorpay_sandbox import (
     RazorpayTestModeHTTPTransport,
     RazorpayTestModeOrdersClient,
 )
-from tests.finance_core.test_phase6b_razorpay_sandbox_adapter import sandbox_config
+
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def sandbox_config(
+    *,
+    mode: str = "test",
+    key_id: str = "rzp_test_key_id",
+    key_secret: str = "rzp_test_key_secret",
+    webhook_secret: str = "rzp_test_webhook_secret",
+) -> RazorpaySandboxConfig:
+    return RazorpaySandboxConfig(
+        mode=mode,  # type: ignore[arg-type]
+        key_id=key_id,
+        key_secret=key_secret,
+        webhook_secret=webhook_secret,
+        merchant_reference="pay7-test-merchant",
+    )
 
 
 class FakeGenericAdapter:
