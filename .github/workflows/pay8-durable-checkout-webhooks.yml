@@ -78,6 +78,7 @@ jobs:
               "security/cluster_role_bootstrap/ownership.v1.json",
               "tests/finance_core/admin_database.py",
               "tests/finance_core/test_phase6c_checkout_orchestration.py",
+              "tests/finance_core/test_phase6v_test_mode_checkout_route_integration.py",
               "tests/finance_core/test_phase6aj_checkout_callback_recording.py",
               "tests/finance_core/test_phase5b_foundation.py",
               "tests/test_cluster_role_contract_manifests.py",
