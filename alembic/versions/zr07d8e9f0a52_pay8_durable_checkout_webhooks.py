@@ -156,6 +156,18 @@ def _require_predecessor(bind) -> None:
             "PAY-8 requires predecessor payment id/org unique authority"
         )
 
+    for runtime in (_PAYMENT_RUNTIME, _RECON_RUNTIME):
+        if bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_schema_privilege("
+                ":role_name,'app_secure','USAGE')"
+            ),
+            {"role_name": runtime},
+        ).scalar_one():
+            raise RuntimeError(
+                f"PAY-8 refuses preexisting app_secure USAGE for {runtime}"
+            )
+
     if not bind.execute(
         sa.text(
             """
@@ -1733,6 +1745,10 @@ def _install_functions(bind) -> None:
                 f"GRANT EXECUTE ON FUNCTION {signature} TO app_runtime"
             )
         op.execute(
+            "GRANT USAGE ON SCHEMA app_secure "
+            "TO finance_payment_runtime, finance_reconciliation_runtime"
+        )
+        op.execute(
             f"GRANT EXECUTE ON FUNCTION {_RECONCILE_OPERATION} "
             "TO finance_reconciliation_runtime"
         )
@@ -1846,6 +1862,10 @@ def downgrade() -> None:
             op.execute(
                 f"REVOKE EXECUTE ON FUNCTION {signature} FROM app_runtime"
             )
+        op.execute(
+            "REVOKE USAGE ON SCHEMA app_secure "
+            "FROM finance_payment_runtime, finance_reconciliation_runtime"
+        )
         for signature in (
             _FAIL_WEBHOOK,_COMPLETE_WEBHOOK,_CLAIM_NEXT_WEBHOOK,
             _CLAIM_WEBHOOK,_RECORD_WEBHOOK,_RECONCILE_OPERATION,
