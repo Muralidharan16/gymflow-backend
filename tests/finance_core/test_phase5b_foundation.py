@@ -30,6 +30,8 @@ from app.finance_core.models import (
     FinanceMemberSubscriptionCheckoutBinding,
     FinanceMemberSubscriptionFinanceBinding,
     FinanceMonetaryCommand,
+    FinanceOfflinePaymentEvent,
+    FinanceOfflinePaymentRequest,
     FinancePaymentContext,
     FinanceMembershipPlanTaxProfile,
     FinanceLegalEntity,
@@ -81,6 +83,8 @@ FINANCE_TABLES = {
     "audit_events",
     "idempotency_keys",
     "monetary_commands",
+    "offline_payment_requests",
+    "offline_payment_events",
     "outbox_events",
 }
 
@@ -107,6 +111,8 @@ MODEL_TABLES = {
         FinanceMemberSubscriptionCheckoutBinding,
         FinanceMemberSubscriptionFinanceBinding,
         FinanceMonetaryCommand,
+        FinanceOfflinePaymentEvent,
+        FinanceOfflinePaymentRequest,
         FinancePaymentContext,
         FinanceMembershipPlanTaxProfile,
         FinanceLegalEntity,

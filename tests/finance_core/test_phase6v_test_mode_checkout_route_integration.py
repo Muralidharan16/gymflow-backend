@@ -300,7 +300,8 @@ def test_phase6v_has_no_default_network_client_frontend_or_subscription_behavior
     assert "finance_payment_api_enabled = false" in combined
     assert "razorpay.client" not in combined
     assert "razorpayclient" not in combined
-    assert "requests" not in combined
+    assert "import requests" not in combined
+    assert "from requests" not in combined
     assert "httpx" not in combined
     assert "aiohttp" not in combined
     assert "urllib" not in combined

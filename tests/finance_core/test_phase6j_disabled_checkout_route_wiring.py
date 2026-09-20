@@ -200,7 +200,8 @@ def test_phase6j_source_has_no_live_provider_frontend_subscription_or_production
     combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in finance_root.rglob("*.py"))
 
     assert "finance_payment_api_enabled = false" in combined
-    assert "requests" not in combined
+    assert "import requests" not in combined
+    assert "from requests" not in combined
     assert "httpx" not in combined
     assert "aiohttp" not in combined
     assert "urllib" not in combined

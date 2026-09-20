@@ -273,7 +273,8 @@ def test_phase6u_does_not_add_default_network_client_public_enablement_or_fronte
     assert "require_finance_payment_api_enabled" in combined
     assert "razorpay.client" not in combined
     assert "razorpayclient" not in combined
-    assert "requests" not in combined
+    assert "import requests" not in combined
+    assert "from requests" not in combined
     assert "httpx" not in combined
     assert "aiohttp" not in combined
     assert "urllib" not in combined

@@ -38,6 +38,7 @@ APP_PRIVATE_FILES = {
     "f71f231fb001_rbac_hardening_phase_10_partitioned_.py",
     "zd07d8e9f0a3e_p4d_refund_obligation_resolution.py",
     "ze07d8e9f0a3f_audit_partition_lifecycle.py",
+    "zq07d8e9f0a51_pay6_offline_payments.py",
 }
 
 APP_RLS_EXECUTOR_FILES = {
@@ -511,6 +512,10 @@ def test_complete_app_private_ddl_category_allowlist_is_exact() -> None:
             "grant_schema",
             "revoke_function",
             "revoke_schema",
+        },
+        "zq07d8e9f0a51_pay6_offline_payments.py": {
+            "create_private_table",
+            "drop_private_table",
         },
     }
     actual = {

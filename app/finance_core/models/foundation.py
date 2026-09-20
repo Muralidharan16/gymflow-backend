@@ -403,6 +403,150 @@ class FinanceTaxRecord(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
 
 
+class FinanceOfflinePaymentRequest(Base):
+    __tablename__ = "offline_payment_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay6_offline_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["payment_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_pay6_offline_payment_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("prepare_command_id", name="uq_pay6_offline_prepare_command"),
+        UniqueConstraint("approval_command_id", name="uq_pay6_offline_approval_command"),
+        UniqueConstraint("rejection_command_id", name="uq_pay6_offline_rejection_command"),
+        UniqueConstraint("payment_id", name="uq_pay6_offline_payment"),
+        UniqueConstraint(
+            "organization_id",
+            "payment_method",
+            "reference_code",
+            name="uq_pay6_offline_reference",
+        ),
+        CheckConstraint(
+            "payment_method IN ('cash','bank_transfer','cheque')",
+            name="chk_pay6_offline_method",
+        ),
+        CheckConstraint("amount > 0", name="chk_pay6_offline_amount"),
+        CheckConstraint(
+            "status IN ('prepared','approved','rejected')",
+            name="chk_pay6_offline_status",
+        ),
+        Index(
+            "ix_pay6_offline_requests_org_status",
+            "organization_id",
+            "status",
+            "prepared_at",
+            "id",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    payment_method: Mapped[str] = mapped_column(String(24), nullable=False)
+    reference_code: Mapped[str] = mapped_column(String(120), nullable=False)
+    proof_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'prepared'")
+    )
+    prepared_actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    prepared_actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    prepare_command_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.monetary_commands.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    approved_actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    approved_actor_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    approval_command_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.monetary_commands.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    rejected_actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    rejected_actor_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    rejection_command_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.monetary_commands.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    rejection_reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    prepared_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceOfflinePaymentEvent(Base):
+    __tablename__ = "offline_payment_events"
+    __table_args__ = (
+        UniqueConstraint("monetary_command_id", name="uq_pay6_offline_event_command"),
+        CheckConstraint(
+            "event_type IN ('offline_payment.prepared','offline_payment.approved','offline_payment.rejected')",
+            name="chk_pay6_offline_event_type",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    offline_payment_request_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.offline_payment_requests.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    monetary_command_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.monetary_commands.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    proof_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
 class FinancePayment(Base):
     __tablename__ = "payments"
     __table_args__ = (

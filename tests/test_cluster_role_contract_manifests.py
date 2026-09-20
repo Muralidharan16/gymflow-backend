@@ -20,8 +20,8 @@ OWNERSHIP_MANIFEST = (
     / "ownership.v1.json"
 )
 EXPECTED_OWNERSHIP_SHA256 = (
-    "17e11cca82365baa2df8eaf2e440b4e9"
-    "c803e239226ae4b29a38f94c02a8bfe3"
+    "21d2ccaedb5c4a46e3f6e39393f6f53b"
+    "d1f4fbac42d0b7bba1c6471ebcd411b1"
 )
 
 
@@ -328,7 +328,7 @@ def test_ownership_manifest_matches_reviewed_projection() -> None:
 
     ownership = json.loads(payload.decode("utf-8"))
     objects = ownership["objects"]
-    assert len(objects) == 209
+    assert len(objects) == 217
     assert not any(record["object"] == "IF" for record in objects)
     assert {
         "dynamic": False,
@@ -490,3 +490,27 @@ def test_pay5_finance_event_delivery_ownership_projection_is_exact() -> None:
 
     forbidden = set(bundle.ownership["forbidden_object_owners"])
     assert {"worker_runtime", "app_runtime"} <= forbidden
+
+
+def test_pay6_offline_payment_ownership_projection_is_exact() -> None:
+    bundle = load_contract_bundle()
+    by_name = {record["object"]: record for record in bundle.ownership["objects"]}
+
+    for name in (
+        "finance.offline_payment_requests",
+        "finance.offline_payment_events",
+    ):
+        assert by_name[name]["target_owner"] == "migration_owner"
+
+    for name in (
+        "app_secure.pay6_reserve_offline_command(text,text,text,text)",
+        "app_secure.pay6_complete_offline_command(uuid,text)",
+        "app_secure.pay6_reject_offline_event_mutation()",
+        "app_secure.prepare_offline_payment(uuid,text,numeric,text,text,text,text)",
+        "app_secure.approve_offline_payment(uuid,text)",
+        "app_secure.reject_offline_payment(uuid,text,text)",
+    ):
+        assert by_name[name]["target_owner"] == "app_security_owner"
+
+    forbidden = set(bundle.ownership["forbidden_object_owners"])
+    assert {"app_runtime", "worker_runtime"} <= forbidden

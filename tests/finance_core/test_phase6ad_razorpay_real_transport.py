@@ -218,7 +218,12 @@ def test_phase6ad_source_scope_has_no_sdk_dependency_frontend_or_subscription_be
     assert "http.client" in combined
     assert "razorpay.client" not in combined
     assert "razorpayclient" not in combined
-    assert "requests" not in combined
+    # Ban the third-party HTTP client dependency, not ordinary domain words
+    # such as PAY-6's finance.offline_payment_requests table.
+    for path in finance_root.rglob("*.py"):
+        source = path.read_text(encoding="utf-8").lower()
+        assert "import requests" not in source
+        assert "from requests" not in source
     assert "httpx" not in combined
     assert "aiohttp" not in combined
     assert "urllib" not in combined

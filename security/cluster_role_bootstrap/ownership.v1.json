@@ -391,6 +391,14 @@
     },
     {
       "dynamic": false,
+      "object": "app_secure.approve_offline_payment(uuid,text)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-6 maker/checker approval capability executes under reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
       "object": "app_secure.claim_member_subscription_finance_events(uuid,integer,integer)",
       "object_type": "FUNCTION",
       "parent_relation": null,
@@ -479,10 +487,50 @@
     },
     {
       "dynamic": false,
+      "object": "app_secure.pay6_complete_offline_command(uuid,text)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-6 monetary-command completion helper executes under reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.pay6_reject_offline_event_mutation()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-6 immutable offline-event trigger executes under reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.pay6_reserve_offline_command(text,text,text,text)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-6 monetary-command reservation helper executes under reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.prepare_offline_payment(uuid,text,numeric,text,text,text,text)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-6 bounded offline-payment preparation capability executes under reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
       "object": "app_secure.record_member_subscription_finance_binding(uuid,uuid)",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "PAY-4 immutable Finance binding capability executes under the reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.reject_offline_payment(uuid,text,text)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-6 bounded offline-payment rejection capability executes under reduced security owner.",
       "target_owner": "app_security_owner"
     },
     {
@@ -1291,6 +1339,22 @@
       "object_type": "TABLE",
       "parent_relation": null,
       "policy": "PAY-3 durable monetary-command evidence is owned by migration_owner; runtime capabilities remain table-blind.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.offline_payment_events",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-6 append-only offline-payment audit evidence is migration-owned.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.offline_payment_requests",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-6 authoritative maker/checker offline-payment request evidence is migration-owned.",
       "target_owner": "migration_owner"
     },
     {

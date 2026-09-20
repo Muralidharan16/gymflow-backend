@@ -260,7 +260,12 @@ def test_phase6e_has_no_public_api_frontend_provider_network_or_subscription_beh
 
     assert "finance_payment_api_enabled = false" in combined
     assert "require_finance_payment_api_enabled" in combined
-    assert "requests" not in combined
+    # Ban the third-party HTTP client dependency, not ordinary domain words
+    # such as PAY-6's finance.offline_payment_requests table.
+    for source_path in finance_root.rglob("*.py"):
+        source = source_path.read_text(encoding="utf-8").lower()
+        assert "import requests" not in source
+        assert "from requests" not in source
     assert "httpx" not in combined
     assert "aiohttp" not in combined
     assert "urllib" not in combined

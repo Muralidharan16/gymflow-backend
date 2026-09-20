@@ -289,7 +289,8 @@ def test_phase6d_has_no_public_api_frontend_network_or_subscription_behavior():
 
     assert "finance_payment_api_enabled = false" in combined
     assert "require_finance_payment_api_enabled" in combined
-    assert "requests" not in combined
+    assert "import requests" not in combined
+    assert "from requests" not in combined
     assert "httpx" not in combined
     assert "aiohttp" not in combined
     assert "urllib" not in combined

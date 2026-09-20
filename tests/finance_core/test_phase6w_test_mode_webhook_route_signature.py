@@ -313,7 +313,12 @@ def test_phase6w_jwt_exemption_is_exact_path_only_and_no_network_or_subscription
     assert "finance_payment_api_enabled = false" in combined
     assert "razorpay.client" not in combined
     assert "razorpayclient" not in combined
-    assert "requests" not in combined
+    # Ban the third-party HTTP client dependency, not ordinary domain words
+    # such as PAY-6's finance.offline_payment_requests table.
+    for source_path in finance_root.rglob("*.py"):
+        source = source_path.read_text(encoding="utf-8").lower()
+        assert "import requests" not in source
+        assert "from requests" not in source
     assert "httpx" not in combined
     assert "aiohttp" not in combined
     assert "urllib" not in combined

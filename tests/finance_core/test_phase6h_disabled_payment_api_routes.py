@@ -142,7 +142,8 @@ def test_phase6h_source_has_no_real_provider_network_secret_or_subscription_beha
     finance_root = repo_root / "app" / "finance_core"
     combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in finance_root.rglob("*.py"))
 
-    assert "requests" not in combined
+    assert "import requests" not in combined
+    assert "from requests" not in combined
     assert "httpx" not in combined
     assert "aiohttp" not in combined
     assert "urllib" not in combined
