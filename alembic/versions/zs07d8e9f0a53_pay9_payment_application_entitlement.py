@@ -589,13 +589,11 @@ def _install_function(bind) -> None:
                             SELECT la.id INTO v_clearing_account
                             FROM finance.ledger_accounts la
                             WHERE la.legal_entity_id=v_payment.legal_entity_id
-                              AND la.code='PAYMENT_CLEARING'
-                              AND la.status='active';
+                              AND la.code='PAYMENT_CLEARING';
                             SELECT la.id INTO v_ar_account
                             FROM finance.ledger_accounts la
                             WHERE la.legal_entity_id=v_payment.legal_entity_id
-                              AND la.code='AR'
-                              AND la.status='active';
+                              AND la.code='AR';
                             IF v_clearing_account IS NULL
                                OR v_ar_account IS NULL
                             THEN
