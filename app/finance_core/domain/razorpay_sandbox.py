@@ -298,7 +298,11 @@ def map_razorpay_refund_response(
             operation="refund_response",
         ) from exc
 
-    if not provider_refund_id.startswith("rfnd_"):
+    if (
+        not provider_refund_id.startswith("rfnd_")
+        or len(provider_refund_id) <= 5
+        or not provider_refund_id.replace("_", "").isalnum()
+    ):
         raise RazorpayProviderError(
             "RAZORPAY_REFUND_ID_INVALID",
             "Razorpay refund id was invalid.",
