@@ -3,7 +3,6 @@
   "name": "Refund and Credit-Note Provider Execution",
   "inherited_pay9_sha": "581c3d83a1e78ba59213c90309166913fedf9c3e",
   "predecessor_revision": "zs07d8e9f0a53",
-  "revision": "zt07d8e9f0a54",
   "refund_truth": "finance.refunds",
   "execution_truth": "finance.refund_execution_commands",
   "evidence_relation": "finance.refund_provider_evidence",
@@ -27,5 +26,21 @@
   "live_money_movement": false,
   "merge_authorized": false,
   "release_authorized": false,
-  "deployment_authorized": false
+  "deployment_authorized": false,
+  "revisions": {
+    "authority_schema": "zt07d8e9f0a54",
+    "execution_protocol": "zu07d8e9f0a55"
+  },
+  "migration_policy": "append_only_after_exact_certification",
+  "execution_claim_modes": [
+    "submit",
+    "discover",
+    "fetch"
+  ],
+  "provider_retry_rule": "only known pre-send failure may resubmit; ambiguous attempts reconcile",
+  "reconciliation": {
+    "lost_provider_ref": "discover by payment and deterministic receipt",
+    "known_provider_ref": "fetch exact refund",
+    "bounded": true
+  }
 }
