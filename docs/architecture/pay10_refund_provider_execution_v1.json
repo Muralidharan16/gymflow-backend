@@ -1,0 +1,109 @@
+{
+  "phase": "PAY-10",
+  "name": "Refund and Credit-Note Provider Execution",
+  "inherited_pay9_sha": "581c3d83a1e78ba59213c90309166913fedf9c3e",
+  "predecessor_revision": "zs07d8e9f0a53",
+  "revision": "zt07d8e9f0a54",
+  "refund_truth": "finance.refunds",
+  "execution_truth": "finance.refund_execution_commands",
+  "evidence_relation": "finance.refund_provider_evidence",
+  "credit_note_provenance_relation": "finance.refund_credit_note_links",
+  "credit_note_series_relation": "finance.credit_note_series",
+  "terminal_refund_requires": [
+    "authoritative_provider_evidence",
+    "exact_refund_command_payment_org_currency_binding",
+    "refundable_balance",
+    "issued_credit_note_backing",
+    "current_execution_fence"
+  ],
+  "ambiguous_provider_outcome": "reconciliation_pending",
+  "duplicate_effect_policy": "same logical provider receipt; exact replay no-op; conflicting replay fail closed",
+  "refund_cash_ledger": [
+    "debit:AR",
+    "credit:PAYMENT_CLEARING"
+  ],
+  "revenue_tax_reversal_authority": "credit_note_only",
+  "live_provider": false,
+  "live_money_movement": false,
+  "merge_authorized": false,
+  "release_authorized": false,
+  "deployment_authorized": false,
+  "provider_adapter": {
+    "provider_code": "razorpay_sandbox",
+    "environments": [
+      "sandbox",
+      "test"
+    ],
+    "submit_endpoint": "POST /v1/payments/:payment_id/refund",
+    "fetch_endpoint": "GET /v1/payments/:payment_id/refunds/:refund_id",
+    "normalized_states": [
+      "pending",
+      "processed",
+      "failed"
+    ],
+    "provider_receipt": "sha256(command_id:refund_id) deterministic receipt",
+    "duplicate_receipt_http_400": "reconciliation_required",
+    "automatic_retry": "known non-acceptance only",
+    "database_mutation": false
+  },
+  "execution_reconciliation": {
+    "claim_capability": "app_secure.claim_pay10_refund_provider_execution(uuid,integer)",
+    "request_binding_capability": "app_secure.bind_pay10_refund_provider_request(uuid,uuid,bigint,text,text,numeric,text,text)",
+    "submission_outcome_capability": "app_secure.record_pay10_refund_provider_outcome(uuid,uuid,bigint,text,text,text,timestamp with time zone)",
+    "unknown_outcome_capability": "app_secure.record_pay10_refund_provider_unknown(uuid,uuid,bigint,text)",
+    "failure_capability": "app_secure.record_pay10_refund_provider_failure(uuid,uuid,bigint,text,boolean)",
+    "external_evidence_capability": "app_secure.record_pay10_refund_external_evidence(uuid,text,text,text,text,text,text,timestamp with time zone)",
+    "execution_role": "finance_refund_runtime",
+    "reconciliation_role": "finance_reconciliation_runtime",
+    "lease_minutes": 10,
+    "processed_provider_state_local_command_state": "reconciliation_pending",
+    "unknown_provider_state_local_command_state": "reconciliation_pending",
+    "retry_rule": "known non-acceptance only",
+    "active_lease_blocks_reconciliation": true,
+    "stale_fence_mutation": false,
+    "direct_finance_table_dml": false,
+    "financial_finalization": false,
+    "ledger_posting": false,
+    "outbox_emission": false,
+    "refund_success_transition": false
+  },
+  "execution_revision": "zu07d8e9f0a55",
+  "finalization_revision": "zv07d8e9f0a56",
+  "finalization": {
+    "credit_note_binding_capability": "app_secure.link_pay10_refund_credit_note(uuid,uuid)",
+    "finalization_capability": "app_secure.finalize_pay10_refund(uuid)",
+    "refund_ledger": {
+      "debit": "AR",
+      "credit": "PAYMENT_CLEARING"
+    },
+    "revenue_tax_reversal_authority": "credit_note_only",
+    "terminal_credit_note_backing": "exact_issued_backing",
+    "outbox_events": [
+      "finance.refund.completed",
+      "finance.payment.refund_state.changed",
+      "finance.ledger.entry.posted"
+    ]
+  },
+  "worker_recovery": {
+    "processor": "app.finance_core.services.refund_provider_worker.RefundProviderExecutionProcessor",
+    "transaction_boundary": [
+      "claim_commit",
+      "request_bind_commit",
+      "provider_io",
+      "outcome_commit",
+      "task_ack"
+    ],
+    "crash_points": [
+      "after_claim_commit",
+      "after_bind_commit",
+      "after_provider_effect",
+      "after_outcome_commit"
+    ],
+    "provider_success_db_ack_loss": "same_identity_redelivery_or_reconciliation",
+    "db_commit_broker_ack_loss": "durable_state_noop_redelivery",
+    "celery_late_ack": true,
+    "reject_on_worker_lost": true,
+    "prefetch_multiplier": 1,
+    "production_runtime_binding": false
+  }
+}

@@ -1103,6 +1103,11 @@ class FinancePaymentEvent(Base):
 class FinanceRefund(Base):
     __tablename__ = "refunds"
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_pay10_refunds_id_org",
+        ),
         CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
         CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
         CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
@@ -1165,6 +1170,27 @@ class FinanceRefundExecutionCommand(Base):
             "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
             name="chk_finance_refund_execution_provider_evidence",
         ),
+        CheckConstraint(
+            "request_sha256 IS NULL OR request_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_pay10_refund_command_request_hash",
+        ),
+        CheckConstraint(
+            "provider_accepted_at IS NULL OR first_attempted_at IS NOT NULL",
+            name="chk_pay10_refund_command_attempt_timestamps",
+        ),
+        CheckConstraint(
+            "completed_at IS NULL OR provider_accepted_at IS NOT NULL",
+            name="chk_pay10_refund_command_completion_timestamps",
+        ),
+        Index(
+            "uq_pay10_refund_command_provider_ref",
+            "provider_code",
+            "provider_refund_ref",
+            unique=True,
+            postgresql_where=text(
+                "provider_code IS NOT NULL AND provider_refund_ref IS NOT NULL"
+            ),
+        ),
         Index(
             "ix_finance_refund_execution_claimable",
             "process_after",
@@ -1207,11 +1233,20 @@ class FinanceRefundExecutionCommand(Base):
     provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
     provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
     provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    request_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    first_attempted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    provider_accepted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
 
 class FinanceCreditNote(Base):
     __tablename__ = "credit_notes"
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_pay10_credit_notes_id_org",
+        ),
         UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
         CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
         CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
@@ -1248,11 +1283,247 @@ class FinanceCreditNoteLine(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
 
 
+class FinanceCreditNoteSeries(Base):
+    __tablename__ = "credit_note_series"
+    __table_args__ = (
+        UniqueConstraint(
+            "legal_entity_id",
+            "gst_registration_id",
+            "financial_year",
+            "series_code",
+            name="uq_pay10_credit_note_series_scope",
+        ),
+        CheckConstraint(
+            "financial_year ~ '^[0-9]{4}$'",
+            name="chk_pay10_credit_note_series_year",
+        ),
+        CheckConstraint(
+            "series_code ~ '^[A-Z0-9_-]+$'",
+            name="chk_pay10_credit_note_series_code",
+        ),
+        CheckConstraint(
+            "prefix ~ '^[A-Z0-9/-]+$' AND char_length(prefix) BETWEEN 1 AND 12",
+            name="chk_pay10_credit_note_series_prefix",
+        ),
+        CheckConstraint(
+            "last_number >= 0",
+            name="chk_pay10_credit_note_series_last_number",
+        ),
+        CheckConstraint(
+            "status IN ('active','inactive')",
+            name="chk_pay10_credit_note_series_status",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    series_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    prefix: Mapped[str] = mapped_column(String(12), nullable=False)
+    last_number: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("0")
+    )
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'active'")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceRefundCreditNoteLink(Base):
+    __tablename__ = "refund_credit_note_links"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["refund_id", "organization_id"],
+            ["finance.refunds.id", "finance.refunds.organization_id"],
+            name="fk_pay10_refund_credit_link_refund_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["credit_note_id", "organization_id"],
+            ["finance.credit_notes.id", "finance.credit_notes.organization_id"],
+            name="fk_pay10_refund_credit_link_credit_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "refund_id",
+            "credit_note_id",
+            name="uq_pay10_refund_credit_link",
+        ),
+        UniqueConstraint(
+            "credit_note_id",
+            name="uq_pay10_refund_credit_note_single_refund",
+        ),
+        CheckConstraint(
+            "amount > 0",
+            name="chk_pay10_refund_credit_link_amount",
+        ),
+        Index(
+            "ix_pay10_refund_credit_note_refund",
+            "organization_id",
+            "refund_id",
+            "created_at",
+            "id",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceRefundProviderEvidence(Base):
+    __tablename__ = "refund_provider_evidence"
+    __table_args__ = (
+        CheckConstraint(
+            "provider_code ~ '^[a-z0-9_]+$'",
+            name="chk_pay10_refund_evidence_provider",
+        ),
+        CheckConstraint(
+            "evidence_source IN ('submission','webhook','reconciliation')",
+            name="chk_pay10_refund_evidence_source",
+        ),
+        CheckConstraint(
+            "normalized_status IN ('pending','processed','failed')",
+            name="chk_pay10_refund_evidence_status",
+        ),
+        CheckConstraint(
+            "request_sha256 ~ '^[0-9a-f]{64}$' "
+            "AND evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_pay10_refund_evidence_hashes",
+        ),
+        CheckConstraint(
+            "normalized_status = 'failed' OR provider_refund_ref IS NOT NULL",
+            name="chk_pay10_refund_evidence_reference",
+        ),
+        CheckConstraint(
+            "evidence_source <> 'webhook' OR provider_event_id IS NOT NULL",
+            name="chk_pay10_refund_evidence_event_source",
+        ),
+        UniqueConstraint(
+            "command_id",
+            "evidence_sha256",
+            name="uq_pay10_refund_evidence_hash",
+        ),
+        Index(
+            "uq_pay10_refund_provider_event",
+            "provider_code",
+            "provider_event_id",
+            unique=True,
+            postgresql_where=text("provider_event_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_pay10_refund_provider_reference",
+            "provider_code",
+            "provider_refund_ref",
+            "recorded_at",
+            "id",
+            postgresql_where=text("provider_refund_ref IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    command_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "finance.refund_execution_commands.command_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    refund_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.refunds.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    payment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.payments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    evidence_source: Mapped[str] = mapped_column(String(24), nullable=False)
+    normalized_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    request_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    evidence_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    occurred_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
 class FinanceLedgerEntry(Base):
     __tablename__ = "ledger_entries"
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
         CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        Index(
+            "uq_pay10_refund_ledger_source",
+            "source_id",
+            unique=True,
+            postgresql_where=text(
+                "source_type = 'refund' AND status = 'posted'"
+            ),
+        ),
         {"schema": SCHEMA},
     )
 
