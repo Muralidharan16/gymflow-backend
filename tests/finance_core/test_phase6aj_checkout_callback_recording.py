@@ -217,12 +217,18 @@ async def test_same_order_different_payment_and_same_payment_different_order_are
     client = FakeRazorpayClient()
     first_checkout, _client = await orchestrate(command(idempotency_key="phase6aj-order-one"), client=client)
     second_checkout, _client = await orchestrate(command(idempotency_key="phase6aj-order-two"), client=client)
-    await record(callback_command(order_id="order_test_1", payment_id="pay_shared", idempotency_key="phase6aj-bind-first"))
+    await record(
+        callback_for_checkout(
+            first_checkout,
+            payment_id="pay_shared",
+            idempotency_key="phase6aj-bind-first",
+        )
+    )
 
     with pytest.raises(FinanceCheckoutCallbackError) as different_payment:
         await record(
-            callback_command(
-                order_id=checkout.provider_order_id,
+            callback_for_checkout(
+                first_checkout,
                 payment_id="pay_different",
                 idempotency_key="phase6aj-different-payment",
             )
@@ -231,8 +237,8 @@ async def test_same_order_different_payment_and_same_payment_different_order_are
 
     with pytest.raises(FinanceCheckoutCallbackError) as different_order:
         await record(
-            callback_command(
-                order_id="order_test_2",
+            callback_for_checkout(
+                second_checkout,
                 payment_id="pay_shared",
                 idempotency_key="phase6aj-different-order",
             )
