@@ -115,12 +115,17 @@ def _require_predecessor(bind) -> None:
         ).scalar_one():
             raise RuntimeError(f"PAY-9 predecessor relation missing: {relation}")
 
-    if bind.execute(
+    if not bind.execute(
         sa.text(
             """
-            SELECT pg_catalog.to_regprocedure(
-                'app_secure.confirm_finance_provider_evidence(text,text,text,text,text,bigint,text,text,text,text)'
-            ) IS NULL
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_proc p
+                JOIN pg_catalog.pg_namespace n
+                  ON n.oid=p.pronamespace
+                WHERE n.nspname='app_secure'
+                  AND p.proname='confirm_finance_provider_evidence'
+            )
             """
         )
     ).scalar_one():
