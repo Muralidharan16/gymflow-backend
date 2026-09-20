@@ -973,17 +973,17 @@ def _install_functions(bind) -> None:
                     END IF;
                 END IF;
 
-                UPDATE finance.provider_operations
+                UPDATE finance.provider_operations AS po
                 SET status=p_outcome,
                     provider_object_id=CASE
                         WHEN p_provider_object_id IS NOT NULL
                         THEN p_provider_object_id
-                        ELSE provider_object_id
+                        ELSE po.provider_object_id
                     END,
                     provider_evidence_sha256=CASE
                         WHEN p_evidence_sha256 IS NOT NULL
                         THEN p_evidence_sha256
-                        ELSE provider_evidence_sha256
+                        ELSE po.provider_evidence_sha256
                     END,
                     lease_owner=NULL,
                     lease_until=NULL,
@@ -999,8 +999,8 @@ def _install_functions(bind) -> None:
                         ELSE NULL
                     END,
                     updated_at=pg_catalog.clock_timestamp()
-                WHERE id=v_operation.id
-                RETURNING * INTO v_operation;
+                WHERE po.id=v_operation.id
+                RETURNING po.* INTO v_operation;
 
                 RETURN QUERY SELECT
                     v_operation.id,v_operation.status::text,
@@ -1122,12 +1122,12 @@ def _install_functions(bind) -> None:
                         USING ERRCODE='22023';
                 END IF;
 
-                UPDATE finance.provider_operations
+                UPDATE finance.provider_operations AS po
                 SET status=p_outcome,
                     provider_object_id=CASE
                         WHEN p_provider_object_id IS NOT NULL
                         THEN p_provider_object_id
-                        ELSE provider_object_id
+                        ELSE po.provider_object_id
                     END,
                     provider_evidence_sha256=p_evidence_sha256,
                     last_error_code=CASE
@@ -1136,8 +1136,8 @@ def _install_functions(bind) -> None:
                     END,
                     completed_at=pg_catalog.clock_timestamp(),
                     updated_at=pg_catalog.clock_timestamp()
-                WHERE id=v_operation.id
-                RETURNING * INTO v_operation;
+                WHERE po.id=v_operation.id
+                RETURNING po.* INTO v_operation;
 
                 RETURN QUERY SELECT
                     v_operation.id,v_operation.status::text,
