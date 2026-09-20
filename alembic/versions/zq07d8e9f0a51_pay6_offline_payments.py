@@ -1218,6 +1218,16 @@ def _install_functions(bind) -> None:
             op.execute(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC")
         for signature in (_PREPARE,_APPROVE,_REJECT):
             op.execute(f"GRANT EXECUTE ON FUNCTION {signature} TO app_runtime")
+
+        # migration_owner owns the trigger target table but intentionally has
+        # no persistent app_secure visibility. Grant only what PostgreSQL needs
+        # to bind the trigger function, then revoke immediately after creation.
+        op.execute("GRANT USAGE ON SCHEMA app_secure TO migration_owner")
+        op.execute(
+            "GRANT EXECUTE ON FUNCTION "
+            "app_secure.pay6_reject_offline_event_mutation() "
+            "TO migration_owner"
+        )
     finally:
         op.execute("RESET ROLE")
 
@@ -1235,6 +1245,19 @@ def _install_functions(bind) -> None:
         FOR EACH ROW EXECUTE FUNCTION app_secure.pay6_reject_offline_event_mutation()
         """
     )
+
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        op.execute(
+            "REVOKE EXECUTE ON FUNCTION "
+            "app_secure.pay6_reject_offline_event_mutation() "
+            "FROM migration_owner"
+        )
+        op.execute(
+            "REVOKE USAGE ON SCHEMA app_secure FROM migration_owner"
+        )
+    finally:
+        op.execute("RESET ROLE")
 
 
 def upgrade() -> None:
