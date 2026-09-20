@@ -27,6 +27,9 @@ from app.finance_core.services.provider_webhook_inbox import (
     FinanceProviderWebhookInboxService,
     ProviderWebhookReceipt,
 )
+from app.finance_core.services.payment_settlement import (
+    FinanceVerifiedPaymentSettlementService,
+)
 
 
 RAZORPAY_EVENT_STATUS_MAP = {
@@ -56,6 +59,7 @@ class RazorpayWebhookConfirmationService:
             provider_code=self._provider_config.provider_code,
         )
         self._inbox = FinanceProviderWebhookInboxService(session)
+        self._settlement = FinanceVerifiedPaymentSettlementService(session)
 
     async def record_verified_webhook(
         self,
@@ -94,6 +98,15 @@ class RazorpayWebhookConfirmationService:
         result = await self._confirmation.confirm_provider_evidence(
             claimed.confirmation_command()
         )
+        # PAY-9 deliberately separates provider capture from allocation. Only
+        # after PAY-8 has persisted and validated provider evidence may the
+        # bounded settlement capability derive the canonical invoice and apply
+        # money. The capability never accepts a caller-selected invoice/amount.
+        if result.payment_status in {"captured", "settled"}:
+            await self._settlement.apply_verified_provider_payment(
+                payment_id=result.payment_id,
+                payment_event_id=result.payment_event_id,
+            )
         return NormalizedProviderEventResult(
             payment_event_id=result.payment_event_id,
             provider_code=result.provider_code,

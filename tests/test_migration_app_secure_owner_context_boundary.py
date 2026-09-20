@@ -113,6 +113,9 @@ _PAY6_OFFLINE_PAYMENT_MIGRATION = (
 _PAY8_DURABLE_PROVIDER_MIGRATION = (
     "zr07d8e9f0a52_pay8_durable_checkout_webhooks.py"
 )
+_PAY9_PAYMENT_APPLICATION_MIGRATION = (
+    "zs07d8e9f0a53_pay9_payment_application_entitlement.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -158,6 +161,7 @@ APP_SECURE_FILES.update(
         _PAY5_FINANCE_EVENT_DELIVERY_MIGRATION,
         _PAY6_OFFLINE_PAYMENT_MIGRATION,
         _PAY8_DURABLE_PROVIDER_MIGRATION,
+        _PAY9_PAYMENT_APPLICATION_MIGRATION,
     }
 )
 
@@ -330,6 +334,14 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # are removed by dropping the PAY-8 relations on downgrade.
         _PAY8_DURABLE_PROVIDER_MIGRATION: {
             "create_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
+        # PAY-9 installs one tenant RLS policy and temporarily opens schema
+        # CREATE only while app_security_owner installs the bounded capability.
+        _PAY9_PAYMENT_APPLICATION_MIGRATION: {
+            "create_policy",
+            "drop_policy",
             "grant_schema",
             "revoke_schema",
         },
