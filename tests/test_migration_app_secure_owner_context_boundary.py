@@ -116,6 +116,9 @@ _PAY8_DURABLE_PROVIDER_MIGRATION = (
 _PAY9_PAYMENT_APPLICATION_MIGRATION = (
     "zs07d8e9f0a53_pay9_payment_application_entitlement.py"
 )
+_PAY10_REFUND_PROVIDER_MIGRATION = (
+    "zt07d8e9f0a54_pay10_refund_provider_authority.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -162,6 +165,7 @@ APP_SECURE_FILES.update(
         _PAY6_OFFLINE_PAYMENT_MIGRATION,
         _PAY8_DURABLE_PROVIDER_MIGRATION,
         _PAY9_PAYMENT_APPLICATION_MIGRATION,
+        _PAY10_REFUND_PROVIDER_MIGRATION,
     }
 )
 
@@ -344,6 +348,13 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "drop_policy",
             "grant_schema",
             "revoke_schema",
+        },
+        # PAY-10-A adds FORCE-RLS Finance evidence/provenance tables and
+        # installs the immutable evidence trigger under app_security_owner.
+        # It does not expose app_secure schema authority to runtime identities.
+        _PAY10_REFUND_PROVIDER_MIGRATION: {
+            "create_policy",
+            "drop_policy",
         },
         A1.name: view_contract,
     }
