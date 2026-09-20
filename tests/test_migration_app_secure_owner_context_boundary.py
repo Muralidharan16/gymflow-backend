@@ -318,6 +318,8 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         _PAY6_OFFLINE_PAYMENT_MIGRATION: {
             "create_policy",
             "drop_policy",
+            "grant_schema",
+            "revoke_schema",
         },
         A1.name: view_contract,
     }
