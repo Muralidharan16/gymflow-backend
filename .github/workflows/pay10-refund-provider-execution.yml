@@ -25,7 +25,7 @@ env:
 
 jobs:
   contract:
-    name: PAY-10-A static authority and evidence contract
+    name: PAY-10-A/B authority, evidence and provider contract
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -62,12 +62,16 @@ jobs:
           allowed={
               ".github/workflows/pay10-refund-provider-execution.yml",
               "alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py",
+              "app/finance_core/domain/provider_boundary.py",
+              "app/finance_core/domain/razorpay_sandbox.py",
               "app/finance_core/models/__init__.py",
               "app/finance_core/models/foundation.py",
+              "app/finance_core/services/razorpay_sandbox.py",
               "docs/architecture/PAY10_ACCEPTANCE_MATRIX.md",
               "docs/architecture/PAY10_REFUND_CREDIT_NOTE_PROVIDER_EXECUTION.md",
               "docs/architecture/pay10_refund_provider_execution_v1.json",
               "tests/finance_core/admin_database.py",
+              "tests/finance_core/test_pay10_refund_provider_adapter.py",
               "tests/finance_core/test_phase5b_foundation.py",
               "tests/test_migration_app_secure_owner_context_boundary.py",
               "tests/test_pay10_refund_provider_authority_runtime.py",
@@ -80,7 +84,7 @@ jobs:
           }
           if changed != allowed:
               raise SystemExit(
-                  f"PAY-10-A exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"PAY-10-A/B exact scope mismatch: missing={sorted(allowed-changed)}, "
                   f"unexpected={sorted(changed-allowed)}"
               )
           migrations=sorted(
@@ -91,19 +95,22 @@ jobs:
           ]
           if migrations != expected:
               raise SystemExit(f"PAY-10-A migration scope mismatch: {migrations}")
-          print(f"PAY-10-A exact allowlist paths: {len(changed)}")
+          print(f"PAY-10-A/B exact allowlist paths: {len(changed)}")
           PY_SCOPE
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY10_HEAD}"
       - name: PAY-10-A focused static contracts
         run: |
           set -euo pipefail
-          python -m py_compile             alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py             app/finance_core/models/foundation.py             app/finance_core/models/__init__.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py
+          python -m py_compile             alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py             app/finance_core/domain/provider_boundary.py             app/finance_core/domain/razorpay_sandbox.py             app/finance_core/models/foundation.py             app/finance_core/models/__init__.py             app/finance_core/services/razorpay_sandbox.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py
           python -m json.tool             docs/architecture/pay10_refund_provider_execution_v1.json             >/dev/null
-          python -m pytest --noconftest -q --maxfail=1             tests/test_pay10_refund_provider_execution_static.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
+          python -m pytest --noconftest -q --maxfail=1             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_provider_execution_static.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
           echo 'PAY10_A_AUTHORITY_SCHEMA=PASS'
           echo 'PAY10_A_EVIDENCE_IMMUTABILITY=PASS'
           echo 'PAY10_A_TABLE_BLIND_RUNTIME=PASS'
+          echo 'PAY10_B_PROVIDER_NEUTRAL_BOUNDARY=PASS'
+          echo 'PAY10_B_RAZORPAY_TEST_MODE=PASS'
+          echo 'PAY10_B_UNKNOWN_OUTCOME_RECONCILIATION=PASS'
 
   protocol_pg16:
     name: PAY-10-A real PG16 authority and migration proof
@@ -356,8 +363,8 @@ jobs:
   migration_semantics:
     uses: ./.github/workflows/migration-semantics-inventory.yml
 
-  certify_a:
-    name: PAY-10-A authority/evidence decision
+  certify_b:
+    name: PAY-10-B provider adapter decision
     if: ${{ always() }}
     needs:
       - contract
@@ -372,7 +379,7 @@ jobs:
       - migration_semantics
     runs-on: ubuntu-24.04
     steps:
-      - name: Require every PAY-10-A gate
+      - name: Require every PAY-10-A/B gate
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
@@ -386,13 +393,13 @@ jobs:
               if value["result"] != "success"
           }
           if bad:
-              raise SystemExit(f"PAY-10-A prerequisite failure: {bad}")
+              raise SystemExit(f"PAY-10-B prerequisite failure: {bad}")
           PY
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
           ref: ${{ env.PAY10_CANDIDATE_SHA }}
-      - name: Bind exact PAY-10-A candidate
+      - name: Bind exact PAY-10-B candidate
         run: |
           set -euo pipefail
           test "$(git rev-parse "${PAY10_BASE_SHA}^{tree}")" = "${PAY10_BASE_TREE}"
@@ -400,7 +407,7 @@ jobs:
           python - <<'PY'
           import json,os,subprocess
           decision={
-              "phase":"PAY-10-A",
+              "phase":"PAY-10-B",
               "candidate_sha":os.environ["PAY10_CANDIDATE_SHA"],
               "candidate_tree":subprocess.check_output(
                   ["git","rev-parse","HEAD^{tree}"],text=True
@@ -412,7 +419,7 @@ jobs:
               "merge_authorized":False,
               "release_authorized":False,
               "deployment_authorized":False,
-              "decision":"SCHEMA_PASS",
+              "decision":"PROVIDER_ADAPTER_PASS",
           }
           print(json.dumps(decision,indent=2,sort_keys=True))
           PY
@@ -421,6 +428,10 @@ jobs:
           echo 'PAY10_A_DIRECT_DML_DENIAL=PASS'
           echo 'PAY10_A_MIGRATION_LIFECYCLE=PASS'
           echo 'PAY10_A_PAY9_INHERITED=PASS'
+          echo 'PAY10_B_PROVIDER_ADAPTER=PASS'
+          echo 'PAY10_B_DETERMINISTIC_RECEIPT=PASS'
+          echo 'PAY10_B_RECONCILIATION_FETCH=PASS'
+          echo 'PAY10_B_NO_FINANCE_DB_MUTATION=PASS'
           echo 'PAY10_LIVE_PROVIDER=DISABLED'
           echo 'PAY10_LIVE_MONEY_MOVEMENT=DISABLED'
           echo 'PAY10_MERGE=NOT_AUTHORIZED'
