@@ -1,0 +1,31 @@
+{
+  "phase": "PAY-10",
+  "name": "Refund and Credit-Note Provider Execution",
+  "inherited_pay9_sha": "581c3d83a1e78ba59213c90309166913fedf9c3e",
+  "predecessor_revision": "zs07d8e9f0a53",
+  "revision": "zt07d8e9f0a54",
+  "refund_truth": "finance.refunds",
+  "execution_truth": "finance.refund_execution_commands",
+  "evidence_relation": "finance.refund_provider_evidence",
+  "credit_note_provenance_relation": "finance.refund_credit_note_links",
+  "credit_note_series_relation": "finance.credit_note_series",
+  "terminal_refund_requires": [
+    "authoritative_provider_evidence",
+    "exact_refund_command_payment_org_currency_binding",
+    "refundable_balance",
+    "issued_credit_note_backing",
+    "current_execution_fence"
+  ],
+  "ambiguous_provider_outcome": "reconciliation_pending",
+  "duplicate_effect_policy": "same logical provider receipt; exact replay no-op; conflicting replay fail closed",
+  "refund_cash_ledger": [
+    "debit:AR",
+    "credit:PAYMENT_CLEARING"
+  ],
+  "revenue_tax_reversal_authority": "credit_note_only",
+  "live_provider": false,
+  "live_money_movement": false,
+  "merge_authorized": false,
+  "release_authorized": false,
+  "deployment_authorized": false
+}
