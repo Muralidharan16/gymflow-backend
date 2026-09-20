@@ -1694,10 +1694,10 @@ def _install_functions(bind) -> None:
                         USING ERRCODE='40001';
                 END IF;
 
-                UPDATE finance.provider_webhook_inbox
+                UPDATE finance.provider_webhook_inbox AS wi
                 SET status=CASE
                         WHEN p_retryable
-                             AND processing_attempts<max_attempts
+                             AND wi.processing_attempts<wi.max_attempts
                         THEN 'retry'
                         ELSE 'dead_letter'
                     END,
@@ -1705,8 +1705,8 @@ def _install_functions(bind) -> None:
                     lease_until=NULL,
                     last_error_code=p_error_code,
                     updated_at=pg_catalog.clock_timestamp()
-                WHERE id=v_row.id
-                RETURNING * INTO v_row;
+                WHERE wi.id=v_row.id
+                RETURNING wi.* INTO v_row;
 
                 RETURN QUERY SELECT
                     v_row.id,v_row.status::text,
