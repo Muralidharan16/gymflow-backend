@@ -51,7 +51,12 @@ def test_pay10e_unexpected_db_ack_failure_is_not_swallowed():
     assert "except BaseException" in outcome
     assert "await session.rollback()" in outcome
     assert "raise" in outcome
-    assert "return" not in outcome
+    assert (
+        "except BaseException:\n"
+        "                await session.rollback()\n"
+        "                raise\n"
+        "        return receipt"
+    ) in outcome
 
 
 def test_pay10e_inherits_real_late_ack_redelivery_policy():
