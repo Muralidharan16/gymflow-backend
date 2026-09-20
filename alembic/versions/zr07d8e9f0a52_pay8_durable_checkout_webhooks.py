@@ -50,6 +50,7 @@ _RECORD_WEBHOOK = (
     "text,text,text,bigint)"
 )
 _CLAIM_WEBHOOK = "app_secure.claim_finance_provider_webhook(uuid,uuid)"
+_CLAIM_NEXT_WEBHOOK = "app_secure.claim_next_finance_provider_webhook(uuid)"
 _COMPLETE_WEBHOOK = (
     "app_secure.complete_finance_provider_webhook(uuid,uuid,bigint,uuid)"
 )
@@ -1408,6 +1409,78 @@ def _install_functions(bind) -> None:
         )
         op.execute(
             r"""
+            CREATE FUNCTION app_secure.claim_next_finance_provider_webhook(
+                p_lease_owner uuid
+            )
+            RETURNS TABLE(
+                inbox_id uuid,
+                status text,
+                lease_fence bigint,
+                processing_attempts integer,
+                claimed boolean,
+                provider_code text,
+                environment text,
+                provider_event_id text,
+                payload_sha256 text,
+                event_type text,
+                provider_order_ref text,
+                provider_payment_ref text,
+                provider_amount_subunits bigint,
+                provider_currency text,
+                provider_payment_status text,
+                provider_captured boolean,
+                provider_payment_order_ref text,
+                provider_order_entity_ref text,
+                provider_order_status text,
+                provider_event_timestamp bigint
+            )
+            LANGUAGE plpgsql
+            SECURITY DEFINER
+            SET search_path=pg_catalog,public,finance
+            SET row_security=on
+            AS $function$
+            DECLARE
+                v_inbox_id uuid;
+            BEGIN
+                IF NOT pg_catalog.pg_has_role(
+                    session_user,'worker_runtime','MEMBER'
+                ) THEN
+                    RAISE EXCEPTION
+                        'PAY-8 webhook recovery requires worker_runtime'
+                        USING ERRCODE='42501';
+                END IF;
+                IF p_lease_owner IS NULL THEN
+                    RAISE EXCEPTION
+                        'PAY-8 webhook recovery lease owner required'
+                        USING ERRCODE='22023';
+                END IF;
+
+                SELECT w.id INTO v_inbox_id
+                FROM finance.provider_webhook_inbox w
+                WHERE w.status IN ('received','retry')
+                   OR (
+                       w.status='processing'
+                       AND w.lease_until<=pg_catalog.clock_timestamp()
+                   )
+                ORDER BY w.received_at,w.id
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1;
+
+                IF v_inbox_id IS NULL THEN
+                    RETURN;
+                END IF;
+
+                RETURN QUERY
+                SELECT *
+                FROM app_secure.claim_finance_provider_webhook(
+                    v_inbox_id,p_lease_owner
+                );
+            END
+            $function$
+            """
+        )
+        op.execute(
+            r"""
             CREATE FUNCTION app_secure.complete_finance_provider_webhook(
                 p_inbox_id uuid,
                 p_lease_owner uuid,
@@ -1585,7 +1658,7 @@ def _install_functions(bind) -> None:
         for signature in (
             _RESERVE_OPERATION,_CLAIM_OPERATION,_FINISH_OPERATION,
             _RECONCILE_OPERATION,_RECORD_WEBHOOK,_CLAIM_WEBHOOK,
-            _COMPLETE_WEBHOOK,_FAIL_WEBHOOK,
+            _CLAIM_NEXT_WEBHOOK,_COMPLETE_WEBHOOK,_FAIL_WEBHOOK,
         ):
             op.execute(
                 f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC"
@@ -1603,7 +1676,8 @@ def _install_functions(bind) -> None:
             "TO worker_runtime"
         )
         for signature in (
-            _CLAIM_WEBHOOK,_COMPLETE_WEBHOOK,_FAIL_WEBHOOK,
+            _CLAIM_WEBHOOK,_CLAIM_NEXT_WEBHOOK,
+            _COMPLETE_WEBHOOK,_FAIL_WEBHOOK,
         ):
             op.execute(
                 f"GRANT EXECUTE ON FUNCTION {signature} TO worker_runtime"
@@ -1688,7 +1762,7 @@ def downgrade() -> None:
         )
 
     for signature in (
-        _RECONCILE_OPERATION,_CLAIM_WEBHOOK,
+        _RECONCILE_OPERATION,_CLAIM_WEBHOOK,_CLAIM_NEXT_WEBHOOK,
         _COMPLETE_WEBHOOK,_FAIL_WEBHOOK,
     ):
         op.execute(
@@ -1706,8 +1780,8 @@ def downgrade() -> None:
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
         for signature in (
-            _FAIL_WEBHOOK,_COMPLETE_WEBHOOK,_CLAIM_WEBHOOK,
-            _RECORD_WEBHOOK,_RECONCILE_OPERATION,_FINISH_OPERATION,
+            _FAIL_WEBHOOK,_COMPLETE_WEBHOOK,_CLAIM_NEXT_WEBHOOK,
+            _CLAIM_WEBHOOK,_RECORD_WEBHOOK,_RECONCILE_OPERATION,_FINISH_OPERATION,
             _CLAIM_OPERATION,_RESERVE_OPERATION,
         ):
             op.execute(f"DROP FUNCTION {signature}")
