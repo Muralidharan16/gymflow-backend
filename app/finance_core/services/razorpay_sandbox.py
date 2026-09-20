@@ -104,7 +104,16 @@ class RazorpayTestModeHTTPTransport:
             "Content-Type": "application/json",
         }
         body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-        connection = self._connection_factory("api.razorpay.com", timeout=timeout_seconds)
+        try:
+            connection = self._connection_factory(
+                "api.razorpay.com",
+                timeout=timeout_seconds,
+            )
+        except Exception as exc:
+            raise RazorpayProviderError(
+                "RAZORPAY_CONNECT_FAILED",
+                "Razorpay test-mode connection could not be established.",
+            ) from exc
         try:
             connection.request("POST", path, body=body, headers=safe_headers)
             response = connection.getresponse()
@@ -148,6 +157,10 @@ class RazorpaySandboxAdapter:
         self._client = client
         self._guard_service = guard_service or FinanceOperationalGuardService()
 
+    @property
+    def environment(self) -> str:
+        return self._config.mode
+
     async def create_checkout_intent(
         self,
         request: ProviderCheckoutIntentRequest,
@@ -156,9 +169,15 @@ class RazorpaySandboxAdapter:
         order_request = self.build_order_request(request)
         order_response = await self._client.create_order(order_request)
         if order_response.amount_subunits != order_request.amount_subunits:
-            raise ValueError("Razorpay order response amount mismatch")
+            raise RazorpayProviderError(
+                "RAZORPAY_ORDER_AMOUNT_MISMATCH",
+                "Razorpay order amount did not match the server invoice.",
+            )
         if order_response.currency_code.upper() != order_request.currency_code:
-            raise ValueError("Razorpay order response currency mismatch")
+            raise RazorpayProviderError(
+                "RAZORPAY_ORDER_CURRENCY_MISMATCH",
+                "Razorpay order currency did not match the server invoice.",
+            )
         return ProviderCheckoutIntentResponse(
             provider_code=self.provider_code,
             provider_order_ref=order_response.order_id,
@@ -187,6 +206,15 @@ class RazorpaySandboxAdapter:
         forbidden = ("secret", "token", "password", "email", "phone", live_key_marker, self._config.key_secret.lower(), self._config.webhook_secret.lower())
         if any(value and value in joined for value in forbidden):
             raise RazorpayProviderError("RAZORPAY_ORDER_NOTES_UNSAFE", "Razorpay order metadata contained unsafe fields.")
+
+    def build_checkout_fields(
+        self,
+        *,
+        provider_order_ref: str,
+    ) -> dict[str, str]:
+        return self.checkout_fields(
+            order_id=provider_order_ref,
+        ).to_browser_payload()
 
     def checkout_fields(self, *, order_id: str) -> RazorpayCheckoutFields:
         return RazorpayCheckoutFields(key_id=self._config.key_id, order_id=order_id)

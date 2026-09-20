@@ -9,11 +9,15 @@ from app.finance_core.domain.checkout_orchestration import (
     SafeCheckoutSessionResult,
 )
 from app.finance_core.domain.invoice_engine import CreateDraftInvoiceCommand, IssueInvoiceCommand, money
-from app.finance_core.domain.provider_boundary import CreateCheckoutIntentCommand, ProviderCheckoutIntentRequest
+from app.finance_core.domain.provider_boundary import (
+    CheckoutIntentProvider,
+    CreateCheckoutIntentCommand,
+    FinanceProviderConfigError,
+    ProviderCheckoutIntentRequest,
+)
 from app.finance_core.models.foundation import FinanceInvoice, FinancePayment
 from app.finance_core.services.checkout_intents import FinanceCheckoutIntentService
 from app.finance_core.services.invoice_engine import FinanceInvoiceEngine
-from app.finance_core.services.razorpay_sandbox import RazorpaySandboxAdapter
 
 
 class FinanceCheckoutOrchestrationService:
@@ -22,11 +26,25 @@ class FinanceCheckoutOrchestrationService:
         session: AsyncSession,
         *,
         plan_resolver: CheckoutPlanResolver,
-        razorpay_adapter: RazorpaySandboxAdapter,
+        provider_adapter: CheckoutIntentProvider | None = None,
+        razorpay_adapter: CheckoutIntentProvider | None = None,
     ):
+        if provider_adapter is not None and razorpay_adapter is not None:
+            raise FinanceProviderConfigError(
+                "Checkout orchestration accepts one provider adapter only."
+            )
+        adapter = provider_adapter or razorpay_adapter
+        if adapter is None:
+            raise FinanceProviderConfigError(
+                "Checkout orchestration requires a provider adapter."
+            )
+        if adapter.environment not in {"sandbox", "test"}:
+            raise FinanceProviderConfigError(
+                "PAY-7 checkout orchestration accepts sandbox/test adapters only."
+            )
         self._session = session
         self._plan_resolver = plan_resolver
-        self._razorpay_adapter = razorpay_adapter
+        self._provider_adapter = adapter
         self._invoice_engine = FinanceInvoiceEngine(session)
         self._checkout_intents = FinanceCheckoutIntentService(session)
 
@@ -58,7 +76,7 @@ class FinanceCheckoutOrchestrationService:
             CreateCheckoutIntentCommand(
                 organization_id=command.organization_id,
                 invoice_id=invoice.id,
-                provider_code=self._razorpay_adapter.provider_code,
+                provider_code=self._provider_adapter.provider_code,
                 amount=amount,
                 currency_code=invoice.currency_code,
                 idempotency_key=f"{command.idempotency_key}:checkout_intent",
@@ -67,7 +85,7 @@ class FinanceCheckoutOrchestrationService:
 
         provider_order_id = intent.provider_order_ref
         if not provider_order_id or provider_order_id.startswith("intent_"):
-            provider_response = await self._razorpay_adapter.create_checkout_intent(
+            provider_response = await self._provider_adapter.create_checkout_intent(
                 ProviderCheckoutIntentRequest(
                     invoice_id=invoice.id,
                     amount=amount,
@@ -79,13 +97,15 @@ class FinanceCheckoutOrchestrationService:
             await self._store_provider_order_id(intent.intent_id, provider_order_id)
 
         if not provider_order_id:
-            raise ValueError("Razorpay sandbox adapter did not return an order id")
+            raise ValueError("Checkout provider adapter did not return an order id")
 
         return SafeCheckoutSessionResult(
             finance_invoice_id=invoice.id,
             finance_checkout_intent_id=intent.intent_id,
             provider_order_id=provider_order_id,
-            checkout_fields=self._razorpay_adapter.checkout_fields(order_id=provider_order_id).to_browser_payload(),
+            checkout_fields=self._provider_adapter.build_checkout_fields(
+                provider_order_ref=provider_order_id
+            ),
             display_amount=amount,
             display_currency=invoice.currency_code,
             replayed=draft.replayed or issued.replayed or intent.replayed,

@@ -4,7 +4,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Protocol
+from typing import Literal, Protocol
 
 
 class FinanceCheckoutIntentConflictError(Exception):
@@ -17,6 +17,55 @@ class FinanceCheckoutIntentStateError(Exception):
 
 class FinanceProviderConfigError(Exception):
     pass
+
+
+ProviderEnvironment = Literal["sandbox", "test"]
+ProviderFailureClass = Literal["retryable", "final", "unknown"]
+
+
+class FinanceProviderOperationError(Exception):
+    """Provider-neutral outbound operation failure.
+
+    The message must be safe for logs/API translation. Raw provider bodies,
+    credentials, authorization headers and secret material never belong here.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider_code: str,
+        operation: str,
+        code: str,
+        failure_class: ProviderFailureClass,
+        message: str,
+        provider_status_code: int | None = None,
+    ):
+        self.provider_code = provider_code
+        self.operation = operation
+        self.code = code
+        self.failure_class = failure_class
+        self.message = message
+        self.provider_status_code = provider_status_code
+        super().__init__(message)
+
+    @property
+    def automatic_retry_allowed(self) -> bool:
+        return self.failure_class == "retryable"
+
+    @property
+    def requires_reconciliation(self) -> bool:
+        return self.failure_class == "unknown"
+
+    def __str__(self) -> str:
+        status = (
+            f" status={self.provider_status_code}"
+            if self.provider_status_code is not None
+            else ""
+        )
+        return (
+            f"{self.provider_code}:{self.operation}:{self.code}:"
+            f"{self.failure_class}{status} {self.message}"
+        )
 
 
 class FinanceWebhookSignatureError(Exception):
@@ -69,11 +118,61 @@ class ProviderCheckoutIntentResponse:
 
 
 class CheckoutIntentProvider(Protocol):
+    @property
+    def provider_code(self) -> str:
+        ...
+
+    @property
+    def environment(self) -> ProviderEnvironment:
+        ...
+
     async def create_checkout_intent(
         self,
         request: ProviderCheckoutIntentRequest,
     ) -> ProviderCheckoutIntentResponse:
-        """Provider boundary; production adapters are intentionally not part of Phase 5F."""
+        """Create a provider checkout object without mutating Finance truth."""
+
+    def build_checkout_fields(self, *, provider_order_ref: str) -> dict[str, str]:
+        """Return the minimal browser-safe provider fields."""
+
+
+class CheckoutProviderRegistry:
+    """Server-owned registry. Provider choice is never browser authority."""
+
+    def __init__(self, adapters: tuple[CheckoutIntentProvider, ...]):
+        if not adapters:
+            raise FinanceProviderConfigError("At least one checkout provider adapter is required.")
+        mapping: dict[str, CheckoutIntentProvider] = {}
+        for adapter in adapters:
+            code = adapter.provider_code
+            if (
+                not code
+                or code != code.lower()
+                or not code.replace("_", "").isalnum()
+            ):
+                raise FinanceProviderConfigError("Checkout provider code is invalid.")
+            if adapter.environment not in {"sandbox", "test"}:
+                raise FinanceProviderConfigError(
+                    "PAY-7 registry accepts sandbox/test adapters only."
+                )
+            if code in mapping:
+                raise FinanceProviderConfigError(
+                    f"Duplicate checkout provider adapter: {code}"
+                )
+            mapping[code] = adapter
+        self._adapters = mapping
+
+    def resolve(self, provider_code: str) -> CheckoutIntentProvider:
+        try:
+            return self._adapters[provider_code]
+        except KeyError as exc:
+            raise FinanceProviderConfigError(
+                f"Checkout provider is not registered: {provider_code}"
+            ) from exc
+
+    @property
+    def provider_codes(self) -> tuple[str, ...]:
+        return tuple(sorted(self._adapters))
 
 
 @dataclass(frozen=True)
@@ -142,6 +241,14 @@ class SandboxCheckoutIntentProvider:
     def __init__(self, config: ProviderSandboxConfig):
         self.config = validate_sandbox_provider_config(config)
 
+    @property
+    def provider_code(self) -> str:
+        return self.config.provider_code
+
+    @property
+    def environment(self) -> ProviderEnvironment:
+        return "sandbox"
+
     async def create_checkout_intent(
         self,
         request: ProviderCheckoutIntentRequest,
@@ -153,6 +260,13 @@ class SandboxCheckoutIntentProvider:
             provider_order_ref=f"sandbox_order_{digest}",
             status="created",
         )
+
+    def build_checkout_fields(
+        self,
+        *,
+        provider_order_ref: str,
+    ) -> dict[str, str]:
+        return {"order_id": provider_order_ref}
 
 
 class StaticSandboxSignatureVerifier:

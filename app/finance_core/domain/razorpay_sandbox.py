@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal, Protocol
 
-from app.finance_core.domain.provider_boundary import FinanceProviderConfigError
+from app.finance_core.domain.provider_boundary import (
+    FinanceProviderConfigError,
+    FinanceProviderOperationError,
+    ProviderFailureClass,
+)
 
 
 RazorpaySandboxMode = Literal["sandbox", "test"]
@@ -86,15 +90,67 @@ class RazorpayTestModeOrderResult:
         }
 
 
-@dataclass(frozen=True)
-class RazorpayProviderError(Exception):
-    code: str
-    message: str
-    provider_status_code: int | None = None
+def classify_razorpay_provider_failure(
+    *,
+    code: str,
+    provider_status_code: int | None = None,
+) -> ProviderFailureClass:
+    """Classify outbound checkout failures conservatively.
 
-    def __str__(self) -> str:
-        status = f" status={self.provider_status_code}" if self.provider_status_code is not None else ""
-        return f"{self.code}:{status} {self.message}"
+    Unknown means the POST may have reached Razorpay and must be reconciled
+    before another provider-side create is attempted.
+    """
+
+    if code in {
+        "RAZORPAY_URL_UNSAFE",
+        "RAZORPAY_TIMEOUT_UNSAFE",
+        "RAZORPAY_ORDER_NOTES_UNSAFE",
+    }:
+        return "final"
+    if code == "RAZORPAY_CONNECT_FAILED":
+        return "retryable"
+    if code == "RAZORPAY_HTTP_ERROR":
+        if provider_status_code is not None and 400 <= provider_status_code < 500:
+            if provider_status_code not in {408, 409, 425, 429}:
+                return "final"
+        return "unknown"
+    if code in {
+        "RAZORPAY_TIMEOUT",
+        "RAZORPAY_UNAVAILABLE",
+        "RAZORPAY_NETWORK_ERROR",
+        "RAZORPAY_RESPONSE_INVALID",
+        "RAZORPAY_ORDER_RESPONSE_INVALID",
+        "RAZORPAY_ORDER_ID_INVALID",
+        "RAZORPAY_ORDER_AMOUNT_MISMATCH",
+        "RAZORPAY_ORDER_CURRENCY_MISMATCH",
+        "RAZORPAY_ORDER_RECEIPT_MISMATCH",
+    }:
+        return "unknown"
+    return "final"
+
+
+class RazorpayProviderError(FinanceProviderOperationError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        provider_status_code: int | None = None,
+        *,
+        failure_class: ProviderFailureClass | None = None,
+        operation: str = "create_checkout",
+    ):
+        super().__init__(
+            provider_code="razorpay_sandbox",
+            operation=operation,
+            code=code,
+            failure_class=failure_class
+            or classify_razorpay_provider_failure(
+                code=code,
+                provider_status_code=provider_status_code,
+            ),
+            message=message,
+            provider_status_code=provider_status_code,
+        )
 
 
 @dataclass(frozen=True)
