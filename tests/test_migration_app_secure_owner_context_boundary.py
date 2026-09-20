@@ -119,6 +119,9 @@ _PAY9_PAYMENT_APPLICATION_MIGRATION = (
 _PAY10_REFUND_PROVIDER_MIGRATION = (
     "zt07d8e9f0a54_pay10_refund_provider_authority.py"
 )
+_PAY10_REFUND_EXECUTION_MIGRATION = (
+    "zu07d8e9f0a55_pay10_refund_execution_capabilities.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -166,6 +169,7 @@ APP_SECURE_FILES.update(
         _PAY8_DURABLE_PROVIDER_MIGRATION,
         _PAY9_PAYMENT_APPLICATION_MIGRATION,
         _PAY10_REFUND_PROVIDER_MIGRATION,
+        _PAY10_REFUND_EXECUTION_MIGRATION,
     }
 )
 
@@ -356,6 +360,9 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "create_policy",
             "drop_policy",
         },
+        # PAY-10-C opens app_secure CREATE only under the reduced security
+        # owner while installing/removing the bounded execution capabilities.
+        _PAY10_REFUND_EXECUTION_MIGRATION: function_install_contract,
         A1.name: view_contract,
     }
     actual = {
