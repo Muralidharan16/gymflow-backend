@@ -228,42 +228,132 @@ def map_checkout_session_response(result: SafeCheckoutSessionResult) -> FinanceC
     )
 
 
+def _provider_operation_http_error(
+    exc: FinanceProviderOperationError,
+) -> HTTPException:
+    if exc.requires_reconciliation:
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "FINANCE_PROVIDER_OUTCOME_UNKNOWN",
+                "message": (
+                    "Provider outcome is unknown and requires "
+                    "reconciliation before retry."
+                ),
+            },
+        )
+    if exc.automatic_retry_allowed:
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "FINANCE_PROVIDER_RETRYABLE_FAILURE",
+                "message": "Provider is temporarily unavailable; retry is safe.",
+            },
+        )
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": "FINANCE_PROVIDER_FINAL_FAILURE",
+            "message": "Provider rejected the checkout operation.",
+        },
+    )
+
+
 @router.post("/checkout-sessions", response_model=FinanceCheckoutCreateResponse)
 async def create_checkout_session(
     request: FinanceCheckoutCreateRequest,
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
     actor: FinancePaymentActor = Depends(checkout_actor_dependency),
     _sandbox_enabled: None = Depends(require_finance_checkout_sandbox_enabled),
-    checkout_service: FinanceCheckoutOrchestrationService = Depends(get_checkout_orchestration_service),
+    db: AsyncSession = Depends(get_db),
+    checkout_service: FinanceCheckoutOrchestrationService = Depends(
+        get_checkout_orchestration_service
+    ),
 ) -> FinanceCheckoutCreateResponse:
-    command = build_checkout_session_command(request, actor=actor, idempotency_key=x_idempotency_key)
-    try:
-        result = await checkout_service.create_checkout_session(command)
-    except FinanceProviderOperationError as exc:
-        if exc.requires_reconciliation:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "FINANCE_PROVIDER_OUTCOME_UNKNOWN",
-                    "message": "Provider outcome is unknown and requires reconciliation before retry.",
-                },
-            ) from exc
-        if exc.automatic_retry_allowed:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "code": "FINANCE_PROVIDER_RETRYABLE_FAILURE",
-                    "message": "Provider is temporarily unavailable; retry is safe.",
-                },
-            ) from exc
+    command = build_checkout_session_command(
+        request,
+        actor=actor,
+        idempotency_key=x_idempotency_key,
+    )
+
+    prepared = await checkout_service.prepare_checkout_session(command)
+    # Durable local authority exists before any provider I/O.
+    await db.commit()
+
+    if prepared.provider_order_id:
+        return map_checkout_session_response(
+            checkout_service.build_result(
+                prepared,
+                provider_order_id=prepared.provider_order_id,
+            )
+        )
+    if prepared.provider_operation is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
-                "code": "FINANCE_PROVIDER_FINAL_FAILURE",
-                "message": "Provider rejected the checkout operation.",
+                "code": "FINANCE_PROVIDER_OPERATION_UNAVAILABLE",
+                "message": "Provider operation is unavailable.",
             },
-        ) from exc
-    return map_checkout_session_response(result)
+        )
+    if prepared.provider_operation.status not in (
+        "reserved",
+        "failed_retryable",
+    ):
+        raise _provider_operation_http_error(
+            checkout_service.operation_state_error(
+                prepared.provider_operation.status
+            )
+        )
+
+    lease_owner = uuid.uuid4()
+    claim = await checkout_service.claim_provider_operation(
+        prepared,
+        lease_owner=lease_owner,
+    )
+    # Commit the in-flight lease/fence before submitting the external POST.
+    await db.commit()
+
+    if not claim.claimed:
+        if claim.status == "succeeded" and claim.provider_object_id:
+            return map_checkout_session_response(
+                checkout_service.build_result(
+                    prepared,
+                    provider_order_id=claim.provider_object_id,
+                )
+            )
+        raise _provider_operation_http_error(
+            checkout_service.operation_state_error(claim.status)
+        )
+
+    try:
+        response = await checkout_service.call_provider(prepared)
+    except FinanceProviderOperationError as exc:
+        await checkout_service.finish_provider_error(
+            claim,
+            lease_owner=lease_owner,
+            error=exc,
+        )
+        # Persist retryable/final/unknown before returning the HTTP result.
+        await db.commit()
+        raise _provider_operation_http_error(exc) from exc
+
+    # If this DB acknowledgement fails after provider success, the already
+    # committed in-flight lease later expires to UNKNOWN. A retry cannot submit
+    # a second create until reconciliation resolves the ambiguity.
+    provider_order_id = await checkout_service.finish_provider_success(
+        prepared,
+        claim,
+        lease_owner=lease_owner,
+        response=response,
+    )
+    await db.commit()
+
+    return map_checkout_session_response(
+        checkout_service.build_result(
+            prepared,
+            provider_order_id=provider_order_id,
+        )
+    )
 
 
 @router.get("/checkout-sessions/{checkout_session_id}", response_model=FinanceCheckoutStatusResponse)
