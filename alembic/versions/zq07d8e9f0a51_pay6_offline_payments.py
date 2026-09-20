@@ -1308,7 +1308,14 @@ def downgrade() -> None:
     op.execute("SET LOCAL statement_timeout='30s'")
     _require_identity(bind)
 
-    op.execute("SET LOCAL ROLE app_security_owner")
+    # This is a global downgrade safety check, not a tenant read.
+    # FORCE RLS would make a tenantless security-owner probe see zero rows.
+    # The migration owner owns the relation, so open the smallest possible
+    # table-owner inspection window and restore FORCE RLS before deciding.
+    op.execute(
+        "ALTER TABLE finance.offline_payment_requests "
+        "NO FORCE ROW LEVEL SECURITY"
+    )
     try:
         has_evidence=bind.execute(
             sa.text(
@@ -1322,7 +1329,10 @@ def downgrade() -> None:
             )
         ).scalar_one()
     finally:
-        op.execute("RESET ROLE")
+        op.execute(
+            "ALTER TABLE finance.offline_payment_requests "
+            "FORCE ROW LEVEL SECURITY"
+        )
     if has_evidence:
         raise RuntimeError(
             "PAY-6 downgrade blocked: offline payment evidence exists"
