@@ -379,7 +379,7 @@ async def test_pay10_b_fetch_refuses_provider_refund_identity_substitution():
 
 
 @pytest.mark.parametrize(
-    "request",
+    "refund_request",
     [
         provider_refund_request(provider_payment_ref="../refund"),
         provider_refund_request(provider_payment_ref="pay_"),
@@ -392,13 +392,13 @@ async def test_pay10_b_fetch_refuses_provider_refund_identity_substitution():
 )
 @pytest.mark.asyncio
 async def test_pay10_b_invalid_server_authority_fails_before_provider_call(
-    request: ProviderRefundRequest,
+    refund_request: ProviderRefundRequest,
 ):
     transport = FakeRefundTransport()
     adapter = build_adapter(transport)
 
     with pytest.raises(FinanceProviderOperationError) as exc:
-        await adapter.submit_refund(request)
+        await adapter.submit_refund(refund_request)
 
     assert exc.value.failure_class == "final"
     assert transport.submit_calls == []
