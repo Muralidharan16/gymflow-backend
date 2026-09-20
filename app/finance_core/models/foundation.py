@@ -557,52 +557,71 @@ class FinanceProviderOperation(Base):
             ondelete="RESTRICT",
         ),
         UniqueConstraint(
-            "organization_id",
-            "provider_code",
-            "environment",
-            "operation_type",
-            "idempotency_key",
+            "organization_id", "provider_code", "environment",
+            "operation_type", "idempotency_key",
             name="uq_pay8_provider_operation_key",
         ),
         UniqueConstraint(
-            "payment_id",
-            "operation_type",
+            "payment_id", "operation_type",
             name="uq_pay8_provider_operation_payment",
         ),
         UniqueConstraint(
-            "provider_code",
-            "environment",
-            "provider_object_id",
+            "provider_code", "environment", "provider_object_id",
             name="uq_pay8_provider_object",
         ),
         CheckConstraint(
-            "environment IN ('sandbox','test')",
-            name="chk_pay8_provider_environment",
-        ),
-        CheckConstraint(
-            "operation_type = 'create_checkout'",
-            name="chk_pay8_provider_operation_type",
-        ),
-        CheckConstraint(
-            "status IN ('reserved','in_flight','succeeded','failed_retryable','failed_final','unknown')",
-            name="chk_pay8_provider_operation_status",
-        ),
-        CheckConstraint(
-            "(status='in_flight') = (lease_owner IS NOT NULL AND lease_until IS NOT NULL)",
-            name="chk_pay8_provider_operation_lease",
-        ),
-        Index(
-            "ix_pay8_provider_operations_org_status",
+            "provider_code ~ '^[a-z0-9_]{1,40}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
             "organization_id",
-            "status",
-            "updated_at",
-            "id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
         ),
-        Index(
-            "ix_pay8_provider_operations_recovery",
-            "lease_until",
-            "id",
-            postgresql_where=text("status='in_flight'"),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
         ),
         {"schema": SCHEMA},
     )
@@ -618,7 +637,3623 @@ class FinanceProviderOperation(Base):
         ForeignKey("organizations.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_pay8_provider_code",
+        ),
+        CheckConstraint(
+            "environment IN ('sandbox','test')",
+            name="chk_pay8_provider_environment",
+        ),
+        CheckConstraint(
+            "operation_type='create_checkout'",
+            name="chk_pay8_provider_operation_type",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_pay8_provider_operation_key",
+        ),
+        CheckConstraint(
+            "request_hash_sha256 ~ '^[0-9a-f]{64}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_pay8_provider_operation_hash",
+        ),
+        CheckConstraint(
+            "status IN ('reserved','in_flight','succeeded',"
+            "'failed_retryable','failed_final','unknown')",
+            name="chk_pay8_provider_operation_status",
+        ),
+        CheckConstraint(
+            "provider_object_id IS NULL "
+            "OR provider_object_id ~ '^[A-Za-z0-9_:-]{1,200}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_pay8_provider_operation_object",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL "
+            "OR provider_evidence_sha256 ~ '^[0-9a-f]{64}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_pay8_provider_operation_evidence",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND max_attempts BETWEEN 1 AND 20 "
+            "AND attempt_count <= max_attempts AND lease_fence >= 0",
+            name="chk_pay8_provider_operation_attempts",
+        ),
+        CheckConstraint(
+            "(status='in_flight') = "
+            "(lease_owner IS NOT NULL AND lease_until IS NOT NULL)",
+            name="chk_pay8_provider_operation_lease",
+        ),
+        CheckConstraint(
+            "last_error_code IS NULL OR ("
+            "last_error_code ~ '^[a-z][a-z0-9_]{0,79}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+ "
+            "AND last_error_code !~ '(secret|token|bearer|password)')",
+            name="chk_pay8_provider_operation_error",
+        ),
+        CheckConstraint(
+            "(status='succeeded' AND provider_object_id IS NOT NULL "
+            "AND provider_evidence_sha256 IS NOT NULL "
+            "AND completed_at IS NOT NULL) "
+            "OR (status='failed_final' AND completed_at IS NOT NULL) "
+            "OR (status NOT IN ('succeeded','failed_final') "
+            "AND completed_at IS NULL)",
+            name="chk_pay8_provider_operation_terminal",
+        ),
+        Index(
+            "ix_pay8_provider_operations_org_status",
+            "organization_id", "status", "updated_at", "id",
+        ),
+        Index(
+            "ix_pay8_provider_operations_recovery",
+            "lease_until", "id",
+            postgresql_where=text("status='in_flight'"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True,
+        default=new_uuid, server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    payment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
     provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)
     operation_type: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -636,15 +4271,13 @@ class FinanceProviderOperation(Base):
     lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
     last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True),
-        nullable=False,
+        TIMESTAMP(timezone=True), nullable=False,
         server_default=text("clock_timestamp()"),
     )
     last_started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True),
-        nullable=False,
+        TIMESTAMP(timezone=True), nullable=False,
         server_default=text("clock_timestamp()"),
     )
 
@@ -652,39 +4285,69 @@ class FinanceProviderOperation(Base):
 class FinanceProviderWebhookInbox(Base):
     __tablename__ = "provider_webhook_inbox"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["payment_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_pay8_webhook_payment_org",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint(
-            "provider_code",
-            "environment",
-            "provider_event_id",
+            "provider_code", "environment", "provider_event_id",
             name="uq_pay8_webhook_provider_event",
         ),
         CheckConstraint(
-            "environment IN ('sandbox','test')",
-            name="chk_pay8_webhook_environment",
+            "provider_code ~ '^[a-z0-9_]{1,40}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
         ),
         CheckConstraint(
-            "event_type IN ('payment.authorized','payment.captured','payment.failed','order.paid')",
-            name="chk_pay8_webhook_event_type",
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
         ),
         CheckConstraint(
-            "status IN ('received','processing','processed','retry','dead_letter')",
-            name="chk_pay8_webhook_status",
-        ),
-        CheckConstraint(
-            "(status='processing') = (lease_owner IS NOT NULL AND lease_until IS NOT NULL)",
-            name="chk_pay8_webhook_lease",
-        ),
-        Index(
-            "ix_pay8_webhook_inbox_status",
-            "status",
-            "received_at",
-            "id",
-        ),
-        Index(
-            "ix_pay8_webhook_inbox_recovery",
-            "lease_until",
-            "id",
-            postgresql_where=text("status='processing'"),
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
         ),
         {"schema": SCHEMA},
     )
@@ -694,6 +4357,6023 @@ class FinanceProviderWebhookInbox(Base):
         primary_key=True,
         default=new_uuid,
         server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_pay8_webhook_provider",
+        ),
+        CheckConstraint(
+            "environment IN ('sandbox','test')",
+            name="chk_pay8_webhook_environment",
+        ),
+        CheckConstraint(
+            "provider_event_id ~ '^[A-Za-z0-9_-]{1,200}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_pay8_webhook_event_id",
+        ),
+        CheckConstraint(
+            "payload_sha256 ~ '^[0-9a-f]{64}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+ "
+            "AND signature_sha256 ~ '^[0-9a-f]{64}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_pay8_webhook_hashes",
+        ),
+        CheckConstraint(
+            "event_type IN ('payment.authorized','payment.captured',"
+            "'payment.failed','order.paid')",
+            name="chk_pay8_webhook_event_type",
+        ),
+        CheckConstraint(
+            "provider_order_ref ~ '^[A-Za-z0-9_:-]{1,200}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+ "
+            "AND provider_payment_ref ~ '^[A-Za-z0-9_:-]{1,200}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+ "
+            "AND provider_payment_order_ref ~ '^[A-Za-z0-9_:-]{1,200}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+ "
+            "AND (provider_order_entity_ref IS NULL "
+            "OR provider_order_entity_ref ~ '^[A-Za-z0-9_:-]{1,200}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+)",
+            name="chk_pay8_webhook_refs",
+        ),
+        CheckConstraint(
+            "provider_amount_subunits >= 0",
+            name="chk_pay8_webhook_amount",
+        ),
+        CheckConstraint(
+            "provider_currency ~ '^[A-Z]{3}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+",
+            name="chk_pay8_webhook_currency",
+        ),
+        CheckConstraint(
+            "status IN ('received','processing','processed','retry','dead_letter')",
+            name="chk_pay8_webhook_status",
+        ),
+        CheckConstraint(
+            "processing_attempts >= 0 AND max_attempts BETWEEN 1 AND 50 "
+            "AND processing_attempts <= max_attempts AND lease_fence >= 0",
+            name="chk_pay8_webhook_attempts",
+        ),
+        CheckConstraint(
+            "(status='processing') = "
+            "(lease_owner IS NOT NULL AND lease_until IS NOT NULL)",
+            name="chk_pay8_webhook_lease",
+        ),
+        CheckConstraint(
+            "last_error_code IS NULL OR ("
+            "last_error_code ~ '^[a-z][a-z0-9_]{0,79}    __tablename__ = "payments"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_payment_ref", name="uq_finance_payments_provider_payment_ref"),
+        UniqueConstraint("id", "currency_code", name="uq_finance_payments_id_currency"),
+        CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_finance_payments_provider_code"),
+        CheckConstraint("status IN ('created', 'pending', 'authorized', 'captured', 'failed', 'cancelled', 'refunded', 'partially_refunded', 'settled')", name="chk_finance_payments_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_payments_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_payments_currency"),
+        CheckConstraint("provider_signature_hash IS NULL OR provider_signature_hash ~ '^[0-9a-f]{64}$'", name="chk_finance_payments_signature_hash"),
+        Index("ix_finance_payments_org_status", "organization_id", "status", postgresql_where=text("organization_id IS NOT NULL")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    idempotency_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.idempotency_keys.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_payment_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_signature_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default=text("'INR'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'created'"))
+    raw_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+
+class FinancePaymentContext(Base):
+    __tablename__ = "payment_contexts"
+    __table_args__ = (
+        UniqueConstraint("id", "organization_id", name="uq_finance_payment_contexts_id_org"),
+        UniqueConstraint(
+            "organization_id",
+            "context_type",
+            "business_reference",
+            name="uq_finance_payment_contexts_business",
+        ),
+        CheckConstraint(
+            "context_type = 'member_subscription_term'",
+            name="chk_finance_payment_contexts_type",
+        ),
+        CheckConstraint(
+            "business_reference LIKE 'subscription_term:%' AND "
+            "char_length(business_reference) = 54 AND "
+            "pg_catalog.pg_input_is_valid(substring(business_reference from 19), 'uuid')",
+            name="chk_finance_payment_contexts_business",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    context_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionFinanceBinding(Base):
+    __tablename__ = "member_subscription_finance_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay4_binding_term_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_pay4_binding_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["finance_payment_context_id", "organization_id"],
+            ["finance.payment_contexts.id", "finance.payment_contexts.organization_id"],
+            name="fk_pay4_binding_context_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["member_id", "organization_id"],
+            ["members.id", "members.org_id"],
+            name="fk_pay4_binding_member_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_term_id", name="uq_pay4_binding_term"),
+        UniqueConstraint("finance_invoice_id", name="uq_pay4_binding_invoice"),
+        UniqueConstraint("finance_payment_context_id", name="uq_pay4_binding_context"),
+        CheckConstraint(
+            "jsonb_typeof(plan_snapshot) = 'object'",
+            name="chk_pay4_binding_plan_snapshot",
+        ),
+        CheckConstraint("amount >= 0", name="chk_pay4_binding_amount"),
+        CheckConstraint(
+            "char_length(currency_code) = 3 AND upper(currency_code) = currency_code "
+            "AND currency_code !~ '[^A-Z]'",
+            name="chk_pay4_binding_currency",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    finance_payment_context_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    member_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceMemberSubscriptionCheckoutBinding(Base):
+    __tablename__ = "member_subscription_checkout_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_id", "organization_id"],
+            ["member_subscriptions_v2.id", "member_subscriptions_v2.org_id"],
+            name="fk_member_subscription_checkout_bindings_subscription_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_member_subscription_checkout_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_intent_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_member_subscription_checkout_bindings_intent_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("subscription_id", name="uq_member_subscription_checkout_bindings_subscription"),
+        UniqueConstraint("invoice_id", name="uq_member_subscription_checkout_bindings_invoice"),
+        UniqueConstraint("checkout_intent_id", name="uq_member_subscription_checkout_bindings_intent"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_member_subscription_checkout_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    checkout_intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'member_subscriptions_v2'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundObligationBinding(Base):
+    __tablename__ = "refund_obligation_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_id", "organization_id"],
+            ["org_branches.id", "org_branches.org_id"],
+            name="fk_refund_obligation_bindings_branch_org",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["invoice_id", "organization_id"],
+            ["finance.invoices.id", "finance.invoices.organization_id"],
+            name="fk_refund_obligation_bindings_invoice_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("invoice_id", name="uq_refund_obligation_bindings_invoice"),
+        CheckConstraint("source_table = 'member_subscriptions_v2'", name="chk_refund_obligation_bindings_source_table"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentAllocation(Base):
+    __tablename__ = "payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_finance_payment_allocations_payment_invoice"),
+        CheckConstraint("allocated_amount >= 0", name="chk_finance_payment_allocations_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    allocated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinancePaymentEvent(Base):
+    __tablename__ = "payment_events"
+    __table_args__ = (
+        UniqueConstraint("provider_code", "provider_event_id", name="uq_finance_payment_events_provider_event"),
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_payment_events_payload_hash"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=True)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefund(Base):
+    __tablename__ = "refunds"
+    __table_args__ = (
+        CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
+        CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
+        ForeignKeyConstraint(
+            ["payment_id", "currency_code"],
+            ["finance.payments.id", "finance.payments.currency_code"],
+            name="fk_finance_refunds_payment_currency",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_finance_refunds_payment_reason_not_null",
+            "payment_id",
+            "reason_code",
+            unique=True,
+            postgresql_where=text("reason_code IS NOT NULL"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'requested'"))
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceRefundExecutionCommand(Base):
+    __tablename__ = "refund_execution_commands"
+    __table_args__ = (
+        UniqueConstraint("refund_id", name="uq_finance_refund_execution_refund"),
+        UniqueConstraint("logical_obligation_key", name="uq_finance_refund_execution_logical_key"),
+        CheckConstraint("btrim(source_type) <> ''", name="chk_finance_refund_execution_source"),
+        CheckConstraint("amount > 0", name="chk_finance_refund_execution_amount"),
+        CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refund_execution_currency"),
+        CheckConstraint(
+            "status IN ('pending','processing','retry_pending','provider_accepted','reconciliation_pending','succeeded','rejected','dead_lettered','cancelled')",
+            name="chk_finance_refund_execution_status",
+        ),
+        CheckConstraint(
+            "max_attempts BETWEEN 1 AND 20 AND attempt_count BETWEEN 0 AND max_attempts",
+            name="chk_finance_refund_execution_attempts",
+        ),
+        CheckConstraint("lease_fence >= 0", name="chk_finance_refund_execution_lease_fence"),
+        CheckConstraint(
+            "last_error_code IS NULL OR (last_error_code ~ '^[a-z][a-z0-9_]{0,63}$' AND last_error_code !~ '(bearer|secret|token)')",
+            name="chk_finance_refund_execution_error_code",
+        ),
+        CheckConstraint(
+            "(status = 'processing') = (leased_by IS NOT NULL AND leased_until IS NOT NULL)",
+            name="chk_finance_refund_execution_lease",
+        ),
+        CheckConstraint(
+            "provider_evidence_sha256 IS NULL OR provider_evidence_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_refund_execution_provider_evidence",
+        ),
+        Index(
+            "ix_finance_refund_execution_claimable",
+            "process_after",
+            "materialized_at",
+            "command_id",
+            postgresql_where=text("status IN ('pending','retry_pending')"),
+        ),
+        Index(
+            "ix_finance_refund_execution_processing",
+            "leased_until",
+            "command_id",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        Index("ix_finance_refund_execution_maintenance", "status", "process_after", "updated_at"),
+        {"schema": SCHEMA},
+    )
+
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    refund_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.refunds.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.payments.id", ondelete="RESTRICT"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    logical_obligation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    currency_code: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    process_after: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialized_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    provider_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_refund_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+
+
+class FinanceCreditNote(Base):
+    __tablename__ = "credit_notes"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
+        CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
+        CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT"), nullable=False)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    gst_registration_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.gst_registrations.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=False)
+    brand_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=False)
+    financial_year: Mapped[str] = mapped_column(CHAR(4), nullable=False)
+    credit_note_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    issued_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceCreditNoteLine(Base):
+    __tablename__ = "credit_note_lines"
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="chk_finance_credit_note_lines_amount_nonnegative"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    credit_note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.credit_notes.id", ondelete="RESTRICT"), nullable=False)
+    invoice_line_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.invoice_lines.id", ondelete="RESTRICT"), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'posted', 'reversed')", name="chk_finance_ledger_entries_status"),
+        CheckConstraint("entry_type IN ('invoice', 'payment', 'refund', 'credit_note', 'settlement', 'adjustment')", name="chk_finance_ledger_entries_type"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=False)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
+    posted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceLedgerEntryLine(Base):
+    __tablename__ = "ledger_entry_lines"
+    __table_args__ = (
+        CheckConstraint("debit_amount >= 0 AND credit_amount >= 0", name="chk_finance_ledger_entry_lines_nonnegative"),
+        CheckConstraint("(debit_amount = 0 AND credit_amount > 0) OR (debit_amount > 0 AND credit_amount = 0)", name="chk_finance_ledger_entry_lines_one_sided"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_entries.id", ondelete="RESTRICT"), nullable=False)
+    ledger_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.ledger_accounts.id", ondelete="RESTRICT"), nullable=False)
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, server_default=text("0"))
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
+        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+
+
+class FinanceIdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_idempotency_keys_scope_key"),
+        CheckConstraint("btrim(scope) <> ''", name="chk_finance_idempotency_keys_scope"),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="chk_finance_idempotency_keys_key"),
+        CheckConstraint("request_hash_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_idempotency_keys_request_hash"),
+        CheckConstraint("status IN ('processing', 'succeeded', 'failed')", name="chk_finance_idempotency_keys_status"),
+        CheckConstraint("expires_at > created_at", name="chk_finance_idempotency_keys_expires_after_create"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+
+
+class FinanceMonetaryCommand(Base):
+    __tablename__ = "monetary_commands"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "scope", "idempotency_key", name="uq_finance_monetary_commands_scope_key"),
+        CheckConstraint(
+            "char_length(scope) BETWEEN 3 AND 120 AND scope ~ '^[a-z][a-z0-9_.]*$'",
+            name="chk_finance_monetary_commands_scope",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 200 "
+            "AND idempotency_key ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_key",
+        ),
+        CheckConstraint(
+            "char_length(request_hash_sha256) = 64 AND request_hash_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_request_hash",
+        ),
+        CheckConstraint(
+            "char_length(business_reference) BETWEEN 1 AND 200 "
+            "AND business_reference ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$'",
+            name="chk_finance_monetary_commands_business_ref",
+        ),
+        CheckConstraint(
+            "char_length(actor_type) BETWEEN 1 AND 40 AND actor_type ~ '^[a-z][a-z0-9_]*$'",
+            name="chk_finance_monetary_commands_actor_type",
+        ),
+        CheckConstraint(
+            "char_length(actor_ref_sha256) = 64 AND actor_ref_sha256 ~ '^[0-9a-f]+$'",
+            name="chk_finance_monetary_commands_actor_hash",
+        ),
+        CheckConstraint(
+            "status IN ('processing','unknown','succeeded','failed_deterministic')",
+            name="chk_finance_monetary_commands_status",
+        ),
+        CheckConstraint(
+            "error_code IS NULL OR (char_length(error_code) BETWEEN 1 AND 64 "
+            "AND error_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND error_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_error_code",
+        ),
+        CheckConstraint(
+            "response_ref IS NULL OR (char_length(response_ref) BETWEEN 1 AND 200 "
+            "AND response_ref ~ '^[A-Za-z0-9][A-Za-z0-9:._/-]*$')",
+            name="chk_finance_monetary_commands_response_ref",
+        ),
+        CheckConstraint(
+            "(status='succeeded') = (response_ref IS NOT NULL)",
+            name="chk_finance_monetary_commands_success_response",
+        ),
+        CheckConstraint(
+            "(status='failed_deterministic') = (error_code IS NOT NULL)",
+            name="chk_finance_monetary_commands_failure_error",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded','failed_deterministic')) = (completed_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_terminal_completed",
+        ),
+        CheckConstraint(
+            "ambiguity_code IS NULL OR (char_length(ambiguity_code) BETWEEN 1 AND 64 "
+            "AND ambiguity_code ~ '^[a-z][a-z0-9_]*$' "
+            "AND ambiguity_code !~ '(secret|token|bearer)')",
+            name="chk_finance_monetary_commands_ambiguity_code",
+        ),
+        CheckConstraint(
+            "(ambiguity_code IS NULL) = (unknown_at IS NULL)",
+            name="chk_finance_monetary_commands_ambiguity_pair",
+        ),
+        CheckConstraint(
+            "status <> 'unknown' OR (ambiguity_code IS NOT NULL AND unknown_at IS NOT NULL)",
+            name="chk_finance_monetary_commands_unknown_evidence",
+        ),
+        Index("ix_finance_monetary_commands_status_created", "status", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(120), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    business_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_ref_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'processing'"))
+    response_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ambiguity_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unknown_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+
+class FinanceOutboxEvent(Base):
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("aggregate_type", "aggregate_id", "event_type", "idempotency_key", name="uq_finance_outbox_events_idempotency"),
+        CheckConstraint("status IN ('pending', 'processing', 'published', 'failed', 'discarded')", name="chk_finance_outbox_events_status"),
+        CheckConstraint("jsonb_typeof(payload_json) = 'object'", name="chk_finance_outbox_events_payload_object"),
+        CheckConstraint("payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_outbox_events_payload_hash"),
+        CheckConstraint("attempt_count >= 0", name="chk_finance_outbox_events_attempt_count"),
+        Index("ix_finance_outbox_events_claimable", "created_at", postgresql_where=text("status = 'pending'")),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
+    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    aggregate_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    leased_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+ "
+            "AND last_error_code !~ '(secret|token|bearer|password)')",
+            name="chk_pay8_webhook_error",
+        ),
+        CheckConstraint(
+            "(status='processed') = (payment_event_id IS NOT NULL "
+            "AND payment_id IS NOT NULL AND organization_id IS NOT NULL "
+            "AND processed_at IS NOT NULL)",
+            name="chk_pay8_webhook_processed",
+        ),
+        Index(
+            "ix_pay8_webhook_inbox_status",
+            "status", "received_at", "id",
+        ),
+        Index(
+            "ix_pay8_webhook_inbox_recovery",
+            "lease_until", "id",
+            postgresql_where=text("status='processing'"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True,
+        default=new_uuid, server_default=text("gen_random_uuid()"),
     )
     provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -716,17 +10396,15 @@ class FinanceProviderWebhookInbox(Base):
         ForeignKey("organizations.id", ondelete="RESTRICT"),
         nullable=True,
     )
-    payment_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("finance.payments.id", ondelete="RESTRICT"),
-        nullable=True,
-    )
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     payment_event_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("finance.payment_events.id", ondelete="RESTRICT"),
         nullable=True,
     )
-    status: Mapped[str] = mapped_column(String(24), nullable=False, server_default=text("'received'"))
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default=text("'received'")
+    )
     processing_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
     lease_owner: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
@@ -734,14 +10412,12 @@ class FinanceProviderWebhookInbox(Base):
     lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
     last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     received_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True),
-        nullable=False,
+        TIMESTAMP(timezone=True), nullable=False,
         server_default=text("clock_timestamp()"),
     )
     processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True),
-        nullable=False,
+        TIMESTAMP(timezone=True), nullable=False,
         server_default=text("clock_timestamp()"),
     )
 
