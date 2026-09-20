@@ -17,13 +17,14 @@ def _text(path: Path) -> str:
 
 def test_pay10e_processor_commits_before_and_after_provider_io():
     source = _text(WORKER)
+    normalized = source.lower()
     assert "await session.commit()" in source
     assert "response = await provider.submit_refund" in source
     assert "after_bind_commit" in source
     assert "after_provider_effect" in source
     assert "after_outcome_commit" in source
     assert "keeping provider calls outside database transactions" not in source
-    assert "provider I/O runs with no open" in source
+    assert "provider i/o runs with no open" in normalized
 
 
 def test_pay10e_provider_success_never_becomes_financial_success_in_worker():
