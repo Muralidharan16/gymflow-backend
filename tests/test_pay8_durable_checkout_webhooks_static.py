@@ -222,14 +222,10 @@ def test_webhook_completion_reads_only_declared_predecessor_event_columns():
 
 def test_finance_capability_roles_get_bounded_app_secure_usage_only():
     source = MIGRATION.read_text(encoding="utf-8")
-    assert (
-        "GRANT USAGE ON SCHEMA app_secure "
-        "TO finance_payment_runtime, finance_reconciliation_runtime"
-    ) in source
-    assert (
-        "REVOKE USAGE ON SCHEMA app_secure "
-        "FROM finance_payment_runtime, finance_reconciliation_runtime"
-    ) in source
+    assert "GRANT USAGE ON SCHEMA app_secure " in source
+    assert "TO finance_payment_runtime, finance_reconciliation_runtime" in source
+    assert "REVOKE USAGE ON SCHEMA app_secure " in source
+    assert "FROM finance_payment_runtime, finance_reconciliation_runtime" in source
     assert "PAY-8 refuses preexisting app_secure USAGE" in source
     for role in ("finance_payment_runtime", "finance_reconciliation_runtime"):
         assert (
@@ -240,6 +236,19 @@ def test_finance_capability_roles_get_bounded_app_secure_usage_only():
             f"GRANT SELECT ON TABLE finance.provider_webhook_inbox TO {role}"
             not in source
         )
+
+
+def test_pay8_models_and_migration_enforce_tenant_payment_composites():
+    source = MIGRATION.read_text(encoding="utf-8")
+    model = FOUNDATION.read_text(encoding="utf-8")
+    for constraint in (
+        "fk_pay8_provider_operation_payment_org",
+        "fk_pay8_webhook_payment_org",
+    ):
+        assert constraint in source
+        assert constraint in model
+    assert "REFERENCES finance.payments(id,organization_id)" in source
+    assert '["finance.payments.id", "finance.payments.organization_id"]' in model
 
 
 def test_runtime_roles_have_capabilities_but_no_direct_provider_table_dml():
