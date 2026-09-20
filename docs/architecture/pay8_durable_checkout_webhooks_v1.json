@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-8",
+  "date": "2026-09-20",
+  "branch": "hardening/pay8-durable-checkout-webhooks",
+  "inherited_pay7": {
+    "commit": "3489f0841866e7ffcd01a16c753c3e382293e22e",
+    "tree": "b652d3a4ab09bf93c30a5834729cd189334b9d0f",
+    "certification": "PAY7_FINAL=PASS"
+  },
+  "alembic": {
+    "predecessor": "zq07d8e9f0a51",
+    "head": "zr07d8e9f0a52",
+    "additive": true,
+    "predecessor_data_rewrite": false
+  },
+  "provider_operation": {
+    "relation": "finance.provider_operations",
+    "statuses": [
+      "reserved",
+      "in_flight",
+      "succeeded",
+      "failed_retryable",
+      "failed_final",
+      "unknown"
+    ],
+    "payment_tenant_composite_fk": true,
+    "retryable_claim_states": [
+      "reserved",
+      "failed_retryable"
+    ],
+    "expired_in_flight": "unknown",
+    "blind_retry_unknown": false,
+    "reconciliation_role": "finance_reconciliation_runtime",
+    "stale_fence_rejected": true,
+    "provider_object_unique": true
+  },
+  "webhook_inbox": {
+    "relation": "finance.provider_webhook_inbox",
+    "signature_verified_before_record": true,
+    "raw_body_persisted": false,
+    "raw_signature_persisted": false,
+    "payload_sha256": true,
+    "signature_sha256": true,
+    "exact_replay_idempotent": true,
+    "conflicting_replay_rejected": true,
+    "recovery_role": "finance_payment_runtime",
+    "skip_locked_recovery": true,
+    "stale_fence_rejected": true,
+    "retry_exhaustion": "dead_letter"
+  },
+  "authority": {
+    "adapter_finance_authority": false,
+    "direct_runtime_table_dml": false,
+    "existing_provider_evidence_state_machine_reused": true
+  },
+  "live_provider": false,
+  "live_money_movement": false,
+  "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+  "merge_authorized": false,
+  "release_authorized": false,
+  "deployment_authorized": false,
+  "next_phase": "PAY-9"
+}
