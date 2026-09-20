@@ -985,7 +985,7 @@ def _install_functions() -> None:
                     event_payload_sha256
                 ) VALUES (
                     v_payment.id,'manual',
-                    'offline:'||v_request.id::text||':approved',
+                    'offline/'||v_request.id::text||'/approved',
                     'manual.payment.approved',v_event_hash
                 );
 
@@ -1011,7 +1011,7 @@ def _install_functions() -> None:
                 FROM app_secure.apply_finance_confirmed_payment(
                     v_payment.id,v_invoice.id,v_request.amount,
                     v_request.currency_code::text,
-                    'offline-payment:'||v_request.id::text||':apply',
+                    'offline-payment/'||v_request.id::text||'/apply',
                     v_apply_hash
                 );
 
