@@ -1208,6 +1208,9 @@ def _install_functions() -> None:
 
 
 def _post_install_proof(bind) -> None:
+    # migration_owner is deliberately app_secure-blind. Resolve and
+    # verify function ownership/ACLs only inside the bounded NOLOGIN
+    # app_security_owner context, then reset before migration exit.
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
         for signature in _FUNCTIONS:
@@ -1245,25 +1248,24 @@ def _post_install_proof(bind) -> None:
                 raise RuntimeError(
                     f"PAY-10-D function security drift: {signature}"
                 )
+
+            for role in _RUNTIME_ROLES:
+                actual = bool(
+                    bind.execute(
+                        sa.text(
+                            "SELECT pg_catalog.has_function_privilege("
+                            ":role,:signature,'EXECUTE')"
+                        ),
+                        {"role": role, "signature": signature},
+                    ).scalar_one()
+                )
+                if actual != (role == _REFUND_RUNTIME):
+                    raise RuntimeError(
+                        "PAY-10-D execute ACL drift: "
+                        f"{role} -> {signature}"
+                    )
     finally:
         op.execute("RESET ROLE")
-
-    for role in _RUNTIME_ROLES:
-        for signature in _FUNCTIONS:
-            actual = bool(
-                bind.execute(
-                    sa.text(
-                        "SELECT pg_catalog.has_function_privilege("
-                        ":role,:signature,'EXECUTE')"
-                    ),
-                    {"role": role, "signature": signature},
-                ).scalar_one()
-            )
-            if actual != (role == _REFUND_RUNTIME):
-                raise RuntimeError(
-                    "PAY-10-D execute ACL drift: "
-                    f"{role} -> {signature}"
-                )
 
     for role in (
         _REFUND_RUNTIME,
