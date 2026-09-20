@@ -38,9 +38,11 @@ def test_pay10_a_adds_closed_provider_evidence_and_credit_note_provenance():
         "finance.refund_provider_evidence",
     ):
         assert f"CREATE TABLE {relation}" in source
-        assert f"ALTER TABLE {relation} ENABLE ROW LEVEL SECURITY" in source
-        assert f"ALTER TABLE {relation} FORCE ROW LEVEL SECURITY" in source
-        assert f"REVOKE ALL ON TABLE {relation} FROM PUBLIC" in source
+
+    assert "_NEW_TABLES = (" in source
+    assert 'f"ALTER TABLE finance.{table_name} ENABLE ROW LEVEL SECURITY"' in source
+    assert 'f"ALTER TABLE finance.{table_name} FORCE ROW LEVEL SECURITY"' in source
+    assert 'f"REVOKE ALL ON TABLE finance.{table_name} FROM PUBLIC"' in source
 
     assert "uq_pay10_refund_credit_note_single_refund" in source
     assert "fk_pay10_refund_credit_link_refund_org" in source
