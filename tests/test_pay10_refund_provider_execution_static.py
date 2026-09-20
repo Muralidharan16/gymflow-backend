@@ -9,6 +9,10 @@ MIGRATION = (
     ROOT
     / "alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py"
 )
+EXECUTION_MIGRATION = (
+    ROOT
+    / "alembic/versions/zu07d8e9f0a55_pay10_refund_execution_capabilities.py"
+)
 MODEL = ROOT / "app/finance_core/models/foundation.py"
 ARCHITECTURE = (
     ROOT
@@ -168,6 +172,7 @@ def test_pay10_machine_contract_keeps_live_money_and_release_disabled():
     )
     assert contract["predecessor_revision"] == "zs07d8e9f0a53"
     assert contract["revision"] == "zt07d8e9f0a54"
+    assert contract["execution_revision"] == "zu07d8e9f0a55"
     assert contract["live_provider"] is False
     assert contract["live_money_movement"] is False
     assert contract["merge_authorized"] is False
@@ -278,7 +283,7 @@ def test_pay10_b_adapter_does_not_gain_finance_database_mutation_authority():
 
 
 def test_pay10_c_installs_exact_fenced_execution_capability_split():
-    migration = _text(MIGRATION)
+    migration = _text(EXECUTION_MIGRATION)
     contract = json.loads(_text(MACHINE))
     c_contract = contract["execution_reconciliation"]
 
@@ -294,9 +299,9 @@ def test_pay10_c_installs_exact_fenced_execution_capability_split():
         assert f"CREATE FUNCTION {signature}" in migration
 
     assert (
-        '"GRANT USAGE ON SCHEMA app_secure "'
-        '\n            "TO finance_refund_runtime"'
-    ) in migration
+        "GRANT USAGE ON SCHEMA app_secure TO finance_refund_runtime"
+        in migration
+    )
     assert "TO finance_refund_runtime" in migration
     assert "TO finance_reconciliation_runtime" in migration
     assert c_contract["execution_role"] == "finance_refund_runtime"
@@ -306,7 +311,7 @@ def test_pay10_c_installs_exact_fenced_execution_capability_split():
 
 
 def test_pay10_c_claim_and_binding_reuse_p4d_fence_and_finance_authority():
-    migration = _text(MIGRATION)
+    migration = _text(EXECUTION_MIGRATION)
 
     assert "c.lease_fence+1" in migration
     assert "c.status='processing' AS reclaiming" in migration
@@ -345,7 +350,7 @@ def test_pay10_c_claim_and_binding_reuse_p4d_fence_and_finance_authority():
 
 
 def test_pay10_c_refundable_reservation_and_unknown_outcome_fail_closed():
-    migration = _text(MIGRATION)
+    migration = _text(EXECUTION_MIGRATION)
     contract = json.loads(_text(MACHINE))["execution_reconciliation"]
 
     assert "FROM finance.payment_allocations a" in migration
@@ -359,7 +364,7 @@ def test_pay10_c_refundable_reservation_and_unknown_outcome_fail_closed():
 
 
 def test_pay10_c_processed_evidence_cannot_perform_financial_finalization():
-    migration = _text(MIGRATION)
+    migration = _text(EXECUTION_MIGRATION)
     c_start = migration.index(
         "CREATE FUNCTION app_secure.claim_pay10_refund_provider_execution"
     )
@@ -386,7 +391,7 @@ def test_pay10_c_processed_evidence_cannot_perform_financial_finalization():
 
 
 def test_pay10_c_external_evidence_is_replay_safe_and_order_monotonic():
-    migration = _text(MIGRATION)
+    migration = _text(EXECUTION_MIGRATION)
 
     assert "PAY-10 conflicting provider event replay" in migration
     assert "PAY-10 conflicting external evidence replay" in migration
@@ -419,11 +424,12 @@ def test_pay10_c_service_keeps_provider_io_outside_database_capability_layer():
 
 
 def test_pay10_c_empty_downgrade_removes_capabilities_and_refund_runtime_usage():
-    migration = _text(MIGRATION)
+    migration = _text(EXECUTION_MIGRATION)
 
     assert (
-        '"REVOKE USAGE ON SCHEMA app_secure "'
-        '\n            "FROM finance_refund_runtime"'
-    ) in migration
-    assert "for signature in reversed(_PAY10_FUNCTIONS):" in migration
+        "REVOKE USAGE ON SCHEMA app_secure "
+        "FROM finance_refund_runtime"
+        in migration
+    )
+    assert "for signature in reversed(_FUNCTIONS):" in migration
     assert 'op.execute(f"DROP FUNCTION {signature}")' in migration
