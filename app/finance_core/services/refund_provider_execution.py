@@ -194,46 +194,6 @@ class FinanceRefundProviderExecutionService:
         self,
         *,
         claim: RefundProviderExecutionClaim,
-        environment: ProviderEnvironment,
-    ) -> RefundProviderRequestBinding:
-        request = claim.provider_request()
-        request_sha256 = refund_provider_request_hash(
-            claim=claim,
-            environment=environment,
-        )
-        result = await self._session.execute(
-            text(
-                """
-                SELECT *
-                FROM app_secure.bind_pay10_refund_provider_request(
-                    :command_id,
-                    :worker_id,
-                    :lease_fence,
-                    :provider_code,
-                    :provider_payment_ref,
-                    :amount,
-                    :currency_code,
-                    :request_sha256
-                )
-                """
-            ),
-            {
-                "command_id": claim.command_id,
-                "worker_id": claim_worker_id(claim),
-                "lease_fence": claim.lease_fence,
-                "provider_code": claim.provider_code,
-                "provider_payment_ref": request.provider_payment_ref,
-                "amount": request.amount,
-                "currency_code": request.currency_code,
-                "request_sha256": request_sha256,
-            },
-        )
-        return RefundProviderRequestBinding(**dict(result.mappings().one()))
-
-    async def bind_request_for_worker(
-        self,
-        *,
-        claim: RefundProviderExecutionClaim,
         worker_id: uuid.UUID,
         environment: ProviderEnvironment,
     ) -> RefundProviderRequestBinding:
@@ -414,10 +374,3 @@ class FinanceRefundProviderExecutionService:
         )
         return RefundProviderEvidenceReceipt(**dict(result.mappings().one()))
 
-
-def claim_worker_id(
-    claim: RefundProviderExecutionClaim,
-) -> uuid.UUID:
-    raise FinanceProviderConfigError(
-        "bind_request requires an explicit worker id; use bind_request_for_worker."
-    )
