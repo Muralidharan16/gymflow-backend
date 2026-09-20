@@ -115,6 +115,30 @@ def test_pay6_function_install_uses_temporary_schema_create_only():
     )
 
 
+def test_pay6_trigger_install_uses_temporary_migration_schema_visibility():
+    source=MIGRATION.read_text(encoding="utf-8")
+    install=source.split("def _install_functions(bind)",1)[1].split("def upgrade()",1)[0]
+    assert "GRANT USAGE ON SCHEMA app_secure TO migration_owner" in install
+    assert (
+        "GRANT EXECUTE ON FUNCTION "
+        "app_secure.pay6_reject_offline_event_mutation() "
+        "TO migration_owner"
+    ) in install
+    assert "CREATE TRIGGER trg_pay6_offline_events_immutable" in install
+    assert (
+        "REVOKE EXECUTE ON FUNCTION "
+        "app_secure.pay6_reject_offline_event_mutation() "
+        "FROM migration_owner"
+    ) in install
+    assert "REVOKE USAGE ON SCHEMA app_secure FROM migration_owner" in install
+    assert install.index(
+        "GRANT USAGE ON SCHEMA app_secure TO migration_owner"
+    ) < install.index("CREATE TRIGGER trg_pay6_offline_events_immutable")
+    assert install.index("CREATE TRIGGER trg_pay6_offline_events_immutable") < install.rindex(
+        "REVOKE USAGE ON SCHEMA app_secure FROM migration_owner"
+    )
+
+
 def test_pay6_application_runtime_is_capability_only():
     source=MIGRATION.read_text(encoding="utf-8")
     for signature in (
