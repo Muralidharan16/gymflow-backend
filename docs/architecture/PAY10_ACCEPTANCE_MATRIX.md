@@ -38,3 +38,20 @@
 | P10-B05 | Exact reconciliation fetch | Known provider refund is fetched by payment id + refund id without issuing a second POST. |
 | P10-B06 | Safe provider output | Raw response bodies, credentials, customer PII and provider-private payload fields do not leave the adapter. |
 | P10-B07 | No Finance mutation | Provider adapter performs no Finance-table mutation; PAY-10-C/D remain authority for durable state and finalization. |
+| P10-C01 | Fenced claim | Due commands are claimed under a worker id and monotonically increasing lease fence. |
+| P10-C02 | Expired reclaim | Expired processing work is reclaimable under a new fence without incrementing the same in-flight logical attempt. |
+| P10-C03 | Server-authoritative request | Provider code/payment ref/amount/currency must exactly match locked Finance payment/refund/command truth. |
+| P10-C04 | Stable request identity | Request SHA-256 is bound once and cannot drift across retry or reclaim. |
+| P10-C05 | Refundable reservation gate | Active/successful refund reservations cannot exceed authoritative applied payment value. |
+| P10-C06 | Stale fence rejection | Wrong/expired worker fence cannot bind, acknowledge, fail, or mark an unknown outcome. |
+| P10-C07 | Known non-acceptance retry | Only known non-acceptance can enter retry_pending; bounded attempt/backoff rules remain in force. |
+| P10-C08 | Unknown outcome | Ambiguous provider acceptance enters reconciliation_pending and is not blindly reclaimed/resubmitted. |
+| P10-C09 | Active lease/reconciliation exclusion | Reconciliation cannot race a still-active execution lease. |
+| P10-C10 | Submission evidence replay | Exact normalized submission evidence replay is a no-op; changed replay fails closed. |
+| P10-C11 | External event replay | Exact provider event replay is a no-op; changed use of the same event identity fails closed. |
+| P10-C12 | Out-of-order evidence | Pending/failed evidence arriving after processed evidence cannot erase the processed success candidate. |
+| P10-C13 | Provider payment binding | External evidence must map to the Finance-owned provider payment reference and known refund identity. |
+| P10-C14 | Processed is not final | Provider processed evidence stops at reconciliation_pending; C cannot set refund/command succeeded. |
+| P10-C15 | No financial side effects | C does not issue credit notes, change payment refund status, post ledger entries, or emit financial outbox events. |
+| P10-C16 | Least privilege | finance_refund_runtime and finance_reconciliation_runtime remain direct-table blind and receive only their exact app_secure capabilities. |
+| P10-C17 | Capability lifecycle | Empty downgrade removes PAY-10-C functions/ACLs and restores the PAY-9/PAY-10 predecessor security surface. |
