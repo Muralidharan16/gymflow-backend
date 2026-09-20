@@ -172,6 +172,30 @@ def _require_predecessor(bind) -> None:
                 'provider_order_ref',
                 'SELECT'
             )
+            AND pg_catalog.has_column_privilege(
+                'app_security_owner',
+                'finance.payment_events',
+                'id',
+                'SELECT'
+            )
+            AND pg_catalog.has_column_privilege(
+                'app_security_owner',
+                'finance.payment_events',
+                'payment_id',
+                'SELECT'
+            )
+            AND pg_catalog.has_column_privilege(
+                'app_security_owner',
+                'finance.payment_events',
+                'provider_code',
+                'SELECT'
+            )
+            AND pg_catalog.has_column_privilege(
+                'app_security_owner',
+                'finance.payment_events',
+                'provider_event_id',
+                'SELECT'
+            )
             """
         )
     ).scalar_one():
