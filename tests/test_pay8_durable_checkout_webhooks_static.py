@@ -220,6 +220,28 @@ def test_webhook_completion_reads_only_declared_predecessor_event_columns():
     assert "SELECT e.*" not in body
 
 
+def test_finance_capability_roles_get_bounded_app_secure_usage_only():
+    source = MIGRATION.read_text(encoding="utf-8")
+    assert (
+        "GRANT USAGE ON SCHEMA app_secure "
+        "TO finance_payment_runtime, finance_reconciliation_runtime"
+    ) in source
+    assert (
+        "REVOKE USAGE ON SCHEMA app_secure "
+        "FROM finance_payment_runtime, finance_reconciliation_runtime"
+    ) in source
+    assert "PAY-8 refuses preexisting app_secure USAGE" in source
+    for role in ("finance_payment_runtime", "finance_reconciliation_runtime"):
+        assert (
+            f"GRANT SELECT ON TABLE finance.provider_operations TO {role}"
+            not in source
+        )
+        assert (
+            f"GRANT SELECT ON TABLE finance.provider_webhook_inbox TO {role}"
+            not in source
+        )
+
+
 def test_runtime_roles_have_capabilities_but_no_direct_provider_table_dml():
     source = MIGRATION.read_text(encoding="utf-8")
 
