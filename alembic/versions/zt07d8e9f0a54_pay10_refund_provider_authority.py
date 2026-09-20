@@ -1006,7 +1006,7 @@ def _install() -> None:
                     },
                 ).scalar_one()
             )
-            if actual is (role_name not in allowed_roles):
+            if actual != (role_name in allowed_roles):
                 raise RuntimeError(
                     "PAY-10-C execute ACL drift: "
                     f"{role_name} -> {signature}"
