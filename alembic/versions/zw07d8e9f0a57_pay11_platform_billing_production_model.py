@@ -1684,6 +1684,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # PAY-11 tenant relations use FORCE RLS. Temporarily remove FORCE only
+    # inside this transactional downgrade so the table owner can see every
+    # row before destructive DDL. A blocked downgrade rolls this DDL back.
+    for table_name in TENANT_TABLES:
+        op.execute(
+            f"ALTER TABLE public.{table_name} NO FORCE ROW LEVEL SECURITY;"
+        )
+
     op.execute(
         """
         DO $pay11_downgrade_guard$

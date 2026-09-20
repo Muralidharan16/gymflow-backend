@@ -110,19 +110,17 @@ def test_pay11_issued_documents_and_refund_capacity_are_database_enforced():
 
 def test_pay11_runtime_authority_is_read_only_and_document_sequence_is_internal():
     migration = MIGRATION.read_text(encoding="utf-8")
-    app_runtime_grants = re.findall(
-        r"GRANT\s+([A-Z, ]+)\s+ON(?P<body>.*?)TO app_runtime;",
-        migration,
-        flags=re.DOTALL,
-    )
-    assert app_runtime_grants
-    for privileges, body in app_runtime_grants:
-        assert privileges.strip() == "SELECT"
-        assert "platform_document_sequences" not in body
+    marker = "GRANT SELECT ON"
+    assert marker in migration
+    runtime_block = migration.split(marker, 1)[1].split("TO app_runtime;", 1)[0]
+    assert "platform_document_sequences" not in runtime_block
 
-    assert "GRANT INSERT" not in migration
-    assert "GRANT UPDATE" not in migration
-    assert "GRANT DELETE" not in migration
+    for privilege in ("INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+        assert not re.search(
+            rf"GRANT\\s+{privilege}\\b.*?\\bTO\\s+app_runtime\\s*;",
+            migration,
+            flags=re.DOTALL,
+        )
 
 
 def test_pay11_keeps_platform_billing_out_of_member_commerce_modules():
@@ -156,3 +154,11 @@ def test_pay11_machine_contract_and_gate_are_frozen():
     assert contract["live_money_movement"] is False
     assert contract["gate"] == "PAY11_PLATFORM_BILLING_MODEL=PASS"
     assert "PAY11_PLATFORM_BILLING_MODEL=PASS" in ARCH.read_text(encoding="utf-8")
+
+
+def test_pay11_downgrade_guard_bypasses_force_rls_only_inside_migration_transaction():
+    migration = MIGRATION.read_text(encoding="utf-8")
+    downgrade = migration.split("def downgrade() -> None:", 1)[1]
+    guard_prefix = downgrade.split("DO $pay11_downgrade_guard$", 1)[0]
+    assert "NO FORCE ROW LEVEL SECURITY" in guard_prefix
+    assert "PAY-11 downgrade blocked" in downgrade

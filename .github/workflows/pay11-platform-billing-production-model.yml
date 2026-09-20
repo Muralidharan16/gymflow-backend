@@ -71,6 +71,7 @@ jobs:
               "docs/architecture/PAY11_PLATFORM_BILLING_PRODUCTION_MODEL.md",
               "docs/architecture/pay11_platform_billing_model_v1.json",
               "tests/platform_billing/test_architecture.py",
+              "tests/platform_billing/test_baseline_characterization.py",
               "tests/platform_billing/test_pay11_production_model.py",
               "tests/platform_billing/test_pay11_production_model_static.py",
               "tests/platform_billing/test_phase1_schema.py",
