@@ -373,7 +373,7 @@ def _install_tables() -> None:
             provider_amount_subunits BIGINT NOT NULL,
             provider_currency CHAR(3) NOT NULL,
             provider_payment_status VARCHAR(80) NOT NULL,
-            provider_captured BOOLEAN NOT NULL,
+            provider_captured BOOLEAN NULL,
             provider_payment_order_ref VARCHAR(200) NOT NULL,
             provider_order_entity_ref VARCHAR(200) NULL,
             provider_order_status VARCHAR(80) NULL,
@@ -1223,7 +1223,6 @@ def _install_functions(bind) -> None:
                    OR p_provider_payment_status IS NULL
                    OR char_length(p_provider_payment_status)
                       NOT BETWEEN 1 AND 80
-                   OR p_provider_captured IS NULL
                    OR p_provider_payment_order_ref !~
                       '^[A-Za-z0-9_:-]{1,200}$'
                    OR (
