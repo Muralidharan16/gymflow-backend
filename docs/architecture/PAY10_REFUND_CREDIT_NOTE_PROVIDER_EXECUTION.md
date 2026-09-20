@@ -76,9 +76,24 @@ Razorpay test/sandbox behavior only.
 
 For Razorpay, the provider payment identifier is loaded from Finance truth.
 The refund request amount is sent in currency subunits and the deterministic
-Finance receipt is reused for every attempt of the same logical refund.  A
-duplicate provider receipt is treated as an idempotency/reconciliation signal,
-not permission to create a second refund.
+Finance receipt is reused for every attempt of the same logical refund.  The
+receipt is derived from the durable Finance command/refund identity, never from
+browser input.  A duplicate provider receipt is treated as an
+idempotency/reconciliation signal, not permission to create a second refund.
+
+PAY-10-B implements only the Razorpay test/sandbox adapter boundary:
+
+- submit: `POST /v1/payments/:payment_id/refund`;
+- reconcile: `GET /v1/payments/:payment_id/refunds/:refund_id`;
+- request metadata contains Finance UUIDs only, with no customer PII, secrets,
+  authorization material, or raw provider payload;
+- the adapter returns normalized/redacted provider facts and performs no
+  Finance database mutation;
+- an HTTP 400 from refund submission is conservatively ambiguous because a
+  duplicate deterministic receipt may represent a previously accepted refund;
+- only a failure known to occur before provider acceptance is automatically
+  retryable. Timeouts, post-connect network failure, malformed responses and
+  response mismatches require reconciliation.
 
 Normalized provider states:
 
