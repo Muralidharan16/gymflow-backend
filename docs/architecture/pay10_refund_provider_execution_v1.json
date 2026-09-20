@@ -45,5 +45,26 @@
     "duplicate_receipt_http_400": "reconciliation_required",
     "automatic_retry": "known non-acceptance only",
     "database_mutation": false
+  },
+  "execution_reconciliation": {
+    "claim_capability": "app_secure.claim_pay10_refund_provider_execution(uuid,integer)",
+    "request_binding_capability": "app_secure.bind_pay10_refund_provider_request(uuid,uuid,bigint,text,text,numeric,text,text)",
+    "submission_outcome_capability": "app_secure.record_pay10_refund_provider_outcome(uuid,uuid,bigint,text,text,text,timestamp with time zone)",
+    "unknown_outcome_capability": "app_secure.record_pay10_refund_provider_unknown(uuid,uuid,bigint,text)",
+    "failure_capability": "app_secure.record_pay10_refund_provider_failure(uuid,uuid,bigint,text,boolean)",
+    "external_evidence_capability": "app_secure.record_pay10_refund_external_evidence(uuid,text,text,text,text,text,text,timestamp with time zone)",
+    "execution_role": "finance_refund_runtime",
+    "reconciliation_role": "finance_reconciliation_runtime",
+    "lease_minutes": 10,
+    "processed_provider_state_local_command_state": "reconciliation_pending",
+    "unknown_provider_state_local_command_state": "reconciliation_pending",
+    "retry_rule": "known non-acceptance only",
+    "active_lease_blocks_reconciliation": true,
+    "stale_fence_mutation": false,
+    "direct_finance_table_dml": false,
+    "financial_finalization": false,
+    "ledger_posting": false,
+    "outbox_emission": false,
+    "refund_success_transition": false
   }
 }
