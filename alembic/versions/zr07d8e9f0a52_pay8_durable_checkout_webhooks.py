@@ -1557,7 +1557,7 @@ def _install_functions(bind) -> None:
             AS $function$
             DECLARE
                 v_row finance.provider_webhook_inbox%ROWTYPE;
-                v_event finance.payment_events%ROWTYPE;
+                v_event record;
                 v_payment finance.payments%ROWTYPE;
             BEGIN
                 IF NOT (
@@ -1588,7 +1588,12 @@ def _install_functions(bind) -> None:
                         USING ERRCODE='40001';
                 END IF;
 
-                SELECT e.* INTO v_event
+                SELECT
+                    e.id,
+                    e.payment_id,
+                    e.provider_code,
+                    e.provider_event_id
+                INTO v_event
                 FROM finance.payment_events e
                 WHERE e.id=p_payment_event_id;
                 IF NOT FOUND
