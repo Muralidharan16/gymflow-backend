@@ -915,6 +915,138 @@ def _install() -> None:
                     f"{role_name} -> finance.{table_name}"
                 )
 
+    if bool(
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_schema_privilege("
+                "'app_security_owner','app_secure','CREATE')"
+            )
+        ).scalar_one()
+    ):
+        raise RuntimeError(
+            "PAY-10-C installation CREATE authority leaked"
+        )
+
+    if not bool(
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_schema_privilege("
+                ":role,'app_secure','USAGE')"
+            ),
+            {"role": _REFUND_RUNTIME},
+        ).scalar_one()
+    ):
+        raise RuntimeError(
+            "PAY-10-C refund runtime lacks bounded app_secure USAGE"
+        )
+
+    expected_execute = {
+        _CLAIM_REFUND: {_REFUND_RUNTIME},
+        _BIND_REQUEST: {_REFUND_RUNTIME},
+        _RECORD_OUTCOME: {_REFUND_RUNTIME},
+        _RECORD_UNKNOWN: {_REFUND_RUNTIME},
+        _RECORD_FAILURE: {_REFUND_RUNTIME},
+        _RECORD_EXTERNAL: {_RECON_RUNTIME},
+    }
+    for signature, allowed_roles in expected_execute.items():
+        row = bind.execute(
+            sa.text(
+                """
+                SELECT
+                    pg_catalog.pg_get_userbyid(p.proowner) AS owner,
+                    p.prosecdef,
+                    coalesce(p.proconfig::text,'') AS config,
+                    EXISTS (
+                        SELECT 1
+                        FROM pg_catalog.aclexplode(
+                            coalesce(
+                                p.proacl,
+                                pg_catalog.acldefault('f',p.proowner)
+                            )
+                        ) acl
+                        WHERE acl.grantee=0
+                          AND acl.privilege_type='EXECUTE'
+                    ) AS public_execute
+                FROM pg_catalog.pg_proc p
+                JOIN pg_catalog.pg_namespace n
+                  ON n.oid=p.pronamespace
+                WHERE n.nspname='app_secure'
+                  AND p.oid=pg_catalog.to_regprocedure(:signature)
+                """
+            ),
+            {"signature": signature},
+        ).mappings().one_or_none()
+        if (
+            row is None
+            or row["owner"] != _SECURITY_OWNER
+            or not bool(row["prosecdef"])
+            or bool(row["public_execute"])
+            or "row_security=on" not in row["config"]
+        ):
+            raise RuntimeError(
+                f"PAY-10-C function security drift: {signature}"
+            )
+        for role_name in (
+            "app_runtime",
+            "worker_runtime",
+            _REFUND_RUNTIME,
+            _RECON_RUNTIME,
+            "finance_payment_runtime",
+            "finance_maintenance_runtime",
+        ):
+            actual = bool(
+                bind.execute(
+                    sa.text(
+                        "SELECT pg_catalog.has_function_privilege("
+                        ":role,:signature,'EXECUTE')"
+                    ),
+                    {
+                        "role": role_name,
+                        "signature": signature,
+                    },
+                ).scalar_one()
+            )
+            if actual is (role_name not in allowed_roles):
+                raise RuntimeError(
+                    "PAY-10-C execute ACL drift: "
+                    f"{role_name} -> {signature}"
+                )
+
+    for role_name in (_REFUND_RUNTIME, _RECON_RUNTIME):
+        for relation in (
+            "finance.refund_execution_commands",
+            "finance.refunds",
+            "finance.payments",
+            "finance.payment_allocations",
+            "finance.refund_provider_evidence",
+        ):
+            if bool(
+                bind.execute(
+                    sa.text(
+                        """
+                        SELECT
+                            pg_catalog.has_table_privilege(
+                                :role,:relation,'SELECT'
+                            )
+                            OR pg_catalog.has_table_privilege(
+                                :role,:relation,'INSERT'
+                            )
+                            OR pg_catalog.has_table_privilege(
+                                :role,:relation,'UPDATE'
+                            )
+                            OR pg_catalog.has_table_privilege(
+                                :role,:relation,'DELETE'
+                            )
+                        """
+                    ),
+                    {"role": role_name, "relation": relation},
+                ).scalar_one()
+            ):
+                raise RuntimeError(
+                    "PAY-10-C runtime gained direct Finance table authority: "
+                    f"{role_name} -> {relation}"
+                )
+
 
 def upgrade() -> None:
     bind = op.get_bind()
@@ -980,6 +1112,32 @@ def downgrade() -> None:
         ON finance.refund_provider_evidence
         """
     )
+
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        for signature in (
+            _CLAIM_REFUND,
+            _BIND_REQUEST,
+            _RECORD_OUTCOME,
+            _RECORD_UNKNOWN,
+            _RECORD_FAILURE,
+        ):
+            op.execute(
+                f"REVOKE EXECUTE ON FUNCTION {signature} "
+                "FROM finance_refund_runtime"
+            )
+        op.execute(
+            f"REVOKE EXECUTE ON FUNCTION {_RECORD_EXTERNAL} "
+            "FROM finance_reconciliation_runtime"
+        )
+        op.execute(
+            "REVOKE USAGE ON SCHEMA app_secure "
+            "FROM finance_refund_runtime"
+        )
+        for signature in reversed(_PAY10_FUNCTIONS):
+            op.execute(f"DROP FUNCTION {signature}")
+    finally:
+        op.execute("RESET ROLE")
 
     for table_name in reversed(_NEW_TABLES):
         op.execute(
