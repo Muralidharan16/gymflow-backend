@@ -820,6 +820,7 @@ def _install_functions() -> None:
                 v_org uuid;
                 v_actor uuid;
                 v_actor_type text;
+                v_role text;
                 v_request finance.offline_payment_requests%ROWTYPE;
                 v_invoice finance.invoices%ROWTYPE;
                 v_allocated numeric(14,2);
@@ -847,7 +848,12 @@ def _install_functions() -> None:
                 v_actor_type:=NULLIF(
                     pg_catalog.current_setting('app.current_principal_type',true),''
                 );
+                v_role:=NULLIF(
+                    pg_catalog.current_setting('app.current_role',true),''
+                );
                 IF v_org IS NULL OR v_actor IS NULL
+                   OR v_actor_type IS NULL
+                   OR v_role NOT IN ('owner','admin')
                    OR p_offline_payment_request_id IS NULL
                 THEN
                     RAISE EXCEPTION 'PAY-6 offline payment approval invalid'
@@ -868,7 +874,7 @@ def _install_functions() -> None:
                     FROM finance.monetary_commands c
                     WHERE c.id=v_request.approval_command_id;
                     IF NOT FOUND
-                       OR c.idempotency_key IS DISTINCT FROM p_idempotency_key
+                       OR v_cmd.idempotency_key IS DISTINCT FROM p_idempotency_key
                     THEN
                         RAISE EXCEPTION 'PAY-6 offline payment already approved'
                             USING ERRCODE='23505';
@@ -1053,6 +1059,7 @@ def _install_functions() -> None:
                 v_org uuid;
                 v_actor uuid;
                 v_actor_type text;
+                v_role text;
                 v_request finance.offline_payment_requests%ROWTYPE;
                 v_reason text;
                 v_canonical text;
@@ -1073,8 +1080,13 @@ def _install_functions() -> None:
                 v_actor_type:=NULLIF(
                     pg_catalog.current_setting('app.current_principal_type',true),''
                 );
+                v_role:=NULLIF(
+                    pg_catalog.current_setting('app.current_role',true),''
+                );
                 v_reason:=pg_catalog.lower(pg_catalog.btrim(p_reason_code));
                 IF v_org IS NULL OR v_actor IS NULL
+                   OR v_actor_type IS NULL
+                   OR v_role NOT IN ('owner','admin')
                    OR p_offline_payment_request_id IS NULL
                    OR v_reason !~ '^[a-z][a-z0-9_]{0,79}$'
                    OR v_reason ~ '(secret|token|bearer)'
@@ -1096,7 +1108,7 @@ def _install_functions() -> None:
                     FROM finance.monetary_commands c
                     WHERE c.id=v_request.rejection_command_id;
                     IF NOT FOUND
-                       OR c.idempotency_key IS DISTINCT FROM p_idempotency_key
+                       OR v_cmd.idempotency_key IS DISTINCT FROM p_idempotency_key
                        OR v_request.rejection_reason_code IS DISTINCT FROM v_reason
                     THEN
                         RAISE EXCEPTION 'PAY-6 offline payment already rejected'
