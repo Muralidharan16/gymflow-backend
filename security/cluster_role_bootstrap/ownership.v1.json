@@ -399,6 +399,22 @@
     },
     {
       "dynamic": false,
+      "object": "app_secure.claim_finance_provider_operation(uuid,uuid)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-8 fenced outbound provider-operation claim executes under reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.claim_finance_provider_webhook(uuid,uuid)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-8 fenced provider-webhook claim executes under reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
       "object": "app_secure.claim_member_subscription_finance_events(uuid,integer,integer)",
       "object_type": "FUNCTION",
       "parent_relation": null,
@@ -407,10 +423,26 @@
     },
     {
       "dynamic": false,
+      "object": "app_secure.claim_next_finance_provider_webhook(uuid)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-8 finance-payment recovery claim is isolated behind the dedicated capability role and reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
       "object": "app_secure.complete_finance_monetary_command(UUID,TEXT)",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "PAY-3 bounded monetary-command capability is owned only by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.complete_finance_provider_webhook(uuid,uuid,bigint,uuid)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-8 provider-webhook completion/fence capability executes under reduced security owner.",
       "target_owner": "app_security_owner"
     },
     {
@@ -435,6 +467,22 @@
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "PAY-3 bounded monetary-command capability is owned only by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.fail_finance_provider_webhook(uuid,uuid,bigint,text,boolean)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-8 bounded provider-webhook retry/dead-letter transition executes under reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.finish_finance_provider_operation(uuid,uuid,bigint,text,text,text,text)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-8 fenced outbound provider-operation completion executes under reduced security owner.",
       "target_owner": "app_security_owner"
     },
     {
@@ -519,6 +567,22 @@
     },
     {
       "dynamic": false,
+      "object": "app_secure.reconcile_finance_provider_operation(uuid,text,text,text,text)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-8 unknown provider-operation reconciliation is isolated behind finance_reconciliation_runtime and reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.record_finance_provider_webhook(text,text,text,text,text,text,text,text,bigint,text,text,boolean,text,text,text,bigint)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-8 verified normalized provider-webhook intake executes under reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
       "object": "app_secure.record_member_subscription_finance_binding(uuid,uuid)",
       "object_type": "FUNCTION",
       "parent_relation": null,
@@ -547,6 +611,14 @@
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "PAY-3 bounded monetary-command capability is owned only by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.reserve_finance_provider_operation(uuid,text,text,text,text,text)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-8 checkout provider-operation reservation capability executes under reduced security owner.",
       "target_owner": "app_security_owner"
     },
     {
@@ -1395,6 +1467,22 @@
       "object_type": "TABLE",
       "parent_relation": null,
       "policy": "PAY-2 governs existing Finance relation ownership; runtime capability roles may never own financial objects.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.provider_operations",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-8 durable outbound provider-operation saga evidence is migration-owned; runtime roles remain table-blind.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "finance.provider_webhook_inbox",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-8 durable verified provider-webhook inbox is migration-owned; raw runtime roles remain table-blind.",
       "target_owner": "migration_owner"
     },
     {
