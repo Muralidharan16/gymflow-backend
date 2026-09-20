@@ -163,6 +163,49 @@ Before every provider attempt and every terminal success transition:
 
 Concurrent attempts serialize on the durable command/payment authority.
 
+## PAY-10-C execution and reconciliation boundary
+
+PAY-10-C connects the durable P4D execution command to provider execution
+without giving provider results financial-finalization authority.
+
+The bounded capability split is:
+
+- `finance_refund_runtime` may claim a due refund command, bind the exact
+  server-authoritative provider request, record normalized submission evidence,
+  move an ambiguous result to reconciliation, or record a known
+  non-acceptance/failure.
+- `finance_reconciliation_runtime` may record only normalized webhook or
+  reconciliation evidence for a previously bound command.
+- Neither runtime identity receives direct Finance table DML.
+- Every mutating execution acknowledgement from a worker requires the exact
+  current worker id + lease fence and an unexpired processing lease.
+- Expired processing work may be reclaimed under a new fence. The old fence
+  cannot bind, acknowledge, retry, or otherwise mutate the command.
+- A reclaimed in-flight attempt does not increment the logical attempt count;
+  a fresh retry does.
+- The provider request SHA-256 is bound once and must remain identical across
+  retries. A known provider refund reference forbids provider resubmission and
+  forces reconciliation.
+- Only known provider non-acceptance may become `retry_pending`. Unknown
+  acceptance, timeout, post-connect network ambiguity, malformed response, or
+  otherwise indeterminate outcome becomes `reconciliation_pending`.
+- Active worker leases block reconciliation from racing the executing worker.
+  Reconciliation can proceed only after the command is no longer actively
+  leased.
+- Exact provider evidence replay is a no-op. Changed replay of the same
+  evidence hash or provider event id fails closed.
+- Once processed provider evidence exists, later pending/failed callback
+  ordering cannot erase that fact; the command remains
+  `reconciliation_pending` for PAY-10-D financial-finalization checks.
+- Provider state `processed` is **not** local refund success in PAY-10-C.
+  PAY-10-C does not mark the refund or command `succeeded`, post ledger
+  entries, issue credit notes, alter payment refund state, or emit Finance
+  financial outbox events.
+
+The request/provider network call remains outside the database transaction.
+The service layer wraps only the short database capability calls and does not
+commit by itself. This avoids holding Finance locks across provider latency.
+
 ## Financial finalization
 
 Terminal processed evidence is applied once:
