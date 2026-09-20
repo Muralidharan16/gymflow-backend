@@ -5,6 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     Date,
     ForeignKey,
     ForeignKeyConstraint,
@@ -198,6 +199,42 @@ class SubscriptionTerm(Base):
         Index("ix_subscription_terms_series", "series_id", "sequence_number"),
         Index("ix_subscription_terms_legacy_source", "legacy_member_subscription_v2_id"),
         Index("ix_subscription_terms_org_plan", "org_id", "plan_id"),
+    )
+
+
+class MemberSubscriptionFinanceEventConsumption(Base):
+    __tablename__ = "member_subscription_finance_event_consumptions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    finance_event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    finance_payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    subscription_term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    business_result_status: Mapped[str] = mapped_column(Text, nullable=False)
+    effect_applied: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    consumed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("clock_timestamp()"), nullable=False
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["subscription_term_id", "org_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay5_consumption_term_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("finance_event_id", name="uq_pay5_consumption_finance_event"),
+        UniqueConstraint("idempotency_key", name="uq_pay5_consumption_idempotency"),
+        Index("ix_pay5_consumption_org_term", "org_id", "subscription_term_id"),
     )
 
 

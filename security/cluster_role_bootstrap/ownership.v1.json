@@ -375,6 +375,14 @@
     },
     {
       "dynamic": false,
+      "object": "app_secure.acknowledge_member_subscription_finance_event(uuid,uuid,bigint)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-5 post-consumer Finance acknowledgement capability executes under app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
       "object": "app_secure.apply_member_subscription_finance_event(uuid,text)",
       "object_type": "FUNCTION",
       "parent_relation": null,
@@ -383,10 +391,26 @@
     },
     {
       "dynamic": false,
+      "object": "app_secure.claim_member_subscription_finance_events(uuid,integer,integer)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-5 bounded Finance-event claim/reclaim capability executes under app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
       "object": "app_secure.complete_finance_monetary_command(UUID,TEXT)",
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "PAY-3 bounded monetary-command capability is owned only by app_security_owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.consume_member_subscription_finance_event(uuid,uuid,bigint)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-5 atomic business-consume capability executes under app_security_owner.",
       "target_owner": "app_security_owner"
     },
     {
@@ -459,6 +483,14 @@
       "object_type": "FUNCTION",
       "parent_relation": null,
       "policy": "PAY-4 immutable Finance binding capability executes under the reduced security owner.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.release_member_subscription_finance_event(uuid,uuid,bigint,text,boolean)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-5 bounded retry/failure release capability executes under app_security_owner.",
       "target_owner": "app_security_owner"
     },
     {
@@ -1555,6 +1587,14 @@
       "object_type": "TABLE",
       "parent_relation": null,
       "policy": "Preserve source-derived final owner.",
+      "target_owner": "migration_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "public.member_subscription_finance_event_consumptions",
+      "object_type": "TABLE",
+      "parent_relation": null,
+      "policy": "PAY-5 product-owned consumed Finance-event journal is migration-owned; runtime workers remain table-blind.",
       "target_owner": "migration_owner"
     },
     {

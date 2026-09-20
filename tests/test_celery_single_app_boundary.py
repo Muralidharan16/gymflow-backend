@@ -69,6 +69,7 @@ def test_canonical_beat_schedule_contains_only_hardened_operational_sweeps() -> 
         "app.tasks.branch_hours_partition.run",
         "app.tasks.outbox_poller.run",
         "app.tasks.branch_outbox_poller.run",
+        "app.tasks.finance_event_dispatcher.run",
         "app.tasks.branch_lifecycle_sweeps.watchdog",
         "app.tasks.branch_lifecycle_sweeps.reconciliation",
         "app.tasks.platform_maintenance.reclaim_stale_idempotency",

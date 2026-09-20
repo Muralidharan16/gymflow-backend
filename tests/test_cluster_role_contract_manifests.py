@@ -20,8 +20,8 @@ OWNERSHIP_MANIFEST = (
     / "ownership.v1.json"
 )
 EXPECTED_OWNERSHIP_SHA256 = (
-    "2131aaccd4f02c4ba0e6c54dc72ab8d6"
-    "adc553c8c1eb8c33054b3f1f64c69822"
+    "17e11cca82365baa2df8eaf2e440b4e9"
+    "c803e239226ae4b29a38f94c02a8bfe3"
 )
 
 
@@ -328,7 +328,7 @@ def test_ownership_manifest_matches_reviewed_projection() -> None:
 
     ownership = json.loads(payload.decode("utf-8"))
     objects = ownership["objects"]
-    assert len(objects) == 204
+    assert len(objects) == 209
     assert not any(record["object"] == "IF" for record in objects)
     assert {
         "dynamic": False,
@@ -470,3 +470,23 @@ def test_pay4_member_finance_ownership_projection_is_exact() -> None:
         assert by_name[name]["target_owner"] == "app_security_owner"
     for role in PAY2_FINANCE_CAPABILITY_ROLES_FOR_TEST + ("app_runtime", "worker_runtime"):
         assert role in set(bundle.ownership["forbidden_object_owners"])
+
+
+def test_pay5_finance_event_delivery_ownership_projection_is_exact() -> None:
+    bundle = load_contract_bundle()
+    by_name = {record["object"]: record for record in bundle.ownership["objects"]}
+
+    assert (
+        by_name["public.member_subscription_finance_event_consumptions"]["target_owner"]
+        == "migration_owner"
+    )
+    for name in (
+        "app_secure.claim_member_subscription_finance_events(uuid,integer,integer)",
+        "app_secure.consume_member_subscription_finance_event(uuid,uuid,bigint)",
+        "app_secure.acknowledge_member_subscription_finance_event(uuid,uuid,bigint)",
+        "app_secure.release_member_subscription_finance_event(uuid,uuid,bigint,text,boolean)",
+    ):
+        assert by_name[name]["target_owner"] == "app_security_owner"
+
+    forbidden = set(bundle.ownership["forbidden_object_owners"])
+    assert {"worker_runtime", "app_runtime"} <= forbidden

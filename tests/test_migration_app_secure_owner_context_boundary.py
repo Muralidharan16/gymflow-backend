@@ -104,6 +104,9 @@ _PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION = (
 _PAY4_MEMBER_FINANCE_BINDING_MIGRATION = (
     "zo07d8e9f0a49_pay4_member_finance_binding.py"
 )
+_PAY5_FINANCE_EVENT_DELIVERY_MIGRATION = (
+    "zp07d8e9f0a50_pay5_finance_event_delivery.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -146,6 +149,7 @@ APP_SECURE_FILES.update(
         _PAY3_MONETARY_COMMAND_MIGRATION,
         _PAY3_MONETARY_COMMAND_AMBIGUITY_MIGRATION,
         _PAY4_MEMBER_FINANCE_BINDING_MIGRATION,
+        _PAY5_FINANCE_EVENT_DELIVERY_MIGRATION,
     }
 )
 
@@ -298,6 +302,12 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "drop_policy",
             "grant_schema",
             "revoke_schema",
+        },
+        # PAY-5 adds the product consumed-event RLS policies plus reduced-owner
+        # delivery functions; no schema exposure is broadened.
+        _PAY5_FINANCE_EVENT_DELIVERY_MIGRATION: {
+            "create_policy",
+            "drop_policy",
         },
         A1.name: view_contract,
     }
