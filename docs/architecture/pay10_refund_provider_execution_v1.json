@@ -27,5 +27,23 @@
   "live_money_movement": false,
   "merge_authorized": false,
   "release_authorized": false,
-  "deployment_authorized": false
+  "deployment_authorized": false,
+  "provider_adapter": {
+    "provider_code": "razorpay_sandbox",
+    "environments": [
+      "sandbox",
+      "test"
+    ],
+    "submit_endpoint": "POST /v1/payments/:payment_id/refund",
+    "fetch_endpoint": "GET /v1/payments/:payment_id/refunds/:refund_id",
+    "normalized_states": [
+      "pending",
+      "processed",
+      "failed"
+    ],
+    "provider_receipt": "sha256(command_id:refund_id) deterministic receipt",
+    "duplicate_receipt_http_400": "reconciliation_required",
+    "automatic_retry": "known non-acceptance only",
+    "database_mutation": false
+  }
 }
