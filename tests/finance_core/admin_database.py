@@ -17,6 +17,8 @@ _FINANCE_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
 # table/FK cannot be silently absorbed by CASCADE; the live PostgreSQL FK graph
 # below is the authority on whether this set remains safe to truncate.
 FINANCE_TEST_TABLES: tuple[str, ...] = (
+    "refund_provider_evidence",
+    "refund_credit_note_links",
     "payment_application_records",
     "outbox_events",
     "provider_webhook_inbox",
@@ -28,6 +30,7 @@ FINANCE_TEST_TABLES: tuple[str, ...] = (
     "ledger_entries",
     "credit_note_lines",
     "credit_notes",
+    "credit_note_series",
     "refund_execution_commands",
     "refunds",
     "member_subscription_finance_bindings",
