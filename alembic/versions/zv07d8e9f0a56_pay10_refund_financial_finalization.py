@@ -483,8 +483,7 @@ def _install_functions() -> None:
                 SELECT l.id,l.refund_id,l.amount
                 INTO v_existing
                 FROM finance.refund_credit_note_links l
-                WHERE l.credit_note_id=p_credit_note_id
-                FOR UPDATE;
+                WHERE l.credit_note_id=p_credit_note_id;
                 IF FOUND THEN
                     IF v_existing.refund_id<>v_refund.id THEN
                         RAISE EXCEPTION
@@ -526,8 +525,7 @@ def _install_functions() -> None:
                     v_cn_number,
                     v_cn_issued_at
                 FROM finance.credit_notes cn
-                WHERE cn.id=p_credit_note_id
-                FOR UPDATE;
+                WHERE cn.id=p_credit_note_id;
                 IF NOT FOUND THEN
                     RAISE EXCEPTION
                         'PAY-10-D credit note not found'
