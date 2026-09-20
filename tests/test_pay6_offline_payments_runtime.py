@@ -141,6 +141,10 @@ def _cleanup_pay6() -> None:
                 "DELETE FROM finance.ledger_accounts WHERE legal_entity_id=%s",
                 (pay4.ENTITY,),
             )
+            cur.execute(
+                "DELETE FROM finance.idempotency_keys WHERE organization_id=%s",
+                (pay4.ORG,),
+            )
         conn.commit()
     pay4._cleanup()
 
