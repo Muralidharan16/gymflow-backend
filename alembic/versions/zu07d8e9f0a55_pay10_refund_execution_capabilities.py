@@ -230,18 +230,22 @@ def _require_predecessor(bind) -> None:
             "PAY-10-C inherited Finance owner authority is incomplete"
         )
 
-    for signature in _FUNCTIONS:
-        if bool(
-            bind.execute(
-                sa.text(
-                    "SELECT pg_catalog.to_regprocedure(:s) IS NOT NULL"
-                ),
-                {"s": signature},
-            ).scalar_one()
-        ):
-            raise RuntimeError(
-                f"PAY-10-C predecessor already has {signature}"
-            )
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        for signature in _FUNCTIONS:
+            if bool(
+                bind.execute(
+                    sa.text(
+                        "SELECT pg_catalog.to_regprocedure(:s) IS NOT NULL"
+                    ),
+                    {"s": signature},
+                ).scalar_one()
+            ):
+                raise RuntimeError(
+                    f"PAY-10-C predecessor already has {signature}"
+                )
+    finally:
+        op.execute("RESET ROLE")
 
 
 def _install_functions() -> None:
@@ -1355,102 +1359,110 @@ def _install_functions() -> None:
 
 
 def _post_install_proof(bind) -> None:
-    expected = {
-        _CLAIM_REFUND: {_REFUND_RUNTIME},
-        _BIND_REQUEST: {_REFUND_RUNTIME},
-        _RECORD_OUTCOME: {_REFUND_RUNTIME},
-        _RECORD_UNKNOWN: {_REFUND_RUNTIME},
-        _RECORD_FAILURE: {_REFUND_RUNTIME},
-        _RECORD_EXTERNAL: {_RECON_RUNTIME},
-    }
-    for signature, allowed in expected.items():
-        row = bind.execute(
-            sa.text(
-                """
-                SELECT
-                    pg_catalog.pg_get_userbyid(p.proowner) AS owner,
-                    p.prosecdef,
-                    coalesce(array_to_string(p.proconfig,','),'') AS config,
-                    EXISTS (
-                        SELECT 1
-                        FROM pg_catalog.aclexplode(
-                            coalesce(
-                                p.proacl,
-                                pg_catalog.acldefault('f',p.proowner)
-                            )
-                        ) acl
-                        WHERE acl.grantee=0
-                          AND acl.privilege_type='EXECUTE'
-                    ) AS public_execute
-                FROM pg_catalog.pg_proc p
-                WHERE p.oid=pg_catalog.to_regprocedure(:signature)
-                """
-            ),
-            {"signature": signature},
-        ).mappings().one_or_none()
-        if (
-            row is None
-            or row["owner"] != _SECURITY_OWNER
-            or not bool(row["prosecdef"])
-            or bool(row["public_execute"])
-            or "row_security=on" not in row["config"]
-        ):
-            raise RuntimeError(
-                f"PAY-10-C function security drift: {signature}"
-            )
-
-        for role in _RUNTIME_ROLES:
-            actual = bool(
-                bind.execute(
-                    sa.text(
-                        "SELECT pg_catalog.has_function_privilege("
-                        ":role,:signature,'EXECUTE')"
-                    ),
-                    {"role": role, "signature": signature},
-                ).scalar_one()
-            )
-            if actual != (role in allowed):
+    # migration_owner is deliberately app_secure-blind. Function catalog
+    # resolution and ACL proofs therefore execute only under the bounded
+    # NOLOGIN security-owner context and are reset before migration exit.
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        expected = {
+            _CLAIM_REFUND: {_REFUND_RUNTIME},
+            _BIND_REQUEST: {_REFUND_RUNTIME},
+            _RECORD_OUTCOME: {_REFUND_RUNTIME},
+            _RECORD_UNKNOWN: {_REFUND_RUNTIME},
+            _RECORD_FAILURE: {_REFUND_RUNTIME},
+            _RECORD_EXTERNAL: {_RECON_RUNTIME},
+        }
+        for signature, allowed in expected.items():
+            row = bind.execute(
+                sa.text(
+                    """
+                    SELECT
+                        pg_catalog.pg_get_userbyid(p.proowner) AS owner,
+                        p.prosecdef,
+                        coalesce(array_to_string(p.proconfig,','),'') AS config,
+                        EXISTS (
+                            SELECT 1
+                            FROM pg_catalog.aclexplode(
+                                coalesce(
+                                    p.proacl,
+                                    pg_catalog.acldefault('f',p.proowner)
+                                )
+                            ) acl
+                            WHERE acl.grantee=0
+                              AND acl.privilege_type='EXECUTE'
+                        ) AS public_execute
+                    FROM pg_catalog.pg_proc p
+                    WHERE p.oid=pg_catalog.to_regprocedure(:signature)
+                    """
+                ),
+                {"signature": signature},
+            ).mappings().one_or_none()
+            if (
+                row is None
+                or row["owner"] != _SECURITY_OWNER
+                or not bool(row["prosecdef"])
+                or bool(row["public_execute"])
+                or "row_security=on" not in row["config"]
+            ):
                 raise RuntimeError(
-                    "PAY-10-C execute ACL drift: "
-                    f"{role} -> {signature}"
+                    f"PAY-10-C function security drift: {signature}"
                 )
-
-    for role in (_REFUND_RUNTIME, _RECON_RUNTIME):
-        for relation in (
-            "finance.refund_execution_commands",
-            "finance.refunds",
-            "finance.payments",
-            "finance.payment_allocations",
-            "finance.refund_provider_evidence",
-        ):
-            direct = bool(
-                bind.execute(
-                    sa.text(
-                        """
-                        SELECT
-                            pg_catalog.has_table_privilege(
-                                :role,:relation,'SELECT'
-                            )
-                            OR pg_catalog.has_table_privilege(
-                                :role,:relation,'INSERT'
-                            )
-                            OR pg_catalog.has_table_privilege(
-                                :role,:relation,'UPDATE'
-                            )
-                            OR pg_catalog.has_table_privilege(
-                                :role,:relation,'DELETE'
-                            )
-                        """
-                    ),
-                    {"role": role, "relation": relation},
-                ).scalar_one()
-            )
-            if direct:
-                raise RuntimeError(
-                    "PAY-10-C direct Finance DML leaked: "
-                    f"{role} -> {relation}"
+    
+            for role in _RUNTIME_ROLES:
+                actual = bool(
+                    bind.execute(
+                        sa.text(
+                            "SELECT pg_catalog.has_function_privilege("
+                            ":role,:signature,'EXECUTE')"
+                        ),
+                        {"role": role, "signature": signature},
+                    ).scalar_one()
                 )
-
+                if actual != (role in allowed):
+                    raise RuntimeError(
+                        "PAY-10-C execute ACL drift: "
+                        f"{role} -> {signature}"
+                    )
+    
+        for role in (_REFUND_RUNTIME, _RECON_RUNTIME):
+            for relation in (
+                "finance.refund_execution_commands",
+                "finance.refunds",
+                "finance.payments",
+                "finance.payment_allocations",
+                "finance.refund_provider_evidence",
+            ):
+                direct = bool(
+                    bind.execute(
+                        sa.text(
+                            """
+                            SELECT
+                                pg_catalog.has_table_privilege(
+                                    :role,:relation,'SELECT'
+                                )
+                                OR pg_catalog.has_table_privilege(
+                                    :role,:relation,'INSERT'
+                                )
+                                OR pg_catalog.has_table_privilege(
+                                    :role,:relation,'UPDATE'
+                                )
+                                OR pg_catalog.has_table_privilege(
+                                    :role,:relation,'DELETE'
+                                )
+                            """
+                        ),
+                        {"role": role, "relation": relation},
+                    ).scalar_one()
+                )
+                if direct:
+                    raise RuntimeError(
+                        "PAY-10-C direct Finance DML leaked: "
+                        f"{role} -> {relation}"
+                    )
+    
+    
+    finally:
+        op.execute("RESET ROLE")
 
 def _has_execution_evidence(bind) -> bool:
     op.execute("SET LOCAL ROLE app_security_owner")
@@ -1539,14 +1551,19 @@ def downgrade() -> None:
 
     _drop_functions()
 
-    if not bool(
-        bind.execute(
-            sa.text(
-                "SELECT pg_catalog.to_regprocedure(:s) IS NULL"
-            ),
-            {"s": _CLAIM_REFUND},
-        ).scalar_one()
-    ):
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        removed = bool(
+            bind.execute(
+                sa.text(
+                    "SELECT pg_catalog.to_regprocedure(:s) IS NULL"
+                ),
+                {"s": _CLAIM_REFUND},
+            ).scalar_one()
+        )
+    finally:
+        op.execute("RESET ROLE")
+    if not removed:
         raise RuntimeError(
             "PAY-10-C downgrade failed to remove capability functions"
         )
