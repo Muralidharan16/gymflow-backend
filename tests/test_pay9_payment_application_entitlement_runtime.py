@@ -111,6 +111,7 @@ def _cleanup() -> None:
                 # PAY-9 database uses a table TRUNCATE between test cases.
                 cur.execute(
                     "TRUNCATE TABLE "
+                    "finance.payment_application_records, "
                     "finance.provider_webhook_inbox, "
                     "finance.payment_events"
                 )
