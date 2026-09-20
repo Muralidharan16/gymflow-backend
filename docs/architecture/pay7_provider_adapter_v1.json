@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-7",
+  "date": "2026-09-20",
+  "branch": "hardening/pay7-provider-adapter-boundary",
+  "inherited_pay6": {
+    "commit": "e3eecc04ff65284e9d96bece3c2b304673ee6663",
+    "tree": "90b614b1e914772f454f4bd4394121203903e145",
+    "certification": "PAY6_FINAL=PASS"
+  },
+  "alembic": {
+    "inherited_head": "zq07d8e9f0a51",
+    "new_revision": false
+  },
+  "adapter_contract": {
+    "provider_selection": "server_owned_registry",
+    "allowed_environments": [
+      "sandbox",
+      "test"
+    ],
+    "business_orchestration_provider_neutral": true,
+    "configured_adapters": [
+      "razorpay_sandbox"
+    ],
+    "finance_persistence_authority": false
+  },
+  "failure_taxonomy": {
+    "classes": [
+      "retryable",
+      "final",
+      "unknown"
+    ],
+    "automatic_retry": [
+      "retryable"
+    ],
+    "unknown_requires_reconciliation": true,
+    "unknown_blind_retry_forbidden": true,
+    "pre_submit_connect_failure": "retryable",
+    "post_submit_timeout_network": "unknown",
+    "http_408_409_425_429_5xx": "unknown",
+    "malformed_or_mismatched_success": "unknown",
+    "deterministic_ordinary_4xx": "final"
+  },
+  "secret_safety": {
+    "raw_provider_error_payload_persisted": false,
+    "raw_authorization_logged": false,
+    "secret_browser_fields": false,
+    "live_key_material_allowed": false
+  },
+  "live_provider": false,
+  "live_money_movement": false,
+  "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+  "merge_authorized": false,
+  "release_authorized": false,
+  "deployment_authorized": false,
+  "next_phase": "PAY-8"
+}
