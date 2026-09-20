@@ -110,6 +110,9 @@ _PAY5_FINANCE_EVENT_DELIVERY_MIGRATION = (
 _PAY6_OFFLINE_PAYMENT_MIGRATION = (
     "zq07d8e9f0a51_pay6_offline_payments.py"
 )
+_PAY8_DURABLE_PROVIDER_MIGRATION = (
+    "zr07d8e9f0a52_pay8_durable_checkout_webhooks.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -154,6 +157,7 @@ APP_SECURE_FILES.update(
         _PAY4_MEMBER_FINANCE_BINDING_MIGRATION,
         _PAY5_FINANCE_EVENT_DELIVERY_MIGRATION,
         _PAY6_OFFLINE_PAYMENT_MIGRATION,
+        _PAY8_DURABLE_PROVIDER_MIGRATION,
     }
 )
 
@@ -318,6 +322,14 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         _PAY6_OFFLINE_PAYMENT_MIGRATION: {
             "create_policy",
             "drop_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
+        # PAY-8 installs tenant/provider saga policies and opens schema CREATE
+        # only inside the reduced-owner function installation window. Policies
+        # are removed by dropping the PAY-8 relations on downgrade.
+        _PAY8_DURABLE_PROVIDER_MIGRATION: {
+            "create_policy",
             "grant_schema",
             "revoke_schema",
         },

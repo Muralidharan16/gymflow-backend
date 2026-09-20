@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, Response, status
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -228,42 +229,132 @@ def map_checkout_session_response(result: SafeCheckoutSessionResult) -> FinanceC
     )
 
 
+def _provider_operation_http_error(
+    exc: FinanceProviderOperationError,
+) -> HTTPException:
+    if exc.requires_reconciliation:
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "FINANCE_PROVIDER_OUTCOME_UNKNOWN",
+                "message": (
+                    "Provider outcome is unknown and requires "
+                    "reconciliation before retry."
+                ),
+            },
+        )
+    if exc.automatic_retry_allowed:
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "FINANCE_PROVIDER_RETRYABLE_FAILURE",
+                "message": "Provider is temporarily unavailable; retry is safe.",
+            },
+        )
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": "FINANCE_PROVIDER_FINAL_FAILURE",
+            "message": "Provider rejected the checkout operation.",
+        },
+    )
+
+
 @router.post("/checkout-sessions", response_model=FinanceCheckoutCreateResponse)
 async def create_checkout_session(
     request: FinanceCheckoutCreateRequest,
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
     actor: FinancePaymentActor = Depends(checkout_actor_dependency),
     _sandbox_enabled: None = Depends(require_finance_checkout_sandbox_enabled),
-    checkout_service: FinanceCheckoutOrchestrationService = Depends(get_checkout_orchestration_service),
+    db: AsyncSession = Depends(get_db),
+    checkout_service: FinanceCheckoutOrchestrationService = Depends(
+        get_checkout_orchestration_service
+    ),
 ) -> FinanceCheckoutCreateResponse:
-    command = build_checkout_session_command(request, actor=actor, idempotency_key=x_idempotency_key)
-    try:
-        result = await checkout_service.create_checkout_session(command)
-    except FinanceProviderOperationError as exc:
-        if exc.requires_reconciliation:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "FINANCE_PROVIDER_OUTCOME_UNKNOWN",
-                    "message": "Provider outcome is unknown and requires reconciliation before retry.",
-                },
-            ) from exc
-        if exc.automatic_retry_allowed:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "code": "FINANCE_PROVIDER_RETRYABLE_FAILURE",
-                    "message": "Provider is temporarily unavailable; retry is safe.",
-                },
-            ) from exc
+    command = build_checkout_session_command(
+        request,
+        actor=actor,
+        idempotency_key=x_idempotency_key,
+    )
+
+    prepared = await checkout_service.prepare_checkout_session(command)
+    # Durable local authority exists before any provider I/O.
+    await db.commit()
+
+    if prepared.provider_order_id:
+        return map_checkout_session_response(
+            checkout_service.build_result(
+                prepared,
+                provider_order_id=prepared.provider_order_id,
+            )
+        )
+    if prepared.provider_operation is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
-                "code": "FINANCE_PROVIDER_FINAL_FAILURE",
-                "message": "Provider rejected the checkout operation.",
+                "code": "FINANCE_PROVIDER_OPERATION_UNAVAILABLE",
+                "message": "Provider operation is unavailable.",
             },
-        ) from exc
-    return map_checkout_session_response(result)
+        )
+    if prepared.provider_operation.status not in (
+        "reserved",
+        "failed_retryable",
+    ):
+        raise _provider_operation_http_error(
+            checkout_service.operation_state_error(
+                prepared.provider_operation.status
+            )
+        )
+
+    lease_owner = uuid.uuid4()
+    claim = await checkout_service.claim_provider_operation(
+        prepared,
+        lease_owner=lease_owner,
+    )
+    # Commit the in-flight lease/fence before submitting the external POST.
+    await db.commit()
+
+    if not claim.claimed:
+        if claim.status == "succeeded" and claim.provider_object_id:
+            return map_checkout_session_response(
+                checkout_service.build_result(
+                    prepared,
+                    provider_order_id=claim.provider_object_id,
+                )
+            )
+        raise _provider_operation_http_error(
+            checkout_service.operation_state_error(claim.status)
+        )
+
+    try:
+        response = await checkout_service.call_provider(prepared)
+    except FinanceProviderOperationError as exc:
+        await checkout_service.finish_provider_error(
+            claim,
+            lease_owner=lease_owner,
+            error=exc,
+        )
+        # Persist retryable/final/unknown before returning the HTTP result.
+        await db.commit()
+        raise _provider_operation_http_error(exc) from exc
+
+    # If this DB acknowledgement fails after provider success, the already
+    # committed in-flight lease later expires to UNKNOWN. A retry cannot submit
+    # a second create until reconciliation resolves the ambiguity.
+    provider_order_id = await checkout_service.finish_provider_success(
+        prepared,
+        claim,
+        lease_owner=lease_owner,
+        response=response,
+    )
+    await db.commit()
+
+    return map_checkout_session_response(
+        checkout_service.build_result(
+            prepared,
+            provider_order_id=provider_order_id,
+        )
+    )
 
 
 @router.get("/checkout-sessions/{checkout_session_id}", response_model=FinanceCheckoutStatusResponse)
@@ -284,7 +375,10 @@ async def receive_razorpay_webhook(
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
     _actor: None = Depends(webhook_actor_dependency),
     _sandbox_enabled: None = Depends(require_finance_webhook_sandbox_enabled),
-    webhook_service: RazorpayWebhookConfirmationService = Depends(get_razorpay_webhook_confirmation_service),
+    db: AsyncSession = Depends(get_db),
+    webhook_service: RazorpayWebhookConfirmationService = Depends(
+        get_razorpay_webhook_confirmation_service
+    ),
 ) -> dict[str, str]:
     webhook = build_razorpay_webhook_input(
         raw_body=await request.body(),
@@ -292,23 +386,107 @@ async def receive_razorpay_webhook(
         provider_event_id=x_razorpay_event_id,
         idempotency_key=x_idempotency_key,
     )
+
     try:
-        await webhook_service.confirm_payment_event(webhook)
-    except FinanceWebhookSignatureError:
+        receipt = await webhook_service.record_verified_webhook(webhook)
+        # A verified normalized inbox row is durable before Finance state changes.
+        await db.commit()
+    except FinanceWebhookSignatureError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "FINANCE_WEBHOOK_SIGNATURE_INVALID", "message": "Webhook signature is invalid."},
-        )
-    except (FinanceWebhookNormalizationError, FinanceProviderEvidenceError):
+            detail={
+                "code": "FINANCE_WEBHOOK_SIGNATURE_INVALID",
+                "message": "Webhook signature is invalid.",
+            },
+        ) from exc
+    except FinanceWebhookNormalizationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "FINANCE_WEBHOOK_PAYLOAD_INVALID", "message": "Webhook payload is invalid."},
+            detail={
+                "code": "FINANCE_WEBHOOK_PAYLOAD_INVALID",
+                "message": "Webhook payload is invalid.",
+            },
+        ) from exc
+
+    if receipt.status == "processed":
+        return {"status": "accepted"}
+    if receipt.status == "dead_letter":
+        # Durable terminal evidence already exists; acknowledge replay without
+        # re-running a known-invalid financial transition.
+        return {"status": "accepted"}
+
+    lease_owner = uuid.uuid4()
+    claimed = await webhook_service.claim_recorded_webhook(
+        inbox_id=receipt.inbox_id,
+        lease_owner=lease_owner,
+    )
+    # Claim/fence is durable before Finance evidence application.
+    await db.commit()
+
+    if not claimed.claimed:
+        return {
+            "status": (
+                "accepted"
+                if claimed.status in {"processed", "dead_letter"}
+                else "processing"
+            )
+        }
+
+    try:
+        result = await webhook_service.process_claimed_webhook(claimed)
+        await webhook_service.complete_claimed_webhook(
+            claimed=claimed,
+            lease_owner=lease_owner,
+            payment_event_id=result.payment_event_id,
         )
-    except (FinancePaymentStateTransitionError, FinancePaymentConflictError):
+        # Payment state + payment_event + outbox + inbox completion commit
+        # together. Crash before commit leaves the durable inbox reclaimable.
+        await db.commit()
+    except FinanceProviderEvidenceError as exc:
+        await db.rollback()
+        await webhook_service.fail_claimed_webhook(
+            claimed=claimed,
+            lease_owner=lease_owner,
+            error_code="provider_evidence_invalid",
+            retryable=False,
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "FINANCE_WEBHOOK_PAYLOAD_INVALID",
+                "message": "Webhook payload is invalid.",
+            },
+        ) from exc
+    except (FinancePaymentStateTransitionError, FinancePaymentConflictError) as exc:
+        await db.rollback()
+        await webhook_service.fail_claimed_webhook(
+            claimed=claimed,
+            lease_owner=lease_owner,
+            error_code="provider_state_conflict",
+            retryable=False,
+        )
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "FINANCE_WEBHOOK_STATE_CONFLICT", "message": "Webhook state transition is invalid."},
+            detail={
+                "code": "FINANCE_WEBHOOK_STATE_CONFLICT",
+                "message": "Webhook state transition is invalid.",
+            },
+        ) from exc
+    except (DBAPIError, FinanceOperationalGuardError):
+        await db.rollback()
+        await webhook_service.fail_claimed_webhook(
+            claimed=claimed,
+            lease_owner=lease_owner,
+            error_code="provider_processing_retry",
+            retryable=True,
         )
+        await db.commit()
+        # The provider delivery is durably accepted. Recovery can be driven by
+        # a later provider replay or the dedicated finance-payment capability.
+        return {"status": "queued"}
+
     return {"status": "accepted"}
 
 

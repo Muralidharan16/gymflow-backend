@@ -22,6 +22,11 @@ from app.finance_core.domain.razorpay_sandbox import (
 from app.finance_core.domain.razorpay_webhooks import RazorpayWebhookInput, RazorpayWebhookPaymentReference
 from app.finance_core.services.operational_guards import FinanceOperationalGuardService
 from app.finance_core.services.provider_capture_confirmation import FinanceProviderCaptureConfirmationService
+from app.finance_core.services.provider_webhook_inbox import (
+    ClaimedProviderWebhook,
+    FinanceProviderWebhookInboxService,
+    ProviderWebhookReceipt,
+)
 
 
 RAZORPAY_EVENT_STATUS_MAP = {
@@ -49,6 +54,87 @@ class RazorpayWebhookConfirmationService:
         self._confirmation = FinanceProviderCaptureConfirmationService(
             session,
             provider_code=self._provider_config.provider_code,
+        )
+        self._inbox = FinanceProviderWebhookInboxService(session)
+
+    async def record_verified_webhook(
+        self,
+        webhook: RazorpayWebhookInput,
+    ) -> ProviderWebhookReceipt:
+        reference = self.normalize(webhook)
+        self._guard_service.require_safe_preflight()
+        if not webhook.signature:
+            raise FinanceWebhookSignatureError(
+                "Missing Razorpay webhook signature"
+            )
+        return await self._inbox.record_verified(
+            provider_code=self._provider_config.provider_code,
+            environment=self._razorpay_config.mode,
+            reference=reference,
+            raw_body=webhook.raw_body,
+            signature=webhook.signature,
+        )
+
+    async def claim_recorded_webhook(
+        self,
+        *,
+        inbox_id,
+        lease_owner,
+    ) -> ClaimedProviderWebhook:
+        return await self._inbox.claim(
+            inbox_id=inbox_id,
+            lease_owner=lease_owner,
+        )
+
+    async def process_claimed_webhook(
+        self,
+        claimed: ClaimedProviderWebhook,
+    ) -> NormalizedProviderEventResult:
+        self._guard_service.require_safe_preflight()
+        result = await self._confirmation.confirm_provider_evidence(
+            claimed.confirmation_command()
+        )
+        return NormalizedProviderEventResult(
+            payment_event_id=result.payment_event_id,
+            provider_code=result.provider_code,
+            provider_event_id=result.provider_event_id,
+            event_type=result.event_type,
+            raw_status=claimed.provider_payment_status,
+            payment_id=result.payment_id,
+            payment_status=result.payment_status,
+            state_applied=result.state_changed,
+            state_ignored=result.state_ignored,
+            replayed=result.replayed,
+        )
+
+    async def complete_claimed_webhook(
+        self,
+        *,
+        claimed: ClaimedProviderWebhook,
+        lease_owner,
+        payment_event_id,
+    ) -> None:
+        await self._inbox.complete(
+            inbox_id=claimed.inbox_id,
+            lease_owner=lease_owner,
+            lease_fence=claimed.lease_fence,
+            payment_event_id=payment_event_id,
+        )
+
+    async def fail_claimed_webhook(
+        self,
+        *,
+        claimed: ClaimedProviderWebhook,
+        lease_owner,
+        error_code: str,
+        retryable: bool,
+    ) -> str:
+        return await self._inbox.fail(
+            inbox_id=claimed.inbox_id,
+            lease_owner=lease_owner,
+            lease_fence=claimed.lease_fence,
+            error_code=error_code,
+            retryable=retryable,
         )
 
     async def confirm_payment_event(self, webhook: RazorpayWebhookInput) -> NormalizedProviderEventResult:

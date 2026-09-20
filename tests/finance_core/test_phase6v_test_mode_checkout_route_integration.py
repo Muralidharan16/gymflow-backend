@@ -141,7 +141,7 @@ async def test_phase6v_sandbox_checkout_route_uses_razorpay_test_mode_adapter_wi
         "receipt": f"fin_{uuid.UUID(body['finance_invoice_id']).hex[:32]}",
         "notes": {
             "finance_invoice_id": body["finance_invoice_id"],
-            "finance_idempotency_key": "phase6v-test-mode-checkout:razorpay_order",
+            "finance_idempotency_key": "phase6v-test-mode-checkout:provider_order",
         },
     }
     rendered_payload = str(call["payload"]).lower()

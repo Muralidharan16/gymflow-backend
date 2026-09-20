@@ -547,6 +547,205 @@ class FinanceOfflinePaymentEvent(Base):
     )
 
 
+class FinanceProviderOperation(Base):
+    __tablename__ = "provider_operations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["payment_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_pay8_provider_operation_payment_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "organization_id", "provider_code", "environment",
+            "operation_type", "idempotency_key",
+            name="uq_pay8_provider_operation_key",
+        ),
+        UniqueConstraint(
+            "payment_id", "operation_type",
+            name="uq_pay8_provider_operation_payment",
+        ),
+        UniqueConstraint(
+            "provider_code", "environment", "provider_object_id",
+            name="uq_pay8_provider_object",
+        ),
+        CheckConstraint(
+            "provider_code ~ '^[a-z0-9_]{1,40}$'",
+            name="chk_pay8_provider_code",
+        ),
+        CheckConstraint(
+            "environment IN ('sandbox','test')",
+            name="chk_pay8_provider_environment",
+        ),
+        CheckConstraint(
+            "operation_type='create_checkout'",
+            name="chk_pay8_provider_operation_type",
+        ),
+        CheckConstraint(
+            "request_hash_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_pay8_provider_operation_hash",
+        ),
+        CheckConstraint(
+            "status IN ('reserved','in_flight','succeeded',"
+            "'failed_retryable','failed_final','unknown')",
+            name="chk_pay8_provider_operation_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND max_attempts BETWEEN 1 AND 20 "
+            "AND attempt_count <= max_attempts AND lease_fence >= 0",
+            name="chk_pay8_provider_operation_attempts",
+        ),
+        CheckConstraint(
+            "(status='in_flight') = "
+            "(lease_owner IS NOT NULL AND lease_until IS NOT NULL)",
+            name="chk_pay8_provider_operation_lease",
+        ),
+        Index(
+            "ix_pay8_provider_operations_org_status",
+            "organization_id", "status", "updated_at", "id",
+        ),
+        Index(
+            "ix_pay8_provider_operations_recovery",
+            "lease_until", "id",
+            postgresql_where=text("status='in_flight'"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True,
+        default=new_uuid, server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    payment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    environment: Mapped[str] = mapped_column(String(16), nullable=False)
+    operation_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default=text("'reserved'")
+    )
+    provider_object_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("5"))
+    lease_owner: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+    last_started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceProviderWebhookInbox(Base):
+    __tablename__ = "provider_webhook_inbox"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["payment_id", "organization_id"],
+            ["finance.payments.id", "finance.payments.organization_id"],
+            name="fk_pay8_webhook_payment_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "provider_code", "environment", "provider_event_id",
+            name="uq_pay8_webhook_provider_event",
+        ),
+        CheckConstraint(
+            "status IN ('received','processing','processed','retry','dead_letter')",
+            name="chk_pay8_webhook_status",
+        ),
+        CheckConstraint(
+            "processing_attempts >= 0 AND max_attempts BETWEEN 1 AND 50 "
+            "AND processing_attempts <= max_attempts AND lease_fence >= 0",
+            name="chk_pay8_webhook_attempts",
+        ),
+        CheckConstraint(
+            "(status='processing') = "
+            "(lease_owner IS NOT NULL AND lease_until IS NOT NULL)",
+            name="chk_pay8_webhook_lease",
+        ),
+        CheckConstraint(
+            "(status='processed') = (payment_event_id IS NOT NULL "
+            "AND payment_id IS NOT NULL AND organization_id IS NOT NULL "
+            "AND processed_at IS NOT NULL)",
+            name="chk_pay8_webhook_processed",
+        ),
+        Index(
+            "ix_pay8_webhook_inbox_status",
+            "status", "received_at", "id",
+        ),
+        Index(
+            "ix_pay8_webhook_inbox_recovery",
+            "lease_until", "id",
+            postgresql_where=text("status='processing'"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True,
+        default=new_uuid, server_default=text("gen_random_uuid()"),
+    )
+    provider_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    environment: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    signature_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    provider_order_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    provider_payment_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    provider_amount_subunits: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    provider_currency: Mapped[str] = mapped_column(CHAR(3), nullable=False)
+    provider_payment_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    provider_captured: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    provider_payment_order_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    provider_order_entity_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provider_order_status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    provider_event_timestamp: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    payment_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.payment_events.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, server_default=text("'received'")
+    )
+    processing_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("15"))
+    lease_owner: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    lease_fence: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    received_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
 class FinancePayment(Base):
     __tablename__ = "payments"
     __table_args__ = (

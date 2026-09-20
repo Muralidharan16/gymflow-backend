@@ -37,6 +37,8 @@ from app.finance_core.models import (
     FinanceLegalEntity,
     FinanceOutboxEvent,
     FinancePayment,
+    FinanceProviderOperation,
+    FinanceProviderWebhookInbox,
     FinancePaymentAllocation,
     FinancePaymentEvent,
     FinanceRefund,
@@ -85,6 +87,8 @@ FINANCE_TABLES = {
     "monetary_commands",
     "offline_payment_requests",
     "offline_payment_events",
+    "provider_operations",
+    "provider_webhook_inbox",
     "outbox_events",
 }
 
@@ -118,6 +122,8 @@ MODEL_TABLES = {
         FinanceLegalEntity,
         FinanceOutboxEvent,
         FinancePayment,
+        FinanceProviderOperation,
+        FinanceProviderWebhookInbox,
         FinancePaymentAllocation,
         FinancePaymentEvent,
         FinanceRefund,

@@ -20,8 +20,8 @@ OWNERSHIP_MANIFEST = (
     / "ownership.v1.json"
 )
 EXPECTED_OWNERSHIP_SHA256 = (
-    "21d2ccaedb5c4a46e3f6e39393f6f53b"
-    "d1f4fbac42d0b7bba1c6471ebcd411b1"
+    "1beb0342a4245ec5c415807f18647338"
+    "64fb0628474a8740979b868597b10351"
 )
 
 
@@ -328,7 +328,7 @@ def test_ownership_manifest_matches_reviewed_projection() -> None:
 
     ownership = json.loads(payload.decode("utf-8"))
     objects = ownership["objects"]
-    assert len(objects) == 217
+    assert len(objects) == 228
     assert not any(record["object"] == "IF" for record in objects)
     assert {
         "dynamic": False,
@@ -514,3 +514,38 @@ def test_pay6_offline_payment_ownership_projection_is_exact() -> None:
 
     forbidden = set(bundle.ownership["forbidden_object_owners"])
     assert {"app_runtime", "worker_runtime"} <= forbidden
+
+
+def test_pay8_durable_provider_ownership_projection_is_exact() -> None:
+    bundle = load_contract_bundle()
+    by_name = {
+        record["object"]: record
+        for record in bundle.ownership["objects"]
+    }
+
+    for name in (
+        "finance.provider_operations",
+        "finance.provider_webhook_inbox",
+    ):
+        assert by_name[name]["target_owner"] == "migration_owner"
+
+    for name in (
+        "app_secure.reserve_finance_provider_operation(uuid,text,text,text,text,text)",
+        "app_secure.claim_finance_provider_operation(uuid,uuid)",
+        "app_secure.finish_finance_provider_operation(uuid,uuid,bigint,text,text,text,text)",
+        "app_secure.reconcile_finance_provider_operation(uuid,text,text,text,text)",
+        "app_secure.record_finance_provider_webhook(text,text,text,text,text,text,text,text,bigint,text,text,boolean,text,text,text,bigint)",
+        "app_secure.claim_finance_provider_webhook(uuid,uuid)",
+        "app_secure.claim_next_finance_provider_webhook(uuid)",
+        "app_secure.complete_finance_provider_webhook(uuid,uuid,bigint,uuid)",
+        "app_secure.fail_finance_provider_webhook(uuid,uuid,bigint,text,boolean)",
+    ):
+        assert by_name[name]["target_owner"] == "app_security_owner"
+
+    forbidden = set(bundle.ownership["forbidden_object_owners"])
+    assert {
+        "app_runtime",
+        "worker_runtime",
+        "finance_payment_runtime",
+        "finance_reconciliation_runtime",
+    } <= forbidden

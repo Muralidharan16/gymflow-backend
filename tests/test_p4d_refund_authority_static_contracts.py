@@ -1126,7 +1126,14 @@ def test_p4d2_provider_order_is_after_local_commit_and_bounded_sql_attach() -> N
     migration = _source(P4D2_MIGRATION)
     attach_body = migration.split("CREATE FUNCTION app_secure.attach_member_subscription_checkout_provider_order", 1)[1].split("$$;", 1)[0]
     provider_route = router.split("async def create_subscription_checkout_session", 1)[1]
-    assert provider_route.index("await db.commit()") < provider_route.index("adapter.create_checkout_intent")
+    provider_call = provider_route.index("await service.call_provider(")
+    pre_provider = provider_route[:provider_call]
+    post_provider = provider_route[provider_call:]
+    assert "await service.prepare_local_checkout(" in pre_provider
+    assert "await service.claim_provider_operation(" in pre_provider
+    assert pre_provider.count("await db.commit()") >= 2
+    assert "await service.finish_provider_success(" in post_provider
+    assert "adapter.create_checkout_intent" not in provider_route
     assert "RazorpayTestModeOrdersClient" in provider_route
     assert "require_finance_checkout_sandbox_enabled" in provider_route
     assert "app_secure.attach_member_subscription_checkout_provider_order" in service

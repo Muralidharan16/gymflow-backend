@@ -127,83 +127,162 @@ async def create_subscription_checkout_session(
             organization_id=org_id,
             subscription_id=subscription_id,
             provider_code=provider_adapter.provider_code,
+            provider_environment=provider_adapter.environment,
         )
+        # Persist local invoice/binding/payment intent/provider reservation first.
         await db.commit()
     except MemberSubscriptionCheckoutConfigurationError as exc:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": str(exc), "message": str(exc)})
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": str(exc), "message": str(exc)},
+        ) from exc
     except Exception:
         await db.rollback()
         raise
 
-    provider_order_ref = prepared.provider_order_ref
-    if not provider_order_ref or provider_order_ref.startswith("intent_"):
-        try:
-            provider_response = await provider_adapter.create_checkout_intent(
-                ProviderCheckoutIntentRequest(
-                    invoice_id=prepared.finance_invoice_id,
-                    amount=prepared.amount,
-                    currency_code=prepared.currency_code,
-                    idempotency_key=f"member-subscription-checkout:{subscription_id}:razorpay_order",
-                )
-            )
-            if provider_response.provider_order_ref is None:
-                raise MemberSubscriptionCheckoutConfigurationError("PROVIDER_ORDER_REQUIRED")
-            provider_order_ref = provider_response.provider_order_ref
-        except FinanceProviderOperationError as exc:
-            if exc.requires_reconciliation:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "code": "PROVIDER_OUTCOME_UNKNOWN",
-                        "message": "Provider outcome requires reconciliation before retry.",
-                    },
-                ) from exc
-            if exc.automatic_retry_allowed:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail={
-                        "code": "PROVIDER_RETRYABLE_FAILURE",
-                        "message": "Provider is temporarily unavailable; retry is safe.",
-                    },
-                ) from exc
+    if prepared.provider_order_ref:
+        result = service.build_result(
+            prepared=prepared,
+            provider_adapter=provider_adapter,
+            provider_order_ref=prepared.provider_order_ref,
+        )
+        return FinanceCheckoutCreateResponse(
+            finance_invoice_id=result.finance_invoice_id,
+            finance_checkout_intent_id=result.finance_checkout_intent_id,
+            checkout_fields=result.checkout_fields,
+            display_amount=result.display_amount,
+            display_currency=result.display_currency,
+        )
+
+    if prepared.provider_operation is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "PROVIDER_OPERATION_UNAVAILABLE",
+                "message": "Provider operation is unavailable.",
+            },
+        )
+    if prepared.provider_operation.status not in (
+        "reserved",
+        "failed_retryable",
+    ):
+        exc = service.operation_state_error(
+            provider_code=provider_adapter.provider_code,
+            status_value=prepared.provider_operation.status,
+        )
+        if exc.requires_reconciliation:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
-                    "code": "PROVIDER_FINAL_FAILURE",
-                    "message": "Provider rejected the checkout operation.",
+                    "code": "PROVIDER_OUTCOME_UNKNOWN",
+                    "message": "Provider outcome requires reconciliation before retry.",
                 },
             ) from exc
-        except MemberSubscriptionCheckoutConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "PROVIDER_FINAL_FAILURE",
+                "message": "Provider checkout operation is terminal.",
+            },
+        ) from exc
+
+    lease_owner = uuid.uuid4()
+    claim = await service.claim_provider_operation(
+        prepared=prepared,
+        lease_owner=lease_owner,
+    )
+    # Commit durable in-flight/fence before provider POST.
+    await db.commit()
+    if not claim.claimed:
+        if claim.status == "succeeded" and claim.provider_object_id:
+            result = service.build_result(
+                prepared=prepared,
+                provider_adapter=provider_adapter,
+                provider_order_ref=claim.provider_object_id,
+            )
+            return FinanceCheckoutCreateResponse(
+                finance_invoice_id=result.finance_invoice_id,
+                finance_checkout_intent_id=result.finance_checkout_intent_id,
+                checkout_fields=result.checkout_fields,
+                display_amount=result.display_amount,
+                display_currency=result.display_currency,
+            )
+        exc = service.operation_state_error(
+            provider_code=provider_adapter.provider_code,
+            status_value=claim.status,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": (
+                    "PROVIDER_OUTCOME_UNKNOWN"
+                    if exc.requires_reconciliation
+                    else "PROVIDER_FINAL_FAILURE"
+                ),
+                "message": (
+                    "Provider outcome requires reconciliation before retry."
+                    if exc.requires_reconciliation
+                    else "Provider checkout operation is terminal."
+                ),
+            },
+        ) from exc
+
+    try:
+        response = await service.call_provider(
+            prepared=prepared,
+            provider_adapter=provider_adapter,
+        )
+    except FinanceProviderOperationError as exc:
+        await service.finish_provider_error(
+            claim=claim,
+            lease_owner=lease_owner,
+            error=exc,
+        )
+        await db.commit()
+        if exc.requires_reconciliation:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={"code": str(exc), "message": str(exc)},
+                detail={
+                    "code": "PROVIDER_OUTCOME_UNKNOWN",
+                    "message": "Provider outcome requires reconciliation before retry.",
+                },
             ) from exc
+        if exc.automatic_retry_allowed:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "PROVIDER_RETRYABLE_FAILURE",
+                    "message": "Provider is temporarily unavailable; retry is safe.",
+                },
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "PROVIDER_FINAL_FAILURE",
+                "message": "Provider rejected the checkout operation.",
+            },
+        ) from exc
 
-        await update_session_context(
-            db,
-            principal_id=str(staff.id),
-            principal_type="owner",
-            org_id=str(org_id),
-            role=getattr(staff, "role", None) or "owner",
-        )
-        try:
-            await service.attach_provider_order(
-                subscription_id=subscription_id,
-                checkout_intent_id=prepared.finance_checkout_intent_id,
-                provider_order_ref=provider_order_ref,
-            )
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            raise
-
-    return FinanceCheckoutCreateResponse(
-        finance_invoice_id=prepared.finance_invoice_id,
-        finance_checkout_intent_id=prepared.finance_checkout_intent_id,
-        checkout_fields=provider_adapter.build_checkout_fields(
-            provider_order_ref=provider_order_ref
-        ),
-        display_amount=prepared.amount,
-        display_currency=prepared.currency_code,
+    provider_order_ref = await service.finish_provider_success(
+        prepared=prepared,
+        provider_adapter=provider_adapter,
+        claim=claim,
+        lease_owner=lease_owner,
+        response=response,
     )
+    await db.commit()
+
+    result = service.build_result(
+        prepared=prepared,
+        provider_adapter=provider_adapter,
+        provider_order_ref=provider_order_ref,
+    )
+    return FinanceCheckoutCreateResponse(
+        finance_invoice_id=result.finance_invoice_id,
+        finance_checkout_intent_id=result.finance_checkout_intent_id,
+        checkout_fields=result.checkout_fields,
+        display_amount=result.display_amount,
+        display_currency=result.display_currency,
+    )
+

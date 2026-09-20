@@ -13,10 +13,20 @@ from app.finance_core.domain.provider_boundary import (
     CheckoutIntentProvider,
     CreateCheckoutIntentCommand,
     FinanceProviderConfigError,
+    FinanceProviderOperationError,
     ProviderCheckoutIntentRequest,
+    ProviderCheckoutIntentResponse,
 )
 from app.finance_core.services.checkout_intents import FinanceCheckoutIntentService
 from app.finance_core.services.invoice_engine import FinanceInvoiceEngine
+from app.finance_core.services.provider_operations import (
+    FinanceProviderOperationService,
+    ProviderOperationClaim,
+    ProviderOperationReservation,
+    provider_checkout_request_hash,
+    provider_checkout_success_hash,
+    safe_provider_error_code,
+)
 
 
 class MemberSubscriptionCheckoutConfigurationError(Exception):
@@ -32,6 +42,8 @@ class MemberSubscriptionCheckoutPreparation:
     amount: Decimal
     currency_code: str
     provider_order_ref: str | None
+    provider_request: ProviderCheckoutIntentRequest
+    provider_operation: ProviderOperationReservation | None
     replayed: bool
 
 
@@ -50,6 +62,7 @@ class SourceBoundMemberSubscriptionCheckoutService:
         self._session = session
         self._invoice_engine = FinanceInvoiceEngine(session)
         self._checkout_intents = FinanceCheckoutIntentService(session)
+        self._provider_operations = FinanceProviderOperationService(session)
 
     async def prepare_local_checkout(
         self,
@@ -57,6 +70,7 @@ class SourceBoundMemberSubscriptionCheckoutService:
         organization_id: uuid.UUID,
         subscription_id: uuid.UUID,
         provider_code: str,
+        provider_environment: str,
     ) -> MemberSubscriptionCheckoutPreparation:
         inputs = await self._resolve_inputs(subscription_id)
         if inputs["organization_id"] != organization_id:
@@ -152,6 +166,34 @@ class SourceBoundMemberSubscriptionCheckoutService:
                 "invoice_id": invoice["id"],
             },
         )
+        request = ProviderCheckoutIntentRequest(
+            invoice_id=invoice["id"],
+            amount=amount,
+            currency_code=invoice["currency_code"],
+            idempotency_key=f"{source_key}:provider_order",
+        )
+        provider_order_ref = intent.provider_order_ref
+        provider_operation: ProviderOperationReservation | None = None
+        if not provider_order_ref or provider_order_ref.startswith("intent_"):
+            # Internal intent_* values are Finance-local placeholders, not
+            # provider objects. Keep the staged route on the durable external
+            # operation path until a real provider reference is acknowledged.
+            provider_order_ref = None
+            provider_operation = await self._provider_operations.reserve_checkout(
+                payment_id=intent.intent_id,
+                provider_code=provider_code,
+                environment=provider_environment,
+                idempotency_key=request.idempotency_key,
+                request_hash_sha256=provider_checkout_request_hash(
+                    payment_id=intent.intent_id,
+                    provider_code=provider_code,
+                    environment=provider_environment,
+                    request=request,
+                ),
+            )
+            if provider_operation.status == "succeeded":
+                provider_order_ref = provider_operation.provider_object_id
+
         await self._session.flush()
         return MemberSubscriptionCheckoutPreparation(
             organization_id=organization_id,
@@ -160,7 +202,9 @@ class SourceBoundMemberSubscriptionCheckoutService:
             finance_checkout_intent_id=intent.intent_id,
             amount=amount,
             currency_code=invoice["currency_code"],
-            provider_order_ref=intent.provider_order_ref,
+            provider_order_ref=provider_order_ref,
+            provider_request=request,
+            provider_operation=provider_operation,
             replayed=draft.replayed or issued.replayed or intent.replayed,
         )
 
@@ -188,6 +232,128 @@ class SourceBoundMemberSubscriptionCheckoutService:
         )
         await self._session.flush()
 
+    async def claim_provider_operation(
+        self,
+        *,
+        prepared: MemberSubscriptionCheckoutPreparation,
+        lease_owner: uuid.UUID,
+    ) -> ProviderOperationClaim:
+        if prepared.provider_operation is None:
+            raise MemberSubscriptionCheckoutConfigurationError(
+                "PROVIDER_OPERATION_UNAVAILABLE"
+            )
+        return await self._provider_operations.claim(
+            operation_id=prepared.provider_operation.operation_id,
+            lease_owner=lease_owner,
+        )
+
+    async def call_provider(
+        self,
+        *,
+        prepared: MemberSubscriptionCheckoutPreparation,
+        provider_adapter: CheckoutIntentProvider,
+    ) -> ProviderCheckoutIntentResponse:
+        return await provider_adapter.create_checkout_intent(
+            prepared.provider_request
+        )
+
+    async def finish_provider_success(
+        self,
+        *,
+        prepared: MemberSubscriptionCheckoutPreparation,
+        provider_adapter: CheckoutIntentProvider,
+        claim: ProviderOperationClaim,
+        lease_owner: uuid.UUID,
+        response: ProviderCheckoutIntentResponse,
+    ) -> str:
+        if response.provider_code != provider_adapter.provider_code:
+            raise FinanceProviderOperationError(
+                provider_code=provider_adapter.provider_code,
+                operation="create_checkout",
+                code="PROVIDER_CODE_MISMATCH",
+                failure_class="unknown",
+                message="Provider response identity is inconsistent.",
+            )
+        if not response.provider_order_ref:
+            raise FinanceProviderOperationError(
+                provider_code=provider_adapter.provider_code,
+                operation="create_checkout",
+                code="PROVIDER_ORDER_REQUIRED",
+                failure_class="unknown",
+                message="Provider response did not contain an order reference.",
+            )
+        await self._provider_operations.finish(
+            operation_id=claim.operation_id,
+            lease_owner=lease_owner,
+            lease_fence=claim.lease_fence,
+            outcome="succeeded",
+            provider_object_id=response.provider_order_ref,
+            error_code=None,
+            evidence_sha256=provider_checkout_success_hash(response),
+        )
+        return response.provider_order_ref
+
+    async def finish_provider_error(
+        self,
+        *,
+        claim: ProviderOperationClaim,
+        lease_owner: uuid.UUID,
+        error: FinanceProviderOperationError,
+    ) -> None:
+        await self._provider_operations.finish(
+            operation_id=claim.operation_id,
+            lease_owner=lease_owner,
+            lease_fence=claim.lease_fence,
+            outcome={
+                "retryable": "failed_retryable",
+                "final": "failed_final",
+                "unknown": "unknown",
+            }[error.failure_class],
+            provider_object_id=None,
+            error_code=safe_provider_error_code(error),
+            evidence_sha256=None,
+        )
+
+    def build_result(
+        self,
+        *,
+        prepared: MemberSubscriptionCheckoutPreparation,
+        provider_adapter: CheckoutIntentProvider,
+        provider_order_ref: str,
+    ) -> MemberSubscriptionCheckoutResult:
+        return MemberSubscriptionCheckoutResult(
+            finance_invoice_id=prepared.finance_invoice_id,
+            finance_checkout_intent_id=prepared.finance_checkout_intent_id,
+            checkout_fields=provider_adapter.build_checkout_fields(
+                provider_order_ref=provider_order_ref
+            ),
+            display_amount=prepared.amount,
+            display_currency=prepared.currency_code,
+            replayed=prepared.replayed,
+        )
+
+    def operation_state_error(
+        self,
+        *,
+        provider_code: str,
+        status_value: str,
+    ) -> FinanceProviderOperationError:
+        if status_value == "failed_final":
+            return FinanceProviderOperationError(
+                provider_code=provider_code,
+                operation="create_checkout",
+                code="PROVIDER_OPERATION_FINAL",
+                failure_class="final",
+                message="Provider checkout operation is terminal.",
+            )
+        return FinanceProviderOperationError(
+            provider_code=provider_code,
+            operation="create_checkout",
+            code="PROVIDER_OPERATION_UNRESOLVED",
+            failure_class="unknown",
+            message="Provider checkout operation is unresolved.",
+        )
+
     async def create_provider_order_after_commit(
         self,
         *,
@@ -195,6 +361,7 @@ class SourceBoundMemberSubscriptionCheckoutService:
         provider_adapter: CheckoutIntentProvider | None = None,
         razorpay_adapter: CheckoutIntentProvider | None = None,
     ) -> MemberSubscriptionCheckoutResult:
+        """Compatibility helper; route composition uses staged commit methods."""
         if provider_adapter is not None and razorpay_adapter is not None:
             raise FinanceProviderConfigError(
                 "Member checkout accepts one provider adapter only."
@@ -204,44 +371,65 @@ class SourceBoundMemberSubscriptionCheckoutService:
             raise FinanceProviderConfigError(
                 "Member checkout requires a provider adapter."
             )
-        if adapter.environment not in {"sandbox", "test"}:
-            raise FinanceProviderConfigError(
-                "PAY-7 member checkout accepts sandbox/test adapters only."
+
+        if prepared.provider_order_ref:
+            return self.build_result(
+                prepared=prepared,
+                provider_adapter=adapter,
+                provider_order_ref=prepared.provider_order_ref,
+            )
+        if prepared.provider_operation is None:
+            raise MemberSubscriptionCheckoutConfigurationError(
+                "PROVIDER_OPERATION_UNAVAILABLE"
+            )
+        if prepared.provider_operation.status not in (
+            "reserved",
+            "failed_retryable",
+        ):
+            raise self.operation_state_error(
+                provider_code=adapter.provider_code,
+                status_value=prepared.provider_operation.status,
             )
 
-        provider_order_ref = prepared.provider_order_ref
-        if not provider_order_ref or provider_order_ref.startswith("intent_"):
-            provider_response = await adapter.create_checkout_intent(
-                ProviderCheckoutIntentRequest(
-                    invoice_id=prepared.finance_invoice_id,
-                    amount=prepared.amount,
-                    currency_code=prepared.currency_code,
-                    idempotency_key=(
-                        f"member-subscription-checkout:"
-                        f"{prepared.subscription_id}:provider_order"
-                    ),
+        lease_owner = uuid.uuid4()
+        claim = await self.claim_provider_operation(
+            prepared=prepared,
+            lease_owner=lease_owner,
+        )
+        if not claim.claimed:
+            if claim.status == "succeeded" and claim.provider_object_id:
+                return self.build_result(
+                    prepared=prepared,
+                    provider_adapter=adapter,
+                    provider_order_ref=claim.provider_object_id,
                 )
+            raise self.operation_state_error(
+                provider_code=adapter.provider_code,
+                status_value=claim.status,
             )
-            if provider_response.provider_order_ref is None:
-                raise MemberSubscriptionCheckoutConfigurationError(
-                    "PROVIDER_ORDER_REQUIRED"
-                )
-            provider_order_ref = provider_response.provider_order_ref
-            await self.attach_provider_order(
-                subscription_id=prepared.subscription_id,
-                checkout_intent_id=prepared.finance_checkout_intent_id,
-                provider_order_ref=provider_order_ref,
+        try:
+            response = await self.call_provider(
+                prepared=prepared,
+                provider_adapter=adapter,
             )
-
-        return MemberSubscriptionCheckoutResult(
-            finance_invoice_id=prepared.finance_invoice_id,
-            finance_checkout_intent_id=prepared.finance_checkout_intent_id,
-            checkout_fields=adapter.build_checkout_fields(
-                provider_order_ref=provider_order_ref
-            ),
-            display_amount=prepared.amount,
-            display_currency=prepared.currency_code,
-            replayed=prepared.replayed,
+        except FinanceProviderOperationError as exc:
+            await self.finish_provider_error(
+                claim=claim,
+                lease_owner=lease_owner,
+                error=exc,
+            )
+            raise
+        provider_order_ref = await self.finish_provider_success(
+            prepared=prepared,
+            provider_adapter=adapter,
+            claim=claim,
+            lease_owner=lease_owner,
+            response=response,
+        )
+        return self.build_result(
+            prepared=prepared,
+            provider_adapter=adapter,
+            provider_order_ref=provider_order_ref,
         )
 
     async def _resolve_inputs(self, subscription_id: uuid.UUID) -> dict[str, object]:

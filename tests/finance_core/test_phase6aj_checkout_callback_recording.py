@@ -54,6 +54,21 @@ async def seed_checkout(*, idempotency_key: str = "phase6aj-checkout", client=No
     return await orchestrate(command(idempotency_key=idempotency_key), client=client)
 
 
+def callback_for_checkout(
+    checkout,
+    *,
+    payment_id: str = "pay_phase6aj_1",
+    idempotency_key: str = "phase6aj-callback-1",
+    signature: str | None = None,
+) -> RecordCheckoutCallbackCommand:
+    return callback_command(
+        order_id=checkout.provider_order_id,
+        payment_id=payment_id,
+        idempotency_key=idempotency_key,
+        signature=signature,
+    )
+
+
 async def record(command_: RecordCheckoutCallbackCommand):
     async with AsyncSessionLocal() as session:
         service = FinanceCheckoutCallbackRecordingService(
@@ -72,7 +87,7 @@ async def record(command_: RecordCheckoutCallbackCommand):
 async def test_verified_callback_binds_payment_records_event_and_authorizes_created_payment():
     checkout, _client = await seed_checkout()
 
-    result = await record(callback_command())
+    result = await record(callback_for_checkout(checkout))
 
     assert result.payment_id == checkout.finance_checkout_intent_id
     assert result.previous_payment_status == "created"
@@ -113,7 +128,7 @@ async def test_pending_payment_transitions_to_authorized():
         )
         await session.commit()
 
-    result = await record(callback_command(idempotency_key="phase6aj-pending-callback"))
+    result = await record(callback_for_checkout(checkout, idempotency_key="phase6aj-pending-callback"))
 
     assert result.previous_payment_status == "pending"
     assert result.payment_status == "authorized"
@@ -125,9 +140,9 @@ async def test_invalid_or_missing_signature_fails_before_any_database_mutation()
     before = await finance_mutation_counts()
 
     with pytest.raises(RazorpayCheckoutSignatureError):
-        await record(callback_command(signature="invalid-signature"))
+        await record(callback_for_checkout(checkout, signature="invalid-signature"))
     with pytest.raises(RazorpayCheckoutSignatureError):
-        await record(callback_command(signature=" ", idempotency_key="phase6aj-missing-signature"))
+        await record(callback_for_checkout(checkout, signature=" ", idempotency_key="phase6aj-missing-signature"))
 
     after = await finance_mutation_counts()
     assert after == before
@@ -139,7 +154,7 @@ async def test_invalid_or_missing_signature_fails_before_any_database_mutation()
 
 @pytest.mark.asyncio
 async def test_unknown_order_and_wrong_provider_fail_without_mutation():
-    await seed_checkout(idempotency_key="phase6aj-unknown")
+    checkout, _client = await seed_checkout(idempotency_key="phase6aj-unknown")
     with pytest.raises(FinanceCheckoutCallbackError) as unknown:
         await record(
             callback_command(
@@ -152,21 +167,22 @@ async def test_unknown_order_and_wrong_provider_fail_without_mutation():
 
     async with AsyncSessionLocal() as session:
         await session.execute(
-            text("UPDATE finance.payments SET provider_code = 'other_provider' WHERE provider_order_ref = 'order_test_1'")
+            text("UPDATE finance.payments SET provider_code = 'other_provider' WHERE provider_order_ref = :provider_order_ref"),
+            {"provider_order_ref": checkout.provider_order_id},
         )
         await session.commit()
     with pytest.raises(FinanceCheckoutCallbackError) as wrong_provider:
-        await record(callback_command(idempotency_key="phase6aj-wrong-provider"))
+        await record(callback_for_checkout(checkout, idempotency_key="phase6aj-wrong-provider"))
     assert wrong_provider.value.code == "CHECKOUT_CALLBACK_ORDER_NOT_FOUND"
     assert await fetch_scalar("SELECT count(*) FROM finance.payment_events") == 0
 
 
 @pytest.mark.asyncio
 async def test_exact_callback_replays_with_same_or_new_idempotency_key_without_duplicates():
-    await seed_checkout(idempotency_key="phase6aj-replay")
-    first = await record(callback_command(idempotency_key="phase6aj-replay-first"))
-    same_key = await record(callback_command(idempotency_key="phase6aj-replay-first"))
-    new_key = await record(callback_command(idempotency_key="phase6aj-replay-second"))
+    checkout, _client = await seed_checkout(idempotency_key="phase6aj-replay")
+    first = await record(callback_for_checkout(checkout, idempotency_key="phase6aj-replay-first"))
+    same_key = await record(callback_for_checkout(checkout, idempotency_key="phase6aj-replay-first"))
+    new_key = await record(callback_for_checkout(checkout, idempotency_key="phase6aj-replay-second"))
 
     assert first.replayed is False
     assert same_key.replayed is True
@@ -181,12 +197,13 @@ async def test_exact_callback_replays_with_same_or_new_idempotency_key_without_d
 
 @pytest.mark.asyncio
 async def test_same_idempotency_key_with_different_callback_conflicts():
-    await seed_checkout(idempotency_key="phase6aj-idempotency-conflict")
-    await record(callback_command(idempotency_key="phase6aj-same-idem"))
+    checkout, _client = await seed_checkout(idempotency_key="phase6aj-idempotency-conflict")
+    await record(callback_for_checkout(checkout, idempotency_key="phase6aj-same-idem"))
 
     with pytest.raises(FinancePaymentConflictError):
         await record(
-            callback_command(
+            callback_for_checkout(
+                checkout,
                 payment_id="pay_phase6aj_changed",
                 idempotency_key="phase6aj-same-idem",
             )
@@ -200,12 +217,18 @@ async def test_same_order_different_payment_and_same_payment_different_order_are
     client = FakeRazorpayClient()
     first_checkout, _client = await orchestrate(command(idempotency_key="phase6aj-order-one"), client=client)
     second_checkout, _client = await orchestrate(command(idempotency_key="phase6aj-order-two"), client=client)
-    await record(callback_command(order_id="order_test_1", payment_id="pay_shared", idempotency_key="phase6aj-bind-first"))
+    await record(
+        callback_for_checkout(
+            first_checkout,
+            payment_id="pay_shared",
+            idempotency_key="phase6aj-bind-first",
+        )
+    )
 
     with pytest.raises(FinanceCheckoutCallbackError) as different_payment:
         await record(
-            callback_command(
-                order_id="order_test_1",
+            callback_for_checkout(
+                first_checkout,
                 payment_id="pay_different",
                 idempotency_key="phase6aj-different-payment",
             )
@@ -214,8 +237,8 @@ async def test_same_order_different_payment_and_same_payment_different_order_are
 
     with pytest.raises(FinanceCheckoutCallbackError) as different_order:
         await record(
-            callback_command(
-                order_id="order_test_2",
+            callback_for_checkout(
+                second_checkout,
                 payment_id="pay_shared",
                 idempotency_key="phase6aj-different-order",
             )
@@ -254,7 +277,7 @@ async def test_callback_does_not_downgrade_authorized_captured_or_settled_paymen
         )
         await session.commit()
 
-    result = await record(callback_command(idempotency_key=f"phase6aj-{current_status}-callback"))
+    result = await record(callback_for_checkout(checkout, idempotency_key=f"phase6aj-{current_status}-callback"))
 
     assert result.payment_status == current_status
     assert result.replayed is True
@@ -286,14 +309,16 @@ async def test_partially_refunded_callback_records_one_stale_trace_without_downg
         )
         await session.commit()
 
-    callback = callback_command(
+    callback = callback_for_checkout(
+        checkout,
         payment_id="pay_phase6aj_partial_refund",
         idempotency_key="phase6aj-partially-refunded-callback",
     )
     first = await record(callback)
     same_key_replay = await record(callback)
     other_key_replay = await record(
-        callback_command(
+        callback_for_checkout(
+            checkout,
             payment_id="pay_phase6aj_partial_refund",
             idempotency_key="phase6aj-partially-refunded-callback-replay",
         )
@@ -358,7 +383,7 @@ async def test_terminal_payment_state_rejects_callback_without_binding_or_event(
         await session.commit()
 
     with pytest.raises(FinanceCheckoutCallbackError) as exc:
-        await record(callback_command(idempotency_key=f"phase6aj-terminal-callback-{terminal_status}"))
+        await record(callback_for_checkout(checkout, idempotency_key=f"phase6aj-terminal-callback-{terminal_status}"))
     assert exc.value.code == "CHECKOUT_CALLBACK_PAYMENT_STATE_INVALID"
     assert await fetch_scalar("SELECT count(*) FROM finance.payment_events") == 0
     assert await fetch_scalar(
@@ -370,7 +395,7 @@ async def test_terminal_payment_state_rejects_callback_without_binding_or_event(
 @pytest.mark.asyncio
 async def test_webhook_can_capture_after_callback_without_callback_accounting_side_effects():
     checkout, _client = await seed_checkout(idempotency_key="phase6aj-webhook-after")
-    await record(callback_command(payment_id="pay_phase6aj_webhook", idempotency_key="phase6aj-before-webhook"))
+    await record(callback_for_checkout(checkout, payment_id="pay_phase6aj_webhook", idempotency_key="phase6aj-before-webhook"))
 
     raw_body = razorpay_payload(
         event_id="evt_phase6aj_captured",
@@ -400,8 +425,8 @@ async def test_webhook_can_capture_after_callback_without_callback_accounting_si
 
 @pytest.mark.asyncio
 async def test_secrets_signature_and_raw_callback_are_not_exposed_or_persisted():
-    await seed_checkout(idempotency_key="phase6aj-redaction")
-    command_ = callback_command(idempotency_key="phase6aj-redaction-callback")
+    checkout, _client = await seed_checkout(idempotency_key="phase6aj-redaction")
+    command_ = callback_for_checkout(checkout, idempotency_key="phase6aj-redaction-callback")
     result = await record(command_)
 
     rendered = "\n".join((repr(result), str(result)))
@@ -427,7 +452,7 @@ async def test_secrets_signature_and_raw_callback_are_not_exposed_or_persisted()
     assert WEBHOOK_SECRET not in (stored["event_data"] or "")
 
     with pytest.raises(RazorpayCheckoutSignatureError) as exc:
-        await record(callback_command(signature="fake-secret-looking-invalid-signature", idempotency_key="phase6aj-redaction-error"))
+        await record(callback_for_checkout(checkout, signature="fake-secret-looking-invalid-signature", idempotency_key="phase6aj-redaction-error"))
     error_text = str(exc.value)
     assert KEY_SECRET not in error_text
     assert WEBHOOK_SECRET not in error_text
@@ -436,8 +461,8 @@ async def test_secrets_signature_and_raw_callback_are_not_exposed_or_persisted()
 
 @pytest.mark.asyncio
 async def test_callback_has_no_allocation_ledger_invoice_paid_or_product_side_effects():
-    await seed_checkout(idempotency_key="phase6aj-no-side-effects")
-    await record(callback_command(idempotency_key="phase6aj-no-side-effects-callback"))
+    checkout, _client = await seed_checkout(idempotency_key="phase6aj-no-side-effects")
+    await record(callback_for_checkout(checkout, idempotency_key="phase6aj-no-side-effects-callback"))
     await assert_no_accounting_or_product_side_effects()
 
 

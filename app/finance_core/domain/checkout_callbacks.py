@@ -29,7 +29,7 @@ class CheckoutCallbackRecordingResult:
     replayed: bool
 
 
-@dataclass(frozen=True)
+@dataclass
 class FinanceCheckoutCallbackError(Exception):
     code: str
     message: str
