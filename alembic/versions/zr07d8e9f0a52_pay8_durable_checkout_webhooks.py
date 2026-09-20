@@ -380,8 +380,7 @@ def _install_tables() -> None:
             provider_event_timestamp BIGINT NULL,
             organization_id UUID NULL
                 REFERENCES public.organizations(id) ON DELETE RESTRICT,
-            payment_id UUID NULL
-                REFERENCES finance.payments(id) ON DELETE RESTRICT,
+            payment_id UUID NULL,
             payment_event_id UUID NULL
                 REFERENCES finance.payment_events(id) ON DELETE RESTRICT,
             status VARCHAR(24) NOT NULL DEFAULT 'received',
@@ -394,6 +393,10 @@ def _install_tables() -> None:
             received_at TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.clock_timestamp(),
             processed_at TIMESTAMPTZ NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.clock_timestamp(),
+            CONSTRAINT fk_pay8_webhook_payment_org
+                FOREIGN KEY(payment_id,organization_id)
+                REFERENCES finance.payments(id,organization_id)
+                ON DELETE RESTRICT,
             CONSTRAINT uq_pay8_webhook_provider_event
                 UNIQUE(provider_code,environment,provider_event_id),
             CONSTRAINT chk_pay8_webhook_provider
