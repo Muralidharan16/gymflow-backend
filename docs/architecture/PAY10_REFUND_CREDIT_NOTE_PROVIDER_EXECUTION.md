@@ -181,7 +181,11 @@ PAY-13 remains the authority for dispute/chargeback semantics.
 
 ## Migration safety
 
-PAY-10 uses one successor revision after `zs07d8e9f0a53`.
+PAY-10 migration evolution is append-only.  The exact-certified PAY-10-A
+authority revision `zt07d8e9f0a54` must never be rewritten.  PAY-10-C adds
+`zu07d8e9f0a55` as its direct successor for the execution/reconciliation
+protocol.  Later PAY-10 database slices must follow the same rule: new revision,
+exact predecessor, no mutation of a previously certified migration.
 
 Upgrade rules:
 
@@ -206,8 +210,10 @@ Downgrade rules:
   provenance, command attempt identity, migration/security contracts.
 - **B — provider adapter:** sandbox/test refund submit/fetch with deterministic
   receipt and classified failure semantics.
-- **C — execution/reconciliation capabilities:** fenced claim, acceptance,
-  unknown-outcome recovery, webhook/reconciliation evidence.
+- **C — execution/reconciliation capabilities:** append-only successor
+  migration; fenced claim mode (`submit` / `discover` / `fetch`),
+  per-lease preparation identity, acceptance, unknown-outcome recovery,
+  provider evidence and reconciliation scheduling.
 - **D — financial finalization:** refund/payment state, cash ledger, outbox,
   credit-note gate, replay fencing.
 - **E — worker and crash recovery:** lease expiry, redelivery, DB-ack failure,
