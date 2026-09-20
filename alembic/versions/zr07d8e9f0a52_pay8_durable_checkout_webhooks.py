@@ -1826,6 +1826,19 @@ def downgrade() -> None:
     op.execute("SET LOCAL statement_timeout='30s'")
     _require_identity(bind)
 
+    # Both PAY-8 tables FORCE RLS. migration_owner intentionally has no
+    # runtime policy, so a direct count would falsely see zero rows. Disable
+    # FORCE only inside this transactional downgrade so the table owner can
+    # inspect all durable evidence. If evidence exists, the raised exception
+    # rolls this DDL back and FORCE RLS remains installed.
+    op.execute(
+        "ALTER TABLE finance.provider_operations "
+        "NO FORCE ROW LEVEL SECURITY"
+    )
+    op.execute(
+        "ALTER TABLE finance.provider_webhook_inbox "
+        "NO FORCE ROW LEVEL SECURITY"
+    )
     evidence = bind.execute(
         sa.text(
             """
