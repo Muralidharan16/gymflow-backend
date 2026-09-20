@@ -76,6 +76,7 @@ jobs:
               "docs/architecture/pay8_durable_checkout_webhooks_v1.json",
               "security/cluster_role_bootstrap/ownership.v1.json",
               "tests/finance_core/admin_database.py",
+              "tests/finance_core/test_phase6c_checkout_orchestration.py",
               "tests/finance_core/test_phase5b_foundation.py",
               "tests/test_cluster_role_contract_manifests.py",
               "tests/test_migration_app_secure_owner_context_boundary.py",
