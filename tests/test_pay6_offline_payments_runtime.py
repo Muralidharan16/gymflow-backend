@@ -85,9 +85,9 @@ def _cleanup_pay6() -> None:
                     """
                     DELETE FROM finance.monetary_commands
                     WHERE organization_id=%s
-                      AND scope LIKE 'finance.offline_payment.%'
+                      AND scope LIKE %s
                     """,
-                    (pay4.ORG,),
+                    (pay4.ORG, "finance.offline_payment.%"),
                 )
             finally:
                 for table in (
