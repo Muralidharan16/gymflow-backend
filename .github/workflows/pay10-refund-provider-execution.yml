@@ -20,12 +20,12 @@ env:
   PAY10_BASE_SHA: 581c3d83a1e78ba59213c90309166913fedf9c3e
   PAY10_BASE_TREE: 84237255e6d176a9aa6dfd7aeed1c8a430d0853b
   PAY10_PREDECESSOR: zs07d8e9f0a53
-  PAY10_HEAD: zu07d8e9f0a55
+  PAY10_HEAD: zv07d8e9f0a56
   PAY10_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   contract:
-    name: PAY-10-A/B/C authority, provider and execution contract
+    name: PAY-10-A/B/C/D authority, provider, execution and finalization contract
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -63,12 +63,14 @@ jobs:
               ".github/workflows/pay10-refund-provider-execution.yml",
               "alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py",
               "alembic/versions/zu07d8e9f0a55_pay10_refund_execution_capabilities.py",
+              "alembic/versions/zv07d8e9f0a56_pay10_refund_financial_finalization.py",
               "app/finance_core/domain/provider_boundary.py",
               "app/finance_core/domain/razorpay_sandbox.py",
               "app/finance_core/models/__init__.py",
               "app/finance_core/models/foundation.py",
               "app/finance_core/services/razorpay_sandbox.py",
               "app/finance_core/services/refund_provider_execution.py",
+              "app/finance_core/services/refund_financial_finalization.py",
               "docs/architecture/PAY10_ACCEPTANCE_MATRIX.md",
               "docs/architecture/PAY10_REFUND_CREDIT_NOTE_PROVIDER_EXECUTION.md",
               "docs/architecture/pay10_refund_provider_execution_v1.json",
@@ -78,8 +80,10 @@ jobs:
               "tests/finance_core/test_phase5b_foundation.py",
               "tests/test_migration_app_secure_owner_context_boundary.py",
               "tests/test_pay10_refund_execution_capabilities_runtime.py",
+              "tests/test_pay10_refund_financial_finalization_runtime.py",
               "tests/test_pay10_refund_provider_authority_runtime.py",
               "tests/test_pay10_refund_provider_execution_static.py",
+              "tests/test_pay10_refund_financial_finalization_static.py",
           }
           changed={
               x.strip()
@@ -88,7 +92,7 @@ jobs:
           }
           if changed != allowed:
               raise SystemExit(
-                  f"PAY-10-A/B/C exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"PAY-10-A/B/C/D exact scope mismatch: missing={sorted(allowed-changed)}, "
                   f"unexpected={sorted(changed-allowed)}"
               )
           migrations=sorted(
@@ -97,10 +101,11 @@ jobs:
           expected=[
               "alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py",
               "alembic/versions/zu07d8e9f0a55_pay10_refund_execution_capabilities.py",
+              "alembic/versions/zv07d8e9f0a56_pay10_refund_financial_finalization.py",
           ]
           if migrations != expected:
               raise SystemExit(f"PAY-10-A migration scope mismatch: {migrations}")
-          print(f"PAY-10-A/B/C exact allowlist paths: {len(changed)}")
+          print(f"PAY-10-A/B/C/D exact allowlist paths: {len(changed)}")
           PY_SCOPE
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY10_HEAD}"
@@ -108,9 +113,13 @@ jobs:
         run: |
           set -euo pipefail
           python -m py_compile             alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py \
-            alembic/versions/zu07d8e9f0a55_pay10_refund_execution_capabilities.py             app/finance_core/domain/provider_boundary.py             app/finance_core/domain/razorpay_sandbox.py             app/finance_core/models/foundation.py             app/finance_core/models/__init__.py             app/finance_core/services/razorpay_sandbox.py             app/finance_core/services/refund_provider_execution.py             tests/finance_core/test_pay10_refund_execution_service.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_execution_capabilities_runtime.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py
+            alembic/versions/zu07d8e9f0a55_pay10_refund_execution_capabilities.py \
+            alembic/versions/zv07d8e9f0a56_pay10_refund_financial_finalization.py             app/finance_core/domain/provider_boundary.py             app/finance_core/domain/razorpay_sandbox.py             app/finance_core/models/foundation.py             app/finance_core/models/__init__.py             app/finance_core/services/razorpay_sandbox.py             app/finance_core/services/refund_provider_execution.py \
+            app/finance_core/services/refund_financial_finalization.py             tests/finance_core/test_pay10_refund_execution_service.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_execution_capabilities_runtime.py \
+            tests/test_pay10_refund_financial_finalization_runtime.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py \
+            tests/test_pay10_refund_financial_finalization_static.py
           python -m json.tool             docs/architecture/pay10_refund_provider_execution_v1.json             >/dev/null
-          python -m pytest --noconftest -q --maxfail=1             tests/finance_core/test_pay10_refund_execution_service.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_provider_execution_static.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
+          python -m pytest --noconftest -q --maxfail=1             tests/finance_core/test_pay10_refund_execution_service.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_provider_execution_static.py             tests/test_pay10_refund_financial_finalization_static.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
           echo 'PAY10_A_AUTHORITY_SCHEMA=PASS'
           echo 'PAY10_A_EVIDENCE_IMMUTABILITY=PASS'
           echo 'PAY10_A_TABLE_BLIND_RUNTIME=PASS'
@@ -119,6 +128,9 @@ jobs:
           echo 'PAY10_B_UNKNOWN_OUTCOME_RECONCILIATION=PASS'
           echo 'PAY10_C_FENCED_EXECUTION_CONTRACT=PASS'
           echo 'PAY10_C_NO_FINANCIAL_FINALIZATION=PASS'
+          echo 'PAY10_D_ISSUED_CREDIT_NOTE_BACKING_CONTRACT=PASS'
+          echo 'PAY10_D_ATOMIC_FINANCIAL_FINALIZATION_CONTRACT=PASS'
+          echo 'PAY10_D_NO_DOUBLE_REVENUE_REVERSAL_CONTRACT=PASS'
 
   protocol_pg16:
     name: PAY-10-A real PG16 authority and migration proof
@@ -241,7 +253,7 @@ jobs:
       - name: Real PAY-10-A authority proof
         run: |
           set -euo pipefail
-          python -m pytest --noconftest -q --maxfail=1             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_execution_capabilities_runtime.py
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_execution_capabilities_runtime.py             tests/test_pay10_refund_financial_finalization_runtime.py
           echo 'PAY10_A_FORCE_RLS=PASS'
           echo 'PAY10_A_DIRECT_DML_DENIAL=PASS'
           echo 'PAY10_A_IMMUTABLE_EVIDENCE_TRIGGER=PASS'
@@ -249,6 +261,10 @@ jobs:
           echo 'PAY10_C_REQUEST_BINDING=PASS'
           echo 'PAY10_C_UNKNOWN_RECONCILIATION=PASS'
           echo 'PAY10_C_EXTERNAL_EVIDENCE_REPLAY_SAFE=PASS'
+          echo 'PAY10_D_CREDIT_NOTE_BACKING_GATE=PASS'
+          echo 'PAY10_D_ATOMIC_FINALIZATION=PASS'
+          echo 'PAY10_D_REFUND_LEDGER_DR_AR_CR_CLEARING=PASS'
+          echo 'PAY10_D_FINALIZATION_REPLAY_SAFE=PASS'
       - name: Populated downgrade fails closed
         run: |
           set -euo pipefail
@@ -256,9 +272,67 @@ jobs:
           # app_security_owner keeps no TRUNCATE/DELETE authority.
           PGPASSWORD=ci-pay10-postgres psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U postgres -d gymflow_pay10_test <<'SQL'
           TRUNCATE TABLE finance.refund_provider_evidence;
+          DELETE FROM finance.outbox_events
+          WHERE idempotency_key LIKE
+            'pay10:d1000000-0000-4000-8000-000000000011:%';
+          DELETE FROM finance.refund_credit_note_links
+          WHERE refund_id='d1000000-0000-4000-8000-000000000010'
+             OR credit_note_id='d1000000-0000-4000-8000-000000000013';
+          DELETE FROM finance.ledger_entry_lines
+          WHERE ledger_entry_id IN (
+            SELECT id FROM finance.ledger_entries
+            WHERE (
+              source_type='refund'
+              AND source_id='d1000000-0000-4000-8000-000000000010'
+            )
+            OR (
+              source_type='credit_note'
+              AND source_id='d1000000-0000-4000-8000-000000000013'
+            )
+          );
+          DELETE FROM finance.ledger_entries
+          WHERE (
+            source_type='refund'
+            AND source_id='d1000000-0000-4000-8000-000000000010'
+          )
+          OR (
+            source_type='credit_note'
+            AND source_id='d1000000-0000-4000-8000-000000000013'
+          );
+          DELETE FROM finance.credit_note_lines
+          WHERE credit_note_id='d1000000-0000-4000-8000-000000000013';
+          DELETE FROM finance.credit_notes
+          WHERE id='d1000000-0000-4000-8000-000000000013';
           DELETE FROM finance.refund_execution_commands
-          WHERE logical_obligation_key =
-            'finance-refund/c1000000-0000-4000-8000-000000000010';
+          WHERE command_id='d1000000-0000-4000-8000-000000000011'
+             OR logical_obligation_key =
+                'finance-refund/c1000000-0000-4000-8000-000000000010';
+          DELETE FROM finance.refunds
+          WHERE id='d1000000-0000-4000-8000-000000000010';
+          DELETE FROM finance.payment_allocations
+          WHERE id='d1000000-0000-4000-8000-000000000009';
+          DELETE FROM finance.payments
+          WHERE id='d1000000-0000-4000-8000-000000000008';
+          DELETE FROM finance.invoices
+          WHERE id='d1000000-0000-4000-8000-000000000007';
+          DELETE FROM finance.billing_parties
+          WHERE id='d1000000-0000-4000-8000-000000000006';
+          DELETE FROM finance.ledger_accounts
+          WHERE id IN (
+            'd1000000-0000-4000-8000-000000000015',
+            'd1000000-0000-4000-8000-000000000016',
+            'd1000000-0000-4000-8000-000000000017'
+          );
+          DELETE FROM finance.brands
+          WHERE id='d1000000-0000-4000-8000-000000000005';
+          DELETE FROM finance.divisions
+          WHERE id='d1000000-0000-4000-8000-000000000004';
+          DELETE FROM finance.gst_registrations
+          WHERE id='d1000000-0000-4000-8000-000000000003';
+          DELETE FROM finance.legal_entities
+          WHERE id='d1000000-0000-4000-8000-000000000002';
+          DELETE FROM public.organizations
+          WHERE id='d1000000-0000-4000-8000-000000000001';
           SQL
           PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test <<'SQL'
           INSERT INTO finance.legal_entities(
@@ -383,8 +457,8 @@ jobs:
   migration_semantics:
     uses: ./.github/workflows/migration-semantics-inventory.yml
 
-  certify_c:
-    name: PAY-10-C execution and reconciliation decision
+  certify_d:
+    name: PAY-10-D financial finalization decision
     if: ${{ always() }}
     needs:
       - contract
@@ -399,7 +473,7 @@ jobs:
       - migration_semantics
     runs-on: ubuntu-24.04
     steps:
-      - name: Require every PAY-10-A/B/C gate
+      - name: Require every PAY-10-A/B/C/D gate
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
@@ -413,13 +487,13 @@ jobs:
               if value["result"] != "success"
           }
           if bad:
-              raise SystemExit(f"PAY-10-C prerequisite failure: {bad}")
+              raise SystemExit(f"PAY-10-D prerequisite failure: {bad}")
           PY
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
           ref: ${{ env.PAY10_CANDIDATE_SHA }}
-      - name: Bind exact PAY-10-C candidate
+      - name: Bind exact PAY-10-D candidate
         run: |
           set -euo pipefail
           test "$(git rev-parse "${PAY10_BASE_SHA}^{tree}")" = "${PAY10_BASE_TREE}"
@@ -427,7 +501,7 @@ jobs:
           python - <<'PY'
           import json,os,subprocess
           decision={
-              "phase":"PAY-10-C",
+              "phase":"PAY-10-D",
               "candidate_sha":os.environ["PAY10_CANDIDATE_SHA"],
               "candidate_tree":subprocess.check_output(
                   ["git","rev-parse","HEAD^{tree}"],text=True
@@ -439,7 +513,7 @@ jobs:
               "merge_authorized":False,
               "release_authorized":False,
               "deployment_authorized":False,
-              "decision":"EXECUTION_RECONCILIATION_PASS",
+              "decision":"FINANCIAL_FINALIZATION_PASS",
           }
           print(json.dumps(decision,indent=2,sort_keys=True))
           PY
@@ -458,6 +532,12 @@ jobs:
           echo 'PAY10_C_STALE_FENCE_REJECTED=PASS'
           echo 'PAY10_C_EXTERNAL_EVIDENCE_REPLAY_SAFE=PASS'
           echo 'PAY10_C_NO_FINANCIAL_FINALIZATION=PASS'
+          echo 'PAY10_D_ISSUED_CREDIT_NOTE_BACKING=PASS'
+          echo 'PAY10_D_PROCESSED_EVIDENCE_GATE=PASS'
+          echo 'PAY10_D_ATOMIC_FINANCIAL_FINALIZATION=PASS'
+          echo 'PAY10_D_REFUND_LEDGER_DR_AR_CR_PAYMENT_CLEARING=PASS'
+          echo 'PAY10_D_NO_DOUBLE_REVENUE_REVERSAL=PASS'
+          echo 'PAY10_D_OUTBOX_REPLAY_EXACT_ONCE=PASS'
           echo 'PAY10_LIVE_PROVIDER=DISABLED'
           echo 'PAY10_LIVE_MONEY_MOVEMENT=DISABLED'
           echo 'PAY10_MERGE=NOT_AUTHORIZED'
