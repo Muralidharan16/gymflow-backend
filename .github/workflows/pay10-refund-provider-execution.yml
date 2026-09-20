@@ -25,7 +25,7 @@ env:
 
 jobs:
   contract:
-    name: PAY-10-A/B authority, evidence and provider contract
+    name: PAY-10-A/B/C authority, provider and execution contract
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -67,13 +67,16 @@ jobs:
               "app/finance_core/models/__init__.py",
               "app/finance_core/models/foundation.py",
               "app/finance_core/services/razorpay_sandbox.py",
+              "app/finance_core/services/refund_provider_execution.py",
               "docs/architecture/PAY10_ACCEPTANCE_MATRIX.md",
               "docs/architecture/PAY10_REFUND_CREDIT_NOTE_PROVIDER_EXECUTION.md",
               "docs/architecture/pay10_refund_provider_execution_v1.json",
               "tests/finance_core/admin_database.py",
+              "tests/finance_core/test_pay10_refund_execution_service.py",
               "tests/finance_core/test_pay10_refund_provider_adapter.py",
               "tests/finance_core/test_phase5b_foundation.py",
               "tests/test_migration_app_secure_owner_context_boundary.py",
+              "tests/test_pay10_refund_execution_capabilities_runtime.py",
               "tests/test_pay10_refund_provider_authority_runtime.py",
               "tests/test_pay10_refund_provider_execution_static.py",
           }
@@ -84,7 +87,7 @@ jobs:
           }
           if changed != allowed:
               raise SystemExit(
-                  f"PAY-10-A/B exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"PAY-10-A/B/C exact scope mismatch: missing={sorted(allowed-changed)}, "
                   f"unexpected={sorted(changed-allowed)}"
               )
           migrations=sorted(
@@ -95,22 +98,24 @@ jobs:
           ]
           if migrations != expected:
               raise SystemExit(f"PAY-10-A migration scope mismatch: {migrations}")
-          print(f"PAY-10-A/B exact allowlist paths: {len(changed)}")
+          print(f"PAY-10-A/B/C exact allowlist paths: {len(changed)}")
           PY_SCOPE
           python -s scripts/verify_alembic_graph.py
           test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY10_HEAD}"
       - name: PAY-10-A focused static contracts
         run: |
           set -euo pipefail
-          python -m py_compile             alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py             app/finance_core/domain/provider_boundary.py             app/finance_core/domain/razorpay_sandbox.py             app/finance_core/models/foundation.py             app/finance_core/models/__init__.py             app/finance_core/services/razorpay_sandbox.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py
+          python -m py_compile             alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py             app/finance_core/domain/provider_boundary.py             app/finance_core/domain/razorpay_sandbox.py             app/finance_core/models/foundation.py             app/finance_core/models/__init__.py             app/finance_core/services/razorpay_sandbox.py             app/finance_core/services/refund_provider_execution.py             tests/finance_core/test_pay10_refund_execution_service.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_execution_capabilities_runtime.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py
           python -m json.tool             docs/architecture/pay10_refund_provider_execution_v1.json             >/dev/null
-          python -m pytest --noconftest -q --maxfail=1             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_provider_execution_static.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
+          python -m pytest --noconftest -q --maxfail=1             tests/finance_core/test_pay10_refund_execution_service.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_provider_execution_static.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
           echo 'PAY10_A_AUTHORITY_SCHEMA=PASS'
           echo 'PAY10_A_EVIDENCE_IMMUTABILITY=PASS'
           echo 'PAY10_A_TABLE_BLIND_RUNTIME=PASS'
           echo 'PAY10_B_PROVIDER_NEUTRAL_BOUNDARY=PASS'
           echo 'PAY10_B_RAZORPAY_TEST_MODE=PASS'
           echo 'PAY10_B_UNKNOWN_OUTCOME_RECONCILIATION=PASS'
+          echo 'PAY10_C_FENCED_EXECUTION_CONTRACT=PASS'
+          echo 'PAY10_C_NO_FINANCIAL_FINALIZATION=PASS'
 
   protocol_pg16:
     name: PAY-10-A real PG16 authority and migration proof
@@ -233,10 +238,14 @@ jobs:
       - name: Real PAY-10-A authority proof
         run: |
           set -euo pipefail
-          python -m pytest --noconftest -q --maxfail=1             tests/test_pay10_refund_provider_authority_runtime.py
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_execution_capabilities_runtime.py
           echo 'PAY10_A_FORCE_RLS=PASS'
           echo 'PAY10_A_DIRECT_DML_DENIAL=PASS'
           echo 'PAY10_A_IMMUTABLE_EVIDENCE_TRIGGER=PASS'
+          echo 'PAY10_C_STALE_FENCE_REJECTED=PASS'
+          echo 'PAY10_C_REQUEST_BINDING=PASS'
+          echo 'PAY10_C_UNKNOWN_RECONCILIATION=PASS'
+          echo 'PAY10_C_EXTERNAL_EVIDENCE_REPLAY_SAFE=PASS'
       - name: Populated downgrade fails closed
         run: |
           set -euo pipefail
@@ -363,8 +372,8 @@ jobs:
   migration_semantics:
     uses: ./.github/workflows/migration-semantics-inventory.yml
 
-  certify_b:
-    name: PAY-10-B provider adapter decision
+  certify_c:
+    name: PAY-10-C execution and reconciliation decision
     if: ${{ always() }}
     needs:
       - contract
@@ -379,7 +388,7 @@ jobs:
       - migration_semantics
     runs-on: ubuntu-24.04
     steps:
-      - name: Require every PAY-10-A/B gate
+      - name: Require every PAY-10-A/B/C gate
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
@@ -393,13 +402,13 @@ jobs:
               if value["result"] != "success"
           }
           if bad:
-              raise SystemExit(f"PAY-10-B prerequisite failure: {bad}")
+              raise SystemExit(f"PAY-10-C prerequisite failure: {bad}")
           PY
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
           ref: ${{ env.PAY10_CANDIDATE_SHA }}
-      - name: Bind exact PAY-10-B candidate
+      - name: Bind exact PAY-10-C candidate
         run: |
           set -euo pipefail
           test "$(git rev-parse "${PAY10_BASE_SHA}^{tree}")" = "${PAY10_BASE_TREE}"
@@ -407,7 +416,7 @@ jobs:
           python - <<'PY'
           import json,os,subprocess
           decision={
-              "phase":"PAY-10-B",
+              "phase":"PAY-10-C",
               "candidate_sha":os.environ["PAY10_CANDIDATE_SHA"],
               "candidate_tree":subprocess.check_output(
                   ["git","rev-parse","HEAD^{tree}"],text=True
@@ -419,7 +428,7 @@ jobs:
               "merge_authorized":False,
               "release_authorized":False,
               "deployment_authorized":False,
-              "decision":"PROVIDER_ADAPTER_PASS",
+              "decision":"EXECUTION_RECONCILIATION_PASS",
           }
           print(json.dumps(decision,indent=2,sort_keys=True))
           PY
@@ -432,6 +441,12 @@ jobs:
           echo 'PAY10_B_DETERMINISTIC_RECEIPT=PASS'
           echo 'PAY10_B_RECONCILIATION_FETCH=PASS'
           echo 'PAY10_B_NO_FINANCE_DB_MUTATION=PASS'
+          echo 'PAY10_C_FENCED_CLAIM=PASS'
+          echo 'PAY10_C_REQUEST_BINDING=PASS'
+          echo 'PAY10_C_UNKNOWN_RECONCILIATION=PASS'
+          echo 'PAY10_C_STALE_FENCE_REJECTED=PASS'
+          echo 'PAY10_C_EXTERNAL_EVIDENCE_REPLAY_SAFE=PASS'
+          echo 'PAY10_C_NO_FINANCIAL_FINALIZATION=PASS'
           echo 'PAY10_LIVE_PROVIDER=DISABLED'
           echo 'PAY10_LIVE_MONEY_MOVEMENT=DISABLED'
           echo 'PAY10_MERGE=NOT_AUTHORIZED'
