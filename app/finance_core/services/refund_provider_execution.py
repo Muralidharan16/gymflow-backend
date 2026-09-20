@@ -159,7 +159,7 @@ def _authority_mismatch(
 class FinanceRefundProviderExecutionService:
     """Bounded PAY-10-C database capability wrapper.
 
-    This service performs no provider network I/O and does not commit. The
+    This service does no provider network I/O and does not commit. The
     caller must establish short transaction boundaries around claim/bind and
     outcome recording, keeping provider calls outside database transactions.
     """
