@@ -69,6 +69,7 @@ jobs:
               "docs/architecture/PAY9_ACCEPTANCE_MATRIX.md",
               "docs/architecture/PAY9_PAYMENT_APPLICATION_SETTLEMENT_ENTITLEMENT.md",
               "docs/architecture/pay9_payment_application_entitlement_v1.json",
+              "tests/migration_app_secure_owner_context_boundary_baseline.py",
               "tests/test_pay9_payment_application_entitlement_runtime.py",
               "tests/test_pay9_payment_application_entitlement_static.py",
           }
