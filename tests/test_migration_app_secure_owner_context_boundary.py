@@ -367,7 +367,7 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # PAY-10-C opens app_secure CREATE only under the reduced security
         # owner while installing/removing the bounded execution capabilities.
         _PAY10_REFUND_EXECUTION_MIGRATION: function_install_contract,
-        _PAY10_REFUND_FINALIZATION_MIGRATION: function_install_contract,
+        _PAY10_REFUND_FINALIZATION_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {
