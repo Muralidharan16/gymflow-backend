@@ -78,6 +78,7 @@ jobs:
               "tests/finance_core/test_pay10_refund_execution_service.py",
               "tests/finance_core/test_pay10_refund_provider_adapter.py",
               "tests/finance_core/test_phase5b_foundation.py",
+              "tests/test_dafd_app_private_owner_context_boundary.py",
               "tests/test_migration_app_secure_owner_context_boundary.py",
               "tests/test_pay10_refund_execution_capabilities_runtime.py",
               "tests/test_pay10_refund_financial_finalization_runtime.py",
@@ -119,7 +120,7 @@ jobs:
             tests/test_pay10_refund_financial_finalization_runtime.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py \
             tests/test_pay10_refund_financial_finalization_static.py
           python -m json.tool             docs/architecture/pay10_refund_provider_execution_v1.json             >/dev/null
-          python -m pytest --noconftest -q --maxfail=1             tests/finance_core/test_pay10_refund_execution_service.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_provider_execution_static.py             tests/test_pay10_refund_financial_finalization_static.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
+          python -m pytest --noconftest -q --maxfail=1             tests/finance_core/test_pay10_refund_execution_service.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_provider_execution_static.py             tests/test_pay10_refund_financial_finalization_static.py             tests/test_cluster_role_contract_manifests.py             tests/test_dafd_app_private_owner_context_boundary.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
           echo 'PAY10_A_AUTHORITY_SCHEMA=PASS'
           echo 'PAY10_A_EVIDENCE_IMMUTABILITY=PASS'
           echo 'PAY10_A_TABLE_BLIND_RUNTIME=PASS'
@@ -274,7 +275,7 @@ jobs:
           TRUNCATE TABLE finance.refund_provider_evidence;
           DELETE FROM finance.outbox_events
           WHERE idempotency_key LIKE
-            'pay10:d1000000-0000-4000-8000-000000000011:%';
+            'pay10/d1000000-0000-4000-8000-000000000011/%';
           DELETE FROM finance.refund_credit_note_links
           WHERE refund_id='d1000000-0000-4000-8000-000000000010'
              OR credit_note_id='d1000000-0000-4000-8000-000000000013';
