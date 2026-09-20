@@ -1,0 +1,26 @@
+{
+  "manifest_id": "provider_release_v1",
+  "schema_version": 1,
+  "publication_state": "draft",
+  "live_activation": false,
+  "production_credentials_allowed": false,
+  "immutable_after_publication": true,
+  "provider_code": "unbound",
+  "environment": "test",
+  "adapter_version": "unbound",
+  "contract_sha256": null,
+  "capabilities": {
+    "subscriptions": false,
+    "mandates": false,
+    "recurring_payments": false,
+    "refunds": false,
+    "reconciliation": false
+  },
+  "publication_requirements": [
+    "provider selection approved",
+    "adapter contract sha256 frozen",
+    "sandbox contract tests passed",
+    "reconciliation contract passed",
+    "secret and webhook rotation runbooks approved"
+  ]
+}

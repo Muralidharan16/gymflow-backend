@@ -1,0 +1,17 @@
+{
+  "manifest_id": "catalog_release_v1",
+  "schema_version": 1,
+  "publication_state": "draft",
+  "live_activation": false,
+  "immutable_after_publication": true,
+  "requires_commercial_approval": true,
+  "requires_controlled_subscription_migration": true,
+  "currency_policy": "explicit_per_price",
+  "catalog_entries": [],
+  "publication_requirements": [
+    "every plan version is published",
+    "every priced entry references an active immutable platform price",
+    "canonical manifest sha256 is stored before publication",
+    "commercial approval is recorded outside runtime request paths"
+  ]
+}

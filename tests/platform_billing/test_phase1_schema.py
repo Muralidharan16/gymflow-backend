@@ -22,6 +22,21 @@ SHA_A = "a" * 64
 SHA_B = "b" * 64
 TEST_ORGANIZATION_IDS = (ORG_1, ORG_2)
 
+PAY11_TABLES = [
+    "platform_refunds",
+    "platform_payment_attempts",
+    "platform_credit_note_lines",
+    "platform_credit_notes",
+    "platform_invoice_lines",
+    "platform_invoices",
+    "platform_mandates",
+    "platform_provider_subscriptions",
+    "platform_document_sequences",
+    "platform_catalog_release_items",
+    "platform_provider_releases",
+    "platform_catalog_releases",
+]
+
 PHASE_2_TABLES = [
     "platform_usage_projection",
     "platform_access_projection",
@@ -56,7 +71,7 @@ PHASE_1_TABLES = [
 
 
 async def cleanup_phase1_tables() -> None:
-    table_names = PHASE_4A_TABLES + PHASE_2_TABLES + PHASE_1_TABLES
+    table_names = PAY11_TABLES + PHASE_4A_TABLES + PHASE_2_TABLES + PHASE_1_TABLES
     config = get_platform_billing_test_config()
     engine, admin_sessionmaker = create_platform_billing_admin_sessionmaker(config)
     try:
@@ -276,7 +291,7 @@ async def seed_billing_account_and_subscription() -> dict[str, str]:
     return ids
 
 
-async def test_phase_1_2_and_4a_tables_exist_and_later_phase_tables_absent():
+async def test_phase_1_2_4a_and_pay11_tables_exist():
     phase_1_required = {
         "platform_products",
         "platform_policy_versions",
@@ -300,26 +315,9 @@ async def test_phase_1_2_and_4a_tables_exist_and_later_phase_tables_absent():
         WHERE table_schema = 'public'
           AND table_name = ANY(:tables)
         """,
-        {"tables": list(phase_1_required | phase_2_required | phase_4a_required)},
+        {"tables": list(phase_1_required | phase_2_required | phase_4a_required | set(PAY11_TABLES))},
     )
-    assert result == len(phase_1_required | phase_2_required | phase_4a_required)
-
-    forbidden = [
-        "platform_provider_subscriptions",
-        "platform_invoices",
-        "platform_payment_attempts",
-        "platform_refunds",
-    ]
-    absent = await scalar(
-        """
-        SELECT count(*)
-        FROM information_schema.tables
-        WHERE table_schema = 'public'
-          AND table_name = ANY(:tables)
-        """,
-        {"tables": forbidden},
-    )
-    assert absent == 0
+    assert result == len(phase_1_required | phase_2_required | phase_4a_required | set(PAY11_TABLES))
 
 
 async def test_required_constraints_indexes_and_rls_are_present():
