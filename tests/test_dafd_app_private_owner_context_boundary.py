@@ -513,6 +513,10 @@ def test_complete_app_private_ddl_category_allowlist_is_exact() -> None:
             "revoke_function",
             "revoke_schema",
         },
+        "zq07d8e9f0a51_pay6_offline_payments.py": {
+            "create_private_table",
+            "drop_private_table",
+        },
     }
     actual = {
         name: _app_private_ddl_categories(VERSIONS / name)
