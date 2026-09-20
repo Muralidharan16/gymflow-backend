@@ -133,6 +133,29 @@ def _require_predecessor(bind) -> None:
         ).scalar_one():
             raise RuntimeError(f"PAY-8 missing predecessor relation: {relation}")
 
+    payment_org_key = bind.execute(
+        sa.text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_constraint con
+                JOIN pg_catalog.pg_class c
+                  ON c.oid=con.conrelid
+                JOIN pg_catalog.pg_namespace n
+                  ON n.oid=c.relnamespace
+                WHERE n.nspname='finance'
+                  AND c.relname='payments'
+                  AND con.conname='uq_finance_payments_id_org'
+                  AND con.contype='u'
+            )
+            """
+        )
+    ).scalar_one()
+    if not payment_org_key:
+        raise RuntimeError(
+            "PAY-8 requires predecessor payment id/org unique authority"
+        )
+
     if not bind.execute(
         sa.text(
             """
@@ -211,8 +234,7 @@ def _install_tables() -> None:
             id UUID PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
             organization_id UUID NOT NULL
                 REFERENCES public.organizations(id) ON DELETE RESTRICT,
-            payment_id UUID NOT NULL
-                REFERENCES finance.payments(id) ON DELETE RESTRICT,
+            payment_id UUID NOT NULL,
             provider_code VARCHAR(40) NOT NULL,
             environment VARCHAR(16) NOT NULL,
             operation_type VARCHAR(40) NOT NULL,
@@ -231,6 +253,10 @@ def _install_tables() -> None:
             last_started_at TIMESTAMPTZ NULL,
             completed_at TIMESTAMPTZ NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.clock_timestamp(),
+            CONSTRAINT fk_pay8_provider_operation_payment_org
+                FOREIGN KEY(payment_id,organization_id)
+                REFERENCES finance.payments(id,organization_id)
+                ON DELETE RESTRICT,
             CONSTRAINT uq_pay8_provider_operation_key
                 UNIQUE(
                     organization_id,provider_code,environment,
