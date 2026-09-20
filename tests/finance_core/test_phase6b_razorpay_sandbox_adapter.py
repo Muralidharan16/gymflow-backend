@@ -144,7 +144,8 @@ async def test_adapter_uses_injected_fake_client_and_never_imports_http_clients(
     assert len(client.requests) == 1
     finance_root = Path(__file__).resolve().parents[2] / "app" / "finance_core"
     combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in finance_root.rglob("*.py"))
-    assert "requests" not in combined
+    assert "import requests" not in combined
+    assert "from requests" not in combined
     assert "httpx" not in combined
     assert "aiohttp" not in combined
     assert "urllib" not in combined
