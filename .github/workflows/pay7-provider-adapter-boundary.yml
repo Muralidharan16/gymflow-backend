@@ -1,0 +1,209 @@
+name: PAY-7 Provider Adapter Boundary
+
+on:
+  push:
+    branches:
+      - hardening/pay7-provider-adapter-boundary
+  pull_request:
+    branches:
+      - hardening/pay6-offline-payments
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay7-provider-adapter-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY7_BASE_SHA: e3eecc04ff65284e9d96bece3c2b304673ee6663
+  PAY7_BASE_TREE: 90b614b1e914772f454f4bd4394121203903e145
+  PAY7_ALEMBIC_HEAD: zq07d8e9f0a51
+  PAY7_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-7 provider-neutral adapter contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay7_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay7-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay7-static
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY7_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Exact PAY-7 scope and unchanged migration graph
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY7_BASE_SHA}^{tree}")" = "${PAY7_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY7_BASE_SHA}" HEAD
+          git diff --name-only "${PAY7_BASE_SHA}...HEAD" > /tmp/pay7-changed.txt
+          python - <<'PY_SCOPE'
+          from pathlib import Path
+          allowed={
+              ".github/workflows/pay7-provider-adapter-boundary.yml",
+              "app/finance_core/api/payment_boundary.py",
+              "app/finance_core/domain/provider_boundary.py",
+              "app/finance_core/domain/razorpay_sandbox.py",
+              "app/finance_core/services/checkout_orchestration.py",
+              "app/finance_core/services/member_subscription_checkout.py",
+              "app/finance_core/services/razorpay_sandbox.py",
+              "app/routers/member_subscriptions_v2.py",
+              "docs/architecture/PAY7_ACCEPTANCE_MATRIX.md",
+              "docs/architecture/PAY7_PROVIDER_ADAPTER_BOUNDARY.md",
+              "docs/architecture/pay7_provider_adapter_v1.json",
+              "tests/finance_core/test_pay7_provider_adapter_boundary.py",
+          }
+          changed={x.strip() for x in Path("/tmp/pay7-changed.txt").read_text().splitlines() if x.strip()}
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-7 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          migrations=sorted(x for x in changed if x.startswith("alembic/versions/"))
+          if migrations:
+              raise SystemExit(f"PAY-7 must not add/change migrations: {migrations}")
+          print(f"PAY-7 exact allowlist paths: {len(changed)}")
+          PY_SCOPE
+          git diff --quiet "${PAY7_BASE_SHA}...HEAD" -- alembic/versions
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY7_ALEMBIC_HEAD}"
+          echo 'PAY7_NO_MIGRATION_CHANGE=PASS'
+      - name: PAY-7 focused provider contract
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            app/finance_core/api/payment_boundary.py \
+            app/finance_core/domain/provider_boundary.py \
+            app/finance_core/domain/razorpay_sandbox.py \
+            app/finance_core/services/checkout_orchestration.py \
+            app/finance_core/services/member_subscription_checkout.py \
+            app/finance_core/services/razorpay_sandbox.py \
+            app/routers/member_subscriptions_v2.py
+          python -m json.tool docs/architecture/pay7_provider_adapter_v1.json >/dev/null
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/finance_core/test_pay7_provider_adapter_boundary.py
+          echo 'PAY7_PROVIDER_NEUTRAL_CONTRACT=PASS'
+          echo 'PAY7_SERVER_OWNED_REGISTRY=PASS'
+          echo 'PAY7_FAILURE_TAXONOMY=PASS'
+          echo 'PAY7_UNKNOWN_OUTCOME_RECONCILIATION=PASS'
+          echo 'PAY7_SECRET_ISOLATION=PASS'
+          echo 'PAY7_NO_FINANCE_DML=PASS'
+
+  architecture:
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+  general_platform:
+    uses: ./.github/workflows/hardening-ci.yml
+  finance:
+    uses: ./.github/workflows/finance-hardening-ci.yml
+  migration_lifecycle:
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+  migration_preservation:
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+  migration_adversarial:
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+  migration_contracts:
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+  migration_semantics:
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+
+  certify:
+    name: Terminal immutable PAY-7 decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - architecture
+      - general_platform
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all PAY-7 gates
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          data=json.loads(os.environ["RESULTS"])
+          bad={k:v["result"] for k,v in data.items() if v["result"]!="success"}
+          if bad:
+              raise SystemExit(f"PAY-7 prerequisite failure: {bad}")
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY7_CANDIDATE_SHA }}
+      - name: Bind exact PAY-7 candidate
+        run: |
+          set -euo pipefail
+          mkdir -p pay7-evidence
+          test "$(git rev-parse "${PAY7_BASE_SHA}^{tree}")" = "${PAY7_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY7_BASE_SHA}" HEAD
+          git diff --quiet "${PAY7_BASE_SHA}...HEAD" -- alembic/versions
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY7_ALEMBIC_HEAD}"
+          python - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          decision={
+            "phase":"PAY-7",
+            "candidate_sha":os.environ["PAY7_CANDIDATE_SHA"],
+            "candidate_tree":subprocess.check_output(
+              ["git","rev-parse","HEAD^{tree}"],text=True
+            ).strip(),
+            "inherited_pay6_sha":os.environ["PAY7_BASE_SHA"],
+            "alembic_head":os.environ["PAY7_ALEMBIC_HEAD"],
+            "new_migration":False,
+            "live_provider":False,
+            "live_money_movement":False,
+            "refund_provider_execution":"DEFERRED_FAIL_CLOSED",
+            "merge_authorized":False,
+            "release_authorized":False,
+            "deployment_authorized":False,
+            "decision":"PASS",
+          }
+          Path("pay7-evidence/decision.json").write_text(
+              json.dumps(decision,indent=2,sort_keys=True)+"\n"
+          )
+          PY
+          cat pay7-evidence/decision.json
+          echo 'PAY7_PROVIDER_NEUTRAL_CONTRACT=PASS'
+          echo 'PAY7_SERVER_OWNED_REGISTRY=PASS'
+          echo 'PAY7_FAILURE_TAXONOMY=PASS'
+          echo 'PAY7_UNKNOWN_OUTCOME_RECONCILIATION=PASS'
+          echo 'PAY7_SECRET_ISOLATION=PASS'
+          echo 'PAY7_NO_FINANCE_DML=PASS'
+          echo 'PAY7_NO_MIGRATION_CHANGE=PASS'
+          echo 'PAY7_PAY6_INHERITED=PASS'
+          echo 'PAY7_LIVE_PROVIDER=DISABLED'
+          echo 'PAY7_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY7_REFUND_PROVIDER_EXECUTION=DEFERRED_FAIL_CLOSED'
+          echo 'PAY7_FINAL=PASS'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay7-final-${{ github.sha }}
+          path: pay7-evidence/
+          if-no-files-found: error
+          retention-days: 30
