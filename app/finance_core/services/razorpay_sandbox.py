@@ -23,6 +23,7 @@ from app.finance_core.domain.razorpay_sandbox import (
     amount_to_razorpay_subunits,
     build_razorpay_refund_receipt,
     map_razorpay_order_response,
+    map_razorpay_refund_collection,
     map_razorpay_refund_response,
     validate_razorpay_payment_ref,
     validate_razorpay_refund_ref,
@@ -349,6 +350,86 @@ class RazorpayTestModeRefundsClient:
             expected=request,
         )
 
+    async def discover_refund(
+        self,
+        request: RazorpayRefundCreateRequest,
+    ) -> RazorpayTestModeRefundResult | None:
+        payment_ref = validate_razorpay_payment_ref(
+            request.provider_payment_ref
+        )
+        headers = {
+            "Authorization": self._basic_auth_header(),
+            "Content-Type": "application/json",
+        }
+        found: RazorpayTestModeRefundResult | None = None
+        page_size = 100
+        skip = 0
+        max_pages = 10
+
+        for _page in range(max_pages):
+            try:
+                response_payload = await self._transport.get_json(
+                    url=(
+                        f"{self._config.api_base_url}/payments/"
+                        f"{payment_ref}/refunds"
+                        f"?count={page_size}&skip={skip}"
+                    ),
+                    headers=headers,
+                    timeout_seconds=float(self._config.timeout_seconds),
+                )
+            except RazorpayProviderError as exc:
+                raise self._refund_error(
+                    exc,
+                    operation="discover_refund",
+                ) from exc
+            except TimeoutError as exc:
+                raise RazorpayProviderError(
+                    "RAZORPAY_REFUND_TIMEOUT",
+                    "Razorpay refund discovery timed out.",
+                    failure_class="unknown",
+                    operation="discover_refund",
+                ) from exc
+            except Exception as exc:
+                raise RazorpayProviderError(
+                    "RAZORPAY_REFUND_NETWORK_ERROR",
+                    "Razorpay refund discovery failed safely.",
+                    failure_class="unknown",
+                    operation="discover_refund",
+                ) from exc
+
+            page_match = map_razorpay_refund_collection(
+                payload=response_payload,
+                expected=request,
+            )
+            if page_match is not None:
+                if found is not None:
+                    raise RazorpayProviderError(
+                        "RAZORPAY_REFUND_DISCOVERY_AMBIGUOUS",
+                        "Multiple Razorpay refunds matched the Finance receipt.",
+                        failure_class="unknown",
+                        operation="discover_refund",
+                    )
+                found = page_match
+
+            count_raw = response_payload.get("count")
+            if not isinstance(count_raw, int) or count_raw < 0:
+                raise RazorpayProviderError(
+                    "RAZORPAY_REFUND_COLLECTION_INVALID",
+                    "Razorpay refund collection response was invalid.",
+                    failure_class="unknown",
+                    operation="discover_refund",
+                )
+            if count_raw < page_size:
+                return found
+            skip += count_raw
+
+        raise RazorpayProviderError(
+            "RAZORPAY_REFUND_DISCOVERY_OVERFLOW",
+            "Razorpay refund discovery exceeded the bounded scan.",
+            failure_class="unknown",
+            operation="discover_refund",
+        )
+
     def _basic_auth_header(self) -> str:
         token = base64.b64encode(
             f"{self._config.key_id}:{self._config.key_secret}".encode("utf-8")
@@ -505,6 +586,17 @@ class RazorpaySandboxRefundAdapter:
             provider_request,
             provider_refund_ref=provider_refund_ref,
         )
+        return self._provider_response(request, result)
+
+    async def discover_refund(
+        self,
+        request: ProviderRefundRequest,
+    ) -> ProviderRefundResponse | None:
+        self._guard_service.require_safe_preflight()
+        provider_request = self.build_refund_request(request)
+        result = await self._client.discover_refund(provider_request)
+        if result is None:
+            return None
         return self._provider_response(request, result)
 
     def build_refund_request(
