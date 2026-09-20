@@ -71,3 +71,16 @@
 | P10-D13 | Least privilege | Only finance_refund_runtime can execute D capabilities; runtime identities remain direct-table blind. |
 | P10-D14 | Reversible owner ACL delta | Any owner column authority added for D is recorded exactly and removed on empty downgrade. |
 | P10-D15 | Populated downgrade | D -> C downgrade refuses after durable finalized refund effects exist. |
+
+| P10-E01 | Claim crash | Separate-process death after durable claim leaves one leased command; expiry/reclaim preserves logical attempt count. |
+| P10-E02 | Live-lease duplicate delivery | A second worker cannot claim or call the provider while the first lease is live. |
+| P10-E03 | Bind-before-I/O | Deterministic provider request identity is durably bound before provider network I/O. |
+| P10-E04 | No DB transaction across provider | Provider I/O occurs between committed database transactions, never while Finance locks are held. |
+| P10-E05 | Provider-success/DB-ack loss | Death or DB acknowledgement failure after provider effect cannot create local success; redelivery reuses the same provider identity. |
+| P10-E06 | Exactly one provider effect | Duplicate/redelivered submission may make multiple calls but produces one logical provider effect under deterministic identity. |
+| P10-E07 | DB-commit/broker-ack loss | If durable provider evidence commits and task acknowledgement is lost, redelivery is a no-op and does not call the provider again. |
+| P10-E08 | Failure classification | Retryable non-acceptance -> retry_pending; unknown -> reconciliation_pending; final failure -> dead_lettered/rejected. |
+| P10-E09 | Stale fence | Reclaimed work uses a new fence; stale worker acknowledgement remains rejected by PAY-10-C. |
+| P10-E10 | No worker financial authority | E worker cannot invoke D finalization, post ledger, emit financial outbox, or mark refund/payment financially successful. |
+| P10-E11 | Celery delivery contract | Global workers retain late ack, reject-on-worker-lost, prefetch=1, broker reconnect and publish retry. |
+| P10-E12 | Production activation remains closed | finance_refund_runtime stays reserved/unbound; no production refund DB variable/task route/live provider credentials are introduced. |
