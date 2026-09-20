@@ -1103,6 +1103,11 @@ class FinancePaymentEvent(Base):
 class FinanceRefund(Base):
     __tablename__ = "refunds"
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_pay10_refunds_id_org",
+        ),
         CheckConstraint("status IN ('requested', 'approved', 'rejected', 'processing', 'succeeded', 'failed', 'cancelled')", name="chk_finance_refunds_status"),
         CheckConstraint("amount >= 0", name="chk_finance_refunds_amount_nonnegative"),
         CheckConstraint("currency_code ~ '^[A-Z]{3}$'", name="chk_finance_refunds_currency"),
@@ -1212,6 +1217,11 @@ class FinanceRefundExecutionCommand(Base):
 class FinanceCreditNote(Base):
     __tablename__ = "credit_notes"
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_pay10_credit_notes_id_org",
+        ),
         UniqueConstraint("legal_entity_id", "gst_registration_id", "financial_year", "credit_note_number", name="uq_finance_credit_notes_number"),
         CheckConstraint("status IN ('draft', 'issued', 'voided')", name="chk_finance_credit_notes_status"),
         CheckConstraint("total_amount >= 0", name="chk_finance_credit_notes_total_nonnegative"),
