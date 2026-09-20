@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-6",
+  "date": "2026-09-20",
+  "branch": "hardening/pay6-offline-payments",
+  "inherited_pay5": {
+    "commit": "1247f357c68246ce442e75ff0a43470524440e9f",
+    "tree": "016ee5baa80b594cb75ef28f499fb42bc38fca8c",
+    "certification": "PAY5_FINAL=PASS"
+  },
+  "alembic": {
+    "predecessor": "zp07d8e9f0a50",
+    "head": "zq07d8e9f0a51"
+  },
+  "offline_methods": [
+    "cash",
+    "bank_transfer",
+    "cheque"
+  ],
+  "evidence": {
+    "structured_reference_required": true,
+    "proof_sha256_required": true,
+    "arbitrary_proof_body_persisted": false
+  },
+  "maker_checker": {
+    "database_enforced": true,
+    "preparer_may_decide": false,
+    "terminal_replay_actor_bound": true,
+    "decision_roles": [
+      "owner",
+      "admin"
+    ]
+  },
+  "authority": {
+    "monetary_command_store": "finance.monetary_commands",
+    "payment_store": "finance.payments",
+    "legacy_public_payments_authoritative": false,
+    "direct_app_runtime_finance_dml": false
+  },
+  "approval": {
+    "creates_provider_code": "manual",
+    "creates_status": "captured",
+    "revalidates_outstanding": true,
+    "canonical_application_capability": "app_secure.apply_finance_confirmed_payment",
+    "full_invoice_event": "finance.invoice.paid",
+    "partial_invoice_event": "finance.invoice.partially_paid"
+  },
+  "rejection": {
+    "terminal": true,
+    "creates_payment": false,
+    "reason_code_required": true
+  },
+  "migration_safety": {
+    "existing_finance_data_rewrite": false,
+    "backfill": false,
+    "acl_delta_recorded": true,
+    "populated_downgrade": "blocked_if_offline_payment_evidence_exists",
+    "empty_roundtrip_required": true,
+    "lock_timeout": "3s_transaction_local",
+    "statement_timeout": "30s_transaction_local"
+  },
+  "live_money_movement": false,
+  "refund_provider_execution": "DEFERRED_FAIL_CLOSED",
+  "next_phase": "PAY-7"
+}
