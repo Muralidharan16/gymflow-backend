@@ -121,6 +121,10 @@ class FinanceCheckoutOrchestrationService:
         provider_order_id = intent.provider_order_ref
         operation: ProviderOperationReservation | None = None
         if not provider_order_id or provider_order_id.startswith("intent_"):
+            # Internal intent_* references are local placeholders only. They
+            # must never escape as provider checkout objects or suppress the
+            # first real provider create attempt.
+            provider_order_id = None
             request_hash = provider_checkout_request_hash(
                 payment_id=intent.intent_id,
                 provider_code=self._provider_adapter.provider_code,
