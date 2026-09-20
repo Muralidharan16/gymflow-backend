@@ -241,6 +241,14 @@ class SandboxCheckoutIntentProvider:
     def __init__(self, config: ProviderSandboxConfig):
         self.config = validate_sandbox_provider_config(config)
 
+    @property
+    def provider_code(self) -> str:
+        return self.config.provider_code
+
+    @property
+    def environment(self) -> ProviderEnvironment:
+        return "sandbox"
+
     async def create_checkout_intent(
         self,
         request: ProviderCheckoutIntentRequest,
@@ -252,6 +260,13 @@ class SandboxCheckoutIntentProvider:
             provider_order_ref=f"sandbox_order_{digest}",
             status="created",
         )
+
+    def build_checkout_fields(
+        self,
+        *,
+        provider_order_ref: str,
+    ) -> dict[str, str]:
+        return {"order_id": provider_order_ref}
 
 
 class StaticSandboxSignatureVerifier:
