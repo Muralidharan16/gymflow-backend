@@ -61,40 +61,9 @@ def _cleanup() -> None:
         with psycopg.connect(ADMIN_URL) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "TRUNCATE TABLE finance.payment_application_records"
-                )
-                cur.execute(
                     "DELETE FROM finance.member_subscription_checkout_bindings "
                     "WHERE organization_id=%s",
                     (pay4.ORG,),
-                )
-                cur.execute(
-                    """
-                    DELETE FROM finance.ledger_entry_lines
-                    WHERE ledger_entry_id IN (
-                        SELECT e.id
-                        FROM finance.ledger_entries e
-                        WHERE e.source_type='payment_allocation'
-                          AND e.source_id IN (
-                              SELECT a.id
-                              FROM finance.payment_allocations a
-                              WHERE a.invoice_id=%s
-                          )
-                    )
-                    """,
-                    (pay4.INVOICE,),
-                )
-                cur.execute(
-                    """
-                    DELETE FROM finance.ledger_entries
-                    WHERE source_type='payment_allocation'
-                      AND source_id IN (
-                          SELECT a.id
-                          FROM finance.payment_allocations a
-                          WHERE a.invoice_id=%s
-                      )
-                    """,
-                    (pay4.INVOICE,),
                 )
                 cur.execute(
                     "DELETE FROM finance.outbox_events "
@@ -106,14 +75,17 @@ def _cleanup() -> None:
                     "WHERE invoice_id=%s",
                     (pay4.INVOICE,),
                 )
-                # payment_events is PAY-2 immutable history: row DELETE is
-                # intentionally rejected even to test admin. This disposable
-                # PAY-9 database uses a table TRUNCATE between test cases.
+                # PAY-2 immutable Finance history rejects row DELETE.
+                # This database is disposable and dedicated to PAY-9, so reset
+                # the FK-closed immutable evidence set explicitly without
+                # weakening production triggers or using CASCADE.
                 cur.execute(
                     "TRUNCATE TABLE "
                     "finance.payment_application_records, "
                     "finance.provider_webhook_inbox, "
-                    "finance.payment_events"
+                    "finance.payment_events, "
+                    "finance.ledger_entry_lines, "
+                    "finance.ledger_entries"
                 )
                 cur.execute(
                     "DELETE FROM finance.payments WHERE id IN (%s,%s)",
