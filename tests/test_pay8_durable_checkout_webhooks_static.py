@@ -178,8 +178,8 @@ def test_webhook_processing_is_fenced_reclaimable_and_payment_runtime_recoverabl
     )[1].split("$function$", 2)[1]
 
     assert "lease_expired_retry" in claim
-    assert "processing_attempts=processing_attempts+1" in claim
-    assert "lease_fence=lease_fence+1" in claim
+    assert "processing_attempts=wi.processing_attempts+1" in claim
+    assert "lease_fence=wi.lease_fence+1" in claim
     assert "FOR UPDATE SKIP LOCKED" in next_claim
     assert "finance_payment_runtime" in next_claim
     assert "v_row.lease_owner" in complete
