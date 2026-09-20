@@ -102,13 +102,10 @@ def _admin_execute(sql: str, params=()) -> None:
 def _reset_state() -> None:
     with _connect(ADMIN_URL) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                DELETE FROM finance.refund_provider_evidence
-                WHERE command_id=%s
-                """,
-                (COMMAND_ID,),
-            )
+            # Provider evidence is immutable to UPDATE/DELETE by design.
+            # TRUNCATE does not fire the row mutation trigger and is safe only
+            # in this disposable isolated CI database.
+            cur.execute("TRUNCATE TABLE finance.refund_provider_evidence")
             cur.execute(
                 "DELETE FROM finance.refund_execution_commands WHERE command_id=%s",
                 (COMMAND_ID,),
