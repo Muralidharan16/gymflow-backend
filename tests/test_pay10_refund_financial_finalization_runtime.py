@@ -79,7 +79,7 @@ def _reset_state(refund_amount: Decimal = Decimal("25.00")) -> None:
             cur.execute(
                 "DELETE FROM finance.outbox_events "
                 "WHERE idempotency_key LIKE %s",
-                (f"pay10:{COMMAND_ID}:%",),
+                (f"pay10/{COMMAND_ID}/%",),
             )
             cur.execute(
                 "DELETE FROM finance.refund_credit_note_links "
@@ -703,7 +703,7 @@ def test_pay10d_atomic_finalization_and_replay(
         FROM finance.outbox_events
         WHERE idempotency_key LIKE %s
         """,
-        (f"pay10:{COMMAND_ID}:%",),
+        (f"pay10/{COMMAND_ID}/%",),
     ) == 3
     assert _admin_scalar(
         """
@@ -735,7 +735,7 @@ def test_pay10d_atomic_finalization_and_replay(
         FROM finance.outbox_events
         WHERE idempotency_key LIKE %s
         """,
-        (f"pay10:{COMMAND_ID}:%",),
+        (f"pay10/{COMMAND_ID}/%",),
     ) == 3
 
 
