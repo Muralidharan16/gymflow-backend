@@ -106,11 +106,10 @@ def _cleanup() -> None:
                     "WHERE invoice_id=%s",
                     (pay4.INVOICE,),
                 )
-                cur.execute(
-                    "DELETE FROM finance.payment_events "
-                    "WHERE payment_id IN (%s,%s)",
-                    (PROVIDER_PAYMENT, OFFLINE_PAYMENT),
-                )
+                # payment_events is PAY-2 immutable history: row DELETE is
+                # intentionally rejected even to test admin. This disposable
+                # PAY-9 database uses a table TRUNCATE between test cases.
+                cur.execute("TRUNCATE TABLE finance.payment_events")
                 cur.execute(
                     "DELETE FROM finance.payments WHERE id IN (%s,%s)",
                     (PROVIDER_PAYMENT, OFFLINE_PAYMENT),
