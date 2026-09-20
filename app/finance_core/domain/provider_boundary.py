@@ -117,6 +117,61 @@ class ProviderCheckoutIntentResponse:
     status: str
 
 
+ProviderRefundStatus = Literal["pending", "processed", "failed"]
+
+
+@dataclass(frozen=True)
+class ProviderRefundRequest:
+    """Server-authoritative provider refund request.
+
+    Every field is loaded from durable Finance truth by later PAY-10
+    capabilities. The adapter never accepts browser-selected payment, amount,
+    currency, or provider references.
+    """
+
+    command_id: uuid.UUID
+    refund_id: uuid.UUID
+    payment_id: uuid.UUID
+    provider_payment_ref: str
+    amount: Decimal
+    currency_code: str
+
+
+@dataclass(frozen=True)
+class ProviderRefundResponse:
+    provider_code: str
+    provider_refund_ref: str
+    provider_payment_ref: str
+    amount: Decimal
+    currency_code: str
+    receipt: str
+    status: ProviderRefundStatus
+
+
+class RefundProvider(Protocol):
+    @property
+    def provider_code(self) -> str:
+        ...
+
+    @property
+    def environment(self) -> ProviderEnvironment:
+        ...
+
+    async def submit_refund(
+        self,
+        request: ProviderRefundRequest,
+    ) -> ProviderRefundResponse:
+        """Submit one logical refund without mutating Finance truth."""
+
+    async def fetch_refund(
+        self,
+        request: ProviderRefundRequest,
+        *,
+        provider_refund_ref: str,
+    ) -> ProviderRefundResponse:
+        """Reconcile a known provider refund without creating a new refund."""
+
+
 class CheckoutIntentProvider(Protocol):
     @property
     def provider_code(self) -> str:
