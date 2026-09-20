@@ -47,12 +47,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _async_refund_url() -> str:
+def _async_refund_url():
     assert REFUND_URL
-    return str(
-        make_url(REFUND_URL).set(
-            drivername="postgresql+asyncpg",
-        )
+    # Keep the SQLAlchemy URL object intact. Converting it with str(url)
+    # redacts the password as "***", which would turn this CI-only reduced
+    # runtime proof into an authentication failure instead of exercising E.
+    return make_url(REFUND_URL).set(
+        drivername="postgresql+asyncpg",
     )
 
 
@@ -306,6 +307,13 @@ def test_pay10e_worker_death_after_claim_reclaims_same_attempt(tmp_path: Path):
     assert before[0] == "processing"
     assert before[1] == 1
     assert before[3] is None
+
+    # Duplicate/redelivered work while the original lease is still live
+    # cannot claim the command and therefore cannot call the provider.
+    blocked = asyncio.run(_run_once(store, second_worker))
+    assert blocked.state == "idle"
+    assert blocked.provider_called is False
+    assert _provider_counts(store) == (0, 0)
 
     _expire_lease()
     result = asyncio.run(_run_once(store, second_worker))
