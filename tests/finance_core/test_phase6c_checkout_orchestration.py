@@ -90,6 +90,7 @@ def command(*, idempotency_key: str = "phase6c-checkout-key") -> CreateCheckoutS
 
 
 async def orchestrate(command_: CreateCheckoutSessionCommand, *, client: FakeRazorpayClient | None = None, guard=None):
+    """Exercise the same staged PAY-8 boundary as the HTTP composition path."""
     client = client or FakeRazorpayClient()
     async with AsyncSessionLocal() as session:
         await set_current_org_context(session)
@@ -102,9 +103,45 @@ async def orchestrate(command_: CreateCheckoutSessionCommand, *, client: FakeRaz
                 guard_service=guard,
             ),
         )
-        result = await service.create_checkout_session(command_)
+        prepared = await service.prepare_checkout_session(command_)
+        # Local invoice, payment intent and provider reservation are durable
+        # before any external provider call.
         await session.commit()
-        return result, client
+
+        if prepared.provider_order_id:
+            return (
+                service.build_result(
+                    prepared,
+                    provider_order_id=prepared.provider_order_id,
+                ),
+                client,
+            )
+
+        assert prepared.provider_operation is not None
+        lease_owner = uuid.uuid4()
+        claim = await service.claim_provider_operation(
+            prepared,
+            lease_owner=lease_owner,
+        )
+        # Fence the external attempt before provider I/O.
+        await session.commit()
+        assert claim.claimed is True
+
+        response = await service.call_provider(prepared)
+        provider_order_id = await service.finish_provider_success(
+            prepared,
+            claim,
+            lease_owner=lease_owner,
+            response=response,
+        )
+        await session.commit()
+        return (
+            service.build_result(
+                prepared,
+                provider_order_id=provider_order_id,
+            ),
+            client,
+        )
 
 
 @pytest.mark.asyncio
