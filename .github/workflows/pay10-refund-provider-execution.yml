@@ -272,66 +272,51 @@ jobs:
           # Disposable-test cleanup is intentionally cluster-admin-only.
           # app_security_owner keeps no TRUNCATE/DELETE authority.
           PGPASSWORD=ci-pay10-postgres psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U postgres -d gymflow_pay10_test <<'SQL'
-          TRUNCATE TABLE finance.refund_provider_evidence;
-          DELETE FROM finance.outbox_events
-          WHERE idempotency_key LIKE
-            'pay10/d1000000-0000-4000-8000-000000000011/%';
-          DELETE FROM finance.refund_credit_note_links
-          WHERE refund_id='d1000000-0000-4000-8000-000000000010'
-             OR credit_note_id='d1000000-0000-4000-8000-000000000013';
-          DELETE FROM finance.ledger_entry_lines
-          WHERE ledger_entry_id IN (
-            SELECT id FROM finance.ledger_entries
-            WHERE (
-              source_type='refund'
-              AND source_id='d1000000-0000-4000-8000-000000000010'
-            )
-            OR (
-              source_type='credit_note'
-              AND source_id='d1000000-0000-4000-8000-000000000013'
-            )
-          );
-          DELETE FROM finance.ledger_entries
-          WHERE (
-            source_type='refund'
-            AND source_id='d1000000-0000-4000-8000-000000000010'
-          )
-          OR (
-            source_type='credit_note'
-            AND source_id='d1000000-0000-4000-8000-000000000013'
-          );
-          DELETE FROM finance.credit_note_lines
-          WHERE credit_note_id='d1000000-0000-4000-8000-000000000013';
-          DELETE FROM finance.credit_notes
-          WHERE id='d1000000-0000-4000-8000-000000000013';
-          DELETE FROM finance.refund_execution_commands
-          WHERE command_id='d1000000-0000-4000-8000-000000000011'
-             OR logical_obligation_key =
-                'finance-refund/c1000000-0000-4000-8000-000000000010';
-          DELETE FROM finance.refunds
-          WHERE id='d1000000-0000-4000-8000-000000000010';
-          DELETE FROM finance.payment_allocations
-          WHERE id='d1000000-0000-4000-8000-000000000009';
-          DELETE FROM finance.payments
-          WHERE id='d1000000-0000-4000-8000-000000000008';
-          DELETE FROM finance.invoices
-          WHERE id='d1000000-0000-4000-8000-000000000007';
-          DELETE FROM finance.billing_parties
-          WHERE id='d1000000-0000-4000-8000-000000000006';
-          DELETE FROM finance.ledger_accounts
-          WHERE id IN (
-            'd1000000-0000-4000-8000-000000000015',
-            'd1000000-0000-4000-8000-000000000016',
-            'd1000000-0000-4000-8000-000000000017'
-          );
-          DELETE FROM finance.brands
-          WHERE id='d1000000-0000-4000-8000-000000000005';
-          DELETE FROM finance.divisions
-          WHERE id='d1000000-0000-4000-8000-000000000004';
-          DELETE FROM finance.gst_registrations
-          WHERE id='d1000000-0000-4000-8000-000000000003';
-          DELETE FROM finance.legal_entities
-          WHERE id='d1000000-0000-4000-8000-000000000002';
+          -- Use the same explicit FK-closed Finance reset inventory as
+          -- tests/finance_core/admin_database.py.  TRUNCATE is deliberately
+          -- test-admin-only and does not weaken PAY-2 immutable row guards.
+          TRUNCATE TABLE
+            finance.refund_provider_evidence,
+            finance.refund_credit_note_links,
+            finance.payment_application_records,
+            finance.outbox_events,
+            finance.provider_webhook_inbox,
+            finance.provider_operations,
+            finance.offline_payment_events,
+            finance.offline_payment_requests,
+            finance.audit_events,
+            finance.ledger_entry_lines,
+            finance.ledger_entries,
+            finance.credit_note_lines,
+            finance.credit_notes,
+            finance.credit_note_series,
+            finance.refund_execution_commands,
+            finance.refunds,
+            finance.member_subscription_finance_bindings,
+            finance.payment_contexts,
+            finance.member_subscription_checkout_bindings,
+            finance.refund_obligation_bindings,
+            finance.payment_events,
+            finance.payment_allocations,
+            finance.payments,
+            finance.tax_records,
+            finance.invoice_lines,
+            finance.invoices,
+            finance.monetary_commands,
+            finance.idempotency_keys,
+            finance.brand_ref_series,
+            finance.invoice_series,
+            finance.billing_parties,
+            finance.ledger_accounts,
+            finance.membership_plan_tax_profiles,
+            finance.tax_codes,
+            finance.branch_accounting_profiles,
+            finance.bank_accounts,
+            finance.brands,
+            finance.divisions,
+            finance.gst_registrations,
+            finance.legal_entities
+          RESTART IDENTITY;
           DELETE FROM public.organizations
           WHERE id='d1000000-0000-4000-8000-000000000001';
           SQL
