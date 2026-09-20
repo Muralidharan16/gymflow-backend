@@ -31,3 +31,10 @@
 | P10-A27 | Inherited regression | General, Finance, migration lifecycle, preservation, adversarial and architecture suites pass. |
 | P10-A28 | Test-mode only | No live Razorpay credentials, live provider environment, production money movement, merge, release or deploy. |
 | P10-A29 | Exact candidate | Final decision binds one commit SHA and tree with every required gate green. |
+| P10-B01 | Provider-neutral refund contract | Adapter input is command/refund/payment/provider-payment/amount/currency authority loaded from Finance truth. |
+| P10-B02 | Deterministic provider receipt | Receipt is derived from durable command/refund identity and is stable across retry/recovery. |
+| P10-B03 | Razorpay submit boundary | Test/sandbox only POST uses the exact Finance provider payment reference and amount. |
+| P10-B04 | Conservative retry classification | Only known non-acceptance is retryable; timeout/network/ambiguous HTTP or response mismatch requires reconciliation. |
+| P10-B05 | Exact reconciliation fetch | Known provider refund is fetched by payment id + refund id without issuing a second POST. |
+| P10-B06 | Safe provider output | Raw response bodies, credentials, customer PII and provider-private payload fields do not leave the adapter. |
+| P10-B07 | No Finance mutation | Provider adapter performs no Finance-table mutation; PAY-10-C/D remain authority for durable state and finalization. |
