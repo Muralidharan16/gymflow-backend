@@ -20,7 +20,7 @@ env:
   PAY10_BASE_SHA: 581c3d83a1e78ba59213c90309166913fedf9c3e
   PAY10_BASE_TREE: 84237255e6d176a9aa6dfd7aeed1c8a430d0853b
   PAY10_PREDECESSOR: zs07d8e9f0a53
-  PAY10_HEAD: zt07d8e9f0a54
+  PAY10_HEAD: zu07d8e9f0a55
   PAY10_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
@@ -62,6 +62,7 @@ jobs:
           allowed={
               ".github/workflows/pay10-refund-provider-execution.yml",
               "alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py",
+              "alembic/versions/zu07d8e9f0a55_pay10_refund_execution_capabilities.py",
               "app/finance_core/domain/provider_boundary.py",
               "app/finance_core/domain/razorpay_sandbox.py",
               "app/finance_core/models/__init__.py",
@@ -94,7 +95,8 @@ jobs:
               x for x in changed if x.startswith("alembic/versions/")
           )
           expected=[
-              "alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py"
+              "alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py",
+              "alembic/versions/zu07d8e9f0a55_pay10_refund_execution_capabilities.py",
           ]
           if migrations != expected:
               raise SystemExit(f"PAY-10-A migration scope mismatch: {migrations}")
@@ -105,7 +107,8 @@ jobs:
       - name: PAY-10-A focused static contracts
         run: |
           set -euo pipefail
-          python -m py_compile             alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py             app/finance_core/domain/provider_boundary.py             app/finance_core/domain/razorpay_sandbox.py             app/finance_core/models/foundation.py             app/finance_core/models/__init__.py             app/finance_core/services/razorpay_sandbox.py             app/finance_core/services/refund_provider_execution.py             tests/finance_core/test_pay10_refund_execution_service.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_execution_capabilities_runtime.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py
+          python -m py_compile             alembic/versions/zt07d8e9f0a54_pay10_refund_provider_authority.py \
+            alembic/versions/zu07d8e9f0a55_pay10_refund_execution_capabilities.py             app/finance_core/domain/provider_boundary.py             app/finance_core/domain/razorpay_sandbox.py             app/finance_core/models/foundation.py             app/finance_core/models/__init__.py             app/finance_core/services/razorpay_sandbox.py             app/finance_core/services/refund_provider_execution.py             tests/finance_core/test_pay10_refund_execution_service.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_execution_capabilities_runtime.py             tests/test_pay10_refund_provider_authority_runtime.py             tests/test_pay10_refund_provider_execution_static.py
           python -m json.tool             docs/architecture/pay10_refund_provider_execution_v1.json             >/dev/null
           python -m pytest --noconftest -q --maxfail=1             tests/finance_core/test_pay10_refund_execution_service.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/test_pay10_refund_provider_execution_static.py             tests/test_cluster_role_contract_manifests.py             tests/test_migration_managed_role_boundary.py             tests/test_migration_app_secure_owner_context_boundary.py             tests/test_alembic_model_import_boundary.py
           echo 'PAY10_A_AUTHORITY_SCHEMA=PASS'
@@ -250,6 +253,12 @@ jobs:
         run: |
           set -euo pipefail
           PGPASSWORD=ci-pay10-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay10_test <<'SQL'
+          SET ROLE app_security_owner;
+          TRUNCATE TABLE finance.refund_provider_evidence;
+          DELETE FROM finance.refund_execution_commands
+          WHERE logical_obligation_key =
+            'finance-refund/c1000000-0000-4000-8000-000000000010';
+          RESET ROLE;
           INSERT INTO finance.legal_entities(
             id,code,legal_name,status
           ) VALUES(
