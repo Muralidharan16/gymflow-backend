@@ -1,0 +1,45 @@
+{
+  "phase": "PAY-11",
+  "name": "Platform Billing Production Model",
+  "predecessor_sha": "4fbbde1f4fe809f433f7a4b19894c59dcaffed9b",
+  "predecessor_tree": "ac51aff5b1c68dbec655744834ea3a070dd81ff3",
+  "predecessor_revision": "zv07d8e9f0a56",
+  "revision": "zw07d8e9f0a57",
+  "required_entities": [
+    "platform_provider_subscriptions",
+    "platform_mandates",
+    "platform_document_sequences",
+    "platform_invoices",
+    "platform_invoice_lines",
+    "platform_payment_attempts",
+    "platform_refunds",
+    "platform_credit_notes",
+    "platform_credit_note_lines"
+  ],
+  "commercial_release_relations": [
+    "platform_catalog_releases",
+    "platform_catalog_release_items",
+    "platform_provider_releases"
+  ],
+  "release_manifests": [
+    "catalog_release_v1",
+    "provider_release_v1"
+  ],
+  "plan_price_immutable_after_publication": true,
+  "existing_subscriber_contract_retention": true,
+  "controlled_contract_migration_only": true,
+  "issued_financial_documents_immutable": true,
+  "refund_requires_succeeded_payment": true,
+  "succeeded_refund_requires_credit_note": true,
+  "refund_capacity_serialized": true,
+  "tenant_force_rls": true,
+  "runtime_new_financial_dml": false,
+  "member_payment_domain_reuse": false,
+  "live_provider": false,
+  "production_credentials": false,
+  "live_money_movement": false,
+  "merge_authorized": false,
+  "release_authorized": false,
+  "deployment_authorized": false,
+  "gate": "PAY11_PLATFORM_BILLING_MODEL=PASS"
+}

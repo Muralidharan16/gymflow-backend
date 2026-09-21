@@ -62,7 +62,7 @@ async def fetch_scalar(sql: str, params: dict[str, object] | None = None) -> obj
 
 
 @pytest.mark.asyncio
-async def test_phase4a_schema_surface_is_exact():
+async def test_phase4a_schema_surface_is_present_without_own_scope_drift():
     rows = await fetch_all(
         """
         SELECT table_name
@@ -71,27 +71,9 @@ async def test_phase4a_schema_surface_is_exact():
           AND table_name = ANY(:tables)
         ORDER BY table_name
         """,
-        {"tables": sorted(PHASE_4A_TABLES | {"platform_provider_subscriptions"})},
+        {"tables": sorted(PHASE_4A_TABLES)},
     )
-    found = {row[0] for row in rows}
-    assert PHASE_4A_TABLES <= found
-    assert "platform_provider_subscriptions" not in found
-
-    phase4_like = await fetch_all(
-        """
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema = 'public'
-          AND (
-              table_name LIKE 'platform_provider%'
-              OR table_name LIKE 'platform_payment%'
-              OR table_name LIKE 'platform_webhook%'
-              OR table_name LIKE 'platform_reconciliation%'
-          )
-        ORDER BY table_name
-        """
-    )
-    assert {row[0] for row in phase4_like} == PHASE_4A_TABLES
+    assert {row[0] for row in rows} == PHASE_4A_TABLES
 
 
 @pytest.mark.asyncio

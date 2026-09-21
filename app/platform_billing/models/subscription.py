@@ -21,6 +21,14 @@ class PlatformSubscription(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     current_plan_version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("platform_plan_versions.id", ondelete="RESTRICT"), nullable=False)
     current_price_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("platform_prices.id", ondelete="RESTRICT"), nullable=True)
+    accepted_catalog_release_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("platform_catalog_releases.id", ondelete="RESTRICT"), nullable=True)
+    accepted_provider_release_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("platform_provider_releases.id", ondelete="RESTRICT"), nullable=True)
+    accepted_plan_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("platform_plan_versions.id", ondelete="RESTRICT"), nullable=True)
+    accepted_price_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("platform_prices.id", ondelete="RESTRICT"), nullable=True)
+    commercial_contract_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    commercial_contract_accepted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    commercial_contract_migrated_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    commercial_contract_migration_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     policy_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     started_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
     current_period_start: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
@@ -53,6 +61,41 @@ class PlatformSubscription(Base):
             name="chk_platform_subscriptions_status",
         ),
         CheckConstraint("current_period_end > current_period_start", name="chk_platform_subscriptions_period_order"),
+        CheckConstraint(
+            "commercial_contract_sha256 IS NULL OR commercial_contract_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_platform_subscriptions_commercial_contract_sha",
+        ),
+        CheckConstraint(
+            """
+            (
+                accepted_catalog_release_id IS NULL
+                AND accepted_provider_release_id IS NULL
+                AND accepted_plan_version_id IS NULL
+                AND accepted_price_id IS NULL
+                AND commercial_contract_sha256 IS NULL
+                AND commercial_contract_accepted_at IS NULL
+            )
+            OR
+            (
+                accepted_catalog_release_id IS NOT NULL
+                AND accepted_plan_version_id IS NOT NULL
+                AND commercial_contract_sha256 IS NOT NULL
+                AND commercial_contract_accepted_at IS NOT NULL
+            )
+            """,
+            name="chk_platform_subscriptions_commercial_contract_shape",
+        ),
+        CheckConstraint(
+            """
+            (commercial_contract_migrated_at IS NULL AND commercial_contract_migration_reason IS NULL)
+            OR (
+                commercial_contract_migrated_at IS NOT NULL
+                AND commercial_contract_migration_reason IS NOT NULL
+                AND btrim(commercial_contract_migration_reason) <> ''
+            )
+            """,
+            name="chk_platform_subscriptions_contract_migration_metadata",
+        ),
         CheckConstraint("version >= 1", name="chk_platform_subscriptions_version_positive"),
         UniqueConstraint("id", "organization_id", name="uq_platform_subscriptions_id_org"),
         Index("ix_platform_subscriptions_org_status", "organization_id", "status"),

@@ -927,7 +927,13 @@ async def test_provider_outcome_does_not_mutate_subscription_entitlement_project
     )
     try:
         before = {}
-        for table in ["platform_subscriptions", "platform_entitlement_projection", "platform_access_projection"]:
+        for table in [
+            "platform_subscriptions",
+            "platform_entitlement_projection",
+            "platform_access_projection",
+            "platform_invoices",
+            "platform_refunds",
+        ]:
             before[table] = await db_session.scalar(text(f"SELECT count(*) FROM {table}"))
         forbidden = await db_session.execute(
             text(
@@ -935,8 +941,7 @@ async def test_provider_outcome_does_not_mutate_subscription_entitlement_project
                 SELECT relname
                 FROM pg_class
                 WHERE relname IN (
-                  'platform_payments', 'platform_invoices', 'platform_refunds',
-                  'platform_ledger_entries'
+                  'platform_payments', 'platform_ledger_entries'
                 )
                 ORDER BY relname
                 """

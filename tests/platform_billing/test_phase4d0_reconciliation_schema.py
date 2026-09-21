@@ -279,7 +279,7 @@ async def test_phase4d0_migration_cycle_preserves_existing_rows_and_reverts_sche
 
 
 @pytest.mark.asyncio
-async def test_phase4d0_schema_columns_constraints_indexes_and_no_new_tables():
+async def test_phase4d0_schema_columns_constraints_indexes_and_no_own_scope_drift():
     table_names = {
         row[0]
         for row in await fetch_all(
@@ -287,17 +287,12 @@ async def test_phase4d0_schema_columns_constraints_indexes_and_no_new_tables():
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
-              AND (
-                table_name LIKE 'platform_provider%'
-                OR table_name LIKE 'platform_payment%'
-                OR table_name LIKE 'platform_webhook%'
-                OR table_name LIKE 'platform_reconciliation%'
-              )
-            """
+              AND table_name = ANY(:tables)
+            """,
+            {"tables": sorted(PHASE4_TABLES)},
         )
     }
     assert table_names == PHASE4_TABLES
-    assert "platform_provider_subscriptions" not in table_names
 
     columns = {
         (row[0], row[1])
