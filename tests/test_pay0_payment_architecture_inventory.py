@@ -71,10 +71,16 @@ def test_legacy_member_payment_contract_drift_is_explicitly_inventory_only():
     assert "payment_type:" in model
     assert "transaction_reference:" in model
     assert "collected_by:" in model
-    assert "type=type" in service
-    assert "reference_number=reference_number" in service
-    assert "created_by=created_by" in service
-    assert "data.method" in router and "data.type" in router
+
+    # PAY-0 remains immutable historical inventory of the original legacy
+    # mutation surface. PAY-15 intentionally retires the current write path.
+    assert "type=type" not in service
+    assert "reference_number=reference_number" not in service
+    assert "created_by=created_by" not in service
+    assert "PAY-15 legacy payment writes are retired" in service
+    assert "LEGACY_PAYMENT_WRITE_RETIRED" in router
+    assert "status.HTTP_410_GONE" in router
+
     assert "payment_method: PaymentMethod" in schema
     assert "payment_type: PaymentType" in schema
 

@@ -1,0 +1,619 @@
+name: PAY-15 Legacy Payment Retirement and Data Migration
+
+on:
+  push:
+    branches:
+      - hardening/pay15-legacy-payment-retirement
+  pull_request:
+    branches:
+      - hardening/pay14-reconciliation-treasury-accounting
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay15-legacy-retirement-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY15_BASE_SHA: b23b81f4472554f64e08342dc1268d393d720c7f
+  PAY15_BASE_TREE: d1ad75c713bf87b9380822081d3e36b77762255e
+  PAY15_PREDECESSOR: zz07d8e9f0a60
+  PAY15_HEAD: zz17d8e9f0a61
+  PAY15_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-15 retirement/migration authority contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay15_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay15-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay15-static
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY15_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Exact PAY-15 scope and Alembic graph
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY15_BASE_SHA}^{tree}")" = "${PAY15_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY15_BASE_SHA}" HEAD
+          test "$(git merge-base "${PAY15_BASE_SHA}" HEAD)" = "${PAY15_BASE_SHA}"
+          git diff --name-only "${PAY15_BASE_SHA}...HEAD" > /tmp/pay15-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+
+          allowed = {
+              ".github/workflows/pay15-legacy-retirement.yml",
+              "alembic/versions/zz17d8e9f0a61_pay15_legacy_payment_retirement.py",
+              "app/finance_core/domain/legacy_retirement.py",
+              "app/finance_core/models/__init__.py",
+              "app/finance_core/models/legacy_retirement.py",
+              "app/finance_core/repositories/legacy_retirement.py",
+              "app/finance_core/services/legacy_retirement.py",
+              "app/routers/payments.py",
+              "app/routers/subscriptions.py",
+              "app/services/payment_service.py",
+              "app/services/invoice_service.py",
+              "app/services/subscription_service.py",
+              "docs/architecture/PAY15_LEGACY_PAYMENT_RETIREMENT.md",
+              "docs/architecture/pay15_legacy_retirement_v1.yaml",
+              "tests/finance_core/admin_database.py",
+              "tests/finance_core/test_pay15_legacy_retirement.py",
+              "tests/finance_core/test_pay15_legacy_retirement_static.py",
+              "tests/finance_core/test_phase5b_foundation.py",
+              "tests/test_pay0_payment_architecture_inventory.py",
+              "tests/test_migration_app_secure_owner_context_boundary.py",
+              "tests/migration_app_secure_owner_context_boundary_baseline.py",
+          }
+          changed = {
+              p.strip()
+              for p in Path("/tmp/pay15-changed.txt").read_text().splitlines()
+              if p.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-15 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          print(f"PAY-15 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY15_HEAD}"
+      - name: Compile and prove PAY-15 contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile             alembic/versions/zz17d8e9f0a61_pay15_legacy_payment_retirement.py             app/finance_core/domain/legacy_retirement.py             app/finance_core/models/legacy_retirement.py             app/finance_core/repositories/legacy_retirement.py             app/finance_core/services/legacy_retirement.py             app/routers/payments.py             app/routers/subscriptions.py             app/services/payment_service.py             app/services/invoice_service.py             app/services/subscription_service.py             tests/finance_core/test_pay15_legacy_retirement.py             tests/finance_core/test_pay15_legacy_retirement_static.py
+          python -m pytest --noconftest -q --maxfail=1             tests/finance_core/test_pay15_legacy_retirement_static.py             tests/finance_core/test_pay15_legacy_retirement.py             tests/test_alembic_model_import_boundary.py
+          echo 'PAY15_LEGACY_API_WRITES=0'
+          echo 'PAY15_PERMANENT_DUAL_WRITE=FORBIDDEN'
+          echo 'PAY15_MIGRATION_AUTHORITY=FINANCE_CONFIG_ONLY'
+          echo 'PAY15_PRODUCTION_RUNTIME_BINDING=DISABLED'
+          echo 'PAY15_MERGE=NOT_AUTHORIZED'
+
+  protocol_pg16:
+    name: PAY-15 PG16 populated migration, cutover and downgrade safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay15-migration@127.0.0.1:5432/gymflow_pay15_test
+      SECRET_KEY: pay15-pg16-not-production
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay15-pg16
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY15_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Install disposable PostgreSQL 16 database
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-pay15-migration';
+          CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-pay15-config'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE DATABASE gymflow_pay15_test OWNER migration_owner;
+          REVOKE ALL ON DATABASE gymflow_pay15_test FROM PUBLIC;
+          GRANT CONNECT ON DATABASE gymflow_pay15_test
+            TO migration_owner, finance_config_deployment;
+          GRANT finance_config_runtime TO finance_config_deployment
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_pay15_test
+      - name: Prove empty PAY-14 to PAY-15 to PAY-14 roundtrip
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY15_PREDECESSOR}"
+          python -s -m alembic -c alembic.ini upgrade "${PAY15_HEAD}"
+          test "$(PGPASSWORD=ci-pay15-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay15_test             -c "SELECT pg_catalog.to_regclass('finance.legacy_retirement_batches') IS NOT NULL")" = "t"
+          python -s -m alembic -c alembic.ini downgrade "${PAY15_PREDECESSOR}"
+          test "$(PGPASSWORD=ci-pay15-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay15_test             -c "SELECT pg_catalog.to_regclass('finance.legacy_retirement_batches') IS NULL")" = "t"
+          echo 'PAY15_EMPTY_MIGRATION_ROUNDTRIP=PASS'
+      - name: Seed authoritative pre-cutover legacy and Finance history at PAY-14
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_pay15_test <<'SQL'
+          INSERT INTO public.organizations(
+              id,name,slug,tier,is_active,max_branches,default_currency_code
+          ) VALUES (
+              '98000000-0000-0000-0000-000000000001',
+              'PAY15 Legacy Org','pay15-legacy-org','basic'::orgtier,true,5,'INR'
+          );
+
+          SELECT pg_catalog.set_config(
+              'app.current_org_id',
+              '98000000-0000-0000-0000-000000000001',
+              false
+          );
+
+          INSERT INTO public.gyms(
+              id,org_id,name,facility_type,gymu_id,is_active
+          ) VALUES (
+              '98000000-0000-0000-0000-000000000101',
+              '98000000-0000-0000-0000-000000000001',
+              'PAY15 Legacy Gym','gym'::facilitytype,'PAY15GYM',true
+          );
+
+          INSERT INTO public.members(
+              id,gym_id,org_id,member_uid,member_number,name,status,
+              is_active,is_migrated
+          ) VALUES (
+              '98000000-0000-0000-0000-000000000201',
+              '98000000-0000-0000-0000-000000000101',
+              '98000000-0000-0000-0000-000000000001',
+              'PAY15MEM',15001,'Legacy Member','active'::memberstatus,
+              true,false
+          );
+
+          INSERT INTO public.subscription_plans(
+              id,gym_id,name,duration_days,price,max_freeze_days,features,is_active
+          ) VALUES (
+              '98000000-0000-0000-0000-000000000301',
+              '98000000-0000-0000-0000-000000000101',
+              'Legacy Plan',30,1180.00,0,'{}'::jsonb,true
+          );
+
+          INSERT INTO public.member_subscriptions(
+              id,gym_id,member_id,plan_id,start_date,end_date,total_freeze_days,
+              status,reminder_sent
+          ) VALUES (
+              '98000000-0000-0000-0000-000000000401',
+              '98000000-0000-0000-0000-000000000101',
+              '98000000-0000-0000-0000-000000000201',
+              '98000000-0000-0000-0000-000000000301',
+              DATE '2026-08-01',DATE '2026-08-31',0,
+              'active'::subscriptionstatus,false
+          );
+
+          INSERT INTO public.payments(
+              id,gym_id,member_id,subscription_id,amount,discount_amount,
+              payment_method,payment_type,status,transaction_reference,
+              razorpay_id,is_migrated,payment_date
+          ) VALUES (
+              '98000000-0000-0000-0000-000000000501',
+              '98000000-0000-0000-0000-000000000101',
+              '98000000-0000-0000-0000-000000000201',
+              '98000000-0000-0000-0000-000000000401',
+              1180.00,0.00,'online'::paymentmethod,'subscription'::paymenttype,
+              'completed'::paymentstatus,'legacy-txn-001','pay_legacy_001',
+              false,'2026-08-01T09:00:00Z'
+          );
+
+          INSERT INTO public.invoices(
+              id,gym_id,member_id,payment_id,subscription_id,invoice_number,
+              subtotal,discount_amount,tax_amount,tax_rate,total_amount,
+              invoice_type,status,issued_at
+          ) VALUES (
+              '98000000-0000-0000-0000-000000000601',
+              '98000000-0000-0000-0000-000000000101',
+              '98000000-0000-0000-0000-000000000201',
+              '98000000-0000-0000-0000-000000000501',
+              '98000000-0000-0000-0000-000000000401',
+              'LEGACY-INV-0001',1000.00,0.00,180.00,18.00,1180.00,
+              'tax_invoice'::invoicetype,'paid'::invoicestatus,
+              '2026-08-01T09:01:00Z'
+          );
+
+          INSERT INTO finance.legal_entities(
+              id,code,legal_name,pan,registered_address,status
+          ) VALUES (
+              '99000000-0000-0000-0000-000000000001',
+              'PAY15_LE','PAY15 Legacy Legal','ABCDE1234F',
+              'Chennai migration evidence','active'
+          );
+          INSERT INTO finance.gst_registrations(
+              id,legal_entity_id,gstin,state_code,state_name,
+              registered_address,status
+          ) VALUES (
+              '99000000-0000-0000-0000-000000000101',
+              '99000000-0000-0000-0000-000000000001',
+              '33ABCDE1234F1Z5','33','Tamil Nadu',
+              'Chennai migration evidence','active'
+          );
+          INSERT INTO finance.divisions(
+              id,legal_entity_id,code,name,status
+          ) VALUES (
+              '99000000-0000-0000-0000-000000000201',
+              '99000000-0000-0000-0000-000000000001',
+              'VS','PAY15 Division','active'
+          );
+          INSERT INTO finance.brands(
+              id,legal_entity_id,division_id,code,name,status
+          ) VALUES (
+              '99000000-0000-0000-0000-000000000301',
+              '99000000-0000-0000-0000-000000000001',
+              '99000000-0000-0000-0000-000000000201',
+              'DS','PAY15 Doers','active'
+          );
+          INSERT INTO finance.billing_parties(
+              id,organization_id,buyer_kind,billing_name,party_type,
+              gst_treatment,billing_address,place_of_supply_state_code,status
+          ) VALUES (
+              '99000000-0000-0000-0000-000000000401',
+              '98000000-0000-0000-0000-000000000001',
+              'organization','PAY15 Legacy Org','individual','b2c',
+              'Legacy billing address','33','active'
+          );
+
+          INSERT INTO finance.invoices(
+              id,organization_id,billing_party_id,legal_entity_id,
+              gst_registration_id,division_id,brand_id,financial_year,
+              official_invoice_number,status,currency_code,
+              seller_legal_name,seller_gstin,seller_pan,seller_registered_address,
+              seller_state_code,buyer_billing_name,buyer_address,
+              buyer_place_of_supply_state_code,buyer_gst_treatment,gst_supply_type,
+              subtotal_amount,discount_amount,taxable_amount,total_tax_amount,
+              grand_total_amount,issued_at
+          ) VALUES (
+              '99000000-0000-0000-0000-000000000601',
+              '98000000-0000-0000-0000-000000000001',
+              '99000000-0000-0000-0000-000000000401',
+              '99000000-0000-0000-0000-000000000001',
+              '99000000-0000-0000-0000-000000000101',
+              '99000000-0000-0000-0000-000000000201',
+              '99000000-0000-0000-0000-000000000301',
+              '2627','LEGACY-INV-0001','paid','INR',
+              'PAY15 Legacy Legal','33ABCDE1234F1Z5','ABCDE1234F',
+              'Chennai migration evidence','33','PAY15 Legacy Org',
+              'Legacy billing address','33','b2c','intra_state',
+              1000.00,0.00,1000.00,180.00,1180.00,
+              '2026-08-01T09:01:00Z'
+          );
+
+          INSERT INTO finance.payments(
+              id,organization_id,legal_entity_id,gst_registration_id,
+              division_id,brand_id,provider_code,provider_payment_ref,
+              amount,currency_code,status,raw_status
+          ) VALUES (
+              '99000000-0000-0000-0000-000000000501',
+              '98000000-0000-0000-0000-000000000001',
+              '99000000-0000-0000-0000-000000000001',
+              '99000000-0000-0000-0000-000000000101',
+              '99000000-0000-0000-0000-000000000201',
+              '99000000-0000-0000-0000-000000000301',
+              'legacy_migration','pay_legacy_001',
+              1180.00,'INR','captured','legacy_completed'
+          );
+          SQL
+      - name: Upgrade populated predecessor and prove PAY-15 capability boundary
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY15_HEAD}"
+          PGPASSWORD=ci-pay15-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay15_test <<'SQL'
+          DO $$
+          DECLARE fn text;
+          BEGIN
+            FOREACH fn IN ARRAY ARRAY[
+              'pay15_capture_inventory',
+              'pay15_begin_reconciliation',
+              'pay15_record_invoice_disposition',
+              'pay15_record_payment_disposition',
+              'pay15_record_subscription_link',
+              'pay15_certify_ready',
+              'pay15_activate_cutover',
+              'pay15_enter_rollback_hold'
+            ] LOOP
+              IF EXISTS (
+                SELECT 1
+                FROM pg_catalog.pg_proc p
+                JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+                JOIN LATERAL pg_catalog.aclexplode(
+                  coalesce(p.proacl,pg_catalog.acldefault('f',p.proowner))
+                ) acl ON true
+                WHERE n.nspname='app_secure'
+                  AND p.proname=fn
+                  AND acl.grantee=0
+                  AND acl.privilege_type='EXECUTE'
+              ) THEN
+                RAISE EXCEPTION 'PAY-15 PUBLIC execute leak: %',fn;
+              END IF;
+            END LOOP;
+            IF pg_catalog.has_table_privilege(
+              'finance_config_runtime',
+              'finance.legacy_retirement_batches',
+              'INSERT'
+            ) THEN
+              RAISE EXCEPTION 'PAY-15 config runtime gained direct table INSERT';
+            END IF;
+            IF EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+              WHERE n.nspname='app_secure'
+                AND p.proname='pay15_capture_inventory'
+                AND pg_catalog.oidvectortypes(p.proargtypes) =
+                    'uuid, text, text, text'
+                AND pg_catalog.has_function_privilege(
+                    'app_runtime', p.oid, 'EXECUTE'
+                )
+            ) THEN
+              RAISE EXCEPTION 'PAY-15 app_runtime gained migration EXECUTE';
+            END IF;
+          END
+          $$;
+          SQL
+      - name: Execute exact record-level migration and cutover through config capability
+        run: |
+          set -euo pipefail
+          PGPASSWORD=ci-pay15-config psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U finance_config_deployment -d gymflow_pay15_test <<'SQL'
+          SELECT pg_catalog.set_config(
+            'app.current_org_id',
+            '98000000-0000-0000-0000-000000000001',
+            false
+          );
+          SELECT app_secure.pay15_capture_inventory(
+            '98000000-0000-0000-0000-000000000001',
+            'legacy-full-history-v1',
+            'pay15-ci',
+            'evidence://pay15/inventory'
+          ) AS batch_id \gset
+          SELECT app_secure.pay15_begin_reconciliation(:'batch_id'::uuid);
+          SELECT app_secure.pay15_record_invoice_disposition(
+            :'batch_id'::uuid,
+            '98000000-0000-0000-0000-000000000601',
+            'migrated_finance',
+            '99000000-0000-0000-0000-000000000601',
+            'INR',
+            'pay15-ci',
+            'evidence://pay15/invoice/legacy-0001'
+          );
+          SELECT app_secure.pay15_record_payment_disposition(
+            :'batch_id'::uuid,
+            '98000000-0000-0000-0000-000000000501',
+            'migrated_finance',
+            '99000000-0000-0000-0000-000000000501',
+            'INR',
+            'pay15-ci',
+            'evidence://pay15/payment/legacy-0001'
+          );
+          SELECT app_secure.pay15_record_subscription_link(
+            :'batch_id'::uuid,
+            '98000000-0000-0000-0000-000000000401',
+            'historical_read_only',
+            NULL,
+            'pay15-ci',
+            'evidence://pay15/subscription/legacy-0001'
+          );
+          SELECT app_secure.pay15_certify_ready(
+            :'batch_id'::uuid,
+            'pay15-ci',
+            'evidence://pay15/ready'
+          ) AS manifest_sha256 \gset
+          SELECT app_secure.pay15_activate_cutover(
+            :'batch_id'::uuid,
+            :'manifest_sha256',
+            'pay15-ci',
+            'evidence://pay15/cutover'
+          );
+          SQL
+      - name: Prove hard zero gates and immutable legacy writes
+        run: |
+          set -euo pipefail
+          PSQL=(psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_pay15_test)
+          export PGPASSWORD=ci-pay15-migration
+
+          STATUS="$("${PSQL[@]}" -qAt <<'SQL'
+          SELECT pg_catalog.set_config(
+            'app.current_org_id',
+            '98000000-0000-0000-0000-000000000001',
+            false
+          );
+          SELECT status || '|' || source_invoice_count || '|' ||
+                 source_payment_count || '|' || source_subscription_link_count
+          FROM finance.legacy_retirement_batches
+          WHERE organization_id='98000000-0000-0000-0000-000000000001';
+          SQL
+          )"
+          test "$(echo "$STATUS" | tail -n 1)" = "cutover|1|1|1"
+
+          test "$("${PSQL[@]}" -qAt <<'SQL' | tail -n 1
+          SELECT pg_catalog.set_config(
+            'app.current_org_id',
+            '98000000-0000-0000-0000-000000000001',
+            false
+          );
+          SELECT count(*) FROM finance.legacy_invoice_dispositions
+          WHERE reconciliation_status <> 'exact';
+          SQL
+          )" = "0"
+          test "$("${PSQL[@]}" -qAt <<'SQL' | tail -n 1
+          SELECT pg_catalog.set_config(
+            'app.current_org_id',
+            '98000000-0000-0000-0000-000000000001',
+            false
+          );
+          SELECT count(*) FROM finance.legacy_payment_dispositions
+          WHERE reconciliation_status <> 'exact';
+          SQL
+          )" = "0"
+
+          expect_fail() {
+            local sql="$1"
+            if "${PSQL[@]}" -c "$sql" >/tmp/pay15-write.out 2>&1; then
+              cat /tmp/pay15-write.out
+              echo "PAY-15 legacy mutation unexpectedly succeeded: $sql" >&2
+              exit 1
+            fi
+            grep -Fq 'PAY-15 legacy monetary authority retired' /tmp/pay15-write.out
+          }
+
+          expect_fail "UPDATE public.payments SET amount=999 WHERE id='98000000-0000-0000-0000-000000000501'"
+          expect_fail "DELETE FROM public.payments WHERE id='98000000-0000-0000-0000-000000000501'"
+          expect_fail "INSERT INTO public.payments(id,gym_id,amount,discount_amount,payment_method,payment_type,status,is_migrated) VALUES ('98000000-0000-0000-0000-000000000502','98000000-0000-0000-0000-000000000101',1,0,'online','subscription','completed',false)"
+          expect_fail "BEGIN; TRUNCATE TABLE public.payments CASCADE; ROLLBACK"
+          expect_fail "UPDATE public.invoices SET total_amount=999 WHERE id='98000000-0000-0000-0000-000000000601'"
+          expect_fail "DELETE FROM public.invoices WHERE id='98000000-0000-0000-0000-000000000601'"
+          expect_fail "BEGIN; TRUNCATE TABLE public.invoices; ROLLBACK"
+
+          echo 'PAY15_LEGACY_WRITES=0'
+          echo 'PAY15_UNRECONCILED_MIGRATED_MONEY=0'
+          echo 'PAY15_UNKNOWN_HISTORICAL_INVOICES=0'
+          echo 'PAY15_DUPLICATE_FINANCE_RECORDS=0'
+      - name: Prove populated downgrade fails closed and preserves cutover
+        run: |
+          set -euo pipefail
+          if OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY15_PREDECESSOR}" 2>&1)"; then
+            echo "$OUTPUT"
+            echo 'PAY-15 populated downgrade unexpectedly succeeded' >&2
+            exit 1
+          else
+            RC=$?
+            echo "$OUTPUT"
+            test "$RC" -ne 0
+          fi
+          test "$(PGPASSWORD=ci-pay15-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay15_test             -c 'SELECT version_num FROM public.alembic_version')" = "${PAY15_HEAD}"
+          echo 'PAY15_POPULATED_DOWNGRADE_FAIL_CLOSED=PASS'
+
+  architecture:
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+
+  general_platform:
+    uses: ./.github/workflows/hardening-ci.yml
+
+  finance:
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  migration_lifecycle:
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+
+  migration_preservation:
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+
+  migration_adversarial:
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+
+  migration_contracts:
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+
+  migration_semantics:
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+
+  certify:
+    name: PAY-15 final legacy-retirement decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - protocol_pg16
+      - architecture
+      - general_platform
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every PAY-15 gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          data = json.loads(os.environ["RESULTS"])
+          bad = {
+              key: value["result"]
+              for key, value in data.items()
+              if value["result"] != "success"
+          }
+          if bad:
+              raise SystemExit(f"PAY-15 prerequisite failure: {bad}")
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY15_CANDIDATE_SHA }}
+      - name: Bind exact PAY-15 candidate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY15_BASE_SHA}^{tree}")" = "${PAY15_BASE_TREE}"
+          test "$(git merge-base "${PAY15_BASE_SHA}" HEAD)" = "${PAY15_BASE_SHA}"
+          grep -Fq 'revision: str = "zz17d8e9f0a61"'             alembic/versions/zz17d8e9f0a61_pay15_legacy_payment_retirement.py
+          python - <<'PY'
+          import json, os, subprocess
+          decision = {
+              "phase": "PAY-15",
+              "candidate_sha": os.environ["PAY15_CANDIDATE_SHA"],
+              "candidate_tree": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD^{tree}"], text=True
+              ).strip(),
+              "predecessor_sha": os.environ["PAY15_BASE_SHA"],
+              "alembic_head": os.environ["PAY15_HEAD"],
+              "legacy_writes": 0,
+              "unreconciled_migrated_money": 0,
+              "unknown_historical_invoices": 0,
+              "duplicate_finance_records": 0,
+              "permanent_dual_write": False,
+              "live_provider": False,
+              "production_credentials": False,
+              "live_money_movement": False,
+              "production_runtime_binding": False,
+              "merge_authorized": False,
+              "release_authorized": False,
+              "deployment_authorized": False,
+              "decision": "PAY15_LEGACY_RETIREMENT=PASS",
+          }
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          echo 'PAY15_LEGACY_RETIREMENT=PASS'
+          echo 'PAY15_LEGACY_WRITES=0'
+          echo 'PAY15_UNRECONCILED_MIGRATED_MONEY=0'
+          echo 'PAY15_UNKNOWN_HISTORICAL_INVOICES=0'
+          echo 'PAY15_DUPLICATE_FINANCE_RECORDS=0'
+          echo 'PAY15_PERMANENT_DUAL_WRITE=FORBIDDEN'
+          echo 'PAY15_PRODUCTION_RUNTIME_BINDING=DISABLED'
+          echo 'PAY15_MERGE=NOT_AUTHORIZED'

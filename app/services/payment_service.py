@@ -37,76 +37,23 @@ class PaymentService:
         type: PaymentType,
         reference_number: Optional[str],
         notes: Optional[str],
-        created_by: UUID
+        created_by: UUID,
     ) -> Payment:
-        """
-        Record a new payment and automatically generate invoice for completed payments.
-        
-        Args:
-            gym_id: Gym UUID
-            member_id: Member UUID
-            subscription_id: Optional subscription UUID this payment is for
-            amount: Payment amount
-            method: Payment method (CASH, CARD, UPI, etc.)
-            type: Payment type (SUBSCRIPTION, ADDON, etc.)
-            reference_number: Optional transaction reference number
-            notes: Optional notes
-            created_by: Staff UUID recording payment
-            
-        Returns:
-            Created Payment object
-        """
-        # Verify member exists in this gym
-        member = await self.member_repo.get_by_id_active(member_id, gym_id)
-        if not member:
-            raise NotFoundError(f"Member {member_id} not found in gym {gym_id}", error_code="NOT_FOUND")
-        
-        # Verify subscription if provided (now requires gym_id)
-        if subscription_id:
-            sub = await self.subscription_repo.get_by_id(subscription_id, gym_id)
-            if not sub or sub.member_id != member_id:
-                raise NotFoundError(f"Subscription {subscription_id} not found for member {member_id}", error_code="NOT_FOUND")
-        
-        # Create payment
-        payment = Payment(
-            gym_id=gym_id,
-            member_id=member_id,
-            subscription_id=subscription_id,
-            amount=amount,
-            payment_method=method,  # Note: field is payment_method
-            type=type,
-            reference_number=reference_number,
-            notes=notes,
-            status=PaymentStatus.COMPLETED,  # Assume completed for now
-            created_by=created_by,
-            updated_by=created_by
+        """PAY-15: legacy payment mutation authority is permanently retired."""
+        del (
+            gym_id,
+            member_id,
+            subscription_id,
+            amount,
+            method,
+            type,
+            reference_number,
+            notes,
+            created_by,
         )
-        
-        created = await self.payment_repo.create(payment)
-        await self.session.commit()
-        
-        # Generate invoice for completed payment
-        if created.status == PaymentStatus.COMPLETED:
-            try:
-                gym = await self.gym_repo.get_by_id(gym_id)
-                invoice_repo = InvoiceRepository(self.session)
-                invoice_service = InvoiceService(
-                    invoice_repo=invoice_repo,
-                    session=self.session
-                )
-                await invoice_service.create_invoice_for_payment(
-                    payment=created,
-                    gym=gym,
-                    member_name=member.name,
-                    member_phone=member.phone
-                )
-                logger.info(f"Invoice generated for payment {created.id}")
-            except Exception as e:
-                logger.error(f"Failed to generate invoice for payment {created.id}: {str(e)}")
-                # Don't fail payment creation if invoice generation fails
-        
-        logger.info(f"Payment {created.id} recorded for member {member_id} by staff {created_by}")
-        return created
+        raise RuntimeError(
+            "PAY-15 legacy payment writes are retired; use Finance Core"
+        )
 
     async def get_payment(self, payment_id: UUID, gym_id: UUID) -> Payment:
         """

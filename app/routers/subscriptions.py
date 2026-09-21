@@ -150,36 +150,24 @@ async def assign_plan_to_member(
     member_id: UUID,
     data: SubscriptionCreate,
     current_staff: Staff = Depends(require_gym_access),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
-    Assign a subscription plan to a member (existing endpoint - keep).
+    PAY-15: the legacy subscription admission path is retired because it creates
+    legacy payment/invoice records. Use the modern subscription + Finance Core
+    workflow.
     """
-    service = SubscriptionService(db)
-    try:
-        subscription = await service.assign_subscription(
-            gym_id=gym_id,
-            member_id=member_id,
-            plan_id=data.plan_id,
-            start_date=data.start_date,
-            end_date=data.end_date,
-            price_paid=data.price_paid,
-            created_by=current_staff.id
-        )
-        await db.commit()
-        return Response(data=SubscriptionResponse.model_validate(subscription))
-    except NotFoundError as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"message": str(e), "error_code": "NOT_FOUND"}
-        )
-    except ValidationError as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"message": str(e), "error_code": e.error_code}
-        )
+    del gym_id, member_id, data, current_staff, db
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "message": (
+                "Legacy subscription payment workflow is retired. "
+                "Use the modern subscription and Finance Core workflow."
+            ),
+            "error_code": "LEGACY_SUBSCRIPTION_PAYMENT_WRITE_RETIRED",
+        },
+    )
 
 
 @router.get("/members/{member_id}/subscriptions", response_model=PaginatedResponse[SubscriptionResponse])

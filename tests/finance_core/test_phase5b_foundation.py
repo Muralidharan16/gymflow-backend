@@ -28,6 +28,11 @@ from app.finance_core.models import (
     FinanceLedgerAccount,
     FinanceLedgerEntry,
     FinanceLedgerEntryLine,
+    FinanceLegacyInvoiceDisposition,
+    FinanceLegacyPaymentDisposition,
+    FinanceLegacyRetirementAudit,
+    FinanceLegacyRetirementBatch,
+    FinanceLegacySubscriptionFinancialLink,
     FinanceMemberSubscriptionCheckoutBinding,
     FinanceMemberSubscriptionFinanceBinding,
     FinanceMonetaryCommand,
@@ -98,6 +103,11 @@ FINANCE_TABLES = {
     "provider_operations",
     "provider_webhook_inbox",
     "outbox_events",
+    "legacy_retirement_batches",
+    "legacy_invoice_dispositions",
+    "legacy_payment_dispositions",
+    "legacy_subscription_financial_links",
+    "legacy_retirement_audit",
 }
 
 MODEL_TABLES = {
@@ -121,6 +131,11 @@ MODEL_TABLES = {
         FinanceLedgerAccount,
         FinanceLedgerEntry,
         FinanceLedgerEntryLine,
+        FinanceLegacyInvoiceDisposition,
+        FinanceLegacyPaymentDisposition,
+        FinanceLegacyRetirementAudit,
+        FinanceLegacyRetirementBatch,
+        FinanceLegacySubscriptionFinancialLink,
         FinanceMemberSubscriptionCheckoutBinding,
         FinanceMemberSubscriptionFinanceBinding,
         FinanceMonetaryCommand,
@@ -207,6 +222,7 @@ async def test_finance_schema_and_required_tables_exist():
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'finance'
+          AND table_type = 'BASE TABLE'
         ORDER BY table_name
         """
     )

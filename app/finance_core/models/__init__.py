@@ -1,5 +1,13 @@
 """Finance Core ORM models."""
 
+from app.finance_core.models.legacy_retirement import (
+    PAY15_MODEL_TABLES,
+    FinanceLegacyInvoiceDisposition,
+    FinanceLegacyPaymentDisposition,
+    FinanceLegacyRetirementAudit,
+    FinanceLegacyRetirementBatch,
+    FinanceLegacySubscriptionFinancialLink,
+)
 from app.finance_core.models.foundation import (
     FinanceAuditEvent,
     FinanceBankAccount,
@@ -44,6 +52,12 @@ from app.finance_core.models.foundation import (
 )
 
 __all__ = [
+    "PAY15_MODEL_TABLES",
+    "FinanceLegacyInvoiceDisposition",
+    "FinanceLegacyPaymentDisposition",
+    "FinanceLegacyRetirementAudit",
+    "FinanceLegacyRetirementBatch",
+    "FinanceLegacySubscriptionFinancialLink",
     "FinanceAuditEvent",
     "FinanceBankAccount",
     "FinanceBillingParty",
