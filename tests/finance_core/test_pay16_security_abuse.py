@@ -161,8 +161,19 @@ def test_secure_export_blocks_payment_authentication_material_and_large_exports(
     assert _http_code(captured.value) == "FINANCE_EXPORT_LIMIT_EXCEEDED"
 
 
-@pytest.mark.parametrize("field", ["pan", "card_number", "cvv", "cvc", "upi_pin"])
-def test_pan_cvv_and_upi_pin_storage_contract_is_fail_closed(field):
+@pytest.mark.parametrize(
+    "field",
+    [
+        "card_number",
+        "card_pan",
+        "primary_account_number",
+        "cvv",
+        "cvc",
+        "upi_pin",
+        "pin",
+    ],
+)
+def test_payment_card_pan_cvv_and_pin_storage_contract_is_fail_closed(field):
     with pytest.raises(HTTPException) as captured:
         reject_payment_secret_fields({field})
     assert _http_code(captured.value) == "FINANCE_PAYMENT_SECRET_STORAGE_FORBIDDEN"
