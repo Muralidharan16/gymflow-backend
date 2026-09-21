@@ -493,10 +493,10 @@ jobs:
           expect_fail "UPDATE public.payments SET amount=999 WHERE id='98000000-0000-0000-0000-000000000501'"
           expect_fail "DELETE FROM public.payments WHERE id='98000000-0000-0000-0000-000000000501'"
           expect_fail "INSERT INTO public.payments(id,gym_id,amount,discount_amount,payment_method,payment_type,status,is_migrated) VALUES ('98000000-0000-0000-0000-000000000502','98000000-0000-0000-0000-000000000101',1,0,'online','subscription','completed',false)"
-          expect_fail "TRUNCATE TABLE public.payments"
+          expect_fail "BEGIN; TRUNCATE TABLE public.payments CASCADE; ROLLBACK"
           expect_fail "UPDATE public.invoices SET total_amount=999 WHERE id='98000000-0000-0000-0000-000000000601'"
           expect_fail "DELETE FROM public.invoices WHERE id='98000000-0000-0000-0000-000000000601'"
-          expect_fail "TRUNCATE TABLE public.invoices"
+          expect_fail "BEGIN; TRUNCATE TABLE public.invoices; ROLLBACK"
 
           echo 'PAY15_LEGACY_WRITES=0'
           echo 'PAY15_UNRECONCILED_MIGRATED_MONEY=0'
