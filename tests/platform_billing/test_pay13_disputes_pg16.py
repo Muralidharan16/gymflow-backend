@@ -21,7 +21,9 @@ from tests.platform_billing.test_phase1_schema import (
 )
 
 
+INVOICE_SEQUENCE = "94000000-0000-0000-0000-000000000001"
 INVOICE = "94000000-0000-0000-0000-000000000101"
+INVOICE_LINE = "94000000-0000-0000-0000-000000000102"
 PAYMENT = "94000000-0000-0000-0000-000000000201"
 DISPUTE = "94000000-0000-0000-0000-000000000301"
 EVIDENCE = "94000000-0000-0000-0000-000000000401"
@@ -59,6 +61,32 @@ async def _seed_captured_payment(
             '{"gst":"18pct"}'::jsonb, '{"country":"IN"}'::jsonb
         );
 
+        INSERT INTO platform_document_sequences (
+            id, legal_entity_code, document_type, financial_year,
+            series_code, prefix, padding, last_number, status
+        ) VALUES (
+            :invoice_sequence, 'DOERS_IN', 'invoice', '2026-27',
+            'PAY13', 'INV-P13-', 6, 1, 'active'
+        );
+
+        INSERT INTO platform_invoice_lines (
+            id, organization_id, invoice_id, line_number, line_type,
+            description, quantity, unit_amount_minor, net_amount_minor,
+            tax_rate_bps, tax_amount_minor, gross_amount_minor,
+            plan_version_id, price_id
+        ) VALUES (
+            :invoice_line, :org1, :invoice, 1, 'subscription',
+            'PAY-13 captured payment fixture', 1, 10000, 10000,
+            1800, 1800, 11800, :plan, :price
+        );
+
+        UPDATE platform_invoices
+        SET status='issued',
+            document_sequence_id=:invoice_sequence,
+            invoice_number='INV-P13-000001',
+            issued_at='2026-10-01T00:00:00Z'
+        WHERE id=:invoice;
+
         INSERT INTO platform_payment_attempts (
             id, organization_id, invoice_id, provider_release_id,
             provider_code, external_payment_ref, idempotency_key,
@@ -74,7 +102,9 @@ async def _seed_captured_payment(
         ids
         | {
             "org1": ORG_1,
+            "invoice_sequence": INVOICE_SEQUENCE,
             "invoice": invoice_id,
+            "invoice_line": INVOICE_LINE,
             "payment": payment_id,
             "catalog_release": CATALOG_RELEASE_1,
             "provider_release": PROVIDER_RELEASE_1,
