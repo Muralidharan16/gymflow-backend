@@ -90,6 +90,16 @@ def _require_identity(bind) -> None:
     ).scalar_one():
         raise RuntimeError("PAY-16 app_runtime can reach app_security_owner")
 
+    if not bind.execute(
+        sa.text(
+            "SELECT pg_catalog.has_schema_privilege("
+            "'app_security_owner','finance','USAGE')"
+        )
+    ).scalar_one():
+        raise RuntimeError(
+            "PAY-16 predecessor missing app_security_owner Finance schema usage"
+        )
+
 
 def _install_table() -> None:
     op.execute(
