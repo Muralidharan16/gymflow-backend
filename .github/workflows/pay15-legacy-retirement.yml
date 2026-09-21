@@ -79,6 +79,7 @@ jobs:
               "tests/finance_core/admin_database.py",
               "tests/finance_core/test_pay15_legacy_retirement.py",
               "tests/finance_core/test_pay15_legacy_retirement_static.py",
+              "tests/migration_app_secure_owner_context_boundary.py",
               "tests/migration_app_secure_owner_context_boundary_baseline.py",
           }
           changed = {
@@ -140,7 +141,8 @@ jobs:
           bash scripts/ci/bootstrap_cluster_roles.sh
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
           ALTER ROLE migration_owner PASSWORD 'ci-pay15-migration';
-          ALTER ROLE finance_config_deployment PASSWORD 'ci-pay15-config';
+          CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-pay15-config'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE DATABASE gymflow_pay15_test OWNER migration_owner;
           REVOKE ALL ON DATABASE gymflow_pay15_test FROM PUBLIC;
           GRANT CONNECT ON DATABASE gymflow_pay15_test

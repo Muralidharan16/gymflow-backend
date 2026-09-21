@@ -125,6 +125,9 @@ _PAY10_REFUND_EXECUTION_MIGRATION = (
 _PAY10_REFUND_FINALIZATION_MIGRATION = (
     "zv07d8e9f0a56_pay10_refund_financial_finalization.py"
 )
+_PAY15_LEGACY_RETIREMENT_MIGRATION = (
+    "zz17d8e9f0a61_pay15_legacy_payment_retirement.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -368,6 +371,13 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # owner while installing/removing the bounded execution capabilities.
         _PAY10_REFUND_EXECUTION_MIGRATION: function_install_contract,
         _PAY10_REFUND_FINALIZATION_MIGRATION: set(),
+        # PAY-15 introduces tenant RLS on immutable migration evidence tables.
+        # app_secure function ownership/EXECUTE is covered by PAY-15-specific
+        # contracts; this detector records the policy DDL explicitly.
+        _PAY15_LEGACY_RETIREMENT_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+        },
         A1.name: view_contract,
     }
     actual = {

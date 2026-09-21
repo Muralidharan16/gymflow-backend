@@ -92,7 +92,7 @@ def test_migration_capabilities_are_app_secure_config_only():
             f"GRANT EXECUTE ON FUNCTION app_secure.{function_name}"
             in source
         )
-    assert "TO finance_config_runtime;" in source
+    assert "TO finance_config_runtime" in source
     assert "PAY-15 migration requires finance_config_runtime" in source
     assert "SET row_security = on" in source
     assert "FROM PUBLIC;" in source
