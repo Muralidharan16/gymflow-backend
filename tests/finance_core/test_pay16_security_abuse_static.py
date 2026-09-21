@@ -21,6 +21,10 @@ def test_pay16_authorization_matrix_is_complete_and_fail_closed():
     actions = matrix["actions"]
 
     assert actions["checkout_create"]["allowed_roles"] == ["owner", "admin"]
+    assert actions["checkout_create"]["recent_auth_seconds"] == 600
+    assert actions["checkout_create"]["csrf_when_cookie_authenticated"] is True
+    assert actions["checkout_create"]["revocation_check"] == "fail_closed"
+    assert actions["checkout_create"]["durable_security_audit"] is True
     assert actions["offline_payment_prepare"]["allowed_roles"] == ["owner", "admin"]
     assert actions["offline_payment_approve"]["allowed_roles"] == ["owner", "admin"]
     assert actions["offline_payment_approve"]["maker_checker"] is True
