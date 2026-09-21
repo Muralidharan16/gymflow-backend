@@ -128,6 +128,15 @@ def test_pay12_has_durable_job_fences_and_terminal_fact_protection():
 
 
 def test_pay12_domain_does_not_import_member_commerce():
+    forbidden = {
+        "app.models.subscription",
+        "app.models.payment",
+        "app.models.membership_plan",
+        "app.models.member_subscription_v2",
+        "app.services.subscription_service",
+        "app.services.payment_service",
+        "app.finance_core.services.member_subscription_checkout",
+    }
     for path in (DOMAIN, SERVICE, RECURRING_MODEL):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         imports = {
@@ -135,10 +144,7 @@ def test_pay12_domain_does_not_import_member_commerce():
             for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom) and node.module
         }
-        assert not any(
-            module.startswith(("app.models.", "app.services.subscription", "app.services.payment"))
-            for module in imports
-        )
+        assert not (imports & forbidden)
 
 
 def test_pay12_gate_contract_is_present():
@@ -151,3 +157,26 @@ def test_pay12_gate_contract_is_present():
     assert contract["provider_failure_injection_required"] is True
     assert contract["gate"] == "PAY12_RECURRING_DUNNING=PASS"
     assert "PAY12_RECURRING_DUNNING=PASS" in ARCH.read_text(encoding="utf-8")
+
+
+def test_pay12_database_and_worker_hardening_contracts():
+    migration = MIGRATION.read_text(encoding="utf-8")
+    repository = (
+        ROOT / "app" / "platform_billing" / "repositories" / "recurring.py"
+    ).read_text(encoding="utf-8")
+
+    for token in (
+        "mandates must be created pending",
+        "recurring jobs must start scheduled and unleased",
+        "recurring job identity is immutable",
+        "dunning identity and policy snapshot are immutable",
+        "confirmed dunning attempt count must advance monotonically one at a time",
+        "dunning attempts are append-only",
+        "notification identity is immutable",
+    ):
+        assert token in migration
+
+    assert "expired_processing" in repository
+    assert "lease_owner == claim.worker_id" in repository
+    assert "retry budget exhausted" in repository
+    assert "candidate.max_attempts" in repository

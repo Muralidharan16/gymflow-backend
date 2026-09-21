@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select, text, update
+from sqlalchemy import and_, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,8 @@ class RecurringJobClaim:
     subscription_id: uuid.UUID
     invoice_id: uuid.UUID | None
     attempt_number: int
+    max_attempts: int
+    worker_id: uuid.UUID
     lease_fence: int
     lease_until: datetime
     claimed: bool
@@ -54,6 +56,7 @@ class PlatformRecurringBillingRepository:
         run_at: datetime,
         max_attempts: int,
     ) -> uuid.UUID:
+        await self.set_tenant_context(organization_id)
         statement = (
             insert(PlatformRecurringBillingJob)
             .values(
@@ -94,26 +97,50 @@ class PlatformRecurringBillingRepository:
         now: datetime,
         lease_seconds: int = 300,
     ) -> RecurringJobClaim | None:
+        if lease_seconds < 1 or lease_seconds > 3600:
+            raise ValueError("PAY-12 lease_seconds must be between 1 and 3600")
+
+        await self.set_tenant_context(organization_id)
         lease_until = now + timedelta(seconds=lease_seconds)
+
+        fresh_due = and_(
+            PlatformRecurringBillingJob.status.in_(("scheduled", "retry")),
+            PlatformRecurringBillingJob.run_at <= now,
+            (
+                PlatformRecurringBillingJob.next_attempt_at.is_(None)
+                | (PlatformRecurringBillingJob.next_attempt_at <= now)
+            ),
+            (
+                PlatformRecurringBillingJob.lease_until.is_(None)
+                | (PlatformRecurringBillingJob.lease_until <= now)
+            ),
+            PlatformRecurringBillingJob.attempt_count
+            < PlatformRecurringBillingJob.max_attempts,
+        )
+        reconciliation_due = and_(
+            PlatformRecurringBillingJob.status == "awaiting_reconciliation",
+            PlatformRecurringBillingJob.run_at <= now,
+            (
+                PlatformRecurringBillingJob.next_attempt_at.is_(None)
+                | (PlatformRecurringBillingJob.next_attempt_at <= now)
+            ),
+            (
+                PlatformRecurringBillingJob.lease_until.is_(None)
+                | (PlatformRecurringBillingJob.lease_until <= now)
+            ),
+        )
+        expired_processing = and_(
+            PlatformRecurringBillingJob.status == "processing",
+            PlatformRecurringBillingJob.lease_until.is_not(None),
+            PlatformRecurringBillingJob.lease_until <= now,
+        )
+
         candidate = (
             await self._session.execute(
                 select(PlatformRecurringBillingJob)
                 .where(
                     PlatformRecurringBillingJob.organization_id == organization_id,
-                    PlatformRecurringBillingJob.status.in_(
-                        ("scheduled", "retry", "awaiting_reconciliation", "processing")
-                    ),
-                    PlatformRecurringBillingJob.run_at <= now,
-                    (
-                        PlatformRecurringBillingJob.next_attempt_at.is_(None)
-                        | (PlatformRecurringBillingJob.next_attempt_at <= now)
-                    ),
-                    (
-                        PlatformRecurringBillingJob.lease_until.is_(None)
-                        | (PlatformRecurringBillingJob.lease_until <= now)
-                    ),
-                    PlatformRecurringBillingJob.attempt_count
-                    < PlatformRecurringBillingJob.max_attempts,
+                    or_(fresh_due, reconciliation_due, expired_processing),
                 )
                 .order_by(
                     PlatformRecurringBillingJob.run_at,
@@ -127,13 +154,20 @@ class PlatformRecurringBillingRepository:
         if candidate is None:
             return None
 
-        reclaim = candidate.status == "processing" and candidate.lease_until is not None
+        previous_status = candidate.status
+        reclaim = previous_status == "processing"
+        consumes_provider_attempt = previous_status in ("scheduled", "retry")
+
         candidate.status = "processing"
         candidate.lease_owner = worker_id
         candidate.lease_until = lease_until
         candidate.lease_fence += 1
-        if not reclaim:
+        if consumes_provider_attempt:
             candidate.attempt_count += 1
+        elif reclaim:
+            # A crash/reclaim never consumes a second provider attempt,
+            # including when the crashed execution was the final allowed one.
+            pass
         candidate.version += 1
         await self._session.flush()
         return RecurringJobClaim(
@@ -142,6 +176,8 @@ class PlatformRecurringBillingRepository:
             subscription_id=candidate.subscription_id,
             invoice_id=candidate.invoice_id,
             attempt_number=candidate.attempt_count,
+            max_attempts=candidate.max_attempts,
+            worker_id=worker_id,
             lease_fence=candidate.lease_fence,
             lease_until=lease_until,
             claimed=True,
@@ -157,13 +193,14 @@ class PlatformRecurringBillingRepository:
         evidence_ref: str,
         now: datetime,
     ) -> None:
+        await self.set_tenant_context(claim.organization_id)
         result = await self._session.execute(
             update(PlatformRecurringBillingJob)
             .where(
                 PlatformRecurringBillingJob.id == claim.job_id,
                 PlatformRecurringBillingJob.organization_id == claim.organization_id,
                 PlatformRecurringBillingJob.status == "processing",
-                PlatformRecurringBillingJob.lease_owner.is_not(None),
+                PlatformRecurringBillingJob.lease_owner == claim.worker_id,
                 PlatformRecurringBillingJob.lease_fence == claim.lease_fence,
                 PlatformRecurringBillingJob.lease_until > now,
             )
@@ -195,6 +232,15 @@ class PlatformRecurringBillingRepository:
         now: datetime,
         awaiting_reconciliation: bool = False,
     ) -> None:
+        if (
+            not awaiting_reconciliation
+            and claim.attempt_number >= claim.max_attempts
+        ):
+            raise ValueError(
+                "PAY-12 retry budget exhausted; final provider attempt cannot be rescheduled"
+            )
+
+        await self.set_tenant_context(claim.organization_id)
         next_status = "awaiting_reconciliation" if awaiting_reconciliation else "retry"
         result = await self._session.execute(
             update(PlatformRecurringBillingJob)
@@ -202,6 +248,7 @@ class PlatformRecurringBillingRepository:
                 PlatformRecurringBillingJob.id == claim.job_id,
                 PlatformRecurringBillingJob.organization_id == claim.organization_id,
                 PlatformRecurringBillingJob.status == "processing",
+                PlatformRecurringBillingJob.lease_owner == claim.worker_id,
                 PlatformRecurringBillingJob.lease_fence == claim.lease_fence,
                 PlatformRecurringBillingJob.lease_until > now,
             )

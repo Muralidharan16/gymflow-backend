@@ -27,6 +27,7 @@ from app.platform_billing.providers.fake import DeterministicFakeProvider
 from app.platform_billing.services.recurring_billing import (
     MandateForRecurringCharge,
     RecurringPaymentAttemptService,
+    current_dunning_policy,
     ensure_supported_mandate,
     plan_period,
 )
@@ -37,7 +38,7 @@ T0 = datetime(2026, 9, 1, 0, 0, tzinfo=UTC)
 
 
 def _policy() -> DunningPolicy:
-    return DunningPolicy(policy_day_seconds=86_400)
+    return current_dunning_policy()
 
 
 def _existing(first_failure: datetime = T0, attempts: int = 1) -> DunningCaseSnapshot:

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+import uuid
+
 import pytest
 from sqlalchemy import text
 
 from app.core.database import AsyncSessionLocal
+from app.platform_billing.repositories.recurring import PlatformRecurringBillingRepository
 from tests.platform_billing.test_pay11_production_model import (
     PROVIDER_RELEASE_1,
     _seed_pay11_contract,
@@ -19,6 +24,9 @@ INVOICE = "92000000-0000-0000-0000-000000000201"
 JOB = "92000000-0000-0000-0000-000000000301"
 CASE = "92000000-0000-0000-0000-000000000401"
 NOTICE = "92000000-0000-0000-0000-000000000601"
+DUNNING_ATTEMPT = "92000000-0000-0000-0000-000000000501"
+MANDATE_3 = "92000000-0000-0000-0000-000000000103"
+BAD_JOB = "92000000-0000-0000-0000-000000000302"
 
 
 @pytest.mark.asyncio
@@ -27,7 +35,8 @@ async def test_pay12_pg16_durable_lifecycle_invariants():
     p = ids | {
         "org1": ORG_1, "customer": CUSTOMER, "provider_release": PROVIDER_RELEASE_1,
         "m1": MANDATE_1, "m2": MANDATE_2, "invoice": INVOICE,
-        "job": JOB, "case": CASE, "notice": NOTICE, "sha_a": SHA_A, "sha_b": SHA_B,
+        "job": JOB, "case": CASE, "notice": NOTICE, "dunning_attempt": DUNNING_ATTEMPT,
+        "sha_a": SHA_A, "sha_b": SHA_B,
     }
     await exec_sql(
         """
@@ -90,6 +99,15 @@ async def test_pay12_pg16_durable_lifecycle_invariants():
                 '2026-10-02T00:05:00Z','confirmed_payment_failure',:sha_a,
                 'evidence-pay12-failure-1','2026-10-01T00:05:00Z');
 
+        INSERT INTO platform_dunning_attempts
+            (id,organization_id,dunning_case_id,payment_attempt_id,
+             attempt_number,outcome,counts_toward_dunning,
+             evidence_sha256,evidence_ref,observed_at,next_retry_at)
+        VALUES (:dunning_attempt,:org1,:case,NULL,1,
+                'confirmed_payment_failure',true,:sha_a,
+                'evidence-pay12-failure-1','2026-10-01T00:05:00Z',
+                '2026-10-02T00:05:00Z');
+
         INSERT INTO platform_notification_deliveries
             (id,organization_id,dunning_case_id,notification_type,policy_code,
              channel,recipient_hash,status,scheduled_at,dedupe_key)
@@ -140,6 +158,61 @@ async def test_pay12_pg16_durable_lifecycle_invariants():
         """,
         p,
     )
+    await expect_db_error(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        INSERT INTO platform_mandates
+            (id,organization_id,provider_customer_id,provider_release_id,
+             provider_code,external_mandate_ref,mandate_type,status,payment_rail,
+             currency_code,max_amount_minor,valid_from,activated_at,provider_evidence_sha256)
+        VALUES (:m3,:org1,:customer,:provider_release,'fake','pay12_m3','recurring',
+                'active','e_mandate','INR',500000,'2026-09-03T00:00:00Z',
+                '2026-09-03T00:01:00Z',:sha_a)
+        """,
+        p | {"m3": MANDATE_3},
+    )
+    await expect_db_error(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        INSERT INTO platform_recurring_billing_jobs
+            (id,organization_id,subscription_id,period_start,period_end,run_at,
+             status,attempt_count,max_attempts,lease_owner,lease_until,lease_fence)
+        VALUES (:bad_job,:org1,:subscription,'2026-11-01T00:00:00Z',
+                '2026-12-01T00:00:00Z','2026-11-01T00:00:00Z',
+                'processing',1,4,'92000000-0000-0000-0000-000000000999',
+                '2026-11-01T00:05:00Z',1)
+        """,
+        p | {"bad_job": BAD_JOB},
+    )
+    await expect_db_error(
+        "SELECT pg_catalog.set_config('app.current_org_id', :org1, true); "
+        "UPDATE platform_dunning_attempts SET evidence_ref='tampered' WHERE id=:attempt",
+        {"org1": ORG_1, "attempt": DUNNING_ATTEMPT},
+    )
+    await expect_db_error(
+        "SELECT pg_catalog.set_config('app.current_org_id', :org1, true); "
+        "DELETE FROM platform_dunning_attempts WHERE id=:attempt",
+        {"org1": ORG_1, "attempt": DUNNING_ATTEMPT},
+    )
+    await expect_db_error(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        UPDATE platform_dunning_cases
+        SET policy_snapshot_json='{"tampered":true}'::jsonb
+        WHERE id=:case
+        """,
+        {"org1": ORG_1, "case": CASE},
+    )
+    await expect_db_error(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        UPDATE platform_notification_deliveries
+        SET dedupe_key='pay12-notice-tampered'
+        WHERE id=:notice
+        """,
+        {"org1": ORG_1, "notice": NOTICE},
+    )
+
     await exec_sql(
         """
         SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
@@ -160,3 +233,141 @@ async def test_pay12_pg16_durable_lifecycle_invariants():
         await session.execute(text("SELECT pg_catalog.set_config('app.current_org_id', :org2, true)"), {"org2": ORG_2})
         assert (await session.execute(text("SELECT count(*) FROM platform_dunning_cases WHERE id=:id"),{"id":CASE})).scalar_one()==0
         assert (await session.execute(text("SELECT count(*) FROM platform_recurring_billing_jobs WHERE id=:id"),{"id":JOB})).scalar_one()==0
+
+
+
+@pytest.mark.asyncio
+async def test_pay12_recurring_job_final_attempt_crash_reclaim_and_exact_owner():
+    ids = await _seed_pay11_contract()
+    p = ids | {"org1": ORG_1, "job": JOB}
+
+    await exec_sql(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        INSERT INTO platform_recurring_billing_jobs
+            (id,organization_id,subscription_id,period_start,period_end,run_at,
+             status,attempt_count,max_attempts)
+        VALUES (:job,:org1,:subscription,'2026-10-01T00:00:00Z',
+                '2026-11-01T00:00:00Z','2026-10-01T00:00:00Z',
+                'scheduled',0,4)
+        """,
+        p,
+    )
+
+    worker_1 = uuid.UUID("92000000-0000-0000-0000-000000000701")
+    worker_2 = uuid.UUID("92000000-0000-0000-0000-000000000702")
+    now = datetime(2026, 10, 1, 0, 0, tzinfo=timezone.utc)
+
+    # Reach the fourth/final provider attempt through real claims and retries.
+    for expected_attempt in (1, 2, 3):
+        claim_time = now + timedelta(minutes=expected_attempt - 1)
+        async with AsyncSessionLocal() as session:
+            repo = PlatformRecurringBillingRepository(session)
+            claim = await repo.claim_due(
+                organization_id=uuid.UUID(ORG_1),
+                worker_id=worker_1,
+                now=claim_time,
+                lease_seconds=60,
+            )
+            assert claim is not None
+            assert claim.attempt_number == expected_attempt
+            await repo.release_for_retry(
+                claim=claim,
+                next_attempt_at=claim_time + timedelta(minutes=1),
+                error_code="provider_declined",
+                evidence_sha256=SHA_A,
+                evidence_ref=f"evidence-pay12-attempt-{expected_attempt}",
+                now=claim_time + timedelta(seconds=1),
+            )
+            await session.commit()
+
+    now = now + timedelta(minutes=3)
+    async with AsyncSessionLocal() as session:
+        repo = PlatformRecurringBillingRepository(session)
+        claim_1 = await repo.claim_due(
+            organization_id=uuid.UUID(ORG_1),
+            worker_id=worker_1,
+            now=now,
+            lease_seconds=60,
+        )
+        assert claim_1 is not None
+        assert claim_1.attempt_number == 4
+        assert claim_1.max_attempts == 4
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        repo = PlatformRecurringBillingRepository(session)
+        duplicate = await repo.claim_due(
+            organization_id=uuid.UUID(ORG_1),
+            worker_id=worker_2,
+            now=now + timedelta(seconds=30),
+            lease_seconds=60,
+        )
+        assert duplicate is None
+        await session.rollback()
+
+    async with AsyncSessionLocal() as session:
+        repo = PlatformRecurringBillingRepository(session)
+        reclaimed = await repo.claim_due(
+            organization_id=uuid.UUID(ORG_1),
+            worker_id=worker_2,
+            now=now + timedelta(seconds=61),
+            lease_seconds=60,
+        )
+        assert reclaimed is not None
+        assert reclaimed.attempt_number == 4
+        assert reclaimed.lease_fence == claim_1.lease_fence + 1
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        repo = PlatformRecurringBillingRepository(session)
+        wrong_owner = replace(reclaimed, worker_id=worker_1)
+        with pytest.raises(RuntimeError, match="lease lost"):
+            await repo.complete(
+                claim=wrong_owner,
+                invoice_id=uuid.UUID("92000000-0000-0000-0000-000000000201"),
+                payment_attempt_id=None,
+                evidence_sha256=SHA_A,
+                evidence_ref="evidence-pay12-wrong-owner",
+                now=now + timedelta(seconds=62),
+            )
+        await session.rollback()
+
+    async with AsyncSessionLocal() as session:
+        repo = PlatformRecurringBillingRepository(session)
+        with pytest.raises(ValueError, match="retry budget exhausted"):
+            await repo.release_for_retry(
+                claim=reclaimed,
+                next_attempt_at=now + timedelta(hours=24),
+                error_code="provider_declined",
+                evidence_sha256=SHA_A,
+                evidence_ref="evidence-pay12-final-attempt",
+                now=now + timedelta(seconds=62),
+            )
+        await session.rollback()
+
+    async with AsyncSessionLocal() as session:
+        repo = PlatformRecurringBillingRepository(session)
+        await repo.release_for_retry(
+            claim=reclaimed,
+            next_attempt_at=now + timedelta(minutes=10),
+            error_code="provider_outcome_unknown",
+            evidence_sha256=SHA_B,
+            evidence_ref="evidence-pay12-reconcile",
+            now=now + timedelta(seconds=62),
+            awaiting_reconciliation=True,
+        )
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        repo = PlatformRecurringBillingRepository(session)
+        reconciliation_claim = await repo.claim_due(
+            organization_id=uuid.UUID(ORG_1),
+            worker_id=worker_2,
+            now=now + timedelta(minutes=11),
+            lease_seconds=60,
+        )
+        assert reconciliation_claim is not None
+        assert reconciliation_claim.attempt_number == 4
+        assert reconciliation_claim.max_attempts == 4
+        await session.rollback()

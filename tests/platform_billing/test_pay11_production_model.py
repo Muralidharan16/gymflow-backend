@@ -249,9 +249,17 @@ async def test_pay11_provider_invoice_payment_credit_and_refund_invariants():
         ) VALUES (
             :mandate, :org1, :provider_customer, :provider_subscription,
             :provider_release_1, 'fake', 'fake_mandate_pay11',
-            'recurring', 'active', 'INR', 500000,
+            'recurring', 'pending', 'INR', 500000,
             '2026-09-01T00:00:00Z', :sha_a
         );
+
+        UPDATE platform_mandates
+        SET status='authorized', authorized_at='2026-09-01T00:00:01Z'
+        WHERE id=:mandate;
+
+        UPDATE platform_mandates
+        SET status='active', activated_at='2026-09-01T00:00:02Z'
+        WHERE id=:mandate;
 
         INSERT INTO platform_document_sequences (
             id, legal_entity_code, document_type, financial_year,

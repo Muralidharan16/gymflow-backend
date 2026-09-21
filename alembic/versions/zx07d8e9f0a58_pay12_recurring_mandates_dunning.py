@@ -495,6 +495,13 @@ def upgrade() -> None:
         LANGUAGE plpgsql
         AS $$
         BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.status <> 'pending' THEN
+                    RAISE EXCEPTION 'PAY-12 mandates must be created pending';
+                END IF;
+                RETURN NEW;
+            END IF;
+
             IF OLD.status IN ('revoked','expired','failed')
                AND NEW.status IS DISTINCT FROM OLD.status THEN
                 RAISE EXCEPTION
@@ -557,7 +564,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER trg_platform_mandates_pay12_lifecycle
-        BEFORE UPDATE ON public.platform_mandates
+        BEFORE INSERT OR UPDATE ON public.platform_mandates
         FOR EACH ROW
         EXECUTE FUNCTION public.pay12_validate_mandate_transition();
         """
@@ -570,6 +577,31 @@ def upgrade() -> None:
         LANGUAGE plpgsql
         AS $$
         BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.status <> 'scheduled'
+                   OR NEW.attempt_count <> 0
+                   OR NEW.lease_owner IS NOT NULL
+                   OR NEW.lease_until IS NOT NULL
+                   OR NEW.lease_fence <> 0
+                   OR NEW.completed_at IS NOT NULL THEN
+                    RAISE EXCEPTION
+                        'PAY-12 recurring jobs must start scheduled and unleased';
+                END IF;
+                RETURN NEW;
+            END IF;
+
+            IF ROW(
+                NEW.organization_id, NEW.subscription_id,
+                NEW.period_start, NEW.period_end, NEW.run_at,
+                NEW.max_attempts, NEW.created_at
+            ) IS DISTINCT FROM ROW(
+                OLD.organization_id, OLD.subscription_id,
+                OLD.period_start, OLD.period_end, OLD.run_at,
+                OLD.max_attempts, OLD.created_at
+            ) THEN
+                RAISE EXCEPTION 'PAY-12 recurring job identity is immutable';
+            END IF;
+
             IF OLD.status IN ('completed','dead_lettered','canceled')
                AND ROW(
                     NEW.status, NEW.invoice_id, NEW.last_payment_attempt_id,
@@ -604,7 +636,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER trg_platform_recurring_jobs_pay12_lifecycle
-        BEFORE UPDATE ON public.platform_recurring_billing_jobs
+        BEFORE INSERT OR UPDATE ON public.platform_recurring_billing_jobs
         FOR EACH ROW
         EXECUTE FUNCTION public.pay12_validate_recurring_job_transition();
         """
@@ -620,6 +652,53 @@ def upgrade() -> None:
             old_rank INTEGER;
             new_rank INTEGER;
         BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.status <> 'open'
+                   OR NEW.stage <> 'full_grace'
+                   OR NEW.last_evidence_kind NOT IN (
+                        'confirmed_payment_failure',
+                        'mandate_unavailable',
+                        'customer_action_required'
+                   ) THEN
+                    RAISE EXCEPTION
+                        'PAY-12 dunning cases require first confirmed durable failure evidence';
+                END IF;
+                RETURN NEW;
+            END IF;
+
+            IF ROW(
+                NEW.organization_id, NEW.subscription_id, NEW.invoice_id,
+                NEW.policy_code, NEW.policy_snapshot_json,
+                NEW.first_confirmed_failure_at, NEW.full_grace_ends_at,
+                NEW.limited_write_ends_at, NEW.read_only_ends_at,
+                NEW.max_attempts, NEW.created_at
+            ) IS DISTINCT FROM ROW(
+                OLD.organization_id, OLD.subscription_id, OLD.invoice_id,
+                OLD.policy_code, OLD.policy_snapshot_json,
+                OLD.first_confirmed_failure_at, OLD.full_grace_ends_at,
+                OLD.limited_write_ends_at, OLD.read_only_ends_at,
+                OLD.max_attempts, OLD.created_at
+            ) THEN
+                RAISE EXCEPTION
+                    'PAY-12 dunning identity and policy snapshot are immutable';
+            END IF;
+
+            IF NEW.confirmed_attempt_count < OLD.confirmed_attempt_count
+               OR NEW.confirmed_attempt_count > OLD.confirmed_attempt_count + 1 THEN
+                RAISE EXCEPTION
+                    'PAY-12 confirmed dunning attempt count must advance monotonically one at a time';
+            END IF;
+
+            IF NEW.confirmed_attempt_count > OLD.confirmed_attempt_count
+               AND NEW.last_evidence_kind NOT IN (
+                    'confirmed_payment_failure',
+                    'mandate_unavailable',
+                    'customer_action_required'
+               ) THEN
+                RAISE EXCEPTION
+                    'PAY-12 dunning attempt advance requires confirmed durable failure evidence';
+            END IF;
+
             IF OLD.first_confirmed_failure_at
                IS DISTINCT FROM NEW.first_confirmed_failure_at THEN
                 RAISE EXCEPTION
@@ -680,9 +759,48 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER trg_platform_dunning_cases_pay12_lifecycle
-        BEFORE UPDATE ON public.platform_dunning_cases
+        BEFORE INSERT OR UPDATE ON public.platform_dunning_cases
         FOR EACH ROW
         EXECUTE FUNCTION public.pay12_validate_dunning_transition();
+        """
+    )
+
+    op.execute(
+        """
+        CREATE FUNCTION public.pay12_protect_dunning_attempt()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            case_max_attempts INTEGER;
+        BEGIN
+            IF TG_OP IN ('UPDATE','DELETE') THEN
+                RAISE EXCEPTION 'PAY-12 dunning attempts are append-only';
+            END IF;
+
+            SELECT max_attempts
+            INTO case_max_attempts
+            FROM public.platform_dunning_cases
+            WHERE id = NEW.dunning_case_id
+              AND organization_id = NEW.organization_id;
+
+            IF case_max_attempts IS NULL THEN
+                RAISE EXCEPTION 'PAY-12 dunning attempt case does not exist';
+            END IF;
+            IF NEW.attempt_number > case_max_attempts THEN
+                RAISE EXCEPTION 'PAY-12 dunning attempt exceeds policy max attempts';
+            END IF;
+            RETURN NEW;
+        END;
+        $$;
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_platform_dunning_attempts_append_only
+        BEFORE INSERT OR UPDATE OR DELETE ON public.platform_dunning_attempts
+        FOR EACH ROW
+        EXECUTE FUNCTION public.pay12_protect_dunning_attempt();
         """
     )
 
@@ -693,6 +811,29 @@ def upgrade() -> None:
         LANGUAGE plpgsql
         AS $$
         BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.status NOT IN ('queued','suppressed')
+                   OR NEW.attempt_count <> 0 THEN
+                    RAISE EXCEPTION
+                        'PAY-12 notifications must start queued or suppressed';
+                END IF;
+                RETURN NEW;
+            END IF;
+
+            IF ROW(
+                NEW.organization_id, NEW.dunning_case_id,
+                NEW.notification_type, NEW.policy_code, NEW.channel,
+                NEW.recipient_hash, NEW.scheduled_at,
+                NEW.dedupe_key, NEW.created_at
+            ) IS DISTINCT FROM ROW(
+                OLD.organization_id, OLD.dunning_case_id,
+                OLD.notification_type, OLD.policy_code, OLD.channel,
+                OLD.recipient_hash, OLD.scheduled_at,
+                OLD.dedupe_key, OLD.created_at
+            ) THEN
+                RAISE EXCEPTION 'PAY-12 notification identity is immutable';
+            END IF;
+
             IF OLD.status IN ('sent','suppressed')
                AND NEW.status IS DISTINCT FROM OLD.status THEN
                 RAISE EXCEPTION
@@ -718,7 +859,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER trg_platform_notification_deliveries_pay12_lifecycle
-        BEFORE UPDATE ON public.platform_notification_deliveries
+        BEFORE INSERT OR UPDATE ON public.platform_notification_deliveries
         FOR EACH ROW
         EXECUTE FUNCTION public.pay12_validate_notification_transition();
         """
@@ -814,6 +955,16 @@ def downgrade() -> None:
     )
     op.execute(
         "DROP FUNCTION IF EXISTS public.pay12_protect_invoice_service_period();"
+    )
+
+    op.execute(
+        """
+        DROP TRIGGER IF EXISTS trg_platform_dunning_attempts_append_only
+        ON public.platform_dunning_attempts;
+        """
+    )
+    op.execute(
+        "DROP FUNCTION IF EXISTS public.pay12_protect_dunning_attempt();"
     )
 
     op.execute(
