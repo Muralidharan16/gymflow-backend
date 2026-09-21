@@ -228,8 +228,11 @@ class RazorpayWebhookConfirmationService:
         provider_currency = _required_text(payment_entity, "currency")
         provider_payment_status = _required_text(payment_entity, "status")
         provider_captured = _optional_bool(payment_entity, "captured")
-        provider_event_timestamp = _required_nonnegative_int(payload, "created_at")
-        if provider_event_timestamp > int(time.time()) + MAX_RAZORPAY_FUTURE_SKEW_SECONDS:
+        provider_event_timestamp = _optional_nonnegative_int(payload, "created_at")
+        if (
+            provider_event_timestamp is not None
+            and provider_event_timestamp > int(time.time()) + MAX_RAZORPAY_FUTURE_SKEW_SECONDS
+        ):
             raise FinanceWebhookNormalizationError(
                 "Razorpay webhook event timestamp is outside the accepted future-skew window"
             )
