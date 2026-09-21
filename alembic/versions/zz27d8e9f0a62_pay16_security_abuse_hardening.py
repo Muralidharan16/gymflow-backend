@@ -477,13 +477,45 @@ def _postflight(bind) -> None:
                 f"privilege: {privilege}"
             )
 
-    if not bind.execute(
+    schema_access = bind.execute(
         sa.text(
-            "SELECT pg_catalog.has_function_privilege("
-            "'app_runtime',:signature,'EXECUTE')"
-        ),
-        {"signature": _RECORD},
-    ).scalar_one():
+            """
+            SELECT pg_catalog.has_schema_privilege(
+                'app_runtime',
+                namespace_data.oid,
+                'USAGE'
+            )
+            FROM pg_catalog.pg_namespace AS namespace_data
+            WHERE namespace_data.nspname = 'app_secure'
+            """
+        )
+    ).scalar_one_or_none()
+    if schema_access is not True:
+        raise RuntimeError(
+            "PAY-16 app_runtime missing app_secure schema usage"
+        )
+
+    function_access = bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.has_function_privilege(
+                'app_runtime',
+                procedure_data.oid,
+                'EXECUTE'
+            )
+            FROM pg_catalog.pg_proc AS procedure_data
+            JOIN pg_catalog.pg_namespace AS namespace_data
+              ON namespace_data.oid = procedure_data.pronamespace
+            WHERE namespace_data.nspname = 'app_secure'
+              AND procedure_data.proname =
+                  'record_finance_security_audit'
+              AND pg_catalog.pg_get_function_identity_arguments(
+                      procedure_data.oid
+                  ) = 'text, text, uuid, text, text'
+            """
+        )
+    ).scalar_one_or_none()
+    if function_access is not True:
         raise RuntimeError(
             "PAY-16 app_runtime missing exact security-audit append capability"
         )
