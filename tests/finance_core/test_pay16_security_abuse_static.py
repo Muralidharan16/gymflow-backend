@@ -175,3 +175,18 @@ def test_no_public_finance_export_or_refund_submission_route_is_introduced():
     assert '@router.post("/refund' not in route_source
     assert '@router.get("/export' not in route_source
     assert '@router.post("/export' not in route_source
+
+
+def test_database_maker_checker_and_tamper_evident_offline_audit_remain_enforced():
+    migration = _source("alembic/versions/zq07d8e9f0a51_pay6_offline_payments.py")
+
+    assert migration.count("v_request.prepared_actor_id=v_actor") >= 2
+    assert "maker/checker approval boundary violated" in migration
+    assert "v_cmd.actor_ref_sha256::text IS DISTINCT FROM" in migration
+    assert "v_role NOT IN ('owner','admin')" in migration
+
+    assert "request_hash_sha256 CHAR(64) NOT NULL" in migration
+    assert "proof_sha256 CHAR(64) NOT NULL" in migration
+    assert "trg_pay6_offline_events_immutable" in migration
+    assert "BEFORE UPDATE OR DELETE ON finance.offline_payment_events" in migration
+    assert "PAY-6 offline payment audit events are immutable" in migration

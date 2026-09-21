@@ -61,6 +61,8 @@ Approval additionally requires:
 
 A maker-checker or velocity denial emits a structured security event without credential/provider payload material.
 
+This is defense in depth. The inherited PAY-6 database capability also rejects self-approval/self-rejection, fences replay actors, and records request/proof hashes in immutable offline-payment audit events protected by a BEFORE UPDATE OR DELETE trigger.
+
 The velocity limit is a security circuit breaker, not a payment amount entitlement.
 
 ## Webhook anti-forgery and anti-replay
