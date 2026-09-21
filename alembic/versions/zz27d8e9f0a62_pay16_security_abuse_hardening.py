@@ -167,6 +167,51 @@ def _install_table() -> None:
 
 
 def _install_owner_policies_and_functions(bind) -> None:
+    # Table ACL and RLS policy DDL are owned by migration_owner. The security
+    # owner receives only the exact table privileges its SECURITY DEFINER
+    # append function needs.
+    op.execute(
+        """
+        GRANT SELECT,INSERT
+            ON TABLE finance.security_audit_events
+            TO app_security_owner
+        """
+    )
+    op.execute(
+        """
+        CREATE POLICY pay16_security_audit_owner_select
+            ON finance.security_audit_events
+            FOR SELECT
+            TO app_security_owner
+            USING (
+                organization_id =
+                NULLIF(
+                    pg_catalog.current_setting(
+                        'app.current_org_id',true
+                    ),
+                    ''
+                )::uuid
+            )
+        """
+    )
+    op.execute(
+        """
+        CREATE POLICY pay16_security_audit_owner_insert
+            ON finance.security_audit_events
+            FOR INSERT
+            TO app_security_owner
+            WITH CHECK (
+                organization_id =
+                NULLIF(
+                    pg_catalog.current_setting(
+                        'app.current_org_id',true
+                    ),
+                    ''
+                )::uuid
+            )
+        """
+    )
+
     had_create = bind.execute(
         sa.text(
             "SELECT pg_catalog.has_schema_privilege("
@@ -178,47 +223,6 @@ def _install_owner_policies_and_functions(bind) -> None:
 
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
-        op.execute(
-            """
-            GRANT SELECT,INSERT
-                ON TABLE finance.security_audit_events
-                TO app_security_owner
-            """
-        )
-        op.execute(
-            """
-            CREATE POLICY pay16_security_audit_owner_select
-                ON finance.security_audit_events
-                FOR SELECT
-                TO app_security_owner
-                USING (
-                    organization_id =
-                    NULLIF(
-                        pg_catalog.current_setting(
-                            'app.current_org_id',true
-                        ),
-                        ''
-                    )::uuid
-                )
-            """
-        )
-        op.execute(
-            """
-            CREATE POLICY pay16_security_audit_owner_insert
-                ON finance.security_audit_events
-                FOR INSERT
-                TO app_security_owner
-                WITH CHECK (
-                    organization_id =
-                    NULLIF(
-                        pg_catalog.current_setting(
-                            'app.current_org_id',true
-                        ),
-                        ''
-                    )::uuid
-                )
-            """
-        )
         op.execute(
             """
             CREATE OR REPLACE FUNCTION
@@ -532,23 +536,23 @@ def downgrade() -> None:
         "DROP TRIGGER trg_pay16_security_audit_immutable "
         "ON finance.security_audit_events"
     )
+    op.execute(
+        "DROP POLICY pay16_security_audit_owner_insert "
+        "ON finance.security_audit_events"
+    )
+    op.execute(
+        "DROP POLICY pay16_security_audit_owner_select "
+        "ON finance.security_audit_events"
+    )
+    op.execute(
+        "REVOKE SELECT,INSERT "
+        "ON TABLE finance.security_audit_events "
+        "FROM app_security_owner"
+    )
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
-        op.execute(
-            "DROP POLICY pay16_security_audit_owner_insert "
-            "ON finance.security_audit_events"
-        )
-        op.execute(
-            "DROP POLICY pay16_security_audit_owner_select "
-            "ON finance.security_audit_events"
-        )
         for signature in (_RECORD, _GUARD):
             op.execute(f"DROP FUNCTION IF EXISTS {signature}")
-        op.execute(
-            "REVOKE SELECT,INSERT "
-            "ON TABLE finance.security_audit_events "
-            "FROM app_security_owner"
-        )
     finally:
         op.execute("RESET ROLE")
 
