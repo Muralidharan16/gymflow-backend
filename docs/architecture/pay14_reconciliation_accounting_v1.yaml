@@ -1,0 +1,66 @@
+phase: PAY-14
+name: Reconciliation, Treasury and Accounting Closure
+predecessor_sha: ad4f495f0f79b7e3624de398e6bbfc90a4f55785
+predecessor_tree: 3f481a7b163271a44f8be89c4d4fc45130d90f51
+predecessor_revision: zy07d8e9f0a59
+revision: zz07d8e9f0a60
+
+three_way_reconciliation:
+  - internal_platform_billing_financial_state
+  - provider_payment_refund_dispute_state
+  - settlement_or_bank_evidence
+
+object_types:
+  - captured_payment
+  - settlement
+  - gateway_fee
+  - refund
+  - refund_fee
+  - dispute
+  - chargeback
+  - adjustment
+
+mismatch_categories:
+  - provider_only
+  - local_only
+  - amount_mismatch
+  - currency_mismatch
+  - status_mismatch
+  - settlement_missing
+  - duplicate_provider_object
+  - unknown_provider_object
+  - refund_mismatch
+  - fee_mismatch
+
+safe_outcomes:
+  - auto_resolved_by_authoritative_evidence
+  - retry_required
+  - manual_review_required
+  - security_incident
+  - accounting_incident
+
+durable_entities:
+  - platform_accounting_closure_runs
+  - platform_accounting_evidence
+  - platform_accounting_reconciliation_items
+  - platform_accounting_incidents
+
+automatic_financial_mutation_allowed: false
+authoritative_evidence_may_close_reconciliation_only: true
+authoritative_evidence_may_rewrite_money: false
+evidence_append_only: true
+close_requires_all_items_resolved: true
+close_requires_all_incidents_resolved: true
+close_requires_evidence_manifest: true
+provider_wide_unmapped_rows_tenant_visible: false
+member_finance_core_reused: false
+
+live_provider: false
+production_credentials: false
+live_money_movement: false
+production_runtime_binding: false
+merge_authorized: false
+release_authorized: false
+deployment_authorized: false
+
+gate: PAY14_RECONCILIATION_ACCOUNTING=PASS
