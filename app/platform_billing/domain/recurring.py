@@ -254,7 +254,15 @@ def evaluate_dunning(
                 )
             ),
             termination_at=termination_at,
-            notification_types=(),
+            notification_types=(
+                ("subscription_terminated",)
+                if existing_terminal
+                else (
+                    ("subscription_suspended",)
+                    if existing_stage == DunningStage.billing_only.value
+                    else ()
+                )
+            ),
             reason_code="PROVIDER_OUTAGE_HOLD",
             terminal=existing_terminal,
         )

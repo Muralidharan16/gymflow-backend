@@ -208,6 +208,7 @@ def test_time_advanced_dunning_progression_uses_exact_elapsed_seconds():
     assert at_day_14.subscription_status == "paused"
     assert at_day_14.termination_at == T0 + timedelta(days=44)
     assert at_day_14.terminal is False
+    assert "subscription_suspended" in at_day_14.notification_types
 
     at_day_44 = evaluate_dunning(
         now=T0 + timedelta(days=44),
