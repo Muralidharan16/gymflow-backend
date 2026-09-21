@@ -226,7 +226,18 @@ jobs:
             test "$RC" -ne 0
           fi
           test "$(PGPASSWORD=ci-pay14-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay14_lifecycle_test             -c 'SELECT version_num FROM public.alembic_version')" = "${PAY14_HEAD}"
-          test "$(PGPASSWORD=ci-pay14-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay14_lifecycle_test             -c "SELECT count(*) FROM public.platform_accounting_closure_runs")" = "1"
+          PRESERVED="$(PGPASSWORD=ci-pay14-migration psql -X -qAt -v ON_ERROR_STOP=1 -h 127.0.0.1 -U migration_owner -d gymflow_pay14_lifecycle_test <<'SQL'
+          SELECT pg_catalog.set_config(
+              'app.current_org_id',
+              '97000000-0000-0000-0000-000000000001',
+              false
+          );
+          SELECT count(*)
+          FROM public.platform_accounting_closure_runs
+          WHERE organization_id='97000000-0000-0000-0000-000000000001';
+          SQL
+          )"
+          test "$(echo "$PRESERVED" | tail -n 1)" = "1"
           echo 'PAY14_POPULATED_DOWNGRADE_FAIL_CLOSED=PASS'
 
   architecture:

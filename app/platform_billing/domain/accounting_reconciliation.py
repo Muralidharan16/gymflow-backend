@@ -141,7 +141,6 @@ def classify_three_way_reconciliation(
         return _decision(
             MismatchCategory.unknown_provider_object.value,
             SafeOutcome.manual_review_required.value,
-            False,
             "PAY14_UNKNOWN_PROVIDER_OBJECT",
         )
 
@@ -149,7 +148,6 @@ def classify_three_way_reconciliation(
         return _decision(
             MismatchCategory.duplicate_provider_object.value,
             SafeOutcome.security_incident.value,
-            False,
             "PAY14_DUPLICATE_PROVIDER_OBJECT",
         )
 
@@ -157,7 +155,6 @@ def classify_three_way_reconciliation(
         return _decision(
             MismatchCategory.provider_only.value,
             SafeOutcome.manual_review_required.value,
-            False,
             "PAY14_PROVIDER_ONLY",
         )
 
@@ -165,7 +162,6 @@ def classify_three_way_reconciliation(
         return _decision(
             MismatchCategory.local_only.value,
             SafeOutcome.manual_review_required.value,
-            False,
             "PAY14_LOCAL_ONLY",
         )
 
@@ -174,7 +170,6 @@ def classify_three_way_reconciliation(
             return _decision(
                 MismatchCategory.unknown_provider_object.value,
                 SafeOutcome.manual_review_required.value,
-                False,
                 "PAY14_SETTLEMENT_WITHOUT_MAPPED_OBJECT",
             )
         raise ValueError("PAY-14 reconciliation requires at least one observation")
@@ -199,7 +194,6 @@ def classify_three_way_reconciliation(
         return _decision(
             category,
             SafeOutcome.accounting_incident.value,
-            False,
             "PAY14_CURRENCY_MISMATCH",
         )
 
@@ -229,7 +223,6 @@ def classify_three_way_reconciliation(
         return _decision(
             category,
             SafeOutcome.accounting_incident.value,
-            False,
             "PAY14_AMOUNT_MISMATCH",
         )
 
@@ -241,7 +234,6 @@ def classify_three_way_reconciliation(
         return _decision(
             MismatchCategory.fee_mismatch.value,
             SafeOutcome.accounting_incident.value,
-            False,
             "PAY14_FEE_MISMATCH",
         )
 
@@ -260,7 +252,6 @@ def classify_three_way_reconciliation(
         return _decision(
             category,
             SafeOutcome.accounting_incident.value,
-            False,
             "PAY14_STATUS_MISMATCH",
         )
 
@@ -268,7 +259,6 @@ def classify_three_way_reconciliation(
         return _decision(
             MismatchCategory.settlement_missing.value,
             SafeOutcome.retry_required.value,
-            False,
             "PAY14_SETTLEMENT_MISSING",
         )
 
@@ -281,7 +271,6 @@ def classify_three_way_reconciliation(
         return _decision(
             None,
             SafeOutcome.manual_review_required.value,
-            False,
             "PAY14_EVIDENCE_NOT_AUTHORITATIVE",
             authoritative=False,
         )
@@ -289,7 +278,6 @@ def classify_three_way_reconciliation(
     return _decision(
         None,
         SafeOutcome.auto_resolved_by_authoritative_evidence.value,
-        False,
         "PAY14_THREE_WAY_MATCH",
         authoritative=True,
     )
@@ -298,7 +286,6 @@ def classify_three_way_reconciliation(
 def _decision(
     mismatch_category: str | None,
     safe_outcome: str,
-    auto_financial_mutation_allowed: bool,
     reason_code: str,
     *,
     authoritative: bool = False,
@@ -306,7 +293,7 @@ def _decision(
     return ReconciliationDecision(
         mismatch_category=mismatch_category,
         safe_outcome=safe_outcome,
-        auto_financial_mutation_allowed=auto_financial_mutation_allowed,
+        auto_financial_mutation_allowed=False,
         authoritative_evidence_complete=authoritative,
         reason_code=reason_code,
     )
