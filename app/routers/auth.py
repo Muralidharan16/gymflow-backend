@@ -17,6 +17,8 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 def set_auth_cookies(response: FastApiResponse, tokens: TokenResponse):
+    from app.core.security import finance_csrf_token
+
     is_prod = settings.ENVIRONMENT == "production"
     response.set_cookie(
         key="access_token",
@@ -25,6 +27,7 @@ def set_auth_cookies(response: FastApiResponse, tokens: TokenResponse):
         secure=is_prod,
         samesite="lax",
         max_age=15 * 60,
+        path="/",
     )
     response.set_cookie(
         key="refresh_token",
@@ -33,6 +36,18 @@ def set_auth_cookies(response: FastApiResponse, tokens: TokenResponse):
         secure=is_prod,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
+        path="/auth",
+    )
+    # Double-submit proof bound to the signed access-token JTI. It is
+    # intentionally browser-readable while the credential cookie is not.
+    response.set_cookie(
+        key="finance_csrf",
+        value=finance_csrf_token(tokens.access_token),
+        httponly=False,
+        secure=is_prod,
+        samesite="lax",
+        max_age=15 * 60,
+        path="/",
     )
 
 
@@ -73,13 +88,21 @@ async def verify(token: str, db: AsyncSession = Depends(get_auth_db)):
     from app.core.security import create_access_token, create_refresh_token
     from app.models.auth_session import AuthSession, AuthSessionFamily
 
-    access_token = create_access_token(owner.id, org.id, owner.email)
-    refresh_token = create_refresh_token(owner.id)
-    rt_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-
     family = AuthSessionFamily(org_id=org.id, user_id=owner.id)
     db.add(family)
     await db.flush()
+
+    access_token = create_access_token(
+        owner.id,
+        org.id,
+        owner.email,
+        family_id=str(family.id),
+    )
+    refresh_token = create_refresh_token(
+        owner.id,
+        family_id=str(family.id),
+    )
+    rt_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
 
     db_rt = AuthSession(
         user_id=owner.id,

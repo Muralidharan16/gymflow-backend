@@ -322,19 +322,31 @@ class AuthService:
         # 5. Successful login — reset attempts
         await redis_utils.client.delete(attempts_key)
 
-        # 6. Issue tokens
-        access_token = create_access_token(owner.id, owner.org_id, owner.email)
-        refresh_token = create_refresh_token(owner.id)
-
-        # 7. Store refresh token hash in DB
-        rt_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-        
+        # 6. Create the server-side session family before token issuance so
+        # access and refresh credentials are cryptographically bound to it.
         family = AuthSessionFamily(
             org_id=owner.org_id,
             user_id=owner.id
         )
         self.session.add(family)
         await self.session.flush()
+
+        auth_time = int(datetime.now(timezone.utc).timestamp())
+        access_token = create_access_token(
+            owner.id,
+            owner.org_id,
+            owner.email,
+            auth_time=auth_time,
+            family_id=str(family.id),
+        )
+        refresh_token = create_refresh_token(
+            owner.id,
+            auth_time=auth_time,
+            family_id=str(family.id),
+        )
+
+        # 7. Store only the refresh-token hash in DB.
+        rt_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
 
         auth_session = AuthSession(
             user_id=owner.id,
@@ -393,9 +405,26 @@ class AuthService:
         if not owner:
             raise HTTPException(status_code=401, detail="User not found")
 
-        # Rotate tokens
-        new_access = create_access_token(owner.id, owner.org_id, owner.email)
-        new_refresh = create_refresh_token(owner.id)
+        # Rotate tokens without pretending refresh is a new authentication.
+        # A stale/stolen long-lived session therefore cannot refresh its way
+        # around PAY-16 recent-auth requirements.
+        refresh_payload = decode_token(refresh_token)
+        auth_time = refresh_payload.get("auth_time")
+        if isinstance(auth_time, bool) or not isinstance(auth_time, int) or auth_time < 0:
+            auth_time = int(family.created_at.replace(tzinfo=timezone.utc).timestamp()) if family.created_at.tzinfo is None else int(family.created_at.timestamp())
+
+        new_access = create_access_token(
+            owner.id,
+            owner.org_id,
+            owner.email,
+            auth_time=auth_time,
+            family_id=str(family.id),
+        )
+        new_refresh = create_refresh_token(
+            owner.id,
+            auth_time=auth_time,
+            family_id=str(family.id),
+        )
         new_rt_hash = hashlib.sha256(new_refresh.encode("utf-8")).hexdigest()
 
         # FIX: same pattern — use begin_nested() since SELECT above opened a transaction

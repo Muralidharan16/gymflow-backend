@@ -46,6 +46,7 @@ class RazorpaySandboxConfig:
     merchant_reference: str
     api_base_url: str = "https://api.razorpay.com/v1"
     timeout_seconds: Decimal = Decimal("5.00")
+    previous_webhook_secret: str | None = None
 
     def redacted(self) -> dict[str, str]:
         return {
@@ -53,6 +54,9 @@ class RazorpaySandboxConfig:
             "key_id": self.key_id,
             "key_secret": "[REDACTED]",
             "webhook_secret": "[REDACTED]",
+            "previous_webhook_secret": (
+                "[REDACTED]" if self.previous_webhook_secret else "[NONE]"
+            ),
             "merchant_reference": self.merchant_reference,
             "api_base_url": self.api_base_url,
             "timeout_seconds": str(self.timeout_seconds),
@@ -265,6 +269,16 @@ def validate_razorpay_sandbox_config(config: RazorpaySandboxConfig) -> RazorpayS
         raise FinanceProviderConfigError(f"Razorpay key secret must not be live-mode material: {config.redacted()}")
     if not config.webhook_secret.strip():
         raise FinanceProviderConfigError(f"Razorpay webhook secret is required: {config.redacted()}")
+    if config.previous_webhook_secret is not None:
+        if not config.previous_webhook_secret.strip():
+            raise FinanceProviderConfigError(
+                f"Razorpay previous webhook secret cannot be blank: {config.redacted()}"
+            )
+        live_key_marker = "rzp_" + "live_"
+        if live_key_marker in config.previous_webhook_secret:
+            raise FinanceProviderConfigError(
+                f"Razorpay previous webhook secret must not be live-mode material: {config.redacted()}"
+            )
     if not config.merchant_reference.strip():
         raise FinanceProviderConfigError(f"Razorpay merchant reference is required: {config.redacted()}")
     if config.api_base_url != "https://api.razorpay.com/v1":

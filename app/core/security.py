@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -55,6 +56,19 @@ SECURITY_POLICY = {
 }
 
 
+def _authentication_epoch(value: int | datetime | None = None) -> int:
+    if value is None:
+        return int(datetime.now(timezone.utc).timestamp())
+    if isinstance(value, bool):
+        raise ValueError("auth_time must be an epoch integer or datetime")
+    if isinstance(value, datetime):
+        normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return int(normalized.timestamp())
+    if isinstance(value, int) and value >= 0:
+        return value
+    raise ValueError("auth_time must be an epoch integer or datetime")
+
+
 def create_access_token(
     owner_id: str,
     org_id: str,
@@ -62,14 +76,18 @@ def create_access_token(
     role: str = "owner",
     branch_ids: list[str] = None,
     principal_type: str = "owner",
+    auth_time: int | datetime | None = None,
+    family_id: str | None = None,
 ) -> str:
-    """Create a short-lived access token with an explicit subject namespace."""
+    """Create a short-lived typed access token with session/step-up evidence."""
     normalized_principal_type = str(principal_type).strip().lower()
     if normalized_principal_type not in ACCESS_TOKEN_PRINCIPAL_TYPES:
         raise ValueError(
             f"Unsupported access-token principal type: {principal_type!r}"
         )
 
+    now = datetime.now(timezone.utc)
+    authenticated_at = _authentication_epoch(auth_time)
     payload = {
         "sub": str(owner_id),
         "principal_type": normalized_principal_type,
@@ -79,19 +97,32 @@ def create_access_token(
         "branch_ids": branch_ids or [],
         "type": "access",
         "jti": str(uuid.uuid4()),
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=15),
+        "iat": int(now.timestamp()),
+        "auth_time": authenticated_at,
+        "exp": now + timedelta(minutes=15),
     }
+    if family_id:
+        payload["f_id"] = str(family_id)
     return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
 
 
-def create_refresh_token(owner_id: str) -> str:
-    """Create refresh token for the current owner-authentication flow."""
+def create_refresh_token(
+    owner_id: str,
+    auth_time: int | datetime | None = None,
+    family_id: str | None = None,
+) -> str:
+    """Create a rotating refresh token that preserves the original auth time."""
+    now = datetime.now(timezone.utc)
     payload = {
         "sub": str(owner_id),
         "type": "refresh",
         "jti": str(uuid.uuid4()),
-        "exp": datetime.now(timezone.utc) + timedelta(days=7),
+        "iat": int(now.timestamp()),
+        "auth_time": _authentication_epoch(auth_time),
+        "exp": now + timedelta(days=7),
     }
+    if family_id:
+        payload["f_id"] = str(family_id)
     return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
 
 
@@ -118,6 +149,34 @@ def verify_token(token: str, expected_type: str = "access") -> Dict[str, Any]:
             f"Expected {expected_type} token, got {payload.get('type')}"
         )
     return payload
+
+
+def finance_csrf_token(access_token: str) -> str:
+    """Derive a CSRF proof bound to one signed access-token JTI.
+
+    The token carries no credential material and can safely be exposed to the
+    browser as a non-HttpOnly cookie. The access token itself remains HttpOnly.
+    """
+    payload = verify_token(access_token, expected_type="access")
+    jti = payload.get("jti")
+    if not isinstance(jti, str) or not jti:
+        raise InvalidTokenError("Access token missing jti claim")
+    message = f"doers-finance-csrf-v1:{jti}".encode("utf-8")
+    return hmac.new(
+        settings.SECRET_KEY.encode("utf-8"),
+        message,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def verify_finance_csrf_token(access_token: str, supplied_token: str) -> bool:
+    if not isinstance(supplied_token, str) or not supplied_token:
+        return False
+    try:
+        expected = finance_csrf_token(access_token)
+    except (InvalidTokenError, ExpiredTokenError):
+        return False
+    return hmac.compare_digest(expected, supplied_token)
 
 
 def get_token_family_id(refresh_token: str) -> str:
