@@ -1,6 +1,13 @@
 """Platform Billing ORM models — Phase 1+"""
 from app.platform_billing.models.access_override import PlatformAccessOverride
 from app.platform_billing.models.audit import PlatformBillingAuditEvent
+from app.platform_billing.models.accounting_reconciliation import (
+    PAY14_MODEL_TABLES,
+    PlatformAccountingClosureRun,
+    PlatformAccountingEvidence,
+    PlatformAccountingIncident,
+    PlatformAccountingReconciliationItem,
+)
 from app.platform_billing.models.billing_account import PlatformBillingAccount
 from app.platform_billing.models.catalog import (
     PlatformFeatureDefinition,
@@ -66,6 +73,10 @@ from app.platform_billing.models.webhook import PlatformWebhookInbox
 __all__ = [
     "PlatformAccessOverride",
     "PlatformAccessProjection",
+    "PlatformAccountingClosureRun",
+    "PlatformAccountingEvidence",
+    "PlatformAccountingIncident",
+    "PlatformAccountingReconciliationItem",
     "PlatformBillingAuditEvent",
     "PlatformBillingAccount",
     "PlatformCatalogRelease",
@@ -111,4 +122,5 @@ __all__ = [
     "PAY11_MODEL_TABLES",
     "PAY12_MODEL_TABLES",
     "PAY13_MODEL_TABLES",
+    "PAY14_MODEL_TABLES",
 ]

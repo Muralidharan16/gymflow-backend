@@ -167,12 +167,12 @@ def test_idempotency_middleware_exists():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_platform_billing_db_tables_match_authorized_phase_1_2_4a_pay11_pay12_and_pay13_scope():
+def test_platform_billing_db_tables_match_authorized_phase_1_2_4a_pay11_pay12_pay13_and_pay14_scope():
     """
     Platform Billing models expose the authorized Phase 1 foundation,
     Phase 2 shadow/projection tables, Phase 4A provider persistence
     foundation, PAY-11 production commercial model, PAY-12 recurring/dunning model,
-    and PAY-13 dispute/financial-exception model.
+    PAY-13 dispute/financial-exception model, and PAY-14 reconciliation/accounting-closure model.
     """
     import importlib
 
@@ -231,6 +231,10 @@ def test_platform_billing_db_tables_match_authorized_phase_1_2_4a_pay11_pay12_an
         "platform_dispute_events",
         "platform_dispute_financial_entries",
         "platform_financial_exception_cases",
+        "platform_accounting_closure_runs",
+        "platform_accounting_evidence",
+        "platform_accounting_reconciliation_items",
+        "platform_accounting_incidents",
     }
 
 
