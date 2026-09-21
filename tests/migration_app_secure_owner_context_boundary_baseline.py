@@ -19,6 +19,7 @@ APP_SECURE_FILES = {
     "0027_rbac_p6_perm_snapshots.py",
     "0029_rbac_p8_contract.py",
     "6f708192a3b4_address_runtime_privilege_boundary.py",
+    "zz17d8e9f0a61_pay15_legacy_payment_retirement.py",
     A1.name,
 }
 
@@ -485,6 +486,7 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "grant_schema",
             "revoke_schema",
         },
+        "zz17d8e9f0a61_pay15_legacy_payment_retirement.py": set(),
         A1.name: view_contract,
     }
     actual = {

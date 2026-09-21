@@ -898,20 +898,32 @@ def upgrade() -> None:
         GRANT SELECT (
             id, gym_id, subscription_id, amount, discount_amount,
             status, transaction_reference, razorpay_id
-        ) ON TABLE public.payments TO app_security_owner;
+        ) ON TABLE public.payments TO app_security_owner
+        """
+    )
+    op.execute(
+        """
         GRANT SELECT (
             id, gym_id, invoice_number, payment_id, subscription_id,
             subtotal, discount_amount, tax_amount, total_amount, status
-        ) ON TABLE public.invoices TO app_security_owner;
+        ) ON TABLE public.invoices TO app_security_owner
+        """
+    )
+    op.execute(
+        """
         GRANT SELECT (id, org_id)
-            ON TABLE public.subscription_terms TO app_security_owner;
+        ON TABLE public.subscription_terms TO app_security_owner
+        """
+    )
+    op.execute(
+        """
         GRANT SELECT, INSERT, UPDATE ON TABLE
             finance.legacy_retirement_batches,
             finance.legacy_invoice_dispositions,
             finance.legacy_payment_dispositions,
             finance.legacy_subscription_financial_links,
             finance.legacy_retirement_audit
-        TO app_security_owner;
+        TO app_security_owner
         """
     )
     op.execute("SET LOCAL ROLE app_security_owner")
@@ -2065,29 +2077,24 @@ def upgrade() -> None:
         """
     )
 
-    op.execute(
-        """
-        REVOKE ALL ON FUNCTION app_secure.pay15_source_snapshot_sha(uuid) FROM PUBLIC;
-        REVOKE ALL ON FUNCTION app_secure.pay15_capture_inventory(uuid,text,text,text) FROM PUBLIC;
-        REVOKE ALL ON FUNCTION app_secure.pay15_begin_reconciliation(uuid) FROM PUBLIC;
-        REVOKE ALL ON FUNCTION app_secure.pay15_record_invoice_disposition(uuid,uuid,text,uuid,text,text,text) FROM PUBLIC;
-        REVOKE ALL ON FUNCTION app_secure.pay15_record_payment_disposition(uuid,uuid,text,uuid,text,text,text) FROM PUBLIC;
-        REVOKE ALL ON FUNCTION app_secure.pay15_record_subscription_link(uuid,uuid,text,uuid,text,text) FROM PUBLIC;
-        REVOKE ALL ON FUNCTION app_secure.pay15_assert_reconciled(uuid) FROM PUBLIC;
-        REVOKE ALL ON FUNCTION app_secure.pay15_certify_ready(uuid,text,text) FROM PUBLIC;
-        REVOKE ALL ON FUNCTION app_secure.pay15_activate_cutover(uuid,text,text,text) FROM PUBLIC;
-        REVOKE ALL ON FUNCTION app_secure.pay15_enter_rollback_hold(uuid,text,text,text) FROM PUBLIC;
-
-        GRANT EXECUTE ON FUNCTION app_secure.pay15_capture_inventory(uuid,text,text,text) TO finance_config_runtime;
-        GRANT EXECUTE ON FUNCTION app_secure.pay15_begin_reconciliation(uuid) TO finance_config_runtime;
-        GRANT EXECUTE ON FUNCTION app_secure.pay15_record_invoice_disposition(uuid,uuid,text,uuid,text,text,text) TO finance_config_runtime;
-        GRANT EXECUTE ON FUNCTION app_secure.pay15_record_payment_disposition(uuid,uuid,text,uuid,text,text,text) TO finance_config_runtime;
-        GRANT EXECUTE ON FUNCTION app_secure.pay15_record_subscription_link(uuid,uuid,text,uuid,text,text) TO finance_config_runtime;
-        GRANT EXECUTE ON FUNCTION app_secure.pay15_certify_ready(uuid,text,text) TO finance_config_runtime;
-        GRANT EXECUTE ON FUNCTION app_secure.pay15_activate_cutover(uuid,text,text,text) TO finance_config_runtime;
-        GRANT EXECUTE ON FUNCTION app_secure.pay15_enter_rollback_hold(uuid,text,text,text) TO finance_config_runtime;
-        """
-    )
+    op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_source_snapshot_sha(uuid) FROM PUBLIC")
+    op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_capture_inventory(uuid,text,text,text) FROM PUBLIC")
+    op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_begin_reconciliation(uuid) FROM PUBLIC")
+    op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_record_invoice_disposition(uuid,uuid,text,uuid,text,text,text) FROM PUBLIC")
+    op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_record_payment_disposition(uuid,uuid,text,uuid,text,text,text) FROM PUBLIC")
+    op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_record_subscription_link(uuid,uuid,text,uuid,text,text) FROM PUBLIC")
+    op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_assert_reconciled(uuid) FROM PUBLIC")
+    op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_certify_ready(uuid,text,text) FROM PUBLIC")
+    op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_activate_cutover(uuid,text,text,text) FROM PUBLIC")
+    op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_enter_rollback_hold(uuid,text,text,text) FROM PUBLIC")
+    op.execute("GRANT EXECUTE ON FUNCTION app_secure.pay15_capture_inventory(uuid,text,text,text) TO finance_config_runtime")
+    op.execute("GRANT EXECUTE ON FUNCTION app_secure.pay15_begin_reconciliation(uuid) TO finance_config_runtime")
+    op.execute("GRANT EXECUTE ON FUNCTION app_secure.pay15_record_invoice_disposition(uuid,uuid,text,uuid,text,text,text) TO finance_config_runtime")
+    op.execute("GRANT EXECUTE ON FUNCTION app_secure.pay15_record_payment_disposition(uuid,uuid,text,uuid,text,text,text) TO finance_config_runtime")
+    op.execute("GRANT EXECUTE ON FUNCTION app_secure.pay15_record_subscription_link(uuid,uuid,text,uuid,text,text) TO finance_config_runtime")
+    op.execute("GRANT EXECUTE ON FUNCTION app_secure.pay15_certify_ready(uuid,text,text) TO finance_config_runtime")
+    op.execute("GRANT EXECUTE ON FUNCTION app_secure.pay15_activate_cutover(uuid,text,text,text) TO finance_config_runtime")
+    op.execute("GRANT EXECUTE ON FUNCTION app_secure.pay15_enter_rollback_hold(uuid,text,text,text) TO finance_config_runtime")
     op.execute("RESET ROLE")
 
     op.execute(
@@ -2332,13 +2339,21 @@ def downgrade() -> None:
         REVOKE SELECT (
             id, gym_id, subscription_id, amount, discount_amount,
             status, transaction_reference, razorpay_id
-        ) ON TABLE public.payments FROM app_security_owner;
+        ) ON TABLE public.payments FROM app_security_owner
+        """
+    )
+    op.execute(
+        """
         REVOKE SELECT (
             id, gym_id, invoice_number, payment_id, subscription_id,
             subtotal, discount_amount, tax_amount, total_amount, status
-        ) ON TABLE public.invoices FROM app_security_owner;
+        ) ON TABLE public.invoices FROM app_security_owner
+        """
+    )
+    op.execute(
+        """
         REVOKE SELECT (id, org_id)
-            ON TABLE public.subscription_terms FROM app_security_owner;
+        ON TABLE public.subscription_terms FROM app_security_owner
         """
     )
 

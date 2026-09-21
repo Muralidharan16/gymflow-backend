@@ -50,9 +50,12 @@ def test_legacy_mutation_http_surfaces_are_retired_but_reads_remain():
     assert "LEGACY_SUBSCRIPTION_PAYMENT_WRITE_RETIRED" in subscriptions
     assert "status.HTTP_410_GONE" in payments
     assert "status.HTTP_410_GONE" in subscriptions
-    assert '@router.get("")' in payments
-    assert '@router.get("/{payment_id}")' in payments
-    assert '@router.get("/{payment_id}/invoice")' in payments
+    assert '@router.get("", response_model=PaginatedResponse[PaymentResponse])' in payments
+    assert 'async def list_payments(' in payments
+    assert '@router.get("/{payment_id}", response_model=Response[PaymentResponse])' in payments
+    assert 'async def get_payment_detail(' in payments
+    assert '@router.get("/{payment_id}/invoice", response_model=Response[InvoiceResponse])' in payments
+    assert 'async def get_payment_invoice(' in payments
     assert "regenerate_pdf" not in payments
     assert "void_invoice(invoice.id" not in payments
 
