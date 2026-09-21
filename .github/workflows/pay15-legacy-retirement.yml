@@ -188,12 +188,14 @@ jobs:
           );
 
           INSERT INTO public.members(
-              id,gym_id,org_id,member_uid,member_number,name,status,is_active
+              id,gym_id,org_id,member_uid,member_number,name,status,
+              is_active,is_migrated
           ) VALUES (
               '98000000-0000-0000-0000-000000000201',
               '98000000-0000-0000-0000-000000000101',
               '98000000-0000-0000-0000-000000000001',
-              'PAY15MEM',15001,'Legacy Member','active'::memberstatus,true
+              'PAY15MEM',15001,'Legacy Member','active'::memberstatus,
+              true,false
           );
 
           INSERT INTO public.subscription_plans(
