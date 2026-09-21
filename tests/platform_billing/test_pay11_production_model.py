@@ -265,12 +265,14 @@ async def test_pay11_provider_invoice_payment_credit_and_refund_invariants():
             status, currency_code, subtotal_minor, tax_minor, total_minor,
             amount_due_minor, catalog_release_id, provider_release_id,
             plan_version_id, price_id, commercial_contract_sha256,
+            service_period_start, service_period_end,
             tax_snapshot_json, billing_address_snapshot_json
         ) VALUES (
             :invoice, :org1, :billing_account, :subscription,
             'draft', 'INR', 10000, 1800, 11800,
             11800, :catalog_release_1, :provider_release_1,
             :plan, :price, :sha_a,
+            '2026-09-01T00:00:00Z', '2026-10-01T00:00:00Z',
             '{"gst":"18pct"}'::jsonb, '{"country":"IN"}'::jsonb
         );
 

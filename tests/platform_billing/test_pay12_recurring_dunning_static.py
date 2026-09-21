@@ -92,10 +92,12 @@ def test_pay12_policy_has_retry_grace_notification_and_recovery_rules():
 
 def test_pay12_recurring_records_are_tenant_rls_and_runtime_read_only():
     migration = MIGRATION.read_text(encoding="utf-8")
+    assert 'op.execute(f"ALTER TABLE public.{table_name} ENABLE ROW LEVEL SECURITY;")' in migration
+    assert 'op.execute(f"ALTER TABLE public.{table_name} FORCE ROW LEVEL SECURITY;")' in migration
+    assert "CREATE POLICY tenant_isolation_{table_name}" in migration
+    tenant_block = migration.split("TENANT_TABLES = (", 1)[1].split(")", 1)[0]
     for table in PAY12_TABLES:
-        assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in migration
-        assert f"ALTER TABLE public.{table} FORCE ROW LEVEL SECURITY" in migration
-        assert f"tenant_isolation_{table}" in migration
+        assert f'"{table}"' in tenant_block
     assert "GRANT SELECT ON" in migration
     for privilege in ("INSERT", "UPDATE", "DELETE", "TRUNCATE"):
         assert not re.search(

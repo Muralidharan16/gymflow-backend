@@ -79,6 +79,7 @@ jobs:
               "docs/architecture/pay12_recurring_dunning_v1.yaml",
               "tests/platform_billing/test_architecture.py",
               "tests/platform_billing/test_baseline_characterization.py",
+              "tests/platform_billing/test_pay11_production_model.py",
               "tests/platform_billing/test_pay12_recurring_dunning.py",
               "tests/platform_billing/test_pay12_recurring_dunning_pg16.py",
               "tests/platform_billing/test_pay12_recurring_dunning_static.py",
