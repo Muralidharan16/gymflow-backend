@@ -27,6 +27,7 @@ from app.finance_core.security_abuse import (
     validate_admin_reason_code,
 )
 from app.finance_core.services.offline_payments import FinanceOfflinePaymentService
+from app.finance_core.services.security_audit import FinanceSecurityAuditService
 
 
 logger = logging.getLogger("doers.finance.offline_payments")
@@ -152,7 +153,7 @@ async def prepare_offline_payment(
     x_idempotency_key: str | None=Header(default=None,alias="X-Idempotency-Key"),
     db: AsyncSession=Depends(get_db),
     staff: Staff=Depends(require_org_admin),
-    _security: FinanceSecurityContext=Depends(finance_high_risk_actor_dependency),
+    security_context: FinanceSecurityContext=Depends(finance_high_risk_actor_dependency),
 ) -> FinanceOfflinePaymentPrepareResponse:
     _enforce_org(org_id,staff)
     service=FinanceOfflinePaymentService(db)
@@ -168,6 +169,20 @@ async def prepare_offline_payment(
         )
     except DBAPIError as exc:
         raise _map_db_error(exc) from exc
+
+    await FinanceSecurityAuditService(db).record(
+        event_type="finance.security.offline_payment.prepared",
+        target_type="offline_payment",
+        target_id=result.offline_payment_request_id,
+        reason_code="OFFLINE_PAYMENT_PREPARED",
+        severity="info",
+    )
+    security_event(
+        "finance.offline_payment.prepared",
+        actor_id=security_context.actor_id,
+        organization_id=org_id,
+        reason_code="OFFLINE_PAYMENT_PREPARED",
+    )
     return FinanceOfflinePaymentPrepareResponse(**result.__dict__)
 
 
@@ -200,6 +215,13 @@ async def approve_offline_payment(
         )
     except DBAPIError as exc:
         raise _map_db_error(exc) from exc
+    await FinanceSecurityAuditService(db).record(
+        event_type="finance.security.offline_payment.approved",
+        target_type="offline_payment",
+        target_id=offline_payment_request_id,
+        reason_code=reason_code,
+        severity="info",
+    )
     security_event(
         "finance.offline_payment.approved",
         actor_id=security_context.actor_id,
@@ -233,6 +255,13 @@ async def reject_offline_payment(
         )
     except DBAPIError as exc:
         raise _map_db_error(exc) from exc
+    await FinanceSecurityAuditService(db).record(
+        event_type="finance.security.offline_payment.rejected",
+        target_type="offline_payment",
+        target_id=offline_payment_request_id,
+        reason_code=reason_code,
+        severity="info",
+    )
     security_event(
         "finance.offline_payment.rejected",
         actor_id=security_context.actor_id,
