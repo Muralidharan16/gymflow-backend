@@ -41,68 +41,22 @@ class SubscriptionService:
         start_date: date,
         amount_paid: Decimal,
         payment_method: PaymentMethod,
-        staff_id: uuid.UUID
+        staff_id: uuid.UUID,
     ) -> MemberSubscription:
-        """
-        Assign a subscription plan to a member.
-        Atomic operation: Subscription -> Payment -> Invoice.
-        """
-        plan = await self.sub_repo.get_plan_by_id_and_gym(plan_id, gym_id)
-        if not plan:
-            raise HTTPException(status_code=404, detail="Plan not found")
-
-        member = await self.member_repo.get_by_id(member_id, gym_id)
-        if not member:
-            raise HTTPException(status_code=404, detail="Member not found")
-
-        # Check for existing active subscription
-        existing_sub = await self.sub_repo.get_active_for_member(member_id, gym_id)
-        if existing_sub:
-            # Shift start_date to end of existing sub if it's in the future
-            if existing_sub.end_date >= start_date:
-                start_date = existing_sub.end_date + timedelta(days=1)
-
-        end_date = start_date + timedelta(days=plan.duration_days)
-
-        async with self.session.begin_nested():
-            # 1. Create subscription
-            sub = MemberSubscription(
-                gym_id=gym_id,
-                member_id=member_id,
-                plan_id=plan_id,
-                start_date=start_date,
-                end_date=end_date,
-                status=SubscriptionStatus.active,
-                created_by=staff_id
-            )
-            sub = await self.sub_repo.create(sub)
-
-            # 2. Create payment
-            payment = Payment(
-                gym_id=gym_id,
-                member_id=member_id,
-                subscription_id=sub.id,
-                collected_by=staff_id,
-                amount=amount_paid,
-                discount_amount=Decimal(0),
-                payment_method=payment_method,
-                payment_type=PaymentType.subscription,
-                status=PaymentStatus.completed,
-            )
-            payment = await self.payment_repo.create(payment)
-
-            # 3. Create invoice
-            invoice_service = InvoiceService(self.invoice_repo, self.session)
-            await invoice_service.generate_invoice(gym_id, payment, sub, member)
-
-            # 4. Update member status if needed
-            if member.status != MemberStatus.active:
-                member.status = MemberStatus.active
-                await self.member_repo.update(member)
-
-        # Invalidate cache AFTER transaction commit
-        await self._invalidate_cache(member)
-        return sub
+        """PAY-15: legacy subscription + payment/invoice write path is retired."""
+        del (
+            gym_id,
+            member_id,
+            plan_id,
+            start_date,
+            amount_paid,
+            payment_method,
+            staff_id,
+        )
+        raise RuntimeError(
+            "PAY-15 legacy subscription payment writes are retired; "
+            "use modern subscriptions with Finance Core"
+        )
 
     async def freeze_subscription(
         self, 

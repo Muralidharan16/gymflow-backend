@@ -1,0 +1,41 @@
+phase: PAY-15
+title: Legacy Payment Retirement and Data Migration
+predecessor_sha: b23b81f4472554f64e08342dc1268d393d720c7f
+predecessor_tree: d1ad75c713bf87b9380822081d3e36b77762255e
+predecessor_revision: zz07d8e9f0a60
+revision: zz17d8e9f0a61
+authority:
+  migration_capability: finance_config_runtime
+  capability_schema: app_secure
+  ordinary_runtime_migration_authority: false
+legacy_tables:
+  - public.payments
+  - public.invoices
+legacy_writes: 0
+unreconciled_migrated_money: 0
+unknown_historical_invoices: 0
+duplicate_finance_records: 0
+permanent_dual_write: false
+required_reconciliation:
+  record_level: true
+  monetary_totals: true
+  tax_totals: true
+  invoice_sequence_preservation: true
+  payment_references: true
+  subscription_bindings: true
+  historical_audit: true
+  migration_checksum: true
+  rollback_strategy: finance_pause_legacy_read_only
+cutover:
+  source_checksum_reproof: true
+  manifest_bound: true
+  populated_downgrade: fail_closed
+  rollback_reenables_legacy_writes: false
+live_provider: false
+production_credentials: false
+live_money_movement: false
+production_runtime_binding: false
+merge_authorized: false
+release_authorized: false
+deployment_authorized: false
+gate: PAY15_LEGACY_RETIREMENT=PASS
