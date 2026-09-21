@@ -1,0 +1,329 @@
+name: PAY-14 Reconciliation Treasury and Accounting Closure
+
+on:
+  push:
+    branches:
+      - hardening/pay14-reconciliation-treasury-accounting
+  pull_request:
+    branches:
+      - hardening/pay13-disputes-financial-exceptions
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay14-reconciliation-accounting-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY14_BASE_SHA: ad4f495f0f79b7e3624de398e6bbfc90a4f55785
+  PAY14_BASE_TREE: 3f481a7b163271a44f8be89c4d4fc45130d90f51
+  PAY14_PREDECESSOR: zy07d8e9f0a59
+  PAY14_HEAD: zz07d8e9f0a60
+  PAY14_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-14 three-way reconciliation and accounting-closure contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay14_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay14-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay14-static
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY14_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Exact PAY-14 scope and Alembic graph
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY14_BASE_SHA}^{tree}")" = "${PAY14_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY14_BASE_SHA}" HEAD
+          test "$(git merge-base "${PAY14_BASE_SHA}" HEAD)" = "${PAY14_BASE_SHA}"
+          git diff --name-only "${PAY14_BASE_SHA}...HEAD" > /tmp/pay14-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+
+          allowed = {
+              ".github/workflows/pay14-reconciliation-accounting.yml",
+              "alembic/versions/zz07d8e9f0a60_pay14_reconciliation_treasury_accounting.py",
+              "app/platform_billing/domain/accounting_reconciliation.py",
+              "app/platform_billing/models/__init__.py",
+              "app/platform_billing/models/accounting_reconciliation.py",
+              "app/platform_billing/repositories/accounting_reconciliation.py",
+              "app/platform_billing/services/accounting_reconciliation.py",
+              "docs/architecture/PAY14_RECONCILIATION_TREASURY_ACCOUNTING.md",
+              "docs/architecture/pay14_reconciliation_accounting_v1.yaml",
+              "tests/platform_billing/test_architecture.py",
+              "tests/platform_billing/test_baseline_characterization.py",
+              "tests/platform_billing/test_phase1_schema.py",
+              "tests/platform_billing/test_pay14_reconciliation_accounting.py",
+              "tests/platform_billing/test_pay14_reconciliation_accounting_pg16.py",
+              "tests/platform_billing/test_pay14_reconciliation_accounting_static.py",
+          }
+          changed = {
+              p.strip()
+              for p in Path("/tmp/pay14-changed.txt").read_text().splitlines()
+              if p.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-14 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          print(f"PAY-14 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY14_HEAD}"
+      - name: Compile and prove PAY-14 contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile             alembic/versions/zz07d8e9f0a60_pay14_reconciliation_treasury_accounting.py             app/platform_billing/domain/accounting_reconciliation.py             app/platform_billing/models/accounting_reconciliation.py             app/platform_billing/repositories/accounting_reconciliation.py             app/platform_billing/services/accounting_reconciliation.py             tests/platform_billing/test_pay14_reconciliation_accounting.py             tests/platform_billing/test_pay14_reconciliation_accounting_pg16.py             tests/platform_billing/test_pay14_reconciliation_accounting_static.py
+          python - <<'PY'
+          import yaml
+          with open(
+              "docs/architecture/pay14_reconciliation_accounting_v1.yaml",
+              encoding="utf-8",
+          ) as handle:
+              contract = yaml.safe_load(handle)
+          if contract["gate"] != "PAY14_RECONCILIATION_ACCOUNTING=PASS":
+              raise SystemExit("PAY-14 contract gate mismatch")
+          PY
+          python -m pytest --noconftest -q --maxfail=1             tests/platform_billing/test_pay14_reconciliation_accounting_static.py             tests/platform_billing/test_pay14_reconciliation_accounting.py             tests/test_platform_billing_cleanup_boundary.py             tests/test_alembic_model_import_boundary.py
+          echo 'PAY14_THREE_WAY_RECONCILIATION=PASS'
+          echo 'PAY14_MISMATCH_TAXONOMY=PASS'
+          echo 'PAY14_SAFE_OUTCOME_TAXONOMY=PASS'
+          echo 'PAY14_AUTOMATED_MONEY_CORRECTION=FORBIDDEN'
+          echo 'PAY14_LIVE_PROVIDER=DISABLED'
+          echo 'PAY14_PRODUCTION_CREDENTIALS=DISABLED'
+          echo 'PAY14_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY14_PRODUCTION_RUNTIME_BINDING=DISABLED'
+          echo 'PAY14_MERGE=NOT_AUTHORIZED'
+
+  protocol_pg16:
+    name: PAY-14 PG16 lifecycle and accounting-history downgrade safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay14-migration@127.0.0.1:5432/gymflow_pay14_lifecycle_test
+      SECRET_KEY: pay14-pg16-not-production
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay14-pg16
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY14_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Install disposable PostgreSQL 16 database
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-pay14-migration';
+          CREATE DATABASE gymflow_pay14_lifecycle_test OWNER migration_owner;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_pay14_lifecycle_test
+      - name: Prove PAY-13 to PAY-14 empty lifecycle
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY14_PREDECESSOR}"
+          test "$(PGPASSWORD=ci-pay14-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay14_lifecycle_test             -c "SELECT pg_catalog.to_regclass('public.platform_accounting_closure_runs') IS NULL")" = "t"
+          python -s -m alembic -c alembic.ini upgrade "${PAY14_HEAD}"
+          PGPASSWORD=ci-pay14-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay14_lifecycle_test <<'SQL'
+          DO $$
+          DECLARE missing_count integer;
+          BEGIN
+            SELECT count(*) INTO missing_count
+            FROM (
+              VALUES
+                ('platform_accounting_closure_runs'),
+                ('platform_accounting_evidence'),
+                ('platform_accounting_reconciliation_items'),
+                ('platform_accounting_incidents')
+            ) AS required(name)
+            WHERE pg_catalog.to_regclass('public.' || name) IS NULL;
+            IF missing_count <> 0 THEN
+              RAISE EXCEPTION 'PAY-14 required relation count missing=%', missing_count;
+            END IF;
+          END
+          $$;
+          SQL
+          python -s -m alembic -c alembic.ini downgrade "${PAY14_PREDECESSOR}"
+          test "$(PGPASSWORD=ci-pay14-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay14_lifecycle_test             -c "SELECT pg_catalog.to_regclass('public.platform_accounting_closure_runs') IS NULL")" = "t"
+          python -s -m alembic -c alembic.ini upgrade "${PAY14_HEAD}"
+          echo 'PAY14_EMPTY_MIGRATION_ROUNDTRIP=PASS'
+      - name: Prove populated PAY-14 accounting history blocks downgrade
+        run: |
+          set -euo pipefail
+          PGPASSWORD=ci-pay14-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay14_lifecycle_test <<'SQL'
+          INSERT INTO public.organizations (
+              id, name, slug, tier, is_active, max_branches, default_currency_code
+          ) VALUES (
+              '97000000-0000-0000-0000-000000000001',
+              'PAY14 Downgrade Guard',
+              'pay14-downgrade-guard',
+              'basic'::orgtier,
+              true,
+              1,
+              'INR'
+          );
+          SELECT pg_catalog.set_config(
+              'app.current_org_id',
+              '97000000-0000-0000-0000-000000000001',
+              false
+          );
+          INSERT INTO public.platform_accounting_closure_runs (
+              organization_id, provider_code, environment,
+              closure_key, period_start, period_end,
+              status, expected_object_count
+          ) VALUES (
+              '97000000-0000-0000-0000-000000000001',
+              'fake', 'test',
+              'pay14-downgrade-guard',
+              '2026-09-01T00:00:00Z',
+              '2026-10-01T00:00:00Z',
+              'collecting', 0
+          );
+          SQL
+          if OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY14_PREDECESSOR}" 2>&1)"; then
+            echo "$OUTPUT"
+            echo 'PAY-14 populated downgrade unexpectedly succeeded' >&2
+            exit 1
+          else
+            RC=$?
+            echo "$OUTPUT"
+            test "$RC" -ne 0
+          fi
+          test "$(PGPASSWORD=ci-pay14-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay14_lifecycle_test             -c 'SELECT version_num FROM public.alembic_version')" = "${PAY14_HEAD}"
+          test "$(PGPASSWORD=ci-pay14-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay14_lifecycle_test             -c "SELECT count(*) FROM public.platform_accounting_closure_runs")" = "1"
+          echo 'PAY14_POPULATED_DOWNGRADE_FAIL_CLOSED=PASS'
+
+  architecture:
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+
+  general_platform:
+    uses: ./.github/workflows/hardening-ci.yml
+
+  finance:
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  migration_lifecycle:
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+
+  migration_preservation:
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+
+  migration_adversarial:
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+
+  migration_contracts:
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+
+  migration_semantics:
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+
+  certify:
+    name: PAY-14 final reconciliation/accounting decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - protocol_pg16
+      - architecture
+      - general_platform
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every PAY-14 gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          data = json.loads(os.environ["RESULTS"])
+          bad = {
+              key: value["result"]
+              for key, value in data.items()
+              if value["result"] != "success"
+          }
+          if bad:
+              raise SystemExit(f"PAY-14 prerequisite failure: {bad}")
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY14_CANDIDATE_SHA }}
+      - name: Bind exact PAY-14 candidate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY14_BASE_SHA}^{tree}")" = "${PAY14_BASE_TREE}"
+          test "$(git merge-base "${PAY14_BASE_SHA}" HEAD)" = "${PAY14_BASE_SHA}"
+          grep -Fq 'revision: str = "zz07d8e9f0a60"'             alembic/versions/zz07d8e9f0a60_pay14_reconciliation_treasury_accounting.py
+          python - <<'PY'
+          import json, os, subprocess
+          decision = {
+              "phase": "PAY-14",
+              "candidate_sha": os.environ["PAY14_CANDIDATE_SHA"],
+              "candidate_tree": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD^{tree}"], text=True
+              ).strip(),
+              "predecessor_sha": os.environ["PAY14_BASE_SHA"],
+              "alembic_head": os.environ["PAY14_HEAD"],
+              "three_way_reconciliation": True,
+              "automatic_financial_mutation_allowed": False,
+              "live_provider": False,
+              "production_credentials": False,
+              "live_money_movement": False,
+              "production_runtime_binding": False,
+              "merge_authorized": False,
+              "release_authorized": False,
+              "deployment_authorized": False,
+              "decision": "PAY14_RECONCILIATION_ACCOUNTING=PASS",
+          }
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          echo 'PAY14_RECONCILIATION_ACCOUNTING=PASS'
+          echo 'PAY14_THREE_WAY_RECONCILIATION=PASS'
+          echo 'PAY14_ACCOUNTING_CLOSURE=PASS'
+          echo 'PAY14_AUTOMATED_MONEY_CORRECTION=FORBIDDEN'
+          echo 'PAY14_LIVE_PROVIDER=DISABLED'
+          echo 'PAY14_PRODUCTION_CREDENTIALS=DISABLED'
+          echo 'PAY14_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY14_PRODUCTION_RUNTIME_BINDING=DISABLED'
+          echo 'PAY14_MERGE=NOT_AUTHORIZED'
