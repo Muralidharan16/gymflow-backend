@@ -58,7 +58,18 @@ SQL
 
 for privilege in SELECT INSERT UPDATE DELETE TRUNCATE REFERENCES TRIGGER; do
   value="$(
-    PGPASSWORD="${APP_PASSWORD}" psql -X -qAt -v ON_ERROR_STOP=1       -h 127.0.0.1 -U "${APP_LOGIN}" -d "${DB_NAME}"       -c "SELECT pg_catalog.has_table_privilege(current_user,'finance.security_audit_events','${privilege}')"
+    PGPASSWORD="${APP_PASSWORD}" psql -X -qAt -v ON_ERROR_STOP=1 \
+      -h 127.0.0.1 -U "${APP_LOGIN}" -d "${DB_NAME}" \
+      -c "SELECT pg_catalog.has_table_privilege(
+             current_user,
+             relation_data.oid,
+             '${privilege}'
+           )
+           FROM pg_catalog.pg_class AS relation_data
+           JOIN pg_catalog.pg_namespace AS namespace_data
+             ON namespace_data.oid = relation_data.relnamespace
+           WHERE namespace_data.nspname='finance'
+             AND relation_data.relname='security_audit_events'"
   )"
   test "${value}" = "f"
 done
