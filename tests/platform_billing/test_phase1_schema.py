@@ -22,6 +22,13 @@ SHA_A = "a" * 64
 SHA_B = "b" * 64
 TEST_ORGANIZATION_IDS = (ORG_1, ORG_2)
 
+PAY12_TABLES = [
+    "platform_notification_deliveries",
+    "platform_dunning_attempts",
+    "platform_dunning_cases",
+    "platform_recurring_billing_jobs",
+]
+
 PAY11_TABLES = [
     "platform_refunds",
     "platform_payment_attempts",
@@ -71,7 +78,7 @@ PHASE_1_TABLES = [
 
 
 async def cleanup_phase1_tables() -> None:
-    table_names = PAY11_TABLES + PHASE_4A_TABLES + PHASE_2_TABLES + PHASE_1_TABLES
+    table_names = PAY12_TABLES + PAY11_TABLES + PHASE_4A_TABLES + PHASE_2_TABLES + PHASE_1_TABLES
     config = get_platform_billing_test_config()
     engine, admin_sessionmaker = create_platform_billing_admin_sessionmaker(config)
     try:
@@ -291,7 +298,7 @@ async def seed_billing_account_and_subscription() -> dict[str, str]:
     return ids
 
 
-async def test_phase_1_2_4a_and_pay11_tables_exist():
+async def test_phase_1_2_4a_pay11_and_pay12_tables_exist():
     phase_1_required = {
         "platform_products",
         "platform_policy_versions",
@@ -315,9 +322,9 @@ async def test_phase_1_2_4a_and_pay11_tables_exist():
         WHERE table_schema = 'public'
           AND table_name = ANY(:tables)
         """,
-        {"tables": list(phase_1_required | phase_2_required | phase_4a_required | set(PAY11_TABLES))},
+        {"tables": list(phase_1_required | phase_2_required | phase_4a_required | set(PAY11_TABLES) | set(PAY12_TABLES))},
     )
-    assert result == len(phase_1_required | phase_2_required | phase_4a_required | set(PAY11_TABLES))
+    assert result == len(phase_1_required | phase_2_required | phase_4a_required | set(PAY11_TABLES) | set(PAY12_TABLES))
 
 
 async def test_required_constraints_indexes_and_rls_are_present():

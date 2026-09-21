@@ -30,6 +30,26 @@ policies:
       read_only_stage_days: 7
       final_mode: billing_only
       trigger: durable_invoice_payment_evidence_or_reconciliation
+      max_attempts: 4
+      retry_spacing_hours: [0, 24, 72, 120]
+      provider_outage_counts_as_failure: false
+      final_action: suspend_then_terminate
+      termination_after_suspension_days: 30
+      mandate_unavailable_counts_as_failure: true
+      late_payment_recovers_access: true
+      supported_mandate_rails:
+        - upi_autopay
+        - e_mandate
+        - card_recurring
+      customer_notifications:
+        - payment_failed
+        - retry_scheduled
+        - grace_ending
+        - access_limited
+        - access_read_only
+        - subscription_suspended
+        - subscription_terminated
+        - payment_recovered
     status: draft
 
   # ── Cancellation policy ──────────────────────────────────

@@ -355,6 +355,15 @@ PAY11_TABLES = frozenset(
     }
 )
 
+PAY12_TABLES = frozenset(
+    {
+        "platform_recurring_billing_jobs",
+        "platform_dunning_cases",
+        "platform_dunning_attempts",
+        "platform_notification_deliveries",
+    }
+)
+
 
 def test_platform_billing_models_define_only_authorized_phase_1_and_2_tables():
     table_names: set[str] = set()
@@ -365,11 +374,12 @@ def test_platform_billing_models_define_only_authorized_phase_1_and_2_tables():
         table_names.update(re.findall(r'__tablename__\s*=\s*"([^"]+)"', source))
 
     missing = PHASE_1_TABLES - table_names
-    extra = table_names - PHASE_1_TABLES - PHASE_2_TABLES - PHASE_4A_TABLES - PAY11_TABLES
+    extra = table_names - PHASE_1_TABLES - PHASE_2_TABLES - PHASE_4A_TABLES - PAY11_TABLES - PAY12_TABLES
     assert not missing, f"Missing Phase 1 ORM table mappings: {sorted(missing)}"
     assert not extra, f"Unauthorized Platform Billing ORM tables: {sorted(extra)}"
     assert PHASE_4A_TABLES <= table_names, f"Missing Phase 4A ORM table mappings: {sorted(PHASE_4A_TABLES - table_names)}"
     assert PAY11_TABLES <= table_names, f"Missing PAY-11 ORM table mappings: {sorted(PAY11_TABLES - table_names)}"
+    assert PAY12_TABLES <= table_names, f"Missing PAY-12 ORM table mappings: {sorted(PAY12_TABLES - table_names)}"
 
 
 def test_phase_1_migration_exists_and_is_linear():
@@ -378,7 +388,7 @@ def test_phase_1_migration_exists_and_is_linear():
     source = migration.read_text(encoding="utf-8")
     assert 'revision: str = "f1a2b3c4d5e6"' in source
     assert 'down_revision: Union[str, Sequence[str], None] = "e5f6a7b8c9d0"' in source
-    for forbidden in PAY11_TABLES:
+    for forbidden in (PAY11_TABLES | PAY12_TABLES):
         assert forbidden not in source, f"Later-phase table {forbidden} must not be created in Phase 1"
 
 
@@ -390,7 +400,7 @@ def test_phase_2_migration_exists_and_creates_only_authorized_tables():
     assert 'down_revision: Union[str, Sequence[str], None] = "f1a2b3c4d5e6"' in source
     for required in PHASE_2_TABLES:
         assert required in source, f"Phase 2 table {required} must be created in Phase 2"
-    for forbidden in PAY11_TABLES:
+    for forbidden in (PAY11_TABLES | PAY12_TABLES):
         assert forbidden not in source, f"Later-phase table {forbidden} must not be created in Phase 2"
 
 
@@ -402,7 +412,7 @@ def test_phase_4a_migration_exists_and_creates_only_authorized_tables():
     assert 'down_revision: Union[str, Sequence[str], None] = "f2b3c4d5e6a7"' in source
     for required in PHASE_4A_TABLES:
         assert required in source, f"Phase 4A table {required} must be created in Phase 4A"
-    for forbidden in PAY11_TABLES:
+    for forbidden in (PAY11_TABLES | PAY12_TABLES):
         assert forbidden not in source, f"Later-phase table {forbidden} must not be created in Phase 4A"
     assert "CREATE ROLE" not in source
     assert "ALTER ROLE" not in source

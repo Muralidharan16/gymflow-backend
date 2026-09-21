@@ -189,12 +189,20 @@ class PlatformMandate(Base):
     external_mandate_ref: Mapped[str] = mapped_column(String(200), nullable=False)
     mandate_type: Mapped[str] = mapped_column(String(40), nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
+    payment_rail: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'legacy_provider_recurring'"))
     currency_code: Mapped[str | None] = mapped_column(CHAR(3), nullable=True)
     max_amount_minor: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     valid_from: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     valid_until: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    authorized_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     activated_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    paused_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    expired_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    replacement_mandate_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    replaced_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     provider_evidence_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
@@ -219,14 +227,37 @@ class PlatformMandate(Base):
             ondelete="RESTRICT",
             name="fk_platform_mandates_payment_method_org",
         ),
+        ForeignKeyConstraint(
+            ["replacement_mandate_id", "organization_id"],
+            ["platform_mandates.id", "platform_mandates.organization_id"],
+            ondelete="RESTRICT",
+            name="fk_platform_mandates_replacement_org",
+        ),
         UniqueConstraint("id", "organization_id", name="uq_platform_mandates_id_org"),
         UniqueConstraint("provider_code", "external_mandate_ref", name="uq_platform_mandates_external"),
         CheckConstraint("provider_code ~ '^[a-z0-9_]+$'", name="chk_platform_mandates_provider_code"),
         CheckConstraint("btrim(external_mandate_ref) <> ''", name="chk_platform_mandates_external_ref"),
         CheckConstraint("btrim(mandate_type) <> ''", name="chk_platform_mandates_type"),
         CheckConstraint(
-            "status IN ('pending', 'active', 'revoked', 'expired', 'failed')",
+            "status IN ('pending', 'authorized', 'active', 'paused', 'revoked', 'expired', 'failed')",
             name="chk_platform_mandates_status",
+        ),
+        CheckConstraint(
+            "payment_rail IN ('upi_autopay', 'e_mandate', 'card_recurring', 'legacy_provider_recurring')",
+            name="chk_platform_mandates_payment_rail",
+        ),
+        CheckConstraint(
+            "failure_code IS NULL OR failure_code ~ '^[a-z0-9_]+$'",
+            name="chk_platform_mandates_failure_code",
+        ),
+        CheckConstraint(
+            "(replacement_mandate_id IS NULL AND replaced_at IS NULL) OR "
+            "(replacement_mandate_id IS NOT NULL AND replaced_at IS NOT NULL)",
+            name="chk_platform_mandates_replacement_shape",
+        ),
+        CheckConstraint(
+            "replacement_mandate_id IS NULL OR replacement_mandate_id <> id",
+            name="chk_platform_mandates_replacement_not_self",
         ),
         CheckConstraint(
             "currency_code IS NULL OR (currency_code = upper(currency_code) AND currency_code ~ '^[A-Z]{3}$')",
@@ -289,6 +320,8 @@ class PlatformInvoice(Base):
     tax_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
     total_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
     amount_due_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    service_period_start: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    service_period_end: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     catalog_release_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("platform_catalog_releases.id", ondelete="RESTRICT"), nullable=True)
     provider_release_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("platform_provider_releases.id", ondelete="RESTRICT"), nullable=True)
     plan_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("platform_plan_versions.id", ondelete="RESTRICT"), nullable=True)
@@ -329,6 +362,22 @@ class PlatformInvoice(Base):
         CheckConstraint("subtotal_minor >= 0 AND tax_minor >= 0 AND total_minor >= 0 AND amount_due_minor >= 0", name="chk_platform_invoices_amounts_nonnegative"),
         CheckConstraint("total_minor = subtotal_minor + tax_minor", name="chk_platform_invoices_total_math"),
         CheckConstraint("amount_due_minor <= total_minor", name="chk_platform_invoices_amount_due"),
+        CheckConstraint(
+            "(service_period_start IS NULL AND service_period_end IS NULL) OR "
+            "(service_period_start IS NOT NULL AND service_period_end IS NOT NULL AND service_period_end > service_period_start)",
+            name="chk_platform_invoices_service_period_pair",
+        ),
+        Index(
+            "ux_platform_invoices_subscription_service_period",
+            "subscription_id",
+            "service_period_start",
+            "service_period_end",
+            unique=True,
+            postgresql_where=text(
+                "subscription_id IS NOT NULL AND service_period_start IS NOT NULL "
+                "AND service_period_end IS NOT NULL AND status <> 'void'"
+            ),
+        ),
         CheckConstraint("jsonb_typeof(tax_snapshot_json) = 'object'", name="chk_platform_invoices_tax_snapshot"),
         CheckConstraint("jsonb_typeof(billing_address_snapshot_json) = 'object'", name="chk_platform_invoices_address_snapshot"),
         CheckConstraint("commercial_contract_sha256 IS NULL OR commercial_contract_sha256 ~ '^[0-9a-f]{64}$'", name="chk_platform_invoices_contract_sha"),

@@ -84,6 +84,33 @@ class PaymentAttemptStatus(str, Enum):
     refunded = "refunded"
 
 
+# ── Mandate lifecycle ───────────────────────────────────────────────
+
+class MandateStatus(str, Enum):
+    pending = "pending"
+    authorized = "authorized"
+    active = "active"
+    paused = "paused"
+    revoked = "revoked"
+    expired = "expired"
+    failed = "failed"
+
+
+class MandatePaymentRail(str, Enum):
+    upi_autopay = "upi_autopay"
+    e_mandate = "e_mandate"
+    card_recurring = "card_recurring"
+    legacy_provider_recurring = "legacy_provider_recurring"
+
+
+class DunningStage(str, Enum):
+    full_grace = "full_grace"
+    limited_write = "limited_write"
+    read_only = "read_only"
+    billing_only = "billing_only"
+    recovered = "recovered"
+
+
 # ── Platform access mode ────────────────────────────────────────────
 
 class PlatformAccessMode(str, Enum):

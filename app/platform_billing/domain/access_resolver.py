@@ -346,17 +346,36 @@ def _resolve_dunning(
     now: datetime,
     sub_version: int | None,
 ) -> AccessResolverResult:
-    """Resolve dunning stages for past_due subscriptions."""
-    # Default policy: 3-day grace, 4-day limited write, 7-day read-only
-    # In Phase 2 we use the general fallback behavior until dunning policies
-    # are fully integrated.
+    """Resolve PAY-12 dunning stages for a durable past_due subscription."""
+    if inputs.within_dunning_full_grace:
+        mode = "full"
+        reason_code = "PAYMENT_GRACE"
+        detail = "Payment is overdue but full access remains available during the grace period."
+    elif inputs.within_dunning_limited_write:
+        mode = "limited_write"
+        reason_code = "PAYMENT_OVERDUE"
+        detail = "Payment is overdue. Capacity-increasing actions are restricted."
+    elif inputs.within_read_only_window:
+        mode = "read_only"
+        reason_code = "PAYMENT_OVERDUE"
+        detail = "Payment is overdue. Product data is available in read-only mode."
+    else:
+        mode = "billing_only"
+        reason_code = "PAYMENT_OVERDUE"
+        detail = "Payment remains overdue after the configured recovery windows."
+
     return AccessResolverResult(
         decision=AccessDecision(
-            mode="read_only" if not inputs.within_dunning_full_grace else "full",
-            reason_code="PAYMENT_OVERDUE",
-            reason_detail_safe="Payment is overdue. Please update your payment method.",
+            mode=mode,
+            reason_code=reason_code,
+            reason_detail_safe=detail,
             effective_from=now,
-            recovery_actions=("UPDATE_PAYMENT_METHOD", "CONTACT_SUPPORT"),
+            recovery_actions=(
+                "VIEW_PLAN_BILLING",
+                "UPDATE_PAYMENT_METHOD",
+                "COMPLETE_PAYMENT_ACTION",
+                "CONTACT_SUPPORT",
+            ),
             resolution_version=inputs.resolution_version,
             source_subscription_version=sub_version,
         ),

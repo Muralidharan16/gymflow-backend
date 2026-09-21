@@ -1,0 +1,360 @@
+name: PAY-12 Recurring Payments and Dunning
+
+on:
+  push:
+    branches:
+      - hardening/pay12-recurring-mandates-dunning
+  pull_request:
+    branches:
+      - hardening/pay11-platform-billing-production-model
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay12-recurring-dunning-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY12_BASE_SHA: a9a6a0ae46aa5003f93a956a7c40cfe456c0fad6
+  PAY12_BASE_TREE: c619ccf6dbc48e8eebe2dbe8a4706f69e4eacb0e
+  PAY12_PREDECESSOR: zw07d8e9f0a57
+  PAY12_HEAD: zx07d8e9f0a58
+  PAY12_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  simulation_contract:
+    name: PAY-12 time simulation and failure injection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay12_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay12-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay12-static
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY12_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Exact PAY-12 scope and Alembic graph
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY12_BASE_SHA}^{tree}")" = "${PAY12_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY12_BASE_SHA}" HEAD
+          test "$(git merge-base "${PAY12_BASE_SHA}" HEAD)" = "${PAY12_BASE_SHA}"
+          git diff --name-only "${PAY12_BASE_SHA}...HEAD" > /tmp/pay12-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              ".github/workflows/pay12-recurring-dunning.yml",
+              "alembic/versions/zx07d8e9f0a58_pay12_recurring_mandates_dunning.py",
+              "app/platform_billing/domain/access_resolver.py",
+              "app/platform_billing/domain/enums.py",
+              "app/platform_billing/domain/events.py",
+              "app/platform_billing/domain/recurring.py",
+              "app/platform_billing/models/__init__.py",
+              "app/platform_billing/models/production.py",
+              "app/platform_billing/models/recurring.py",
+              "app/platform_billing/policies/data/lifecycle_policies_v1.yaml",
+              "app/platform_billing/policies/policy_loader.py",
+              "app/platform_billing/repositories/__init__.py",
+              "app/platform_billing/repositories/recurring.py",
+              "app/platform_billing/services/recurring_billing.py",
+              "docs/architecture/PAY12_RECURRING_DUNNING.md",
+              "docs/architecture/pay12_recurring_dunning_v1.yaml",
+              "tests/platform_billing/test_architecture.py",
+              "tests/platform_billing/test_baseline_characterization.py",
+              "tests/platform_billing/test_pay11_production_model.py",
+              "tests/platform_billing/test_pay12_recurring_dunning.py",
+              "tests/platform_billing/test_pay12_recurring_dunning_pg16.py",
+              "tests/platform_billing/test_pay12_recurring_dunning_static.py",
+              "tests/platform_billing/test_phase1_schema.py",
+          }
+          changed = {p.strip() for p in Path("/tmp/pay12-changed.txt").read_text().splitlines() if p.strip()}
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-12 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          print(f"PAY-12 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY12_HEAD}"
+      - name: Compile and validate PAY-12 contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile             alembic/versions/zx07d8e9f0a58_pay12_recurring_mandates_dunning.py             app/platform_billing/domain/recurring.py             app/platform_billing/domain/access_resolver.py             app/platform_billing/models/recurring.py             app/platform_billing/models/production.py             app/platform_billing/policies/policy_loader.py             app/platform_billing/repositories/recurring.py             app/platform_billing/services/recurring_billing.py             tests/platform_billing/test_pay12_recurring_dunning.py             tests/platform_billing/test_pay12_recurring_dunning_pg16.py             tests/platform_billing/test_pay12_recurring_dunning_static.py
+          python - <<'PY'
+          import yaml
+          for path in (
+              "app/platform_billing/policies/data/lifecycle_policies_v1.yaml",
+              "docs/architecture/pay12_recurring_dunning_v1.yaml",
+          ):
+              with open(path, encoding="utf-8") as handle:
+                  value = yaml.safe_load(handle)
+              if not isinstance(value, dict):
+                  raise SystemExit(f"{path}: expected YAML mapping")
+          PY
+          python -m pytest --noconftest -q --maxfail=1             tests/platform_billing/test_pay12_recurring_dunning_static.py             tests/platform_billing/test_pay12_recurring_dunning.py             tests/test_platform_billing_cleanup_boundary.py             tests/test_alembic_model_import_boundary.py
+          echo 'PAY12_MANDATE_LIFECYCLE=PASS'
+          echo 'PAY12_RECURRING_PERIOD_IDEMPOTENCY=PASS'
+          echo 'PAY12_PROVIDER_OUTAGE_HOLD=PASS'
+          echo 'PAY12_RETRY_GRACE_POLICY=PASS'
+          echo 'PAY12_SUSPENSION_TERMINATION_POLICY=PASS'
+          echo 'PAY12_NOTIFICATION_DURABILITY=PASS'
+          echo 'PAY12_LATE_PAYMENT_RECOVERY=PASS'
+          echo 'PAY12_TIME_ADVANCED_SIMULATION=PASS'
+          echo 'PAY12_PROVIDER_FAILURE_INJECTION=PASS'
+          echo 'PAY12_LIVE_PROVIDER=DISABLED'
+          echo 'PAY12_PRODUCTION_CREDENTIALS=DISABLED'
+          echo 'PAY12_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY12_MERGE=NOT_AUTHORIZED'
+
+  protocol_pg16:
+    name: PAY-12 PG16 recurring/dunning persistence and downgrade safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay12-migration@127.0.0.1:5432/gymflow_pay12_lifecycle_test
+      SECRET_KEY: pay12-pg16-not-production
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay12-pg16
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY12_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Install disposable PostgreSQL 16 database
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-pay12-migration';
+          CREATE DATABASE gymflow_pay12_lifecycle_test OWNER migration_owner;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_pay12_lifecycle_test
+      - name: Prove PAY-11 to PAY-12 empty lifecycle
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY12_PREDECESSOR}"
+          test "$(PGPASSWORD=ci-pay12-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay12_lifecycle_test             -c "SELECT pg_catalog.to_regclass('public.platform_dunning_cases') IS NULL")" = "t"
+          python -s -m alembic -c alembic.ini upgrade "${PAY12_HEAD}"
+          PGPASSWORD=ci-pay12-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay12_lifecycle_test <<'SQL'
+          DO $$
+          DECLARE missing_count integer;
+          BEGIN
+            SELECT count(*) INTO missing_count
+            FROM (
+              VALUES
+                ('platform_recurring_billing_jobs'),
+                ('platform_dunning_cases'),
+                ('platform_dunning_attempts'),
+                ('platform_notification_deliveries')
+            ) AS required(name)
+            WHERE pg_catalog.to_regclass('public.' || name) IS NULL;
+            IF missing_count <> 0 THEN
+              RAISE EXCEPTION 'PAY-12 required relation count missing=%', missing_count;
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='public'
+                AND table_name='platform_mandates'
+                AND column_name='payment_rail'
+            ) THEN
+              RAISE EXCEPTION 'PAY-12 mandate payment_rail missing';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema='public'
+                AND table_name='platform_invoices'
+                AND column_name='service_period_start'
+            ) THEN
+              RAISE EXCEPTION 'PAY-12 invoice service period missing';
+            END IF;
+          END
+          $$;
+          SQL
+          python -s -m alembic -c alembic.ini downgrade "${PAY12_PREDECESSOR}"
+          test "$(PGPASSWORD=ci-pay12-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay12_lifecycle_test             -c "SELECT pg_catalog.to_regclass('public.platform_dunning_cases') IS NULL")" = "t"
+          python -s -m alembic -c alembic.ini upgrade "${PAY12_HEAD}"
+          echo 'PAY12_EMPTY_MIGRATION_ROUNDTRIP=PASS'
+      - name: Prove populated PAY-12 history blocks downgrade
+        run: |
+          set -euo pipefail
+          PGPASSWORD=ci-pay12-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay12_lifecycle_test <<'SQL'
+          INSERT INTO public.organizations (
+              id, name, slug, tier, is_active, max_branches, default_currency_code
+          ) VALUES (
+              '93000000-0000-0000-0000-000000000001',
+              'PAY12 Downgrade Guard',
+              'pay12-downgrade-guard',
+              'basic'::orgtier,
+              true,
+              1,
+              'INR'
+          );
+          SELECT pg_catalog.set_config(
+              'app.current_org_id',
+              '93000000-0000-0000-0000-000000000001',
+              false
+          );
+          INSERT INTO public.platform_notification_deliveries (
+              organization_id, notification_type, policy_code, channel,
+              recipient_hash, status, scheduled_at, dedupe_key
+          ) VALUES (
+              '93000000-0000-0000-0000-000000000001',
+              'mandate_expiring',
+              'DUNNING-IN-V1',
+              'in_app',
+              repeat('a',64),
+              'queued',
+              clock_timestamp(),
+              'pay12-downgrade-guard'
+          );
+          SQL
+          if OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY12_PREDECESSOR}" 2>&1)"; then
+            printf '%s\n' "$OUTPUT"
+            echo 'PAY-12 populated downgrade unexpectedly succeeded' >&2
+            exit 1
+          else
+            RC=$?
+            printf '%s\n' "$OUTPUT"
+            test "$RC" -ne 0
+          fi
+          test "$(PGPASSWORD=ci-pay12-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay12_lifecycle_test             -c 'SELECT version_num FROM public.alembic_version')" = "${PAY12_HEAD}"
+          PGPASSWORD=ci-pay12-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay12_lifecycle_test <<'SQL'
+          SELECT pg_catalog.set_config(
+              'app.current_org_id',
+              '93000000-0000-0000-0000-000000000001',
+              false
+          );
+          DELETE FROM public.platform_notification_deliveries
+          WHERE organization_id='93000000-0000-0000-0000-000000000001';
+          DELETE FROM public.organizations
+          WHERE id='93000000-0000-0000-0000-000000000001';
+          SQL
+          python -s -m alembic -c alembic.ini downgrade "${PAY12_PREDECESSOR}"
+          python -s -m alembic -c alembic.ini upgrade "${PAY12_HEAD}"
+          echo 'PAY12_POPULATED_DOWNGRADE_FAIL_CLOSED=PASS'
+
+  architecture:
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+
+  general_platform:
+    uses: ./.github/workflows/hardening-ci.yml
+
+  finance:
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  migration_lifecycle:
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+
+  migration_preservation:
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+
+  migration_adversarial:
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+
+  migration_contracts:
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+
+  migration_semantics:
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+
+  certify:
+    name: PAY-12 final recurring/dunning decision
+    if: ${{ always() }}
+    needs:
+      - simulation_contract
+      - protocol_pg16
+      - architecture
+      - general_platform
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every PAY-12 gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          data = json.loads(os.environ["RESULTS"])
+          bad = {key: value["result"] for key, value in data.items() if value["result"] != "success"}
+          if bad:
+              raise SystemExit(f"PAY-12 prerequisite failure: {bad}")
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY12_CANDIDATE_SHA }}
+      - name: Bind exact PAY-12 candidate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY12_BASE_SHA}^{tree}")" = "${PAY12_BASE_TREE}"
+          test "$(git merge-base "${PAY12_BASE_SHA}" HEAD)" = "${PAY12_BASE_SHA}"
+          grep -Fq 'revision: str = "zx07d8e9f0a58"'             alembic/versions/zx07d8e9f0a58_pay12_recurring_mandates_dunning.py
+          python - <<'PY'
+          import json, os, subprocess
+          decision = {
+              "phase": "PAY-12",
+              "candidate_sha": os.environ["PAY12_CANDIDATE_SHA"],
+              "candidate_tree": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD^{tree}"], text=True
+              ).strip(),
+              "predecessor_sha": os.environ["PAY12_BASE_SHA"],
+              "alembic_head": os.environ["PAY12_HEAD"],
+              "provider_outage_immediate_disable": False,
+              "final_action": "suspend_then_terminate",
+              "termination_after_suspension_days": 30,
+              "live_provider": False,
+              "production_credentials": False,
+              "live_money_movement": False,
+              "merge_authorized": False,
+              "release_authorized": False,
+              "deployment_authorized": False,
+              "decision": "PAY12_RECURRING_DUNNING=PASS",
+          }
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          echo 'PAY12_RECURRING_DUNNING=PASS'
+          echo 'PAY12_SUSPENSION_TERMINATION_POLICY=PASS'
+          echo 'PAY12_PROVIDER_OUTAGE_IMMEDIATE_DISABLE=FORBIDDEN'
+          echo 'PAY12_LIVE_PROVIDER=DISABLED'
+          echo 'PAY12_PRODUCTION_CREDENTIALS=DISABLED'
+          echo 'PAY12_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY12_MERGE=NOT_AUTHORIZED'

@@ -1,0 +1,44 @@
+phase: PAY-12
+name: Recurring Payments, Mandates and Dunning
+predecessor_sha: a9a6a0ae46aa5003f93a956a7c40cfe456c0fad6
+predecessor_tree: c619ccf6dbc48e8eebe2dbe8a4706f69e4eacb0e
+predecessor_revision: zw07d8e9f0a57
+revision: zx07d8e9f0a58
+mandate_states:
+  - pending
+  - authorized
+  - active
+  - paused
+  - revoked
+  - expired
+  - failed
+supported_rails:
+  - upi_autopay
+  - e_mandate
+  - card_recurring
+durable_entities:
+  - platform_recurring_billing_jobs
+  - platform_dunning_cases
+  - platform_dunning_attempts
+  - platform_notification_deliveries
+provider_outage_never_immediate_disable: true
+provider_outage_counts_as_dunning_failure: false
+retry_spacing_hours: [0, 24, 72, 120]
+max_attempts: 4
+full_access_grace_days: 3
+limited_write_days: 4
+read_only_days: 7
+final_action: suspend_then_terminate
+termination_after_suspension_days: 30
+late_payment_recovery: true
+payment_method_replacement: true
+notification_dedupe: true
+time_advanced_simulation_required: true
+provider_failure_injection_required: true
+live_provider: false
+production_credentials: false
+live_money_movement: false
+merge_authorized: false
+release_authorized: false
+deployment_authorized: false
+gate: PAY12_RECURRING_DUNNING=PASS
