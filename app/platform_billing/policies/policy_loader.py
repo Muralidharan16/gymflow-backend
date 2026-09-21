@@ -32,6 +32,22 @@ REQUIRED_POLICY_FILES = (
 
 
 @dataclass(frozen=True)
+class DunningPolicyConfig:
+    policy_code: str
+    full_access_grace_days: int
+    limited_write_stage_days: int
+    read_only_stage_days: int
+    final_mode: str
+    max_attempts: int
+    retry_spacing_hours: tuple[int, ...]
+    provider_outage_counts_as_failure: bool
+    mandate_unavailable_counts_as_failure: bool
+    late_payment_recovers_access: bool
+    supported_mandate_rails: tuple[str, ...]
+    customer_notifications: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class RuntimePolicy:
     access_resolution_sync_timeout_ms: int
     policy_day_seconds: int
@@ -117,6 +133,47 @@ def _load_and_validate_runtime_policy() -> RuntimePolicy:
     )
 
 
+
+def get_dunning_policy_config() -> DunningPolicyConfig:
+    data = _load_yaml("lifecycle_policies_v1.yaml")
+    raw = data.get("policies", {}).get("DUNNING-IN-V1")
+    if not isinstance(raw, dict):
+        raise ValueError("DUNNING-IN-V1 policy is missing")
+    params = raw.get("params")
+    if not isinstance(params, dict):
+        raise ValueError("DUNNING-IN-V1 params must be a mapping")
+
+    max_attempts = int(params["max_attempts"])
+    retry_spacing = tuple(int(v) for v in params["retry_spacing_hours"])
+    if max_attempts <= 0:
+        raise ValueError("DUNNING-IN-V1 max_attempts must be positive")
+    if len(retry_spacing) < max_attempts:
+        raise ValueError("DUNNING-IN-V1 retry_spacing_hours must cover max_attempts")
+    if tuple(sorted(retry_spacing)) != retry_spacing:
+        raise ValueError("DUNNING-IN-V1 retry spacing must be non-decreasing")
+    if bool(params["provider_outage_counts_as_failure"]):
+        raise ValueError("PAY-12 forbids provider outage from counting as customer failure")
+
+    rails = tuple(str(v) for v in params["supported_mandate_rails"])
+    required_rails = {"upi_autopay", "e_mandate", "card_recurring"}
+    if not required_rails.issubset(set(rails)):
+        raise ValueError("DUNNING-IN-V1 is missing required recurring payment rails")
+
+    return DunningPolicyConfig(
+        policy_code="DUNNING-IN-V1",
+        full_access_grace_days=int(params["full_access_grace_days"]),
+        limited_write_stage_days=int(params["limited_write_stage_days"]),
+        read_only_stage_days=int(params["read_only_stage_days"]),
+        final_mode=str(params["final_mode"]),
+        max_attempts=max_attempts,
+        retry_spacing_hours=retry_spacing,
+        provider_outage_counts_as_failure=bool(params["provider_outage_counts_as_failure"]),
+        mandate_unavailable_counts_as_failure=bool(params["mandate_unavailable_counts_as_failure"]),
+        late_payment_recovers_access=bool(params["late_payment_recovers_access"]),
+        supported_mandate_rails=rails,
+        customer_notifications=tuple(str(v) for v in params["customer_notifications"]),
+    )
+
 def validate_all_policies() -> dict[str, str]:
     errors: dict[str, str] = {}
     for filename in REQUIRED_POLICY_FILES:
@@ -124,6 +181,10 @@ def validate_all_policies() -> dict[str, str]:
             _load_yaml(filename)
         except Exception as exc:
             errors[filename] = str(exc)
+    try:
+        get_dunning_policy_config()
+    except Exception as exc:
+        errors["lifecycle_policies_v1.yaml"] = str(exc)
     try:
         from app.platform_billing.policies.capability_registry import load_capability_registry
 

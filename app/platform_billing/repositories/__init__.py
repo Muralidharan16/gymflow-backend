@@ -3,6 +3,11 @@ from app.platform_billing.repositories.audit import PlatformBillingAuditReadRepo
 from app.platform_billing.repositories.billing_accounts import PlatformBillingAccountReadRepository
 from app.platform_billing.repositories.catalog import PlatformCatalogReadRepository
 from app.platform_billing.repositories.provider_operations import PlatformProviderOperationRepository
+from app.platform_billing.repositories.recurring import (
+    PlatformDunningRepository,
+    PlatformRecurringBillingRepository,
+    RecurringJobClaim,
+)
 from app.platform_billing.repositories.reconciliation import (
     PlatformReconciliationItemRepository,
     PlatformReconciliationRunRepository,
@@ -14,7 +19,10 @@ __all__ = [
     "PlatformBillingAccountReadRepository",
     "PlatformBillingAuditReadRepository",
     "PlatformCatalogReadRepository",
+    "PlatformDunningRepository",
     "PlatformProviderOperationRepository",
+    "PlatformRecurringBillingRepository",
+    "RecurringJobClaim",
     "PlatformReconciliationItemRepository",
     "PlatformReconciliationRunRepository",
     "PlatformSubscriptionReadRepository",

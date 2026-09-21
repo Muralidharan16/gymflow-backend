@@ -25,6 +25,13 @@ from app.platform_billing.models.production import (
     PlatformProviderSubscription,
     PlatformRefund,
 )
+from app.platform_billing.models.recurring import (
+    PAY12_MODEL_TABLES,
+    PlatformDunningAttempt,
+    PlatformDunningCase,
+    PlatformNotificationDelivery,
+    PlatformRecurringBillingJob,
+)
 from app.platform_billing.models.projection import (
     PlatformAccessProjection,
     PlatformEntitlementProjection,
@@ -58,12 +65,15 @@ __all__ = [
     "PlatformCreditNote",
     "PlatformCreditNoteLine",
     "PlatformDocumentSequence",
+    "PlatformDunningAttempt",
+    "PlatformDunningCase",
     "PlatformInvoice",
     "PlatformInvoiceLine",
     "PlatformMandate",
     "PlatformPaymentAttempt",
     "PlatformEntitlementProjection",
     "PlatformFeatureDefinition",
+    "PlatformNotificationDelivery",
     "PlatformPaymentMethod",
     "PlatformPlanEntitlement",
     "PlatformPlanVersion",
@@ -75,6 +85,7 @@ __all__ = [
     "PlatformProviderOperation",
     "PlatformReconciliationItem",
     "PlatformReconciliationRun",
+    "PlatformRecurringBillingJob",
     "PlatformProduct",
     "PlatformRefund",
     "PlatformSubscription",
@@ -85,4 +96,5 @@ __all__ = [
     "PlatformUsageProjection",
     "PlatformWebhookInbox",
     "PAY11_MODEL_TABLES",
+    "PAY12_MODEL_TABLES",
 ]
