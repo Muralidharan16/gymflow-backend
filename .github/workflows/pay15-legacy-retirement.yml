@@ -163,7 +163,7 @@ jobs:
       - name: Seed authoritative pre-cutover legacy and Finance history at PAY-14
         run: |
           set -euo pipefail
-          PGPASSWORD=ci-pay15-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay15_test <<'SQL'
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_pay15_test <<'SQL'
           INSERT INTO public.organizations(
               id,name,slug,tier,is_active,max_branches,default_currency_code
           ) VALUES (
