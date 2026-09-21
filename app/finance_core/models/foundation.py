@@ -1569,25 +1569,139 @@ class FinanceSecurityAuditEvent(Base):
             name="chk_pay16_security_audit_sequence",
         ),
         CheckConstraint(
-            "actor_role ~ '^[a-z][a-z0-9_]{0,39}    __tablename__ = "audit_events"
-    __table_args__ = (
-        CheckConstraint("event_payload_sha256 ~ '^[0-9a-f]{64}$'", name="chk_finance_audit_events_payload_hash"),
-        CheckConstraint("jsonb_typeof(metadata_json) = 'object'", name="chk_finance_audit_events_metadata_object"),
+            "actor_role ~ '^[a-z][a-z0-9_]{0,39}$'",
+            name="chk_pay16_security_audit_role",
+        ),
+        CheckConstraint(
+            "event_type ~ '^finance[.]security[.][a-z0-9_.-]{1,100}$'",
+            name="chk_pay16_security_audit_event",
+        ),
+        CheckConstraint(
+            "target_type ~ '^[a-z][a-z0-9_.-]{0,79}$'",
+            name="chk_pay16_security_audit_target",
+        ),
+        CheckConstraint(
+            "reason_code IS NULL OR "
+            "reason_code ~ '^[A-Z0-9][A-Z0-9_.:-]{2,79}$'",
+            name="chk_pay16_security_audit_reason",
+        ),
+        CheckConstraint(
+            "severity IN ('info','warning','critical')",
+            name="chk_pay16_security_audit_severity",
+        ),
+        CheckConstraint(
+            "char_length(request_id) BETWEEN 1 AND 128",
+            name="chk_pay16_security_audit_request",
+        ),
+        CheckConstraint(
+            "previous_event_hash IS NULL OR "
+            "previous_event_hash ~ '^[0-9a-f]{64}$'",
+            name="chk_pay16_security_audit_prev_hash",
+        ),
+        CheckConstraint(
+            "event_hash ~ '^[0-9a-f]{64}$'",
+            name="chk_pay16_security_audit_hash",
+        ),
+        CheckConstraint(
+            "(sequence_no = 1 AND previous_event_hash IS NULL) OR "
+            "(sequence_no > 1 AND previous_event_hash IS NOT NULL)",
+            name="chk_pay16_security_audit_chain_shape",
+        ),
+        Index(
+            "ix_pay16_security_audit_org_created",
+            "organization_id",
+            "created_at",
+            "sequence_no",
+        ),
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid, server_default=text("gen_random_uuid()"))
-    organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
-    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"), nullable=True)
-    division_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.divisions.id", ondelete="RESTRICT"), nullable=True)
-    brand_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("finance.brands.id", ondelete="RESTRICT"), nullable=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    sequence_no: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    actor_role: Mapped[str] = mapped_column(String(40), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    target_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    previous_event_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    event_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_payload_sha256 ~ '^[0-9a-f]{64}$'",
+            name="chk_finance_audit_events_payload_hash",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(metadata_json) = 'object'",
+            name="chk_finance_audit_events_metadata_object",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=new_uuid,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.legal_entities.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    division_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.divisions.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("finance.brands.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     event_type: Mapped[str] = mapped_column(String(120), nullable=False)
     target_type: Mapped[str] = mapped_column(String(120), nullable=False)
     target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     event_payload_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
-    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
-    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=text("clock_timestamp()"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )
 
 
 class FinanceIdempotencyKey(Base):
