@@ -393,6 +393,47 @@ async def test_pay11_provider_invoice_payment_credit_and_refund_invariants():
         },
     )
 
+
+    await expect_db_error(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        UPDATE platform_payment_attempts
+        SET status='failed'
+        WHERE id=:payment
+        """,
+        {"org1": ORG_1, "payment": PAYMENT},
+    )
+
+    await expect_db_error(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        UPDATE platform_payment_attempts
+        SET amount_minor=11700
+        WHERE id=:payment
+        """,
+        {"org1": ORG_1, "payment": PAYMENT},
+    )
+
+    await expect_db_error(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        UPDATE platform_refunds
+        SET status='failed'
+        WHERE id=:refund
+        """,
+        {"org1": ORG_1, "refund": REFUND},
+    )
+
+    await expect_db_error(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        UPDATE platform_refunds
+        SET amount_minor=5800
+        WHERE id=:refund
+        """,
+        {"org1": ORG_1, "refund": REFUND},
+    )
+
     async with AsyncSessionLocal() as session:
         await session.execute(
             text("SELECT pg_catalog.set_config('app.current_org_id', :org1, true)"),

@@ -1566,6 +1566,74 @@ def upgrade() -> None:
             IF NEW.amount_minor > invoice_total THEN
                 RAISE EXCEPTION 'PAY-11 payment attempt cannot exceed invoice total';
             END IF;
+
+            IF TG_OP = 'UPDATE' THEN
+                IF ROW(
+                    NEW.organization_id, NEW.invoice_id, NEW.provider_operation_id,
+                    NEW.mandate_id, NEW.provider_release_id, NEW.provider_code,
+                    NEW.idempotency_key, NEW.attempt_number, NEW.amount_minor,
+                    NEW.currency_code, NEW.attempted_at, NEW.created_at
+                ) IS DISTINCT FROM ROW(
+                    OLD.organization_id, OLD.invoice_id, OLD.provider_operation_id,
+                    OLD.mandate_id, OLD.provider_release_id, OLD.provider_code,
+                    OLD.idempotency_key, OLD.attempt_number, OLD.amount_minor,
+                    OLD.currency_code, OLD.attempted_at, OLD.created_at
+                ) THEN
+                    RAISE EXCEPTION 'PAY-11 payment attempt financial identity is immutable';
+                END IF;
+
+                IF OLD.external_payment_ref IS NOT NULL
+                   AND NEW.external_payment_ref IS DISTINCT FROM OLD.external_payment_ref THEN
+                    RAISE EXCEPTION 'PAY-11 provider payment reference cannot be rewritten';
+                END IF;
+                IF OLD.provider_evidence_sha256 IS NOT NULL
+                   AND NEW.provider_evidence_sha256 IS DISTINCT FROM OLD.provider_evidence_sha256 THEN
+                    RAISE EXCEPTION 'PAY-11 payment evidence hash cannot be rewritten';
+                END IF;
+                IF OLD.provider_evidence_ref IS NOT NULL
+                   AND NEW.provider_evidence_ref IS DISTINCT FROM OLD.provider_evidence_ref THEN
+                    RAISE EXCEPTION 'PAY-11 payment evidence reference cannot be rewritten';
+                END IF;
+                IF OLD.completed_at IS NOT NULL
+                   AND NEW.completed_at IS DISTINCT FROM OLD.completed_at THEN
+                    RAISE EXCEPTION 'PAY-11 payment completion timestamp cannot be rewritten';
+                END IF;
+
+                IF OLD.status IN ('succeeded', 'failed', 'canceled')
+                   AND NEW.status IS DISTINCT FROM OLD.status THEN
+                    RAISE EXCEPTION 'PAY-11 terminal payment fact cannot revert';
+                END IF;
+
+                IF NOT (
+                    NEW.status = OLD.status
+                    OR (
+                        OLD.status = 'requires_action'
+                        AND NEW.status IN ('processing', 'succeeded', 'failed', 'unknown', 'canceled')
+                    )
+                    OR (
+                        OLD.status = 'processing'
+                        AND NEW.status IN ('succeeded', 'failed', 'unknown', 'canceled')
+                    )
+                    OR (
+                        OLD.status = 'unknown'
+                        AND NEW.status IN ('processing', 'succeeded', 'failed', 'canceled')
+                    )
+                ) THEN
+                    RAISE EXCEPTION 'PAY-11 forbidden payment status transition: % -> %', OLD.status, NEW.status;
+                END IF;
+            END IF;
+
+            IF NEW.status = 'succeeded' THEN
+                IF NEW.external_payment_ref IS NULL
+                   OR btrim(NEW.external_payment_ref) = ''
+                   OR NEW.provider_evidence_sha256 IS NULL
+                   OR NEW.provider_evidence_ref IS NULL
+                   OR btrim(NEW.provider_evidence_ref) = ''
+                   OR NEW.completed_at IS NULL THEN
+                    RAISE EXCEPTION 'PAY-11 succeeded payment requires provider reference, evidence, and completion timestamp';
+                END IF;
+            END IF;
+
             RETURN NEW;
         END;
         $$;
@@ -1574,8 +1642,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER trg_platform_payment_attempts_validate
-        BEFORE INSERT OR UPDATE OF invoice_id, amount_minor, currency_code
-        ON public.platform_payment_attempts
+        BEFORE INSERT OR UPDATE ON public.platform_payment_attempts
         FOR EACH ROW
         EXECUTE FUNCTION public.pay11_validate_payment_attempt();
         """
@@ -1612,6 +1679,70 @@ def upgrade() -> None:
                 RAISE EXCEPTION 'PAY-11 refund currency must match payment attempt currency';
             END IF;
 
+            IF TG_OP = 'UPDATE' THEN
+                IF ROW(
+                    NEW.organization_id, NEW.payment_attempt_id, NEW.invoice_id,
+                    NEW.provider_operation_id, NEW.provider_release_id,
+                    NEW.provider_code, NEW.idempotency_key, NEW.amount_minor,
+                    NEW.currency_code, NEW.reason_code, NEW.requested_at, NEW.created_at
+                ) IS DISTINCT FROM ROW(
+                    OLD.organization_id, OLD.payment_attempt_id, OLD.invoice_id,
+                    OLD.provider_operation_id, OLD.provider_release_id,
+                    OLD.provider_code, OLD.idempotency_key, OLD.amount_minor,
+                    OLD.currency_code, OLD.reason_code, OLD.requested_at, OLD.created_at
+                ) THEN
+                    RAISE EXCEPTION 'PAY-11 refund financial identity is immutable';
+                END IF;
+
+                IF OLD.credit_note_id IS NOT NULL
+                   AND NEW.credit_note_id IS DISTINCT FROM OLD.credit_note_id THEN
+                    RAISE EXCEPTION 'PAY-11 refund credit-note binding cannot be rewritten';
+                END IF;
+                IF OLD.provider_refund_ref IS NOT NULL
+                   AND NEW.provider_refund_ref IS DISTINCT FROM OLD.provider_refund_ref THEN
+                    RAISE EXCEPTION 'PAY-11 provider refund reference cannot be rewritten';
+                END IF;
+                IF OLD.provider_evidence_sha256 IS NOT NULL
+                   AND NEW.provider_evidence_sha256 IS DISTINCT FROM OLD.provider_evidence_sha256 THEN
+                    RAISE EXCEPTION 'PAY-11 refund evidence hash cannot be rewritten';
+                END IF;
+                IF OLD.provider_evidence_ref IS NOT NULL
+                   AND NEW.provider_evidence_ref IS DISTINCT FROM OLD.provider_evidence_ref THEN
+                    RAISE EXCEPTION 'PAY-11 refund evidence reference cannot be rewritten';
+                END IF;
+                IF OLD.completed_at IS NOT NULL
+                   AND NEW.completed_at IS DISTINCT FROM OLD.completed_at THEN
+                    RAISE EXCEPTION 'PAY-11 refund completion timestamp cannot be rewritten';
+                END IF;
+
+                IF OLD.status IN ('succeeded', 'failed', 'canceled')
+                   AND NEW.status IS DISTINCT FROM OLD.status THEN
+                    RAISE EXCEPTION 'PAY-11 terminal refund fact cannot revert';
+                END IF;
+
+                IF NOT (
+                    NEW.status = OLD.status
+                    OR (
+                        OLD.status = 'requested'
+                        AND NEW.status IN ('approved', 'provider_pending', 'failed', 'canceled')
+                    )
+                    OR (
+                        OLD.status = 'approved'
+                        AND NEW.status IN ('provider_pending', 'failed', 'canceled')
+                    )
+                    OR (
+                        OLD.status = 'provider_pending'
+                        AND NEW.status IN ('succeeded', 'failed', 'unknown', 'canceled')
+                    )
+                    OR (
+                        OLD.status = 'unknown'
+                        AND NEW.status IN ('provider_pending', 'succeeded', 'failed', 'canceled')
+                    )
+                ) THEN
+                    RAISE EXCEPTION 'PAY-11 forbidden refund status transition: % -> %', OLD.status, NEW.status;
+                END IF;
+            END IF;
+
             IF NEW.status NOT IN ('failed', 'canceled') THEN
                 SELECT COALESCE(sum(amount_minor), 0)
                 INTO reserved_refunds
@@ -1627,7 +1758,11 @@ def upgrade() -> None:
             IF NEW.status = 'succeeded' THEN
                 IF NEW.credit_note_id IS NULL
                    OR NEW.provider_refund_ref IS NULL
-                   OR NEW.provider_evidence_sha256 IS NULL THEN
+                   OR btrim(NEW.provider_refund_ref) = ''
+                   OR NEW.provider_evidence_sha256 IS NULL
+                   OR NEW.provider_evidence_ref IS NULL
+                   OR btrim(NEW.provider_evidence_ref) = ''
+                   OR NEW.completed_at IS NULL THEN
                     RAISE EXCEPTION 'PAY-11 succeeded refund requires credit note and authoritative provider evidence';
                 END IF;
                 SELECT status, invoice_id INTO note_status, note_invoice
@@ -1645,11 +1780,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER trg_platform_refunds_validate
-        BEFORE INSERT OR UPDATE OF
-            payment_attempt_id, invoice_id, credit_note_id,
-            amount_minor, currency_code, status,
-            provider_refund_ref, provider_evidence_sha256
-        ON public.platform_refunds
+        BEFORE INSERT OR UPDATE ON public.platform_refunds
         FOR EACH ROW
         EXECUTE FUNCTION public.pay11_validate_refund();
         """

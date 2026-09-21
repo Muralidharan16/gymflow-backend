@@ -103,6 +103,10 @@ def test_pay11_issued_documents_and_refund_capacity_are_database_enforced():
         "trg_platform_refunds_validate",
         "cumulative refunds cannot exceed captured payment",
         "succeeded refund requires credit note and authoritative provider evidence",
+        "terminal payment fact cannot revert",
+        "payment attempt financial identity is immutable",
+        "terminal refund fact cannot revert",
+        "refund financial identity is immutable",
     )
     for phrase in required:
         assert phrase in migration
