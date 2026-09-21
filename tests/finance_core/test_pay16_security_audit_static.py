@@ -46,16 +46,20 @@ def test_security_audit_is_force_rls_append_only_and_hash_chained():
 def test_runtime_has_only_exact_append_capability_not_table_dml():
     source = MIGRATION.read_text(encoding="utf-8")
     assert (
-        "GRANT EXECUTE ON FUNCTION "
-        "app_secure.record_finance_security_audit("
+        'op.execute(f"GRANT EXECUTE ON FUNCTION {_RECORD} TO app_runtime")'
         in source
     )
-    assert "TO app_runtime" in source
+    assert (
+        '"app_secure.record_finance_security_audit("'
+        in source
+    )
     assert "REVOKE ALL ON TABLE finance.security_audit_events FROM PUBLIC" in source
     assert "has_table_privilege" in source
     assert "leaked direct app_runtime Finance security-audit" in source
     assert "GRANT SELECT,INSERT" in source
     assert "TO app_security_owner" in source
+    assert "GRANT USAGE ON SCHEMA app_secure TO migration_owner" in source
+    assert "REVOKE USAGE ON SCHEMA app_secure FROM migration_owner" in source
 
 
 def test_security_audit_derives_identity_from_database_context():
