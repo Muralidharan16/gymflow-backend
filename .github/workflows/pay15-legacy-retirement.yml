@@ -79,7 +79,7 @@ jobs:
               "tests/finance_core/admin_database.py",
               "tests/finance_core/test_pay15_legacy_retirement.py",
               "tests/finance_core/test_pay15_legacy_retirement_static.py",
-              "tests/migration_app_secure_owner_context_boundary.py",
+              "tests/test_migration_app_secure_owner_context_boundary.py",
               "tests/migration_app_secure_owner_context_boundary_baseline.py",
           }
           changed = {
