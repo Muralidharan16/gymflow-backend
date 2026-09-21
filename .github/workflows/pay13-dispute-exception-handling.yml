@@ -1,0 +1,329 @@
+name: PAY-13 Disputes and Financial Exceptions
+
+on:
+  push:
+    branches:
+      - hardening/pay13-disputes-financial-exceptions
+  pull_request:
+    branches:
+      - hardening/pay12-recurring-mandates-dunning
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay13-dispute-exception-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY13_BASE_SHA: 60549fcb5bee4649d229e8e99b056d6d378f479a
+  PAY13_BASE_TREE: dbf5cb9cc59a83e8d2d36ebe1e3ac29371b497e2
+  PAY13_PREDECESSOR: zx07d8e9f0a58
+  PAY13_HEAD: zy07d8e9f0a59
+  PAY13_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-13 dispute/exception state and historical-truth contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay13_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay13-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay13-static
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY13_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Exact PAY-13 scope and Alembic graph
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY13_BASE_SHA}^{tree}")" = "${PAY13_BASE_TREE}"
+          git merge-base --is-ancestor "${PAY13_BASE_SHA}" HEAD
+          test "$(git merge-base "${PAY13_BASE_SHA}" HEAD)" = "${PAY13_BASE_SHA}"
+          git diff --name-only "${PAY13_BASE_SHA}...HEAD" > /tmp/pay13-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              ".github/workflows/pay13-dispute-exception-handling.yml",
+              "alembic/versions/zy07d8e9f0a59_pay13_disputes_financial_exceptions.py",
+              "app/platform_billing/domain/disputes.py",
+              "app/platform_billing/models/__init__.py",
+              "app/platform_billing/models/disputes.py",
+              "app/platform_billing/repositories/disputes.py",
+              "app/platform_billing/services/disputes.py",
+              "docs/architecture/PAY13_DISPUTES_FINANCIAL_EXCEPTIONS.md",
+              "docs/architecture/pay13_dispute_exception_handling_v1.yaml",
+              "tests/platform_billing/test_architecture.py",
+              "tests/platform_billing/test_baseline_characterization.py",
+              "tests/platform_billing/test_phase1_schema.py",
+              "tests/platform_billing/test_pay13_disputes.py",
+              "tests/platform_billing/test_pay13_disputes_pg16.py",
+              "tests/platform_billing/test_pay13_disputes_static.py",
+          }
+          changed = {
+              p.strip()
+              for p in Path("/tmp/pay13-changed.txt").read_text().splitlines()
+              if p.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-13 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          print(f"PAY-13 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY13_HEAD}"
+      - name: Compile and prove PAY-13 domain contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile             alembic/versions/zy07d8e9f0a59_pay13_disputes_financial_exceptions.py             app/platform_billing/domain/disputes.py             app/platform_billing/models/disputes.py             app/platform_billing/repositories/disputes.py             app/platform_billing/services/disputes.py             tests/platform_billing/test_pay13_disputes.py             tests/platform_billing/test_pay13_disputes_pg16.py             tests/platform_billing/test_pay13_disputes_static.py
+          python - <<'PY'
+          import yaml
+          with open("docs/architecture/pay13_dispute_exception_handling_v1.yaml", encoding="utf-8") as handle:
+              contract = yaml.safe_load(handle)
+          if contract["gate"] != "PAY13_DISPUTE_EXCEPTION_HANDLING=PASS":
+              raise SystemExit("PAY-13 contract gate mismatch")
+          PY
+          python -m pytest --noconftest -q --maxfail=1             tests/platform_billing/test_pay13_disputes_static.py             tests/platform_billing/test_pay13_disputes.py             tests/test_platform_billing_cleanup_boundary.py             tests/test_alembic_model_import_boundary.py
+          echo 'PAY13_PAYMENT_TRUTH_IMMUTABLE=PASS'
+          echo 'PAY13_DISPUTE_STATE_MACHINE=PASS'
+          echo 'PAY13_FINANCIAL_EXCEPTION_QUARANTINE=PASS'
+          echo 'PAY13_CHARGEBACK_REVERSAL=PASS'
+          echo 'PAY13_LIVE_PROVIDER=DISABLED'
+          echo 'PAY13_PRODUCTION_CREDENTIALS=DISABLED'
+          echo 'PAY13_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY13_PRODUCTION_RUNTIME_BINDING=DISABLED'
+          echo 'PAY13_MERGE=NOT_AUTHORIZED'
+
+  protocol_pg16:
+    name: PAY-13 PG16 migration lifecycle and financial-history downgrade safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay13-migration@127.0.0.1:5432/gymflow_pay13_lifecycle_test
+      SECRET_KEY: pay13-pg16-not-production
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay13-pg16
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY13_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Install disposable PostgreSQL 16 database
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-pay13-migration';
+          CREATE DATABASE gymflow_pay13_lifecycle_test OWNER migration_owner;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_pay13_lifecycle_test
+      - name: Prove PAY-12 to PAY-13 empty lifecycle
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade "${PAY13_PREDECESSOR}"
+          test "$(PGPASSWORD=ci-pay13-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay13_lifecycle_test             -c "SELECT pg_catalog.to_regclass('public.platform_disputes') IS NULL")" = "t"
+          python -s -m alembic -c alembic.ini upgrade "${PAY13_HEAD}"
+          PGPASSWORD=ci-pay13-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay13_lifecycle_test <<'SQL'
+          DO $$
+          DECLARE missing_count integer;
+          BEGIN
+            SELECT count(*) INTO missing_count
+            FROM (
+              VALUES
+                ('platform_disputes'),
+                ('platform_dispute_evidence'),
+                ('platform_dispute_events'),
+                ('platform_dispute_financial_entries'),
+                ('platform_financial_exception_cases')
+            ) AS required(name)
+            WHERE pg_catalog.to_regclass('public.' || name) IS NULL;
+            IF missing_count <> 0 THEN
+              RAISE EXCEPTION 'PAY-13 required relation count missing=%', missing_count;
+            END IF;
+          END
+          $$;
+          SQL
+          python -s -m alembic -c alembic.ini downgrade "${PAY13_PREDECESSOR}"
+          test "$(PGPASSWORD=ci-pay13-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay13_lifecycle_test             -c "SELECT pg_catalog.to_regclass('public.platform_disputes') IS NULL")" = "t"
+          python -s -m alembic -c alembic.ini upgrade "${PAY13_HEAD}"
+          echo 'PAY13_EMPTY_MIGRATION_ROUNDTRIP=PASS'
+      - name: Prove populated PAY-13 financial history blocks downgrade
+        run: |
+          set -euo pipefail
+          PGPASSWORD=ci-pay13-migration psql -X -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay13_lifecycle_test <<'SQL'
+          INSERT INTO public.organizations (
+              id, name, slug, tier, is_active, max_branches, default_currency_code
+          ) VALUES (
+              '95000000-0000-0000-0000-000000000001',
+              'PAY13 Downgrade Guard',
+              'pay13-downgrade-guard',
+              'basic'::orgtier,
+              true,
+              1,
+              'INR'
+          );
+          SELECT pg_catalog.set_config(
+              'app.current_org_id',
+              '95000000-0000-0000-0000-000000000001',
+              false
+          );
+          INSERT INTO public.platform_financial_exception_cases (
+              organization_id, provider_code, environment,
+              exception_type, status, severity,
+              external_object_type, external_object_ref,
+              initial_evidence_sha256, initial_evidence_ref,
+              source_type, manual_review_required,
+              automatic_financial_mutation_allowed, detected_at
+          ) VALUES (
+              '95000000-0000-0000-0000-000000000001',
+              'fake', 'test',
+              'orphan_provider_payment', 'quarantined', 'warning',
+              'payment', 'pay13-downgrade-guard',
+              repeat('a',64), 'evidence://pay13/downgrade-guard',
+              'reconciliation', true, false, clock_timestamp()
+          );
+          SQL
+          if OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY13_PREDECESSOR}" 2>&1)"; then
+            printf '%s
+' "$OUTPUT"
+            echo 'PAY-13 populated downgrade unexpectedly succeeded' >&2
+            exit 1
+          else
+            RC=$?
+            printf '%s
+' "$OUTPUT"
+            test "$RC" -ne 0
+          fi
+          test "$(PGPASSWORD=ci-pay13-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay13_lifecycle_test             -c 'SELECT version_num FROM public.alembic_version')" = "${PAY13_HEAD}"
+          echo 'PAY13_POPULATED_DOWNGRADE_FAIL_CLOSED=PASS'
+
+  architecture:
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+
+  general_platform:
+    uses: ./.github/workflows/hardening-ci.yml
+
+  finance:
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  migration_lifecycle:
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+
+  migration_preservation:
+    uses: ./.github/workflows/migration-data-preservation-ci.yml
+
+  migration_adversarial:
+    uses: ./.github/workflows/migration-adversarial-safety-ci.yml
+
+  migration_contracts:
+    uses: ./.github/workflows/migration-lifecycle-contracts.yml
+
+  migration_semantics:
+    uses: ./.github/workflows/migration-semantics-inventory.yml
+
+  certify:
+    name: PAY-13 final dispute/exception decision
+    if: ${{ always() }}
+    needs:
+      - contract
+      - protocol_pg16
+      - architecture
+      - general_platform
+      - finance
+      - migration_lifecycle
+      - migration_preservation
+      - migration_adversarial
+      - migration_contracts
+      - migration_semantics
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every PAY-13 gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          data = json.loads(os.environ["RESULTS"])
+          bad = {
+              key: value["result"]
+              for key, value in data.items()
+              if value["result"] != "success"
+          }
+          if bad:
+              raise SystemExit(f"PAY-13 prerequisite failure: {bad}")
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY13_CANDIDATE_SHA }}
+      - name: Bind exact PAY-13 candidate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY13_BASE_SHA}^{tree}")" = "${PAY13_BASE_TREE}"
+          test "$(git merge-base "${PAY13_BASE_SHA}" HEAD)" = "${PAY13_BASE_SHA}"
+          grep -Fq 'revision: str = "zy07d8e9f0a59"'             alembic/versions/zy07d8e9f0a59_pay13_disputes_financial_exceptions.py
+          python - <<'PY'
+          import json, os, subprocess
+          decision = {
+              "phase": "PAY-13",
+              "candidate_sha": os.environ["PAY13_CANDIDATE_SHA"],
+              "candidate_tree": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD^{tree}"], text=True
+              ).strip(),
+              "predecessor_sha": os.environ["PAY13_BASE_SHA"],
+              "alembic_head": os.environ["PAY13_HEAD"],
+              "captured_payment_truth_immutable": True,
+              "financial_exception_auto_money_mutation": False,
+              "live_provider": False,
+              "production_credentials": False,
+              "live_money_movement": False,
+              "production_runtime_binding": False,
+              "merge_authorized": False,
+              "release_authorized": False,
+              "deployment_authorized": False,
+              "decision": "PAY13_DISPUTE_EXCEPTION_HANDLING=PASS",
+          }
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          echo 'PAY13_DISPUTE_EXCEPTION_HANDLING=PASS'
+          echo 'PAY13_PAYMENT_TRUTH_IMMUTABLE=PASS'
+          echo 'PAY13_FINANCIAL_EXCEPTION_AUTO_MONEY_MUTATION=FORBIDDEN'
+          echo 'PAY13_LIVE_PROVIDER=DISABLED'
+          echo 'PAY13_PRODUCTION_CREDENTIALS=DISABLED'
+          echo 'PAY13_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY13_PRODUCTION_RUNTIME_BINDING=DISABLED'
+          echo 'PAY13_MERGE=NOT_AUTHORIZED'
