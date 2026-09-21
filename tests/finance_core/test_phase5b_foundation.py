@@ -222,6 +222,7 @@ async def test_finance_schema_and_required_tables_exist():
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'finance'
+          AND table_type = 'BASE TABLE'
         ORDER BY table_name
         """
     )

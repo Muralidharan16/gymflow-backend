@@ -2077,6 +2077,7 @@ def upgrade() -> None:
         """
     )
 
+    op.execute("GRANT USAGE ON SCHEMA app_secure TO finance_config_runtime")
     op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_source_snapshot_sha(uuid) FROM PUBLIC")
     op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_capture_inventory(uuid,text,text,text) FROM PUBLIC")
     op.execute("REVOKE ALL ON FUNCTION app_secure.pay15_begin_reconciliation(uuid) FROM PUBLIC")

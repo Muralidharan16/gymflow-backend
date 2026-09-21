@@ -377,6 +377,7 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         _PAY15_LEGACY_RETIREMENT_MIGRATION: {
             "create_policy",
             "drop_policy",
+            "grant_schema",
         },
         A1.name: view_contract,
     }
