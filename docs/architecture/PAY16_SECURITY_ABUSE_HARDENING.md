@@ -48,6 +48,12 @@ Refresh rotation preserves original auth_time. Refreshing a stale session is not
 
 Access and refresh tokens carry the server-created session-family ID when one exists. Family revocation can therefore invalidate subsequent privileged Finance actions.
 
+## Tamper-evident Finance security audit
+
+Admitted high-risk Finance actions are written to `finance.security_audit_events` through one tenant-derived `app_secure` append capability. `app_runtime` has no direct table DML. Each organization has a serialized monotonic sequence and SHA-256 chain carrying the previous event hash; UPDATE, DELETE and TRUNCATE are rejected by a database trigger.
+
+Checkout initiation is audited before the first durable local-authority commit. Offline payment prepare/approve/reject audit rows are in the same database transaction as their monetary action. A populated PAY-16 security-audit table blocks downgrade to PAY-15 so audit evidence cannot be discarded by ordinary rollback.
+
 ## Maker-checker and abuse velocity
 
 Offline payment preparation and decision remain owner/admin only.
@@ -102,6 +108,10 @@ PAY-16 defines a reusable secure-export guard:
 
 No public Finance export route is enabled by PAY-16. A later export phase must bind this guard, recent authentication, authorization and audit before exposure.
 
+## Suspicious-behavior alerts
+
+PAY-16 emits a bounded-cardinality `doers.finance.security_events` counter. Alerts cover repeated warning/critical Finance security events, any maker-checker self-approval attempt, and any outage of the revocation verifier that causes privileged Finance to fail closed. The alert bundle is `ops/observability/pay16_security_rules.yml` and the response runbook is `docs/runbooks/pay16/finance-security-abuse.md`.
+
 ## Certification gate
 
 One exact PAY-16 candidate must pass:
@@ -113,7 +123,9 @@ One exact PAY-16 candidate must pass:
 - SAST;
 - dependency vulnerability audit;
 - secret scan over PAY-16 application changes;
-- inherited provider/refund/live-mode security contracts.
+- inherited provider/refund/live-mode security contracts;
+- PostgreSQL 16 empty migration round-trip, least-privilege append, hash-chain continuity, mutation rejection and populated downgrade fail-closed proof;
+- suspicious-behavior alert/runbook binding.
 
 Terminal marker:
 
