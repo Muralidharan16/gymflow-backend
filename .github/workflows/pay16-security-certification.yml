@@ -1,0 +1,207 @@
+name: PAY-16 Security and Abuse Hardening
+
+on:
+  push:
+    branches:
+      - hardening/pay16-security-abuse-hardening
+  pull_request:
+    branches:
+      - hardening/pay15-legacy-payment-retirement
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay16-security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY16_BASE_SHA: 3c74c0fa888022922fd079abd0c52d1e151aaf30
+  PAY16_BASE_TREE: c7c4bfeec90ba94212bca4bfe9800564e3ae9d97
+  PAY16_ALEMBIC_HEAD: zz17d8e9f0a61
+  PAY16_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-16 authorization and penetration contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay16_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay16-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay16-static
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY16_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Exact predecessor, scope and migration head
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY16_BASE_SHA}^{tree}")" = "${PAY16_BASE_TREE}"
+          test "$(git merge-base "${PAY16_BASE_SHA}" HEAD)" = "${PAY16_BASE_SHA}"
+          git diff --name-only "${PAY16_BASE_SHA}...HEAD" > /tmp/pay16-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+
+          allowed = {
+              ".github/workflows/pay16-security-certification.yml",
+              "app/core/security.py",
+              "app/services/auth_service.py",
+              "app/routers/auth.py",
+              "app/finance_core/api/offline_payments.py",
+              "app/finance_core/domain/razorpay_sandbox.py",
+              "app/finance_core/security_abuse.py",
+              "app/finance_core/services/razorpay_webhooks.py",
+              "docs/architecture/PAY16_SECURITY_ABUSE_HARDENING.md",
+              "docs/architecture/pay16_security_authorization_matrix_v1.yaml",
+              "tests/finance_core/test_pay16_security_abuse.py",
+              "tests/finance_core/test_pay16_security_abuse_static.py",
+          }
+          changed = {
+              line.strip()
+              for line in Path("/tmp/pay16-changed.txt").read_text().splitlines()
+              if line.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-16 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          print(f"PAY-16 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY16_ALEMBIC_HEAD}"
+      - name: Compile PAY-16 security boundary
+        run: |
+          set -euo pipefail
+          python -m py_compile             app/core/security.py             app/services/auth_service.py             app/routers/auth.py             app/finance_core/api/offline_payments.py             app/finance_core/domain/razorpay_sandbox.py             app/finance_core/security_abuse.py             app/finance_core/services/razorpay_webhooks.py             tests/finance_core/test_pay16_security_abuse.py             tests/finance_core/test_pay16_security_abuse_static.py
+      - name: PAY-16 adversarial penetration and authorization matrix
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1             tests/finance_core/test_pay16_security_abuse.py             tests/finance_core/test_pay16_security_abuse_static.py
+          echo 'PAY16_AUTHORIZATION_MATRIX=PASS'
+          echo 'PAY16_PENETRATION_SUITE=PASS'
+          echo 'PAY16_MAKER_CHECKER=PASS'
+          echo 'PAY16_WEBHOOK_ANTI_REPLAY=PASS'
+          echo 'PAY16_PAYMENT_SECRET_STORAGE=FORBIDDEN'
+          echo 'PAY16_LIVE_MONEY=DISABLED'
+
+  scanners:
+    name: PAY-16 SAST dependency and secret scanning
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY16_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install pinned security scanners
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install             'bandit==1.8.6'             'detect-secrets==1.5.0'             'pip-audit==2.9.0'
+      - name: SAST
+        run: |
+          set -euo pipefail
+          bandit -q -ll -r             app/core/security.py             app/services/auth_service.py             app/routers/auth.py             app/finance_core/api/offline_payments.py             app/finance_core/domain/razorpay_sandbox.py             app/finance_core/security_abuse.py             app/finance_core/services/razorpay_webhooks.py
+          echo 'PAY16_SAST=PASS'
+      - name: Dependency vulnerability audit
+        run: |
+          set -euo pipefail
+          pip-audit -r requirements-test.lock --strict
+          echo 'PAY16_DEPENDENCY_SCAN=PASS'
+      - name: Secret scan PAY-16 application delta
+        run: |
+          set -euo pipefail
+          detect-secrets scan             app/core/security.py             app/services/auth_service.py             app/routers/auth.py             app/finance_core/api/offline_payments.py             app/finance_core/domain/razorpay_sandbox.py             app/finance_core/security_abuse.py             app/finance_core/services/razorpay_webhooks.py             > /tmp/pay16-secrets.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("/tmp/pay16-secrets.json").read_text())
+          findings = report.get("results", {})
+          count = sum(len(items) for items in findings.values())
+          if count:
+              paths = sorted(path for path, items in findings.items() if items)
+              raise SystemExit(
+                  f"PAY-16 secret scan found {count} candidate secret(s) in {paths}"
+              )
+          print("PAY16_SECRET_SCAN=PASS")
+          PY
+
+  inherited_contracts:
+    name: PAY-16 inherited finance security contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay16_inherited
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay16-inherited-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay16-inherited
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY16_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+      - name: Re-prove inherited static money/security boundaries
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay0_payment_architecture_inventory.py             tests/finance_core/test_phase6aj_checkout_callback_recording.py             tests/test_p4d_refund_authority_static_contracts.py
+          echo 'PAY16_INHERITED_FINANCE_SECURITY=PASS'
+
+  decision:
+    name: PAY-16 final decision
+    if: ${{ always() }}
+    needs: [contract, scanners, inherited_contracts]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Decide
+        env:
+          CONTRACT: ${{ needs.contract.result }}
+          SCANNERS: ${{ needs.scanners.result }}
+          INHERITED: ${{ needs.inherited_contracts.result }}
+        run: |
+          set -euo pipefail
+          test "${CONTRACT}" = success
+          test "${SCANNERS}" = success
+          test "${INHERITED}" = success
+          echo 'PAY16_LIVE_PROVIDER=DISABLED'
+          echo 'PAY16_PRODUCTION_CREDENTIALS=DISABLED'
+          echo 'PAY16_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY16_PRODUCTION_RUNTIME_BINDING=DISABLED'
+          echo 'PAY16_MERGE=NOT_AUTHORIZED'
+          echo 'PAY16_RELEASE=NOT_AUTHORIZED'
+          echo 'PAY16_DEPLOYMENT=NOT_AUTHORIZED'
+          echo 'PAY16_SECURITY_CERTIFICATION=PASS'
