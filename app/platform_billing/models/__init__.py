@@ -10,6 +10,14 @@ from app.platform_billing.models.catalog import (
     PlatformPrice,
     PlatformProduct,
 )
+from app.platform_billing.models.disputes import (
+    PAY13_MODEL_TABLES,
+    PlatformDispute,
+    PlatformDisputeEvidence,
+    PlatformDisputeEvent,
+    PlatformDisputeFinancialEntry,
+    PlatformFinancialExceptionCase,
+)
 from app.platform_billing.models.production import (
     PAY11_MODEL_TABLES,
     PlatformCatalogRelease,
@@ -65,6 +73,11 @@ __all__ = [
     "PlatformCreditNote",
     "PlatformCreditNoteLine",
     "PlatformDocumentSequence",
+    "PlatformDispute",
+    "PlatformDisputeEvidence",
+    "PlatformDisputeEvent",
+    "PlatformDisputeFinancialEntry",
+    "PlatformFinancialExceptionCase",
     "PlatformDunningAttempt",
     "PlatformDunningCase",
     "PlatformInvoice",
@@ -97,4 +110,5 @@ __all__ = [
     "PlatformWebhookInbox",
     "PAY11_MODEL_TABLES",
     "PAY12_MODEL_TABLES",
+    "PAY13_MODEL_TABLES",
 ]

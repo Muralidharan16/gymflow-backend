@@ -22,6 +22,14 @@ SHA_A = "a" * 64
 SHA_B = "b" * 64
 TEST_ORGANIZATION_IDS = (ORG_1, ORG_2)
 
+PAY13_TABLES = [
+    "platform_dispute_financial_entries",
+    "platform_dispute_events",
+    "platform_dispute_evidence",
+    "platform_financial_exception_cases",
+    "platform_disputes",
+]
+
 PAY12_TABLES = [
     "platform_notification_deliveries",
     "platform_dunning_attempts",
@@ -78,7 +86,7 @@ PHASE_1_TABLES = [
 
 
 async def cleanup_phase1_tables() -> None:
-    table_names = PAY12_TABLES + PAY11_TABLES + PHASE_4A_TABLES + PHASE_2_TABLES + PHASE_1_TABLES
+    table_names = PAY13_TABLES + PAY12_TABLES + PAY11_TABLES + PHASE_4A_TABLES + PHASE_2_TABLES + PHASE_1_TABLES
     config = get_platform_billing_test_config()
     engine, admin_sessionmaker = create_platform_billing_admin_sessionmaker(config)
     try:

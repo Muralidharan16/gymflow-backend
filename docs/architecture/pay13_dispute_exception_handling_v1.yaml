@@ -1,0 +1,52 @@
+phase: PAY-13
+name: Disputes, Chargebacks and Financial Exceptions
+predecessor_sha: 60549fcb5bee4649d229e8e99b056d6d378f479a
+predecessor_tree: dbf5cb9cc59a83e8d2d36ebe1e3ac29371b497e2
+predecessor_revision: zx07d8e9f0a58
+revision: zy07d8e9f0a59
+dispute_states:
+  - opened
+  - evidence_required
+  - submitted
+  - under_review
+  - won
+  - lost
+  - closed
+dispute_types:
+  - chargeback
+  - cardholder_dispute
+  - duplicate_charge_allegation
+  - fraud_review
+exception_types:
+  - accidental_duplicate_provider_payment
+  - orphan_provider_payment
+  - orphan_settlement
+  - unknown_refund
+  - wrong_customer_mapping
+  - unmapped_dispute
+durable_entities:
+  - platform_disputes
+  - platform_dispute_evidence
+  - platform_dispute_events
+  - platform_dispute_financial_entries
+  - platform_financial_exception_cases
+captured_payment_truth_immutable: true
+active_dispute_freezes_new_payment_attempts: true
+active_dispute_freezes_new_refunds: true
+dispute_liability_required_same_transaction: true
+provider_decision_financial_closure_required_same_transaction: true
+chargeback_reversal_preserves_original_loss_history: true
+financial_exceptions_manual_review_required: true
+financial_exceptions_automatic_money_mutation: false
+provider_fact_sources:
+  - webhook
+  - reconciliation
+  - manual_review
+live_provider: false
+production_credentials: false
+live_money_movement: false
+production_runtime_binding: false
+merge_authorized: false
+release_authorized: false
+deployment_authorized: false
+gate: PAY13_DISPUTE_EXCEPTION_HANDLING=PASS
