@@ -21,9 +21,9 @@ MAX_AUTH_CLOCK_SKEW_SECONDS = 60
 _REASON_CODE_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_.:-]{2,79}$")
 FORBIDDEN_PAYMENT_SECRET_FIELDS = frozenset(
     {
-        "pan",
         "card_number",
         "card_pan",
+        "primary_account_number",
         "cvv",
         "cvc",
         "card_security_code",
@@ -278,7 +278,7 @@ def reject_payment_secret_fields(fields: set[str]) -> None:
     if normalized & FORBIDDEN_PAYMENT_SECRET_FIELDS:
         _deny(
             "FINANCE_PAYMENT_SECRET_STORAGE_FORBIDDEN",
-            "PAN, CVV/CVC and payment PIN material must never be stored.",
+            "Payment-card PAN, CVV/CVC and payment PIN material must never be stored.",
             status.HTTP_400_BAD_REQUEST,
         )
 
