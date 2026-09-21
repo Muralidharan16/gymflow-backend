@@ -368,10 +368,17 @@ jobs:
             ) THEN
               RAISE EXCEPTION 'PAY-15 config runtime gained direct table INSERT';
             END IF;
-            IF pg_catalog.has_function_privilege(
-              'app_runtime',
-              'app_secure.pay15_capture_inventory(uuid,text,text,text)',
-              'EXECUTE'
+            IF EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+              WHERE n.nspname='app_secure'
+                AND p.proname='pay15_capture_inventory'
+                AND pg_catalog.oidvectortypes(p.proargtypes) =
+                    'uuid, text, text, text'
+                AND pg_catalog.has_function_privilege(
+                    'app_runtime', p.oid, 'EXECUTE'
+                )
             ) THEN
               RAISE EXCEPTION 'PAY-15 app_runtime gained migration EXECUTE';
             END IF;
