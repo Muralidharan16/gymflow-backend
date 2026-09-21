@@ -70,4 +70,4 @@ actions:
     public_route: false
     secure_guard_defined: true
     max_rows: 5000
-    forbidden_fields: [pan, card_number, cvv, cvc, upi_pin]
+    forbidden_fields: [card_number, card_pan, primary_account_number, cvv, cvc, upi_pin, pin]
