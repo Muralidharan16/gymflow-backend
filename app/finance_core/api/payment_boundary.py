@@ -271,10 +271,10 @@ async def create_checkout_session(
     request: FinanceCheckoutCreateRequest,
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
     actor: FinancePaymentActor = Depends(checkout_actor_dependency),
+    _sandbox_enabled: None = Depends(require_finance_checkout_sandbox_enabled),
     security_context: FinanceSecurityContext = Depends(
         finance_high_risk_actor_dependency
     ),
-    _sandbox_enabled: None = Depends(require_finance_checkout_sandbox_enabled),
     db: AsyncSession = Depends(get_db),
     checkout_service: FinanceCheckoutOrchestrationService = Depends(
         get_checkout_orchestration_service
