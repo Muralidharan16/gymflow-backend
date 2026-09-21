@@ -428,8 +428,10 @@ def _install_owner_policies_and_functions(bind) -> None:
             op.execute(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC")
         op.execute(f"GRANT EXECUTE ON FUNCTION {_RECORD} TO app_runtime")
 
-        # The table owner needs only a temporary execute grant to bind the
-        # immutable trigger. It is revoked immediately after creation.
+        # The table owner needs only a temporary schema-usage + execute
+        # window to bind the immutable trigger. Both are revoked immediately
+        # after trigger creation.
+        op.execute("GRANT USAGE ON SCHEMA app_secure TO migration_owner")
         op.execute(f"GRANT EXECUTE ON FUNCTION {_GUARD} TO migration_owner")
     finally:
         op.execute("RESET ROLE")
@@ -454,6 +456,7 @@ def _install_immutable_trigger() -> None:
         op.execute(
             f"REVOKE EXECUTE ON FUNCTION {_GUARD} FROM migration_owner"
         )
+        op.execute("REVOKE USAGE ON SCHEMA app_secure FROM migration_owner")
     finally:
         op.execute("RESET ROLE")
 
