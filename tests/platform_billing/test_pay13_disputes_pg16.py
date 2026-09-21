@@ -398,7 +398,7 @@ async def test_pay13_provider_decision_requires_same_transaction_financial_closu
         ) VALUES (
             :evidence, :org1, :dispute, 'service_delivery',
             :sha_b, 'evidence://pay13/service-delivery',
-            'manual_review', '{"safe":true}'::jsonb,
+            'manual_review', jsonb_build_object('safe', true),
             '2026-10-03T00:00:00Z', '2026-10-03T00:00:00Z'
         );
 
@@ -475,7 +475,7 @@ async def test_pay13_provider_decision_requires_same_transaction_financial_closu
             :event_decision, :org1, :dispute, 2,
             :event_type, 'under_review', :target_status, 'webhook',
             :sha_b, '2026-10-04T00:00:00Z',
-            '{"provider_decision":true}'::jsonb, :sha_a
+            jsonb_build_object('provider_decision', true), :sha_a
         );
         """,
         {
