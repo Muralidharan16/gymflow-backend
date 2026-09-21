@@ -38,6 +38,8 @@ class DunningPolicyConfig:
     limited_write_stage_days: int
     read_only_stage_days: int
     final_mode: str
+    final_action: str
+    termination_after_suspension_days: int | None
     max_attempts: int
     retry_spacing_hours: tuple[int, ...]
     provider_outage_counts_as_failure: bool
@@ -154,6 +156,23 @@ def get_dunning_policy_config() -> DunningPolicyConfig:
     if bool(params["provider_outage_counts_as_failure"]):
         raise ValueError("PAY-12 forbids provider outage from counting as customer failure")
 
+    final_action = str(params["final_action"])
+    termination_days = params.get("termination_after_suspension_days")
+    termination_after_suspension_days = (
+        int(termination_days) if termination_days is not None else None
+    )
+    if final_action not in {"suspend", "suspend_then_terminate"}:
+        raise ValueError("DUNNING-IN-V1 final_action is invalid")
+    if final_action == "suspend_then_terminate":
+        if termination_after_suspension_days is None or termination_after_suspension_days <= 0:
+            raise ValueError(
+                "DUNNING-IN-V1 termination_after_suspension_days must be positive"
+            )
+    elif termination_after_suspension_days is not None:
+        raise ValueError(
+            "DUNNING-IN-V1 suspension-only policy cannot define termination window"
+        )
+
     rails = tuple(str(v) for v in params["supported_mandate_rails"])
     required_rails = {"upi_autopay", "e_mandate", "card_recurring"}
     if not required_rails.issubset(set(rails)):
@@ -165,6 +184,8 @@ def get_dunning_policy_config() -> DunningPolicyConfig:
         limited_write_stage_days=int(params["limited_write_stage_days"]),
         read_only_stage_days=int(params["read_only_stage_days"]),
         final_mode=str(params["final_mode"]),
+        final_action=final_action,
+        termination_after_suspension_days=termination_after_suspension_days,
         max_attempts=max_attempts,
         retry_spacing_hours=retry_spacing,
         provider_outage_counts_as_failure=bool(params["provider_outage_counts_as_failure"]),

@@ -205,6 +205,22 @@ def test_time_advanced_dunning_progression_uses_exact_elapsed_seconds():
     )
     assert at_day_14.stage == "billing_only"
     assert at_day_14.access_mode == "billing_only"
+    assert at_day_14.subscription_status == "paused"
+    assert at_day_14.termination_at == T0 + timedelta(days=44)
+    assert at_day_14.terminal is False
+
+    at_day_44 = evaluate_dunning(
+        now=T0 + timedelta(days=44),
+        evidence_kind=RecurringEvidenceKind.provider_unknown.value,
+        existing=case,
+        policy=_policy(),
+        has_valid_paid_period=False,
+    )
+    assert at_day_44.stage == "billing_only"
+    assert at_day_44.access_mode == "billing_only"
+    assert at_day_44.subscription_status == "canceled"
+    assert at_day_44.terminal is True
+    assert "subscription_terminated" in at_day_44.notification_types
 
 
 def test_provider_outage_alone_never_disables_valid_paying_customer():

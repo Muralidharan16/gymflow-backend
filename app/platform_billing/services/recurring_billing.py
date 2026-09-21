@@ -54,6 +54,8 @@ def current_dunning_policy() -> DunningPolicy:
         max_attempts=config.max_attempts,
         retry_spacing_hours=config.retry_spacing_hours,
         final_mode=config.final_mode,
+        final_action=config.final_action,
+        termination_after_suspension_days=config.termination_after_suspension_days,
     )
 
 

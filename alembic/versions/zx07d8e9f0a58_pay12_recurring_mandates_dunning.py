@@ -283,9 +283,15 @@ def upgrade() -> None:
                     OR (stage='recovered' AND recovered_at IS NOT NULL)
                 ),
             CONSTRAINT chk_platform_dunning_cases_suspended_shape
-                CHECK (status <> 'suspended' OR suspended_at IS NOT NULL),
+                CHECK (
+                    status <> 'suspended'
+                    OR (stage='billing_only' AND suspended_at IS NOT NULL)
+                ),
             CONSTRAINT chk_platform_dunning_cases_terminated_shape
-                CHECK (status <> 'terminated' OR terminated_at IS NOT NULL),
+                CHECK (
+                    status <> 'terminated'
+                    OR (stage='billing_only' AND terminated_at IS NOT NULL)
+                ),
             CONSTRAINT chk_platform_dunning_cases_version
                 CHECK (version >= 1)
         );
@@ -410,7 +416,7 @@ def upgrade() -> None:
                     notification_type IN (
                         'payment_failed','retry_scheduled','grace_ending',
                         'access_limited','access_read_only',
-                        'subscription_suspended','payment_recovered',
+                        'subscription_suspended','subscription_terminated','payment_recovered',
                         'mandate_expiring','mandate_revoked',
                         'payment_method_replaced'
                     )
@@ -722,6 +728,33 @@ def upgrade() -> None:
                ) THEN
                 RAISE EXCEPTION
                     'PAY-12 terminal dunning case cannot be rewritten';
+            END IF;
+
+            IF NEW.status IS DISTINCT FROM OLD.status
+               AND NOT (
+                    (OLD.status='open' AND NEW.status IN ('suspended','recovered'))
+                    OR
+                    (OLD.status='suspended' AND NEW.status IN ('recovered','terminated'))
+               ) THEN
+                RAISE EXCEPTION
+                    'PAY-12 forbidden dunning status transition: % -> %',
+                    OLD.status, NEW.status;
+            END IF;
+
+            IF NEW.status='suspended'
+               AND (NEW.stage <> 'billing_only' OR NEW.suspended_at IS NULL) THEN
+                RAISE EXCEPTION
+                    'PAY-12 suspension requires billing_only stage and suspended_at';
+            END IF;
+
+            IF NEW.status='terminated'
+               AND (
+                    OLD.status <> 'suspended'
+                    OR NEW.stage <> 'billing_only'
+                    OR NEW.terminated_at IS NULL
+               ) THEN
+                RAISE EXCEPTION
+                    'PAY-12 termination requires prior suspension and terminated_at';
             END IF;
 
             old_rank := CASE OLD.stage

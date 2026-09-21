@@ -94,6 +94,8 @@ class DunningPolicy:
     max_attempts: int = 4
     retry_spacing_hours: tuple[int, ...] = (0, 24, 72, 120)
     final_mode: str = "billing_only"
+    final_action: str = "suspend_then_terminate"
+    termination_after_suspension_days: int | None = 30
 
     def __post_init__(self) -> None:
         if self.policy_day_seconds != 86_400:
@@ -112,6 +114,18 @@ class DunningPolicy:
             raise ValueError("retry spacing must be non-decreasing")
         if self.final_mode != "billing_only":
             raise ValueError("PAY-12 final dunning mode must be billing_only")
+        if self.final_action not in {"suspend", "suspend_then_terminate"}:
+            raise ValueError("PAY-12 final action must be policy-controlled suspension")
+        if self.final_action == "suspend_then_terminate":
+            if (
+                self.termination_after_suspension_days is None
+                or self.termination_after_suspension_days <= 0
+            ):
+                raise ValueError("PAY-12 termination window must be positive")
+        elif self.termination_after_suspension_days is not None:
+            raise ValueError(
+                "PAY-12 suspension-only policy cannot define termination window"
+            )
 
     def _days(self, days: int) -> timedelta:
         return timedelta(seconds=days * self.policy_day_seconds)
@@ -148,6 +162,7 @@ class DunningDecision:
     read_only_ends_at: datetime | None
     next_retry_at: datetime | None
     next_transition_at: datetime | None
+    termination_at: datetime | None = None
     notification_types: tuple[str, ...] = field(default_factory=tuple)
     reason_code: str = ""
     terminal: bool = False
@@ -195,24 +210,53 @@ def evaluate_dunning(
             read_only_ends_at=None,
             next_retry_at=None,
             next_transition_at=None,
+            termination_at=None,
             notification_types=("payment_recovered",),
             reason_code="PAYMENT_RECOVERED",
             terminal=True,
         )
 
     if evidence_kind in NON_DUNNING_EVIDENCE:
+        existing_stage = (
+            DunningStage.healthy.value
+            if existing is None
+            else _stage_for_existing(now, existing, policy)[0]
+        )
+        termination_at = _termination_at(existing, policy)
+        existing_terminal = bool(
+            termination_at is not None and now >= termination_at
+        )
+        if existing is None or existing.recovered_at is not None:
+            subscription_status = "active"
+        elif existing_terminal:
+            subscription_status = "canceled"
+        elif existing_stage == DunningStage.billing_only.value:
+            subscription_status = "paused"
+        else:
+            subscription_status = "past_due"
+
         return DunningDecision(
-            stage=DunningStage.healthy.value if existing is None else _stage_for_existing(now, existing, policy)[0],
+            stage=existing_stage,
             access_mode="full" if has_valid_paid_period and existing is None else _access_for_existing(now, existing, policy, has_valid_paid_period),
-            subscription_status="active" if existing is None else "past_due",
+            subscription_status=subscription_status,
             counts_toward_dunning=False,
             full_grace_ends_at=None if existing is None or existing.first_confirmed_failure_at is None else policy.boundaries(existing.first_confirmed_failure_at)[0],
             limited_write_ends_at=None if existing is None or existing.first_confirmed_failure_at is None else policy.boundaries(existing.first_confirmed_failure_at)[1],
             read_only_ends_at=None if existing is None or existing.first_confirmed_failure_at is None else policy.boundaries(existing.first_confirmed_failure_at)[2],
             next_retry_at=None,
-            next_transition_at=None if existing is None else _stage_for_existing(now, existing, policy)[2],
+            next_transition_at=(
+                None
+                if existing is None
+                else (
+                    termination_at
+                    if existing_stage == DunningStage.billing_only.value and not existing_terminal
+                    else _stage_for_existing(now, existing, policy)[2]
+                )
+            ),
+            termination_at=termination_at,
             notification_types=(),
             reason_code="PROVIDER_OUTAGE_HOLD",
+            terminal=existing_terminal,
         )
 
     if evidence_kind not in CONFIRMED_DUNNING_EVIDENCE:
@@ -245,19 +289,39 @@ def evaluate_dunning(
     elif stage == DunningStage.billing_only.value:
         notifications.append("subscription_suspended")
 
+    termination_at = (
+        read_end + policy._days(policy.termination_after_suspension_days)
+        if policy.final_action == "suspend_then_terminate"
+        and policy.termination_after_suspension_days is not None
+        else None
+    )
+    terminal = bool(termination_at is not None and now >= termination_at)
+    subscription_status = (
+        "canceled"
+        if terminal
+        else ("paused" if stage == DunningStage.billing_only.value else "past_due")
+    )
+    if terminal:
+        notifications.append("subscription_terminated")
+
     return DunningDecision(
         stage=stage,
         access_mode=access_mode,
-        subscription_status="past_due",
+        subscription_status=subscription_status,
         counts_toward_dunning=True,
         full_grace_ends_at=full_end,
         limited_write_ends_at=limited_end,
         read_only_ends_at=read_end,
         next_retry_at=next_retry,
-        next_transition_at=next_transition,
+        next_transition_at=(
+            termination_at
+            if stage == DunningStage.billing_only.value and not terminal
+            else next_transition
+        ),
+        termination_at=termination_at,
         notification_types=tuple(dict.fromkeys(notifications)),
         reason_code="PAYMENT_OVERDUE",
-        terminal=stage == DunningStage.billing_only.value and next_retry is None,
+        terminal=terminal,
     )
 
 
@@ -275,6 +339,21 @@ def _stage_for_existing(
         first_failure=existing.first_confirmed_failure_at,
         policy=policy,
     )
+
+
+def _termination_at(
+    existing: DunningCaseSnapshot | None,
+    policy: DunningPolicy,
+) -> datetime | None:
+    if (
+        existing is None
+        or existing.first_confirmed_failure_at is None
+        or policy.final_action != "suspend_then_terminate"
+        or policy.termination_after_suspension_days is None
+    ):
+        return None
+    read_end = policy.boundaries(existing.first_confirmed_failure_at)[2]
+    return read_end + policy._days(policy.termination_after_suspension_days)
 
 
 def _access_for_existing(

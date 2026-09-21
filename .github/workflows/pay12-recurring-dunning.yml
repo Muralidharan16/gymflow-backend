@@ -115,6 +115,7 @@ jobs:
           echo 'PAY12_RECURRING_PERIOD_IDEMPOTENCY=PASS'
           echo 'PAY12_PROVIDER_OUTAGE_HOLD=PASS'
           echo 'PAY12_RETRY_GRACE_POLICY=PASS'
+          echo 'PAY12_SUSPENSION_TERMINATION_POLICY=PASS'
           echo 'PAY12_NOTIFICATION_DURABILITY=PASS'
           echo 'PAY12_LATE_PAYMENT_RECOVERY=PASS'
           echo 'PAY12_TIME_ADVANCED_SIMULATION=PASS'
@@ -338,6 +339,8 @@ jobs:
               "predecessor_sha": os.environ["PAY12_BASE_SHA"],
               "alembic_head": os.environ["PAY12_HEAD"],
               "provider_outage_immediate_disable": False,
+              "final_action": "suspend_then_terminate",
+              "termination_after_suspension_days": 30,
               "live_provider": False,
               "production_credentials": False,
               "live_money_movement": False,
@@ -349,6 +352,7 @@ jobs:
           print(json.dumps(decision, indent=2, sort_keys=True))
           PY
           echo 'PAY12_RECURRING_DUNNING=PASS'
+          echo 'PAY12_SUSPENSION_TERMINATION_POLICY=PASS'
           echo 'PAY12_PROVIDER_OUTAGE_IMMEDIATE_DISABLE=FORBIDDEN'
           echo 'PAY12_LIVE_PROVIDER=DISABLED'
           echo 'PAY12_PRODUCTION_CREDENTIALS=DISABLED'

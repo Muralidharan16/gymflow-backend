@@ -89,7 +89,11 @@ first confirmed failure
       ↓
 7 days read only
       ↓
-billing only
+suspended / billing only
+      ↓
+30-day suspension window
+      ↓
+terminated (policy controlled)
 ```
 
 A policy day is exactly 86,400 elapsed seconds.
@@ -104,6 +108,8 @@ spacing from first confirmed failure: 0h, 24h, 72h, 120h
 The first attempt is the triggering attempt. Retry timestamps are persisted.
 
 Dunning stages may move forward or recover. They cannot silently move backward.
+
+The default `DUNNING-IN-V1` final action is `suspend_then_terminate`: billing-only access is a suspension, not an immediate termination. Termination may occur only after the additional 30-day suspension window, and the database requires the case to be suspended before it can become terminated. A future published policy may choose suspension without termination. Provider outages do not start or accelerate the suspension/termination clock.
 
 ## Late payment recovery
 
@@ -129,7 +135,7 @@ Recovery requires payment-success evidence; a support/browser assertion cannot p
 - scheduled/sent timestamps;
 - attempts and safe error text.
 
-Supported policy events include payment failure, retry scheduling, grace warning, limited/read-only restriction, suspension, recovery, mandate expiry/revocation, and payment-method replacement.
+Supported policy events include payment failure, retry scheduling, grace warning, limited/read-only restriction, suspension, policy-controlled termination, recovery, mandate expiry/revocation, and payment-method replacement.
 
 ## Access engine
 
@@ -163,6 +169,7 @@ The exact candidate must simultaneously prove:
 - provider outage non-dunning invariant;
 - retry spacing and max attempts;
 - exact grace-stage timing;
+- policy-controlled suspension and termination timing;
 - durable dunning evidence;
 - deduplicated customer notification model;
 - late-payment recovery;

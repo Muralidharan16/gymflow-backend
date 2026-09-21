@@ -371,3 +371,95 @@ async def test_pay12_recurring_job_final_attempt_crash_reclaim_and_exact_owner()
         assert reconciliation_claim.attempt_number == 4
         assert reconciliation_claim.max_attempts == 4
         await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_pay12_pg16_policy_controlled_suspension_then_termination():
+    ids = await _seed_pay11_contract()
+    invoice_id = "92000000-0000-0000-0000-000000000211"
+    case_id = "92000000-0000-0000-0000-000000000411"
+    params = ids | {
+        "org1": ORG_1,
+        "invoice": invoice_id,
+        "case": case_id,
+        "sha_a": SHA_A,
+    }
+
+    await exec_sql(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+
+        INSERT INTO platform_invoices (
+            id, organization_id, billing_account_id, subscription_id,
+            status, currency_code, subtotal_minor, tax_minor, total_minor,
+            amount_due_minor, catalog_release_id, provider_release_id,
+            plan_version_id, price_id, commercial_contract_sha256,
+            tax_snapshot_json, billing_address_snapshot_json,
+            service_period_start, service_period_end
+        )
+        SELECT
+            :invoice, :org1, billing_account_id, id,
+            'draft', 'INR', 10000, 1800, 11800, 11800,
+            accepted_catalog_release_id, accepted_provider_release_id,
+            accepted_plan_version_id, accepted_price_id,
+            commercial_contract_sha256,
+            '{}'::jsonb, '{}'::jsonb,
+            '2026-12-01T00:00:00Z', '2027-01-01T00:00:00Z'
+        FROM platform_subscriptions
+        WHERE id=:subscription;
+
+        INSERT INTO platform_dunning_cases (
+            id, organization_id, subscription_id, invoice_id,
+            policy_code, policy_snapshot_json,
+            status, stage, first_confirmed_failure_at,
+            full_grace_ends_at, limited_write_ends_at, read_only_ends_at,
+            confirmed_attempt_count, max_attempts, next_retry_at,
+            last_evidence_kind, last_evidence_sha256,
+            last_evidence_ref, last_evidence_at
+        ) VALUES (
+            :case, :org1, :subscription, :invoice,
+            'DUNNING-IN-V1',
+            '{"final_action":"suspend_then_terminate","termination_after_suspension_days":30}'::jsonb,
+            'open', 'full_grace', '2026-12-01T00:05:00Z',
+            '2026-12-04T00:05:00Z', '2026-12-08T00:05:00Z',
+            '2026-12-15T00:05:00Z',
+            4, 4, NULL,
+            'confirmed_payment_failure', :sha_a,
+            'evidence-pay12-terminal-policy',
+            '2026-12-01T00:05:00Z'
+        );
+        """,
+        params,
+    )
+
+    await expect_db_error(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        UPDATE platform_dunning_cases
+        SET status='terminated',
+            stage='billing_only',
+            terminated_at='2027-01-14T00:05:00Z'
+        WHERE id=:case
+        """,
+        {"org1": ORG_1, "case": case_id},
+    )
+
+    await exec_sql(
+        """
+        SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
+        UPDATE platform_dunning_cases
+        SET status='suspended',
+            stage='billing_only',
+            suspended_at='2026-12-15T00:05:00Z',
+            restricted_at='2026-12-04T00:05:00Z',
+            version=version+1
+        WHERE id=:case;
+
+        UPDATE platform_dunning_cases
+        SET status='terminated',
+            terminated_at='2027-01-14T00:05:00Z',
+            version=version+1
+        WHERE id=:case;
+        """,
+        {"org1": ORG_1, "case": case_id},
+    )

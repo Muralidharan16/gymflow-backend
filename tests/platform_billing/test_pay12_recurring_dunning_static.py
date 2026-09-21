@@ -78,6 +78,8 @@ def test_pay12_policy_has_retry_grace_notification_and_recovery_rules():
     assert params["max_attempts"] == 4
     assert params["retry_spacing_hours"] == [0, 24, 72, 120]
     assert params["provider_outage_counts_as_failure"] is False
+    assert params["final_action"] == "suspend_then_terminate"
+    assert params["termination_after_suspension_days"] == 30
     assert params["late_payment_recovers_access"] is True
     assert {"upi_autopay", "e_mandate", "card_recurring"} <= set(params["supported_mandate_rails"])
     assert {
@@ -86,6 +88,7 @@ def test_pay12_policy_has_retry_grace_notification_and_recovery_rules():
         "access_limited",
         "access_read_only",
         "subscription_suspended",
+        "subscription_terminated",
         "payment_recovered",
     } <= set(params["customer_notifications"])
 
@@ -118,6 +121,7 @@ def test_pay12_has_durable_job_fences_and_terminal_fact_protection():
         "first confirmed failure timestamp is immutable",
         "dunning stage cannot move backward",
         "dunning recovery requires durable payment success evidence",
+        "termination requires prior suspension and terminated_at",
         "terminal notification state cannot revert",
         "ux_platform_invoices_subscription_service_period",
         "issued invoice service period is immutable",

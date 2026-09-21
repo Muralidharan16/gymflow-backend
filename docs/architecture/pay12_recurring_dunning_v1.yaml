@@ -28,6 +28,8 @@ max_attempts: 4
 full_access_grace_days: 3
 limited_write_days: 4
 read_only_days: 7
+final_action: suspend_then_terminate
+termination_after_suspension_days: 30
 late_payment_recovery: true
 payment_method_replacement: true
 notification_dedupe: true
