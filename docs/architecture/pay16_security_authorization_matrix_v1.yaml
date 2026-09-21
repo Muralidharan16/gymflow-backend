@@ -2,12 +2,16 @@ version: 1
 phase: PAY-16
 default: deny
 predecessor_sha: 3c74c0fa888022922fd079abd0c52d1e151aaf30
-alembic_head: zz17d8e9f0a61
+alembic_head: zz27d8e9f0a62
 actions:
   checkout_create:
     allowed_roles: [owner, admin]
     same_tenant: true
     provider_mode: sandbox_only
+    recent_auth_seconds: 600
+    csrf_when_cookie_authenticated: true
+    revocation_check: fail_closed
+    durable_security_audit: true
     idempotency_required: true
   checkout_status:
     allowed_roles: [owner, admin, finance_admin, superadmin, compliance]
@@ -32,6 +36,7 @@ actions:
     velocity:
       window_seconds: 300
       max_successes: 10
+    durable_security_audit: true
   offline_payment_reject:
     allowed_roles: [owner, admin]
     same_tenant: true
@@ -40,6 +45,7 @@ actions:
     revocation_check: fail_closed
     reason_code_required: true
     idempotency_required: true
+    durable_security_audit: true
   webhook_razorpay:
     authentication: provider_hmac
     jwt_required: false
