@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "phase": "PAY-16",
+  "metric": "doers.finance.security_events",
+  "prometheus_metric": "doers_finance_security_events_total",
+  "bounded_labels": {
+    "event": [
+      "finance.security.identity_mismatch",
+      "finance.security.revocation_backend_unavailable",
+      "finance.security.csrf_rejected",
+      "finance.offline_payment.maker_checker_rejected",
+      "finance.offline_payment.velocity_rejected",
+      "finance.offline_payment.prepared",
+      "finance.offline_payment.approved",
+      "finance.offline_payment.rejected",
+      "finance.checkout.initiated",
+      "unknown"
+    ],
+    "severity": ["info", "warning", "critical", "unknown"]
+  },
+  "alerts": {
+    "finance_security_abuse_spike": {
+      "name": "DoersFinanceSecurityAbuseSpike",
+      "owner": "finance-security",
+      "severity": "critical",
+      "threshold": "5 warning/critical events in 5m",
+      "runbook": "docs/runbooks/pay16/finance-security-abuse.md"
+    },
+    "maker_checker_violation": {
+      "name": "DoersFinanceMakerCheckerViolation",
+      "owner": "finance-security",
+      "severity": "critical",
+      "threshold": "any rejected self-approval attempt",
+      "runbook": "docs/runbooks/pay16/finance-security-abuse.md"
+    },
+    "revocation_verifier_unavailable": {
+      "name": "DoersFinanceSecurityVerifierUnavailable",
+      "owner": "finance-security",
+      "severity": "critical",
+      "threshold": "any high-risk Finance revocation-verifier outage",
+      "runbook": "docs/runbooks/pay16/finance-security-abuse.md"
+    }
+  },
+  "forbidden_metric_attributes": [
+    "tenant_id",
+    "actor_id",
+    "request_id",
+    "access_token",
+    "refresh_token",
+    "signature",
+    "provider_reference",
+    "payment_reference",
+    "amount",
+    "currency"
+  ]
+}
