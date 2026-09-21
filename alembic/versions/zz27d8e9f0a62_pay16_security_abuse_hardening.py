@@ -509,8 +509,8 @@ def _postflight(bind) -> None:
             WHERE namespace_data.nspname = 'app_secure'
               AND procedure_data.proname =
                   'record_finance_security_audit'
-              AND pg_catalog.pg_get_function_identity_arguments(
-                      procedure_data.oid
+              AND pg_catalog.oidvectortypes(
+                      procedure_data.proargtypes
                   ) = 'text, text, uuid, text, text'
             """
         )
