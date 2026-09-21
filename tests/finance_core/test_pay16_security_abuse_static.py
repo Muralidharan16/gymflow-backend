@@ -110,9 +110,12 @@ def test_live_provider_and_money_movement_stay_fail_closed():
     assert "production_payment_application_enabled: bool = False" in guards
 
 
-def test_finance_models_and_schemas_do_not_store_pan_cvv_or_upi_pin():
-    forbidden = re.compile(
-        r"(?i)\b(?:pan|card_number|card_pan|cvv|cvc|upi_pin|card_security_code)\b"
+def test_finance_models_and_schemas_do_not_store_card_pan_cvv_or_upi_pin():
+    # "PAN" in the PAY-16 payment-data threat model means a card Primary
+    # Account Number. Finance legitimately stores 10-character Indian tax PANs
+    # for legal entities/billing parties; those are not payment credentials.
+    forbidden_payment_secret = re.compile(
+        r"(?i)\b(?:card_number|card_pan|primary_account_number|cvv|cvc|upi_pin|card_security_code)\b"
     )
     targets = [
         *sorted((ROOT / "app" / "finance_core" / "models").glob("*.py")),
@@ -124,9 +127,14 @@ def test_finance_models_and_schemas_do_not_store_pan_cvv_or_upi_pin():
             stripped = line.strip()
             if stripped.startswith("#") or stripped.startswith('"""') or stripped.startswith("'''"):
                 continue
-            if forbidden.search(stripped):
+            if forbidden_payment_secret.search(stripped):
                 violations.append(f"{path.relative_to(ROOT)}:{lineno}:{stripped}")
     assert violations == []
+
+    foundation = _source("app/finance_core/models/foundation.py")
+    assert "class FinanceLegalEntity" in foundation
+    assert "pan: Mapped[str | None] = mapped_column(String(10)" in foundation
+    assert "class FinanceBillingParty" in foundation
 
 
 def test_provider_hosted_collection_exposes_only_public_checkout_fields():

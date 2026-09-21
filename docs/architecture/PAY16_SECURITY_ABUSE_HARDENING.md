@@ -85,9 +85,11 @@ A refund above the eligible value is rejected. Provider refund requests are buil
 
 ## Payment-data minimization
 
-DOers must not store PAN/card number, CVV/CVC, UPI PIN, or equivalent payment-authentication secrets.
+DOers must not store payment-card PAN/card number, CVV/CVC, UPI PIN, or equivalent payment-authentication secrets.
 
-The provider-hosted checkout contract exposes only the public provider key and provider order ID. PAY-16 tests scan Finance models and schemas to prevent forbidden fields from being introduced.
+Here "payment-card PAN" means a card Primary Account Number. It does not mean the 10-character Indian income-tax PAN legitimately stored for legal entities and billing parties.
+
+The provider-hosted checkout contract exposes only the public provider key and provider order ID. PAY-16 tests scan Finance models and schemas to prevent payment-authentication fields from being introduced.
 
 ## Secure exports
 

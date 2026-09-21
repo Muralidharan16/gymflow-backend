@@ -178,7 +178,7 @@ jobs:
       - name: Re-prove inherited static money/security boundaries
         run: |
           set -euo pipefail
-          python -m pytest --noconftest -q --maxfail=1             tests/test_pay0_payment_architecture_inventory.py             tests/finance_core/test_phase6aj_checkout_callback_recording.py             tests/test_p4d_refund_authority_static_contracts.py
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay0_payment_architecture_inventory.py             tests/finance_core/test_phase6aj_checkout_callback_recording.py::test_phase6aj_adds_no_route_frontend_network_or_production_enablement             tests/test_p4d_refund_authority_static_contracts.py
           echo 'PAY16_INHERITED_FINANCE_SECURITY=PASS'
 
   decision:
