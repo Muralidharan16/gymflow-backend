@@ -419,7 +419,10 @@ async def test_pay12_pg16_policy_controlled_suspension_then_termination():
         ) VALUES (
             :case, :org1, :subscription, :invoice,
             'DUNNING-IN-V1',
-            '{"final_action":"suspend_then_terminate","termination_after_suspension_days":30}'::jsonb,
+            jsonb_build_object(
+                'final_action', 'suspend_then_terminate',
+                'termination_after_suspension_days', 30
+            ),
             'open', 'full_grace', '2026-12-01T00:05:00Z',
             '2026-12-04T00:05:00Z', '2026-12-08T00:05:00Z',
             '2026-12-15T00:05:00Z',
