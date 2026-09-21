@@ -171,6 +171,12 @@ jobs:
               'PAY15 Legacy Org','pay15-legacy-org','basic'::orgtier,true,5,'INR'
           );
 
+          SELECT pg_catalog.set_config(
+              'app.current_org_id',
+              '98000000-0000-0000-0000-000000000001',
+              false
+          );
+
           INSERT INTO public.gyms(
               id,org_id,name,facility_type,gymu_id,is_active
           ) VALUES (

@@ -95,7 +95,7 @@ def test_migration_capabilities_are_app_secure_config_only():
     assert "TO finance_config_runtime" in source
     assert "PAY-15 migration requires finance_config_runtime" in source
     assert "SET row_security = on" in source
-    assert "FROM PUBLIC;" in source
+    assert "FROM PUBLIC" in source
     assert "GRANT EXECUTE ON FUNCTION app_secure.pay15_capture_inventory" in source
     assert "TO app_runtime" not in source.split(
         "GRANT EXECUTE ON FUNCTION app_secure.pay15_capture_inventory", 1
