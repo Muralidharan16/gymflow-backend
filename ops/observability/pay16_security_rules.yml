@@ -1,0 +1,45 @@
+groups:
+  - name: doers.pay16.finance.security
+    interval: 30s
+    rules:
+      - alert: DoersFinanceSecurityAbuseSpike
+        expr: 'sum(increase(doers_finance_security_events_total{severity=~"warning|critical"}[5m])) >= 5'
+        for: 1m
+        labels:
+          severity: critical
+          owner: finance-security
+          failure_mode: finance_security_abuse_spike
+          dedupe_key: pay16/finance-security-abuse
+        annotations:
+          customer_impact: 'Repeated rejected privileged Finance actions may indicate credential abuse or active authorization bypass attempts.'
+          runbook: 'docs/runbooks/pay16/finance-security-abuse.md'
+          safe_first_actions: 'Preserve audit/log/trace evidence, identify the bounded event category, and revoke the affected session family before changing Finance state.'
+          escalation_condition: 'Five or more warning/critical security events occur in five minutes or the rate continues increasing.'
+
+      - alert: DoersFinanceMakerCheckerViolation
+        expr: 'sum(increase(doers_finance_security_events_total{event="finance.offline_payment.maker_checker_rejected"}[5m])) > 0'
+        for: 0m
+        labels:
+          severity: critical
+          owner: finance-security
+          failure_mode: finance_maker_checker_violation
+          dedupe_key: pay16/maker-checker
+        annotations:
+          customer_impact: 'An actor attempted to approve a monetary action they prepared, which is forbidden by the four-eyes control.'
+          runbook: 'docs/runbooks/pay16/finance-security-abuse.md'
+          safe_first_actions: 'Preserve the prepared request and actor/session evidence; do not bypass maker-checker or manually mark the payment approved.'
+          escalation_condition: 'Any occurrence is actionable; repeated attempts require session revocation and operator review.'
+
+      - alert: DoersFinanceSecurityVerifierUnavailable
+        expr: 'sum(increase(doers_finance_security_events_total{event="finance.security.revocation_backend_unavailable"}[5m])) > 0'
+        for: 0m
+        labels:
+          severity: critical
+          owner: finance-security
+          failure_mode: finance_revocation_verifier_unavailable
+          dedupe_key: pay16/revocation-verifier
+        annotations:
+          customer_impact: 'High-risk Finance writes fail closed because session revocation truth is unavailable.'
+          runbook: 'docs/runbooks/pay16/finance-security-abuse.md'
+          safe_first_actions: 'Restore the Redis application revocation dependency; do not disable the fail-closed Finance guard.'
+          escalation_condition: 'Any production occurrence or outage lasting longer than one minute.'

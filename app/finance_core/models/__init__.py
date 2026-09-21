@@ -47,6 +47,7 @@ from app.finance_core.models.foundation import (
     FinanceRefundExecutionCommand,
     FinanceRefundObligationBinding,
     FinanceRefundProviderEvidence,
+    FinanceSecurityAuditEvent,
     FinanceTaxCode,
     FinanceTaxRecord,
 )
@@ -96,6 +97,7 @@ __all__ = [
     "FinanceRefundExecutionCommand",
     "FinanceRefundObligationBinding",
     "FinanceRefundProviderEvidence",
+    "FinanceSecurityAuditEvent",
     "FinanceTaxCode",
     "FinanceTaxRecord",
 ]

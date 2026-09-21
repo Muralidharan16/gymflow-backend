@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +41,7 @@ RAZORPAY_EVENT_STATUS_MAP = {
 }
 _EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 _PROVIDER_REF_PATTERN = re.compile(r"^[A-Za-z0-9_:-]{1,200}$")
+MAX_RAZORPAY_FUTURE_SKEW_SECONDS = 300
 
 
 class RazorpayWebhookConfirmationService:
@@ -190,11 +192,22 @@ class RazorpayWebhookConfirmationService:
             raise FinanceWebhookSignatureError("Missing Razorpay webhook signature")
         if not webhook.raw_body:
             raise FinanceWebhookNormalizationError("Missing Razorpay webhook raw body")
-        if not verify_razorpay_webhook_signature(
+        current_secret_valid = verify_razorpay_webhook_signature(
             raw_body=webhook.raw_body,
             signature=webhook.signature,
             webhook_secret=self._razorpay_config.webhook_secret,
+        )
+        previous_secret_valid = False
+        if (
+            not current_secret_valid
+            and self._razorpay_config.previous_webhook_secret
         ):
+            previous_secret_valid = verify_razorpay_webhook_signature(
+                raw_body=webhook.raw_body,
+                signature=webhook.signature,
+                webhook_secret=self._razorpay_config.previous_webhook_secret,
+            )
+        if not (current_secret_valid or previous_secret_valid):
             raise FinanceWebhookSignatureError("Invalid Razorpay webhook signature")
 
         provider_event_id = _authoritative_event_id(webhook.provider_event_id)
@@ -216,6 +229,13 @@ class RazorpayWebhookConfirmationService:
         provider_payment_status = _required_text(payment_entity, "status")
         provider_captured = _optional_bool(payment_entity, "captured")
         provider_event_timestamp = _optional_nonnegative_int(payload, "created_at")
+        if (
+            provider_event_timestamp is not None
+            and provider_event_timestamp > int(time.time()) + MAX_RAZORPAY_FUTURE_SKEW_SECONDS
+        ):
+            raise FinanceWebhookNormalizationError(
+                "Razorpay webhook event timestamp is outside the accepted future-skew window"
+            )
 
         provider_order_entity_id = None
         provider_order_status = None

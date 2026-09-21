@@ -61,6 +61,11 @@ from app.finance_core.domain.provider_boundary import (
 )
 from app.finance_core.domain.razorpay_sandbox import RazorpayProviderError, RazorpaySandboxConfig, validate_razorpay_sandbox_config
 from app.finance_core.domain.razorpay_webhooks import RazorpayWebhookInput
+from app.finance_core.security_abuse import (
+    FinanceSecurityContext,
+    finance_high_risk_actor_dependency,
+    security_event,
+)
 from app.finance_core.services.checkout_orchestration import FinanceCheckoutOrchestrationService
 from app.finance_core.services.payment_application_gate import FinancePaymentApplicationGateService
 from app.finance_core.services.razorpay_sandbox import (
@@ -69,6 +74,7 @@ from app.finance_core.services.razorpay_sandbox import (
     RazorpayTestModeTransport,
 )
 from app.finance_core.services.razorpay_webhooks import RazorpayWebhookConfirmationService
+from app.finance_core.services.security_audit import FinanceSecurityAuditService
 
 
 router = APIRouter(
@@ -266,6 +272,9 @@ async def create_checkout_session(
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
     actor: FinancePaymentActor = Depends(checkout_actor_dependency),
     _sandbox_enabled: None = Depends(require_finance_checkout_sandbox_enabled),
+    security_context: FinanceSecurityContext = Depends(
+        finance_high_risk_actor_dependency
+    ),
     db: AsyncSession = Depends(get_db),
     checkout_service: FinanceCheckoutOrchestrationService = Depends(
         get_checkout_orchestration_service
@@ -278,6 +287,21 @@ async def create_checkout_session(
     )
 
     prepared = await checkout_service.prepare_checkout_session(command)
+    # The checkout initiation security decision is chained and committed with
+    # the durable local invoice/payment authority before any provider I/O.
+    await FinanceSecurityAuditService(db).record(
+        event_type="finance.security.checkout.initiated",
+        target_type="payment",
+        target_id=prepared.finance_checkout_intent_id,
+        reason_code="CHECKOUT_INITIATED",
+        severity="info",
+    )
+    security_event(
+        "finance.checkout.initiated",
+        actor_id=security_context.actor_id,
+        organization_id=security_context.organization_id,
+        reason_code="CHECKOUT_INITIATED",
+    )
     # Durable local authority exists before any provider I/O.
     await db.commit()
 

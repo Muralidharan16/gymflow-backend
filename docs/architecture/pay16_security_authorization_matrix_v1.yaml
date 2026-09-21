@@ -1,0 +1,73 @@
+version: 1
+phase: PAY-16
+default: deny
+predecessor_sha: 3c74c0fa888022922fd079abd0c52d1e151aaf30
+alembic_head: zz27d8e9f0a62
+actions:
+  checkout_create:
+    allowed_roles: [owner, admin]
+    same_tenant: true
+    provider_mode: sandbox_only
+    recent_auth_seconds: 600
+    csrf_when_cookie_authenticated: true
+    revocation_check: fail_closed
+    durable_security_audit: true
+    idempotency_required: true
+  checkout_status:
+    allowed_roles: [owner, admin, finance_admin, superadmin, compliance]
+    same_tenant: true
+    enabled: false
+  offline_payment_prepare:
+    allowed_roles: [owner, admin]
+    same_tenant: true
+    recent_auth_seconds: 600
+    csrf_when_cookie_authenticated: true
+    revocation_check: fail_closed
+    idempotency_required: true
+  offline_payment_approve:
+    allowed_roles: [owner, admin]
+    same_tenant: true
+    recent_auth_seconds: 600
+    csrf_when_cookie_authenticated: true
+    revocation_check: fail_closed
+    maker_checker: true
+    reason_code_required: true
+    idempotency_required: true
+    velocity:
+      window_seconds: 300
+      max_successes: 10
+    durable_security_audit: true
+  offline_payment_reject:
+    allowed_roles: [owner, admin]
+    same_tenant: true
+    recent_auth_seconds: 600
+    csrf_when_cookie_authenticated: true
+    revocation_check: fail_closed
+    reason_code_required: true
+    idempotency_required: true
+    durable_security_audit: true
+  webhook_razorpay:
+    authentication: provider_hmac
+    jwt_required: false
+    event_id_required: true
+    durable_idempotency: true
+    secret_rotation_window: current_plus_previous
+    future_clock_skew_seconds: 300
+    amount_currency_reference_source: server_finance_truth
+    environment: sandbox_only
+  refund_intent:
+    public_route: false
+    cumulative_limit: allocated_minus_already_refunded
+    idempotency_required: true
+    reference_unique: true
+  refund_provider_submit:
+    public_route: false
+    browser_selects_amount: false
+    browser_selects_currency: false
+    browser_selects_provider_reference: false
+    live_provider: false
+  finance_export:
+    public_route: false
+    secure_guard_defined: true
+    max_rows: 5000
+    forbidden_fields: [card_number, card_pan, primary_account_number, cvv, cvc, upi_pin, pin]
