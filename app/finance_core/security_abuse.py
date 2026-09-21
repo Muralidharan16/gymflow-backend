@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException, Request, status
 from app.core.deps import Staff, require_org_admin
 from app.core.redis import redis_client
 from app.core.security import verify_finance_csrf_token, verify_token
+from app.observability.runtime_metrics import runtime_metrics
 
 
 logger = logging.getLogger("doers.finance.security")
@@ -292,7 +293,11 @@ def security_event(
 ) -> None:
     # Never include access tokens, cookies, signatures, raw provider payloads,
     # PAN/CVV/PIN material, or provider secrets in this record.
-    log = logger.warning if severity == "warning" else logger.info
+    runtime_metrics().finance_security_event(
+        event=event,
+        severity=severity,
+    )
+    log = logger.warning if severity in {"warning", "critical"} else logger.info
     log(
         "Finance security event",
         extra={
