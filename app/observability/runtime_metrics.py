@@ -70,6 +70,21 @@ _FINANCE_SIGNALS = frozenset(
         "unknown",
     }
 )
+_FINANCE_SECURITY_EVENTS = frozenset(
+    {
+        "finance.security.identity_mismatch",
+        "finance.security.revocation_backend_unavailable",
+        "finance.security.csrf_rejected",
+        "finance.offline_payment.maker_checker_rejected",
+        "finance.offline_payment.velocity_rejected",
+        "finance.offline_payment.prepared",
+        "finance.offline_payment.approved",
+        "finance.offline_payment.rejected",
+        "finance.checkout.initiated",
+        "unknown",
+    }
+)
+_SECURITY_SEVERITIES = frozenset({"info", "warning", "critical", "unknown"})
 _PROVIDERS = frozenset(
     {
         "opensearch",
@@ -198,6 +213,9 @@ class RuntimeMetrics:
         self.finance_signal = meter.create_gauge("doers.finance.signal.depth", unit="1")
         self.finance_idempotency_conflicts = meter.create_counter(
             "doers.finance.idempotency_conflicts", unit="1"
+        )
+        self.finance_security_events = meter.create_counter(
+            "doers.finance.security_events", unit="1"
         )
 
         # Providers
@@ -380,6 +398,21 @@ class RuntimeMetrics:
             lambda: self.finance_idempotency_conflicts.add(
                 1, {"signal": "idempotency_conflict"}
             ),
+        )
+
+    def finance_security_event(
+        self,
+        *,
+        event: str,
+        severity: str,
+    ) -> bool:
+        attrs = {
+            "event": _enum(event, _FINANCE_SECURITY_EVENTS),
+            "severity": _enum(severity, _SECURITY_SEVERITIES),
+        }
+        return self._safe(
+            "finance_security_event",
+            lambda: self.finance_security_events.add(1, attrs),
         )
 
     def provider_call(
