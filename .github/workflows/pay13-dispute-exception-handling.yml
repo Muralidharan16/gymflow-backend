@@ -217,14 +217,12 @@ jobs:
           );
           SQL
           if OUTPUT="$(python -s -m alembic -c alembic.ini downgrade "${PAY13_PREDECESSOR}" 2>&1)"; then
-            printf '%s
-' "$OUTPUT"
+            echo "$OUTPUT"
             echo 'PAY-13 populated downgrade unexpectedly succeeded' >&2
             exit 1
           else
             RC=$?
-            printf '%s
-' "$OUTPUT"
+            echo "$OUTPUT"
             test "$RC" -ne 0
           fi
           test "$(PGPASSWORD=ci-pay13-migration psql -X -qAt -v ON_ERROR_STOP=1             -h 127.0.0.1 -U migration_owner -d gymflow_pay13_lifecycle_test             -c 'SELECT version_num FROM public.alembic_version')" = "${PAY13_HEAD}"
