@@ -25,6 +25,7 @@ INVOICE_SEQUENCE = "94000000-0000-0000-0000-000000000001"
 INVOICE = "94000000-0000-0000-0000-000000000101"
 INVOICE_LINE = "94000000-0000-0000-0000-000000000102"
 PAYMENT = "94000000-0000-0000-0000-000000000201"
+FAILED_PAYMENT = "94000000-0000-0000-0000-000000000202"
 DISPUTE = "94000000-0000-0000-0000-000000000301"
 EVIDENCE = "94000000-0000-0000-0000-000000000401"
 EVENT_OPEN = "94000000-0000-0000-0000-000000000501"
@@ -322,11 +323,25 @@ async def test_pay13_open_requires_captured_payment_and_atomic_liability():
     await exec_sql(
         """
         SELECT pg_catalog.set_config('app.current_org_id', :org1, true);
-        UPDATE platform_payment_attempts
-        SET status='failed', completed_at='2026-10-02T00:00:00Z'
-        WHERE id=:payment
+        INSERT INTO platform_payment_attempts (
+            id, organization_id, invoice_id, provider_release_id,
+            provider_code, external_payment_ref, idempotency_key,
+            attempt_number, amount_minor, currency_code, status,
+            failure_classification, completed_at
+        ) VALUES (
+            :failed_payment, :org1, :invoice, :provider_release,
+            'fake', 'fake_payment_pay13_failed',
+            'pay13-failed-payment-proof', 2,
+            11800, 'INR', 'failed',
+            'provider_declined', '2026-10-02T00:00:00Z'
+        )
         """,
-        {"org1": ORG_1, "payment": PAYMENT},
+        {
+            "org1": ORG_1,
+            "failed_payment": FAILED_PAYMENT,
+            "invoice": INVOICE,
+            "provider_release": PROVIDER_RELEASE_1,
+        },
     )
 
     await expect_db_error(
@@ -339,7 +354,7 @@ async def test_pay13_open_requires_captured_payment_and_atomic_liability():
             amount_minor, currency_code, financial_hold_active,
             last_evidence_sha256, last_evidence_ref, opened_at
         ) VALUES (
-            :org1, :payment, :invoice,
+            :org1, :failed_payment, :invoice,
             :provider_release, 'fake', 'test',
             'dp_failed_payment', 'chargeback', 'opened',
             11800, 'INR', true,
@@ -349,7 +364,7 @@ async def test_pay13_open_requires_captured_payment_and_atomic_liability():
         """,
         {
             "org1": ORG_1,
-            "payment": PAYMENT,
+            "failed_payment": FAILED_PAYMENT,
             "invoice": INVOICE,
             "provider_release": PROVIDER_RELEASE_1,
             "sha_a": SHA_A,
