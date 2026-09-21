@@ -6,8 +6,9 @@ PAY-16 assumes monetary paths are actively attacked and hardens the Finance boun
 
 - PAY-15 SHA: 3c74c0fa888022922fd079abd0c52d1e151aaf30
 - PAY-15 tree: c7c4bfeec90ba94212bca4bfe9800564e3ae9d97
-- Alembic head remains: zz17d8e9f0a61
-- PAY-16 adds no schema authority and does not alter PAY-15 legacy-retirement semantics.
+- PAY-15 Alembic head: zz17d8e9f0a61
+- PAY-16 Alembic head: zz27d8e9f0a62
+- PAY-16 adds one narrowly scoped append-only security-audit migration and does not alter PAY-15 legacy-retirement semantics.
 
 ## Threat/control mapping
 
@@ -104,7 +105,8 @@ The provider-hosted checkout contract exposes only the public provider key and p
 PAY-16 defines a reusable secure-export guard:
 
 - maximum 5,000 rows per request;
-- PAN/card number/CVV/CVC/UPI PIN fields always forbidden.
+- payment-card PAN/card number/CVV/CVC/UPI PIN fields always forbidden;
+- Indian statutory tax PAN is not treated as payment-authentication material.
 
 No public Finance export route is enabled by PAY-16. A later export phase must bind this guard, recent authentication, authorization and audit before exposure.
 
@@ -116,8 +118,8 @@ PAY-16 emits a bounded-cardinality `doers.finance.security_events` counter. Aler
 
 One exact PAY-16 candidate must pass:
 
-- exact predecessor and exact scope;
-- unchanged Alembic head;
+- exact PAY-15 predecessor and exact PAY-16 scope;
+- single Alembic head `zz27d8e9f0a62` rooted directly in `zz17d8e9f0a61`;
 - authorization matrix;
 - adversarial penetration suite;
 - SAST;
