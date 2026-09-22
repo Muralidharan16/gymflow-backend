@@ -141,7 +141,8 @@ def test_workflow_requires_real_pg16_redis_multi_tenant_and_two_soaks() -> None:
         "run_p10s_soak.sh",
         "P10_SOAK=PASS",
         "tests/finance_core/test_pay17_fault_injection_concurrency.py",
-        "tests/platform_billing/test_pay17_payment_lifecycle_races.py",
+        "scripts/ci/pay20_prepare_system_pg16.sh",
+        "uses: ./.github/workflows/hardening-ci.yml",
     ):
         assert token in source
 
@@ -183,3 +184,27 @@ def test_pay20_document_forbids_correctness_weakening_for_performance() -> None:
     assert "exactly one activation" in text
     assert "five-minute Finance soak" in text
     assert "production-container" in text
+
+
+
+def test_pay20_system_setup_is_current_head_no_migration_setup_not_risk_bypass() -> None:
+    source = (ROOT / "scripts/ci/pay20_prepare_system_pg16.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "scripts/ci/install_pg16_test_stack.sh" in source
+    assert "scripts/ci/bootstrap_cluster_roles.sh" in source
+    assert "scripts/verify_alembic_graph.py" in source
+    assert 'python -s -m alembic -c alembic.ini upgrade head' in source
+    assert 'PAY20_SYSTEM_PG16_READY=PASS' in source
+    assert "migration_semantics_gate.py" not in source
+
+    # PAY-20 exact scope contains no Alembic revision, so bypassing a migration
+    # scan is structurally impossible; this helper only prepares current-head
+    # runtime databases for load.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert '"scripts/ci/pay20_prepare_system_pg16.sh"' in workflow
+    assert "alembic/versions/" not in {
+        line.strip()
+        for line in workflow.splitlines()
+        if line.strip().startswith('"')
+    }
