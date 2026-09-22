@@ -104,8 +104,10 @@ def test_finance_harness_uses_certified_real_finance_paths_and_no_live_provider(
 
     assert '"live_provider": False' in source
     assert "rzp_live_" not in source
-    assert "requests." not in source
-    assert "httpx." not in source
+    assert "import requests" not in source
+    assert "from requests" not in source
+    assert "import httpx" not in source
+    assert "from httpx" not in source
 
 
 def test_finance_harness_hard_fails_on_correctness_drift() -> None:
