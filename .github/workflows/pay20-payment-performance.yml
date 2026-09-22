@@ -371,7 +371,7 @@ jobs:
           # selects FINANCE_CORE_TEST_DATABASE_URL as the reduced runtime pool.
           # Exact URL reuse is forbidden by the global test-isolation contract.
           python -m pytest -q --maxfail=1 \
-            tests/finance_core/test_pay17_fault_injection_concurrency.py::test_one_hundred_identical_callbacks_converge_to_one_evidence_transition \
+            tests/finance_core/test_pay17_fault_injection_concurrency.py::test_100_concurrent_identical_callbacks_converge_to_one_provider_event_without_financial_application \
             tests/finance_core/test_phase5j_refund_credit_note_reversal.py::test_concurrent_refund_intents_serialize_on_payment_and_cannot_over_refund
           echo 'PAY20_HOT_FINANCE_RACES=PASS'
       - name: Prove bounded Finance event dispatcher burst drain
