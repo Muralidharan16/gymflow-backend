@@ -20,6 +20,7 @@ STALE_MAINTENANCE_BOOTSTRAP = "provision_lifecycle_maintenance_role.sh"
 RETIRED_ROLE = "internal_billing_worker"
 TRUSTED_HEAD_WRAPPERS = {
     "bash scripts/ci/prepare_p3e_pg16.sh": "scripts/ci/prepare_p3e_pg16.sh",
+    "bash scripts/ci/pay20_prepare_system_pg16.sh": "scripts/ci/pay20_prepare_system_pg16.sh",
 }
 _HEAD_PATTERN = re.compile(r"\balembic\b[^\n]*\bupgrade\s+head\b", re.IGNORECASE)
 _JOB_PATTERN = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
