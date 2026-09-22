@@ -27,9 +27,9 @@ from app.core.database import AsyncSessionLocal
 from tests import test_pay4_member_finance_binding_runtime as pay4
 from tests.finance_core.test_phase5c_invoice_engine import (
     fetch_scalar,
-    issued_invoice,
     seed_master_data,
 )
+from tests.finance_core.test_phase5d_payment_ledger import issued_invoice
 from tests.finance_core.test_phase5i_settlement_reconciliation import (
     reconcile_payment,
 )
