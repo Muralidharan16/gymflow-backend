@@ -1,0 +1,193 @@
+name: PAY-23 Post-Launch Financial Certification
+
+on:
+  push:
+    branches:
+      - hardening/pay23-postlaunch-financial-certification
+  pull_request:
+    paths:
+      - 'app/payment_certification/**'
+      - 'scripts/operations/pay23_*'
+      - 'tests/test_pay23_postlaunch_financial_certification.py'
+      - 'docs/architecture/PAY23_POST_LAUNCH_FINANCIAL_CERTIFICATION.md'
+      - 'docs/architecture/pay23_postlaunch_financial_certification_v1.json'
+      - '.github/workflows/pay23-postlaunch-financial-certification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay23-postlaunch-financial-certification-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY23_BASE_SHA: 6cba5c1cfa1d4296e32c91a67c46c2b73d3ab016
+  PAY23_BASE_TREE: 0c3158836cde39f50b24051e2c162453641124d7
+  PAY23_ALEMBIC_HEAD: zz47d8e9f0a64
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  contract:
+    name: PAY-23 post-launch certifier contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay23_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay23-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay23-static
+      ENVIRONMENT: test
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Prove PAY-22 predecessor and exact PAY-23 scope
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "$PAY23_BASE_SHA^{tree}")" = "$PAY23_BASE_TREE"
+          test "$(git merge-base "$PAY23_BASE_SHA" HEAD)" = "$PAY23_BASE_SHA"
+          git diff --name-only "$PAY23_BASE_SHA...HEAD" > /tmp/pay23-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              ".github/workflows/pay23-postlaunch-financial-certification.yml",
+              "app/payment_certification/__init__.py",
+              "app/payment_certification/post_launch.py",
+              "docs/architecture/PAY23_POST_LAUNCH_FINANCIAL_CERTIFICATION.md",
+              "docs/architecture/pay23_postlaunch_financial_certification_v1.json",
+              "scripts/operations/pay23_certify_postlaunch.py",
+              "scripts/operations/pay23_local_snapshot.sql",
+              "tests/test_pay23_postlaunch_financial_certification.py",
+          }
+          changed = {
+              line.strip()
+              for line in Path("/tmp/pay23-changed.txt").read_text().splitlines()
+              if line.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-23 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          if any(path.startswith("alembic/versions/") for path in changed):
+              raise SystemExit("PAY-23 must not add or alter a migration")
+          print(f"PAY-23 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "$PAY23_ALEMBIC_HEAD"
+      - name: Prove read-only collector and certifier
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/pay23_postlaunch_financial_certification_v1.json >/dev/null
+          python -m py_compile             app/payment_certification/post_launch.py             scripts/operations/pay23_certify_postlaunch.py             tests/test_pay23_postlaunch_financial_certification.py
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay23_postlaunch_financial_certification.py             tests/platform_billing/test_pay14_reconciliation_accounting.py             tests/platform_billing/test_pay14_reconciliation_accounting_static.py
+          python - <<'PY'
+          from pathlib import Path
+          sql = Path("scripts/operations/pay23_local_snapshot.sql").read_text().upper()
+          required = (
+              "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+              "ROLLBACK",
+              "PLATFORM_ACCOUNTING_CLOSURE_RUNS",
+              "FINANCE.PAYMENTS",
+              "FINANCE.PAYMENT_ALLOCATIONS",
+              "FINANCE.REFUNDS",
+              "FINANCE.LEDGER_ENTRIES",
+              "MEMBER_SUBSCRIPTION_FINANCE_EVENT_CONSUMPTIONS",
+              "PLATFORM_SUBSCRIPTIONS",
+          )
+          for token in required:
+              if token not in sql:
+                  raise SystemExit(f"PAY-23 collector contract missing {token}")
+          for forbidden in (
+              " INSERT ",
+              " UPDATE ",
+              " DELETE ",
+              " TRUNCATE ",
+              " CREATE ",
+              " ALTER ",
+              " DROP ",
+              " GRANT ",
+              " REVOKE ",
+          ):
+              if forbidden in f" {sql} ":
+                  raise SystemExit(f"PAY-23 collector mutation token forbidden: {forbidden.strip()}")
+          PY
+          echo 'PAY23_CERTIFIER_ENGINE=PASS'
+          echo 'PAY23_READ_ONLY_EVIDENCE_CONTRACT=PASS'
+          echo 'PAY23_NONVACUOUS_LIVE_ACTIVITY_GATE=PASS'
+          echo 'PAY23_PAY14_ACCOUNTING_CLOSURE_REUSE=PASS'
+          echo 'PAY23_ZERO_ANOMALY_GATE=PASS'
+          echo 'PAY23_SYNTHETIC_TERMINAL_MARKER=FORBIDDEN'
+
+  finance_regression:
+    name: PAY-23 exact-head Finance regression
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  platform_regression:
+    name: PAY-23 exact-head platform regression
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/hardening-ci.yml
+
+  architecture_regression:
+    name: PAY-23 exact-head architecture contracts
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+
+  readiness:
+    name: PAY-23 post-launch certification readiness
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs:
+      - contract
+      - finance_regression
+      - platform_regression
+      - architecture_regression
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every repository-controlled PAY-23 gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          data = json.loads(os.environ["RESULTS"])
+          bad = {
+              key: value["result"]
+              for key, value in data.items()
+              if value["result"] != "success"
+          }
+          if bad:
+              raise SystemExit(f"PAY-23 repository gate failure: {bad}")
+          PY
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+      - name: Bind readiness to current Stage 0 truth
+        run: |
+          set -euo pipefail
+          candidate="$(git rev-parse HEAD)"
+          test "$(git merge-base "$PAY23_BASE_SHA" "$candidate")" = "$PAY23_BASE_SHA"
+          echo "PAY23_CERTIFIER_CANDIDATE_SHA=$candidate"
+          echo 'PAY23_CERTIFIER_ENGINE=PASS'
+          echo 'PAY23_REPOSITORY_CONTROLLED_GATES=PASS'
+          echo 'PAY23_CURRENT_PAY22_STAGE=0'
+          echo 'PAY23_POST_LAUNCH_LIVE_EVIDENCE=REQUIRED'
+          echo 'PAY23_ENTERPRISE_PAYMENT_SYSTEM=NOT_CERTIFIED'

@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-23",
+  "title": "Post-Launch Financial Certification",
+  "predecessor": {
+    "phase": "PAY-22",
+    "authorized_stage": 0,
+    "certified_executable_sha": "5ee1ed92c1d16b7d7f18da6f7c0f2ed4d8c215da",
+    "authorization_evidence_sha": "6cba5c1cfa1d4296e32c91a67c46c2b73d3ab016",
+    "terminal_marker": "PAY22_PRODUCTION_ACTIVATION_AUTHORIZED"
+  },
+  "new_migration": false,
+  "certification_requires": {
+    "environment": "live",
+    "minimum_activation_stage": 1,
+    "minimum_window_seconds": 3600,
+    "maximum_window_days": 31,
+    "nonzero_provider_payments": true,
+    "nonzero_provider_settlements": true,
+    "read_only_snapshot": true,
+    "reduced_read_role": true,
+    "raw_customer_or_provider_identifiers_in_evidence": false
+  },
+  "equalities": [
+    "provider_payments == finance_payments",
+    "finance_allocations == invoice_allocation_links",
+    "provider_settlements == finance_settlements",
+    "provider_refunds == finance_refunds",
+    "ledger_debits == ledger_credits",
+    "expected_subscription_activations == actual_subscription_activations"
+  ],
+  "required_zero_anomalies": [
+    "unexplained_duplicate_charges",
+    "duplicate_refunds",
+    "lost_payments",
+    "orphaned_invoices",
+    "unexplained_entitlement_grants",
+    "unresolved_cross_tenant_anomalies"
+  ],
+  "platform_billing": {
+    "checked_state_count_must_be_positive": true,
+    "invalid_state_count": 0,
+    "open_reconciliation_discrepancy_count": 0
+  },
+  "accounting_closure": {
+    "source": "PAY-14 platform_accounting_closure_runs",
+    "environment": "live",
+    "status": "closed",
+    "expected_equals_observed": true,
+    "all_expected_objects_resolved": true,
+    "mismatch_count": 0,
+    "retry_count": 0,
+    "manual_review_count": 0,
+    "incident_count": 0
+  },
+  "ci_policy": {
+    "synthetic_evidence_may_test_certifier_logic": true,
+    "synthetic_evidence_may_emit_terminal_marker": false,
+    "stage_0_may_emit_terminal_marker": false
+  },
+  "terminal_marker": "PAY23_ENTERPRISE_PAYMENT_SYSTEM=CERTIFIED"
+}
