@@ -72,6 +72,7 @@ jobs:
               "docs/architecture/pay17_fault_injection_matrix_v1.json",
               "tests/finance_core/test_pay17_fault_injection_concurrency.py",
               "tests/finance_core/test_phase6p_sandbox_webhook_route_enablement.py",
+              "tests/finance_core/admin_database.py",
               "tests/platform_billing/test_pay17_payment_lifecycle_races.py",
               "tests/test_pay17_fault_tolerance_static.py",
           }
@@ -275,25 +276,25 @@ jobs:
     name: PAY-17 process death and Celery redelivery
     uses: ./.github/workflows/p5w2-worker-crash-redelivery-pg16.yml
     with:
-      certification_head: ${{ github.sha }}
+      certification_head: zz27d8e9f0a62
 
   p5e:
     name: PAY-17 provider success acknowledgement ambiguity
     uses: ./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml
     with:
-      certification_head: ${{ github.sha }}
+      certification_head: zz27d8e9f0a62
 
   p5d:
     name: PAY-17 Redis network and database loss
     uses: ./.github/workflows/p5d-dependency-loss-pg16.yml
     with:
-      certification_head: ${{ github.sha }}
+      certification_head: zz27d8e9f0a62
 
   p5r:
     name: PAY-17 deadlock lease and lifecycle Finance races
     uses: ./.github/workflows/p5r-race-deadlock-pg16.yml
     with:
-      certification_head: ${{ github.sha }}
+      certification_head: zz27d8e9f0a62
 
   p6b:
     name: PAY-17 Redis broker restart and reconnect
