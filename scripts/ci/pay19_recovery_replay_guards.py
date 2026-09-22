@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 
+from sqlalchemy import text
+
+from tests.finance_core.admin_database import finance_admin_session
 from tests.finance_core.test_phase5c_invoice_engine import (
+    ORG_ID,
     create_draft,
     draft_command,
     fetch_scalar,
@@ -19,11 +23,49 @@ from tests.test_p4d_refund_authority_runtime import _connect
 from tests.test_p4d_refund_obligation_resolution_runtime import _SOURCE_C
 
 
+async def _provider_operation_snapshot(payment_id):
+    async with finance_admin_session() as admin:
+        await admin.execute(text("SET LOCAL ROLE app_security_owner"))
+        await admin.execute(
+            text(
+                "SELECT pg_catalog.set_config("
+                "'app.current_org_id',:organization_id,true)"
+            ),
+            {"organization_id": str(ORG_ID)},
+        )
+        result = await admin.execute(
+            text(
+                """
+                SELECT id,status,provider_object_id,request_hash_sha256,
+                       attempt_count,lease_fence
+                FROM finance.provider_operations
+                WHERE payment_id=:payment_id
+                  AND operation_type='create_checkout'
+                """
+            ),
+            {"payment_id": payment_id},
+        )
+        rows = [dict(row) for row in result.mappings().all()]
+        count_result = await admin.execute(
+            text(
+                """
+                SELECT count(*)
+                FROM finance.provider_operations
+                WHERE operation_type='create_checkout'
+                """
+            )
+        )
+        count = int(count_result.scalar_one())
+        await admin.execute(text("RESET ROLE"))
+        await admin.commit()
+    if len(rows) != 1:
+        raise RuntimeError(
+            f"PAY-19 expected one sanctioned provider operation, got {len(rows)}"
+        )
+    return rows[0], count
+
+
 async def _replay_finance() -> None:
-    provider_before = await fetch_scalar(
-        "SELECT count(*) FROM finance.provider_operations "
-        "WHERE operation_type='create_checkout'"
-    )
     invoice_before = await fetch_scalar("SELECT count(*) FROM finance.invoices")
     application_before = await fetch_scalar(
         "SELECT count(*) FROM finance.payment_application_records"
@@ -47,17 +89,13 @@ async def _replay_finance() -> None:
         "WHERE payment_id=:payment_id",
         {"payment_id": payment_id},
     )
-    provider_status_before = await fetch_scalar(
-        "SELECT status FROM finance.provider_operations "
-        "WHERE payment_id=:payment_id AND operation_type='create_checkout'",
-        {"payment_id": payment_id},
+    provider_snapshot_before, provider_before = (
+        await _provider_operation_snapshot(payment_id)
     )
-    provider_object_before = await fetch_scalar(
-        "SELECT provider_object_id FROM finance.provider_operations "
-        "WHERE payment_id=:payment_id AND operation_type='create_checkout'",
-        {"payment_id": payment_id},
-    )
-    if provider_status_before != "succeeded" or provider_object_before != "order_test_1":
+    if (
+        provider_snapshot_before["status"] != "succeeded"
+        or provider_snapshot_before["provider_object_id"] != "order_test_1"
+    ):
         raise RuntimeError("PAY-19 recovered provider operation is not canonical")
 
     client = FakeRazorpayClient()
@@ -101,23 +139,13 @@ async def _replay_finance() -> None:
             f"PAY-19 recovered PAY-9 application record did not replay: {pay9_replay!r}"
         )
 
-    if await fetch_scalar(
-        "SELECT count(*) FROM finance.provider_operations "
-        "WHERE operation_type='create_checkout'"
-    ) != provider_before:
+    provider_snapshot_after, provider_after = (
+        await _provider_operation_snapshot(payment_id)
+    )
+    if provider_after != provider_before:
         raise RuntimeError("PAY-19 duplicate provider operation after recovery")
-    if await fetch_scalar(
-        "SELECT status FROM finance.provider_operations "
-        "WHERE payment_id=:payment_id AND operation_type='create_checkout'",
-        {"payment_id": payment_id},
-    ) != provider_status_before:
-        raise RuntimeError("PAY-19 provider operation status drift after replay")
-    if await fetch_scalar(
-        "SELECT provider_object_id FROM finance.provider_operations "
-        "WHERE payment_id=:payment_id AND operation_type='create_checkout'",
-        {"payment_id": payment_id},
-    ) != provider_object_before:
-        raise RuntimeError("PAY-19 provider object drift after replay")
+    if provider_snapshot_after != provider_snapshot_before:
+        raise RuntimeError("PAY-19 provider operation drift after replay")
     if await fetch_scalar("SELECT count(*) FROM finance.invoices") != invoice_before:
         raise RuntimeError("PAY-19 checkout replay created duplicate invoice")
     if await fetch_scalar(
