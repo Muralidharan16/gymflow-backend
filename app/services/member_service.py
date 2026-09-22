@@ -300,7 +300,7 @@ class MemberService:
         page: int = 1,
         size: int = 10
     ) -> Tuple[List[Member], int]:
-        members, total = await self.member_repo.search_org(
+        members, total, org_slug = await self.member_repo.search_org(
             org_id,
             home_branch_id,
             status,
@@ -310,9 +310,11 @@ class MemberService:
             page,
             size,
         )
-        org_slug = await self._current_organization_slug()
         for member in members:
-            member.member_display_code = _member_display_code(org_slug, member.member_number)
+            member.member_display_code = _member_display_code(
+                org_slug,
+                member.member_number,
+            )
         return members, total
 
     async def get_member_org(self, member_id: UUID, org_id: UUID) -> Member:
