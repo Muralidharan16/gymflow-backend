@@ -23,7 +23,6 @@ from tests.test_p4d_refund_obligation_resolution_runtime import (
     _SUBSCRIPTION_A,
     _allocate,
     _claim_source,
-    _cleanup_p4d2_rows,
     _ensure_p4d2_base_state,
     _insert_source,
     _record_member_subscription_checkout_binding,
@@ -69,7 +68,6 @@ async def _seed_checkout_payment() -> dict[str, str]:
 
 
 def _seed_subscription_refund() -> dict[str, str]:
-    _cleanup_p4d2_rows()
     _ensure_p4d2_base_state()
     _allocate(amount="80.00")
 
