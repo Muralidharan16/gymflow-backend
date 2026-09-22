@@ -44,6 +44,8 @@ The same source cluster must archive WAL and produce a
 manifest checksums. `pg_verifybackup` must succeed. A separate physical clone
 must start independently and match the source financial fingerprint.
 
+The **logical restore** and **physical restore** are separately certified; neither is treated as successful merely because PostgreSQL starts. Both must reproduce the same Finance fingerprint and integrity invariants as the source.
+
 ## PITR destructive boundary
 
 After the verified physical base exists, PAY-19 creates a recovery sentinel and
