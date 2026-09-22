@@ -539,10 +539,27 @@ async def test_settlement_and_refund_race_serializes_without_lost_obligation():
         {"payment_id": payment.payment_id},
     ) == Decimal("700.00")
     assert await fetch_scalar(
+        "SELECT count(*) FROM finance.refunds "
+        "WHERE id=:refund_id AND payment_id=:payment_id AND status='requested'",
+        {
+            "refund_id": refund_result.refund_id,
+            "payment_id": payment.payment_id,
+        },
+    ) == 1
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.outbox_events "
+        "WHERE aggregate_type='refund' "
+        "AND aggregate_id=:refund_id "
+        "AND event_type='finance.refund.intent.created'",
+        {"refund_id": refund_result.refund_id},
+    ) == 1
+    # Refund intent is durable obligation authority, not provider-execution
+    # authority. PAY-10 materializes/claims execution separately.
+    assert await fetch_scalar(
         "SELECT count(*) FROM finance.refund_execution_commands "
         "WHERE payment_id=:payment_id",
         {"payment_id": payment.payment_id},
-    ) >= 1
+    ) == 0
 
 
 @pytest.mark.asyncio
