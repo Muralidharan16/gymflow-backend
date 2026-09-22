@@ -14,6 +14,7 @@ from tests.finance_core.test_phase6c_checkout_orchestration import (
     orchestrate,
 )
 from tests.finance_core.test_phase6e_payment_application_gate import apply_gate
+from tests import test_pay9_payment_application_entitlement_runtime as pay9
 from tests.test_p4d_refund_authority_runtime import _connect
 from tests.test_p4d_refund_obligation_resolution_runtime import _SOURCE_C
 
@@ -54,7 +55,13 @@ async def _replay_finance() -> None:
         idempotency_key="pay19-application",
     )
     if not application.replayed:
-        raise RuntimeError("PAY-19 recovered payment application did not replay")
+        raise RuntimeError("PAY-19 recovered checkout payment application did not replay")
+
+    pay9_replay = pay9._apply()
+    if pay9_replay[9] is not True:
+        raise RuntimeError(
+            f"PAY-19 recovered PAY-9 application record did not replay: {pay9_replay!r}"
+        )
 
     if await fetch_scalar(
         "SELECT count(*) FROM finance.provider_operations "
