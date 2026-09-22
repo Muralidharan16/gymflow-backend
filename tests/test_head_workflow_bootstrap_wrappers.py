@@ -14,23 +14,31 @@ from scripts.verify_head_workflow_bootstrap import (
 ROOT = Path(__file__).resolve().parents[1]
 P3E_WRAPPER_COMMAND = "bash scripts/ci/prepare_p3e_pg16.sh"
 P3E_WRAPPER_PATH = "scripts/ci/prepare_p3e_pg16.sh"
+PAY20_WRAPPER_COMMAND = "bash scripts/ci/pay20_prepare_system_pg16.sh"
+PAY20_WRAPPER_PATH = "scripts/ci/pay20_prepare_system_pg16.sh"
 
 
 def _managed_roles() -> set[str]:
     return set(load_contract_bundle().roles["managed_roles"])
 
 
-def test_registered_p3e_head_wrapper_is_fixed_path_and_self_validating() -> None:
-    assert TRUSTED_HEAD_WRAPPERS == {P3E_WRAPPER_COMMAND: P3E_WRAPPER_PATH}
-    source = (ROOT / P3E_WRAPPER_PATH).read_text(encoding="utf-8")
-    assert (
-        inspect_head_wrapper_text(
-            P3E_WRAPPER_PATH,
-            source,
-            managed_roles=_managed_roles(),
+def test_registered_head_wrappers_are_fixed_path_and_self_validating() -> None:
+    expected = {
+        P3E_WRAPPER_COMMAND: P3E_WRAPPER_PATH,
+        PAY20_WRAPPER_COMMAND: PAY20_WRAPPER_PATH,
+    }
+    assert TRUSTED_HEAD_WRAPPERS == expected
+    for command, path in expected.items():
+        source = (ROOT / path).read_text(encoding="utf-8")
+        assert command.startswith("bash scripts/ci/")
+        assert (
+            inspect_head_wrapper_text(
+                path,
+                source,
+                managed_roles=_managed_roles(),
+            )
+            == ()
         )
-        == ()
-    )
 
 
 def test_validated_wrapper_counts_as_single_bootstrap_and_head_boundary() -> None:
