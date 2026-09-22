@@ -17,6 +17,7 @@ from app.payment_activation.domain import (
     ProductionActivationDenied,
     ProductionActivationPolicy,
     kill_switch_names,
+    validate_stage_transition,
 )
 from app.payment_activation.service import PaymentActivationService
 
@@ -299,3 +300,37 @@ def test_no_global_payment_switch_exists():
     )
     assert "payments_enabled" not in names
     assert "global_payment_switch" not in names
+
+
+def test_stage_advancement_cannot_skip_required_progressive_stages():
+    stage0 = runtime(ActivationStage.LIVE_CONFIG_EGRESS_BLOCKED)
+    stage5 = runtime(ActivationStage.GENERAL_AVAILABILITY)
+
+    decision = validate_stage_transition(stage0, stage5)
+    assert decision.allowed is False
+    assert decision.code == "activation.stage_transition.skip_forbidden"
+    assert decision.from_stage == ActivationStage.LIVE_CONFIG_EGRESS_BLOCKED
+    assert decision.to_stage == ActivationStage.GENERAL_AVAILABILITY
+
+
+def test_stage_advancement_allows_only_next_stage_and_emergency_rollback():
+    stage2 = runtime(ActivationStage.SELECTED_TEST_ORGANIZATION)
+    stage3 = runtime(ActivationStage.SMALL_MERCHANT_COHORT)
+    forward = validate_stage_transition(stage2, stage3)
+    assert forward.allowed is True
+
+    stage4 = runtime(ActivationStage.LIMITED_PERCENTAGE)
+    rollback = validate_stage_transition(stage4, stage2)
+    assert rollback.allowed is True
+    assert rollback.code == "activation.stage_transition.allowed"
+
+
+def test_service_transition_rejects_skip_without_mutating_current_posture():
+    service = PaymentActivationService(
+        runtime(ActivationStage.LIVE_CONFIG_EGRESS_BLOCKED)
+    )
+    with pytest.raises(RuntimeError) as exc:
+        service.transition(runtime(ActivationStage.GENERAL_AVAILABILITY))
+
+    assert str(exc.value) == "activation.stage_transition.skip_forbidden"
+    assert service.runtime.stage == ActivationStage.LIVE_CONFIG_EGRESS_BLOCKED
