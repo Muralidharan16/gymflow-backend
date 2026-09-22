@@ -123,18 +123,23 @@ def test_two_refund_race_is_real_concurrent_finance_runtime():
     assert "sum(amount)" in source
 
 
-def test_provider_timeout_and_malformed_response_are_reconciliation_safe():
+def test_provider_timeout_and_invalid_response_are_reconciliation_safe():
     source = _source(
         "tests/finance_core/test_pay10_refund_provider_adapter.py"
-    ).lower()
-    for token in (
-        "timeout",
-        "malformed",
-        "reconciliation",
-        "unknown",
-    ):
-        assert token in source
-    assert "blind" in source or "retry" in source
+    )
+    assert (
+        "test_pay10_b_provider_response_mismatch_is_unknown_and_requires_reconciliation"
+        in source
+    )
+    assert (
+        "test_pay10_b_connect_before_request_is_retryable_but_timeout_is_unknown"
+        in source
+    )
+    assert "requires_reconciliation is True" in source
+    assert "automatic_retry_allowed is False" in source
+    assert "RAZORPAY_REFUND_AMOUNT_MISMATCH" in source
+    assert "RAZORPAY_REFUND_CURRENCY_MISMATCH" in source
+    assert "RAZORPAY_REFUND_STATUS_INVALID" in source
 
 
 def test_payment_races_cannot_directly_overwrite_entitlement_authority():
