@@ -8,6 +8,8 @@ from app.payment_activation.domain import (
     ActivationStage,
     KillSwitches,
     ProductionActivationPolicy,
+    StageTransitionDecision,
+    validate_stage_transition,
 )
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "ActivationStage",
     "KillSwitches",
     "ProductionActivationPolicy",
+    "StageTransitionDecision",
+    "validate_stage_transition",
 ]
