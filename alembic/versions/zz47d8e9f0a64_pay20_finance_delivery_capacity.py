@@ -97,14 +97,14 @@ def _install_binding_helper() -> None:
                 INTO v_bound;
                 PERFORM pg_catalog.set_config(
                     'app.current_org_id',
-                    pg_catalog.coalesce(v_previous_org,''),
+                    COALESCE(v_previous_org,''),
                     true
                 );
                 RETURN v_bound;
             EXCEPTION WHEN OTHERS THEN
                 PERFORM pg_catalog.set_config(
                     'app.current_org_id',
-                    pg_catalog.coalesce(v_previous_org,''),
+                    COALESCE(v_previous_org,''),
                     true
                 );
                 RAISE;
