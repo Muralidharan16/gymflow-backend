@@ -69,6 +69,7 @@ jobs:
               "docs/architecture/PAY20_PAYMENT_PERFORMANCE.md",
               "docs/architecture/pay20_payment_performance_contract_v1.json",
               "scripts/ci/pay20_finance_performance.py",
+              "scripts/ci/pay20_prepare_system_pg16.sh",
               "tests/test_pay20_payment_performance_static.py",
           }
           changed = {
@@ -343,7 +344,7 @@ jobs:
           python -m pip install 'pip==26.2.1'
           python -m pip install -r requirements-test.lock
           python -m pip check
-          bash scripts/ci/prepare_p3e_pg16.sh
+          bash scripts/ci/pay20_prepare_system_pg16.sh
           python scripts/ci/verify_p10_performance_budgets.py | tee /tmp/pay20-budget.log
           grep -q '^P10_BASELINE_BUDGETS=PASS$' /tmp/pay20-budget.log
       - name: Run eight-tenant production-container representative load
@@ -361,6 +362,24 @@ jobs:
             | tee "$EVIDENCE_DIR/pay20-load-decision.log"
           grep -q '^P10_REPRESENTATIVE_LOAD=PASS$' "$EVIDENCE_DIR/pay20-load-decision.log"
           echo 'PAY20_MULTI_TENANT_LOAD=PASS'
+      - name: Reset fresh current-head database for independent system soak
+        run: |
+          set -euo pipefail
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d postgres \
+            -c "DROP DATABASE gymflow_test WITH (FORCE);"
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d postgres \
+            -c "CREATE DATABASE gymflow_test OWNER migration_owner;"
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d postgres \
+            -c "REVOKE ALL ON DATABASE gymflow_test FROM PUBLIC; GRANT CONNECT ON DATABASE gymflow_test TO app_test_runtime,auth_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime;"
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_test
+          DATABASE_URL="postgresql+asyncpg://migration_owner:$MIGRATION_PASSWORD@127.0.0.1:5432/gymflow_test" \
+            python -s -m alembic -c alembic.ini upgrade head
+          DATABASE_URL="postgresql+asyncpg://migration_owner:$MIGRATION_PASSWORD@127.0.0.1:5432/gymflow_test" \
+            python -s -m alembic -c alembic.ini current --check-heads
+          echo 'PAY20_SYSTEM_SOAK_FRESH_DB=PASS'
       - name: Run current-head five-minute production-container system soak
         run: |
           set -euo pipefail
@@ -381,38 +400,9 @@ jobs:
           retention-days: 14
 
   lifecycle_contention:
-    name: PAY-20 payment lifecycle contention
+    name: PAY-20 real Platform Billing lifecycle contention
     if: ${{ github.event_name != 'pull_request' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    env:
-      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay20_lifecycle_static
-      SECRET_KEY: pay20-lifecycle-not-production
-      REDIS_URL: redis://127.0.0.1:6379/0
-      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
-      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
-      AWS_ACCESS_KEY_ID: ci
-      AWS_SECRET_ACCESS_KEY: ci
-      S3_BUCKET_NAME: pay20-lifecycle
-      ENVIRONMENT: test
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          fetch-depth: 0
-          ref: ${{ env.PAY20_CANDIDATE_SHA }}
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: requirements-test.lock
-      - run: |
-          set -euo pipefail
-          python -m pip install 'pip==26.2.1'
-          python -m pip install -r requirements-test.lock
-          python -m pip check
-          python -m pytest --noconftest -q --maxfail=1 \
-            tests/platform_billing/test_pay17_payment_lifecycle_races.py
-          echo 'PAY20_LIFECYCLE_RACE_CONTRACT=PASS'
+    uses: ./.github/workflows/hardening-ci.yml
 
   pr_decision:
     name: PAY-20 PR contract decision
