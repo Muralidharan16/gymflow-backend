@@ -622,9 +622,26 @@ jobs:
           grep -q 'payment_application_records' "$EVIDENCE_DIR/backup-toc.txt"
           grep -q 'refund_execution_commands' "$EVIDENCE_DIR/backup-toc.txt"
           sudo -u postgres createdb -T template0 -O migration_owner "$RESTORE_DB"
-          sudo -u postgres pg_restore --exit-on-error --no-owner --role=migration_owner --dbname="$RESTORE_DB" "$BACKUP_FILE"
+          # Disaster restore is an infrastructure-admin operation. Preserve the
+          # dump's protected owners/ACLs and extension ownership exactly; do
+          # not incorrectly elevate migration_owner into cluster/extension
+          # authority just to make a restore green.
+          sudo -u postgres pg_restore --exit-on-error --dbname="$RESTORE_DB" "$BACKUP_FILE" \
+            > "$EVIDENCE_DIR/restore.log"
+          test "$(sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d "$RESTORE_DB" -c "
+            SELECT r.rolname
+            FROM pg_catalog.pg_extension e
+            JOIN pg_catalog.pg_roles r ON r.oid=e.extowner
+            WHERE e.extname='pg_partman'
+          ")" = "postgres"
+          test "$(sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d postgres -c "
+            SELECT (NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND
+                    NOT rolinherit AND NOT rolreplication AND NOT rolbypassrls)::int
+            FROM pg_catalog.pg_roles WHERE rolname='migration_owner'
+          ")" = "1"
           sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d "$RESTORE_DB"             -f scripts/ci/pay19_financial_fingerprint.sql > "$EVIDENCE_DIR/restored-finance.txt"
           diff -u "$EVIDENCE_DIR/source-finance.txt" "$EVIDENCE_DIR/restored-finance.txt"
+          echo 'PAY21_RECOVERY_INFRA_AUTHORITY=PASS'
           echo 'PAY21_BACKUP_RESTORE=PASS'
           echo 'PAY21_FINANCIAL_FINGERPRINT_PRESERVED=PASS'
       - name: Upload recovery evidence
