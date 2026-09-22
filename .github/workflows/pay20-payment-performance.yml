@@ -135,7 +135,7 @@ jobs:
       PAY9_PAYMENT_PASSWORD: ci-pay20-pay9-payment
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay20-migration@127.0.0.1:5432/gymflow_pay20_finance_test
       FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay20-finance@127.0.0.1:5432/gymflow_pay20_finance_test
-      FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay20-migration@127.0.0.1:5432/gymflow_pay20_finance_test
+      FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://postgres:ci-pay20-postgres@127.0.0.1:5432/gymflow_pay20_finance_test
       FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-pay20-config@127.0.0.1:5432/gymflow_pay20_finance_test
       TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-pay20-app@127.0.0.1:5432/gymflow_pay20_finance_test
       TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay20-migration@127.0.0.1:5432/gymflow_pay20_finance_test
