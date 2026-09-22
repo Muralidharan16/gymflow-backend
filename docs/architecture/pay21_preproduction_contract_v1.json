@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-21",
+  "predecessor": {
+    "phase": "PAY-20",
+    "sha": "5abfeb7a9a3cee44fc362e1a80f74599a6f694ee",
+    "tree": "996da603e4cdd088e91e0fef1ecc0dc7d7cddfea",
+    "alembic_head": "zz47d8e9f0a64"
+  },
+  "alembic_head": "zz47d8e9f0a64",
+  "new_migration": false,
+  "no_new_money_authority": true,
+  "environment": {
+    "postgresql_major": 16,
+    "redis_major": 7,
+    "celery": "real",
+    "tls_required": true,
+    "secrets_system": "github_actions_encrypted_secrets",
+    "provider": "razorpay",
+    "provider_mode": "test",
+    "provider_api": "https://api.razorpay.com/v1",
+    "production_images": true,
+    "production_db_roles": true,
+    "private_service_network": true,
+    "only_tls_ingress_published": true
+  },
+  "scenarios": [
+    "member_admission",
+    "online_payment",
+    "cash_payment",
+    "partial_payment",
+    "renewal",
+    "refund",
+    "partial_refund",
+    "settlement",
+    "failed_payment",
+    "platform_subscription",
+    "recurring_attempt",
+    "dunning",
+    "mandate_revocation",
+    "dispute_simulation",
+    "backup_restore",
+    "bad_deployment_rollback"
+  ],
+  "provider_proof": {
+    "real_test_account_required": true,
+    "real_https_order_creation_required": true,
+    "live_key_forbidden": true,
+    "real_money_forbidden": true,
+    "production_customer_data_forbidden": true,
+    "interactive_checkout_not_required": true,
+    "deterministic_signed_test_events_required": true
+  },
+  "invariants": {
+    "duplicate_financial_effects": 0,
+    "duplicate_subscription_activations": 0,
+    "open_reconciliation_drift": 0,
+    "unbalanced_ledgers": 0,
+    "backup_restore_fingerprint_must_match": true,
+    "rollback_must_restore_last_known_good": true
+  },
+  "release_safety": {
+    "production_credentials": false,
+    "production_customer_data": false,
+    "live_money_movement": false,
+    "production_deployment_authorized": false
+  },
+  "terminal_marker": "PAY21_PREPRODUCTION_CERTIFICATION=PASS"
+}
