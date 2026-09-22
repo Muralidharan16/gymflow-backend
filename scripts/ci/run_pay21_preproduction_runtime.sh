@@ -17,11 +17,16 @@ TLS_DIR="/tmp/pay21-tls"
 NGINX_DIR="/tmp/pay21-nginx"
 REDIS_DIR="/tmp/pay21-redis"
 SOCAT_PID=""
+OTLP_PID=""
 
 cleanup() {
   set +e
   docker rm -f pay21-ingress pay21-bad-api pay21-api pay21-worker pay21-redis >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
+  if [ -n "$OTLP_PID" ]; then
+    kill "$OTLP_PID" >/dev/null 2>&1 || true
+    wait "$OTLP_PID" >/dev/null 2>&1 || true
+  fi
   if [ -n "$SOCAT_PID" ]; then
     kill "$SOCAT_PID" >/dev/null 2>&1 || true
     wait "$SOCAT_PID" >/dev/null 2>&1 || true
@@ -149,6 +154,26 @@ SOCAT_PID=$!
 sleep 1
 kill -0 "$SOCAT_PID"
 
+# Production profiles fail closed without an OTLP metrics sink. Bind the
+# disposable collector only to the private Docker bridge gateway so API/worker
+# telemetry is real without publishing another runner/customer-facing port.
+OTLP_CAPTURE="/tmp/pay21-otlp.jsonl"
+python scripts/ci/p8o_otlp_collector.py \
+  --host "$GATEWAY" --port 4318 --capture "$OTLP_CAPTURE" \
+  >/tmp/pay21-otlp.log 2>&1 &
+OTLP_PID=$!
+for attempt in $(seq 1 30); do
+  if curl -fsS "http://$GATEWAY:4318/healthz" >/dev/null; then
+    break
+  fi
+  if [ "$attempt" -eq 30 ]; then
+    cat /tmp/pay21-otlp.log
+    exit 1
+  fi
+  sleep 1
+done
+OTLP_ENDPOINT="http://host.docker.internal:4318/v1/metrics"
+
 openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes   -keyout "$TLS_DIR/ca.key" -out "$TLS_DIR/ca.crt"   -subj '/CN=DOERS PAY21 Preproduction CA'
 openssl req -newkey rsa:2048 -sha256 -nodes   -keyout "$TLS_DIR/server.key" -out "$TLS_DIR/server.csr"   -subj '/CN=pay21-preprod'
 cat > "$TLS_DIR/server.ext" <<'EOF'
@@ -209,9 +234,9 @@ REDIS_URL="$REDISS_BASE/0?$REDISS_QUERY"
 CELERY_BROKER_URL="$REDISS_BASE/1?$REDISS_QUERY"
 CELERY_RESULT_BACKEND="$REDISS_BASE/2?$REDISS_QUERY"
 
-docker run -d --name pay21-api --network "$NET"   --add-host=host.docker.internal:host-gateway   -v "$TLS_DIR:/run/pay21-tls:ro"   -e ENVIRONMENT=production   -e DOERS_PROCESS_PROFILE=api   -e DATABASE_URL="$API_DB"   -e AUTH_DATABASE_URL="$AUTH_DB"   -e REDIS_URL="$REDIS_URL"   -e CELERY_BROKER_URL="$CELERY_BROKER_URL"   -e CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND"   -e SECRET_KEY="$APP_SECRET"   -e AWS_ACCESS_KEY_ID=pay21-preprod-synthetic   -e AWS_SECRET_ACCESS_KEY=pay21-preprod-synthetic   -e AWS_REGION_NAME=us-east-1   -e S3_BUCKET_NAME=pay21-preprod-synthetic   -e NOTIFICATION_EMAIL_PROVIDER_MODE=disabled   -e SEARCH_PROVIDER_MODE=disabled   -e PLATFORM_BILLING_PROVIDER_MODE=disabled   -e PLATFORM_BILLING_CHECKOUT=false   -e PLATFORM_BILLING_WEBHOOK_PROCESSING=false   -e PLATFORM_BILLING_DUNNING_TRANSITIONS=false   -e PLATFORM_BILLING_NOTIFICATIONS=false   -e DOERS_PRESTOP_CONTROL_TOKEN="$PRESTOP_TOKEN"   -e LOG_LEVEL=warning   "$IMAGE" >/dev/null
+docker run -d --name pay21-api --network "$NET"   --add-host=host.docker.internal:host-gateway   -v "$TLS_DIR:/run/pay21-tls:ro"   -e ENVIRONMENT=production   -e DOERS_PROCESS_PROFILE=api   -e DATABASE_URL="$API_DB"   -e AUTH_DATABASE_URL="$AUTH_DB"   -e REDIS_URL="$REDIS_URL"   -e CELERY_BROKER_URL="$CELERY_BROKER_URL"   -e CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND"   -e SECRET_KEY="$APP_SECRET"   -e AWS_ACCESS_KEY_ID=pay21-preprod-synthetic   -e AWS_SECRET_ACCESS_KEY=pay21-preprod-synthetic   -e AWS_REGION_NAME=us-east-1   -e S3_BUCKET_NAME=pay21-preprod-synthetic   -e NOTIFICATION_EMAIL_PROVIDER_MODE=disabled   -e SEARCH_PROVIDER_MODE=disabled   -e PLATFORM_BILLING_PROVIDER_MODE=disabled   -e PLATFORM_BILLING_CHECKOUT=false   -e PLATFORM_BILLING_WEBHOOK_PROCESSING=false   -e PLATFORM_BILLING_DUNNING_TRANSITIONS=false   -e PLATFORM_BILLING_NOTIFICATIONS=false   -e DOERS_PRESTOP_CONTROL_TOKEN="$PRESTOP_TOKEN"   -e P8_METRICS_OTLP_ENDPOINT="$OTLP_ENDPOINT"   -e P8_METRICS_EXPORT_INTERVAL_SECONDS=1   -e P8_METRICS_EXPORT_TIMEOUT_SECONDS=2   -e LOG_LEVEL=warning   "$IMAGE" >/dev/null
 
-docker run -d --name pay21-worker --network "$NET"   --add-host=host.docker.internal:host-gateway   -v "$TLS_DIR:/run/pay21-tls:ro"   -e ENVIRONMENT=production   -e DOERS_PROCESS_PROFILE=worker   -e CELERY_WORKER_PROFILE=worker   -e WORKER_DATABASE_URL="$WORKER_DB"   -e REDIS_URL="$REDIS_URL"   -e CELERY_BROKER_URL="$CELERY_BROKER_URL"   -e CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND"   -e SECRET_KEY="$APP_SECRET"   -e AWS_ACCESS_KEY_ID=pay21-preprod-synthetic   -e AWS_SECRET_ACCESS_KEY=pay21-preprod-synthetic   -e AWS_REGION_NAME=us-east-1   -e S3_BUCKET_NAME=pay21-preprod-synthetic   -e NOTIFICATION_EMAIL_PROVIDER_MODE=disabled   -e SEARCH_PROVIDER_MODE=disabled   -e PLATFORM_BILLING_PROVIDER_MODE=disabled   -e PLATFORM_BILLING_CHECKOUT=false   -e PLATFORM_BILLING_WEBHOOK_PROCESSING=false   -e PLATFORM_BILLING_DUNNING_TRANSITIONS=false   -e PLATFORM_BILLING_NOTIFICATIONS=false   -e LOG_LEVEL=warning   "$IMAGE"   python -m celery -A app.core.celery_app:celery_app worker     --pool=solo --concurrency=1 --queues=pay21-preprod     --hostname=pay21-preprod@%h --without-gossip --without-mingle --loglevel=WARNING   >/dev/null
+docker run -d --name pay21-worker --network "$NET"   --add-host=host.docker.internal:host-gateway   -v "$TLS_DIR:/run/pay21-tls:ro"   -e ENVIRONMENT=production   -e DOERS_PROCESS_PROFILE=worker   -e CELERY_WORKER_PROFILE=worker   -e WORKER_DATABASE_URL="$WORKER_DB"   -e REDIS_URL="$REDIS_URL"   -e CELERY_BROKER_URL="$CELERY_BROKER_URL"   -e CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND"   -e SECRET_KEY="$APP_SECRET"   -e AWS_ACCESS_KEY_ID=pay21-preprod-synthetic   -e AWS_SECRET_ACCESS_KEY=pay21-preprod-synthetic   -e AWS_REGION_NAME=us-east-1   -e S3_BUCKET_NAME=pay21-preprod-synthetic   -e NOTIFICATION_EMAIL_PROVIDER_MODE=disabled   -e SEARCH_PROVIDER_MODE=disabled   -e PLATFORM_BILLING_PROVIDER_MODE=disabled   -e PLATFORM_BILLING_CHECKOUT=false   -e PLATFORM_BILLING_WEBHOOK_PROCESSING=false   -e PLATFORM_BILLING_DUNNING_TRANSITIONS=false   -e PLATFORM_BILLING_NOTIFICATIONS=false   -e P8_METRICS_OTLP_ENDPOINT="$OTLP_ENDPOINT"   -e P8_METRICS_EXPORT_INTERVAL_SECONDS=1   -e P8_METRICS_EXPORT_TIMEOUT_SECONDS=2   -e LOG_LEVEL=warning   "$IMAGE"   python -m celery -A app.core.celery_app:celery_app worker     --pool=solo --concurrency=1 --queues=pay21-preprod     --hostname=pay21-preprod@%h --without-gossip --without-mingle --loglevel=WARNING   >/dev/null
 
 write_nginx_target() {
   local target="$1"
@@ -292,6 +317,9 @@ docker run -d --name pay21-bad-api --network "$NET" \
   -e PLATFORM_BILLING_DUNNING_TRANSITIONS=false \
   -e PLATFORM_BILLING_NOTIFICATIONS=false \
   -e DOERS_PRESTOP_CONTROL_TOKEN="$PRESTOP_TOKEN" \
+  -e P8_METRICS_OTLP_ENDPOINT="$OTLP_ENDPOINT" \
+  -e P8_METRICS_EXPORT_INTERVAL_SECONDS=1 \
+  -e P8_METRICS_EXPORT_TIMEOUT_SECONDS=2 \
   -e LOG_LEVEL=warning \
   "$IMAGE" >/dev/null
 
@@ -372,6 +400,14 @@ Path(path).write_text(json.dumps(record,indent=2,sort_keys=True)+"\n",encoding="
 print(json.dumps(record,indent=2,sort_keys=True))
 PY
 
+for attempt in $(seq 1 30); do
+  if [ -s "$OTLP_CAPTURE" ]; then
+    break
+  fi
+  sleep 1
+done
+test -s "$OTLP_CAPTURE"
+echo 'PAY21_REAL_OTLP_EXPORT=PASS'
 echo 'PAY21_REAL_POSTGRESQL=PASS'
 echo 'PAY21_REAL_REDIS_TLS=PASS'
 echo 'PAY21_REAL_CELERY=PASS'
