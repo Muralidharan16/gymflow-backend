@@ -109,6 +109,8 @@ def test_seed_uses_certified_services_and_real_refund_subscription_capabilities(
         "event_type=\"payment.captured\"",
         "apply_gate(",
         "_record_member_subscription_checkout_binding(",
+        "_seed_pay9_application_record()",
+        "pay9._apply()",
         "_allocate(amount=\"80.00\")",
         "_resolve()",
         "command_materialized",
@@ -154,6 +156,8 @@ def test_workflow_requires_real_pg16_backup_restore_pitr_and_reconciliation() ->
         "cmp \"$EVIDENCE_DIR/source-finance.txt\"",
         "pay19_recovery_replay_guards.py",
         "test_provider_success_then_process_death_reconciles_without_second_provider_call",
+        "finance_payment_runtime TO pay9_payment_test",
+        "PAY9_PAYMENT_DATABASE_URL",
     ):
         assert token in source
 
@@ -205,3 +209,13 @@ def test_document_freezes_accounting_reconstruction_and_reconciliation_semantics
         "pay19_financial_recovery=pass",
     ):
         assert phrase in text
+
+
+def test_finance_test_harness_initializes_revocation_backend_without_weakening_security() -> None:
+    source = (ROOT / "tests/finance_core/conftest.py").read_text(encoding="utf-8")
+    security = (ROOT / "app/finance_core/security_abuse.py").read_text(encoding="utf-8")
+    assert "initialize_finance_security_redis" in source
+    assert "await init_redis()" in source
+    assert "await close_redis()" in source
+    assert "FINANCE_SECURITY_DEPENDENCY_UNAVAILABLE" in security
+    assert "await redis_client.ping()" in security
