@@ -110,6 +110,30 @@ async def timed(bucket: dict[str, list[float]], name: str, awaitable):
     return result
 
 
+async def observer_scalar(
+    sql: str,
+    params: dict[str, object] | None = None,
+):
+    """Read-only certification observation through the disposable DB superuser.
+
+    Finance runtime paths remain reduced-role. This observer exists only because
+    FORCE RLS intentionally makes migration_owner unable to see several
+    immutable journals required for PAY-20 post-load integrity accounting.
+    """
+    url = os.environ["PAY20_OBSERVER_DATABASE_URL"]
+
+    def call():
+        with psycopg.connect(url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params or {})
+                row = cur.fetchone()
+                if row is None:
+                    raise RuntimeError("PAY-20 observer query returned no row")
+                return row[0]
+
+    return await asyncio.to_thread(call)
+
+
 async def apply_verified_payment_decision(
     payment_id: uuid.UUID,
     payment_event_id: uuid.UUID,
@@ -533,7 +557,7 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
 
     checks = {
         "captured_or_settled_payments": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM finance.payments "
                 "WHERE provider_payment_ref LIKE :prefix "
                 "AND status IN ('captured','settled','partially_refunded','refunded')",
@@ -542,7 +566,7 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
             or 0
         ),
         "payment_events": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM finance.payment_events "
                 "WHERE provider_event_id LIKE :prefix",
                 {"prefix": event_prefix},
@@ -550,7 +574,7 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
             or 0
         ),
         "payment_applications": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) "
                 "FROM finance.payment_application_records a "
                 "JOIN finance.payment_events e ON e.id=a.payment_event_id "
@@ -560,7 +584,7 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
             or 0
         ),
         "allocations": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM finance.payment_allocations a "
                 "JOIN finance.payments p ON p.id=a.payment_id "
                 "WHERE p.provider_payment_ref LIKE :prefix",
@@ -569,7 +593,7 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
             or 0
         ),
         "settlements": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM finance.outbox_events "
                 "WHERE event_type='finance.payment.reconciled' "
                 "AND payload_json->>'settlement_ref' LIKE :prefix",
@@ -578,7 +602,7 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
             or 0
         ),
         "refunds": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM finance.refunds "
                 "WHERE reason_code LIKE :prefix",
                 {"prefix": refund_prefix},
@@ -586,7 +610,7 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
             or 0
         ),
         "unbalanced_posted_ledgers": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM ("
                 " SELECT e.id "
                 " FROM finance.ledger_entries e "
@@ -600,7 +624,7 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
             or 0
         ),
         "duplicate_provider_payment_refs": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM ("
                 " SELECT provider_code,provider_payment_ref "
                 " FROM finance.payments "
@@ -611,7 +635,7 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
             or 0
         ),
         "duplicate_invoice_numbers": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM ("
                 " SELECT legal_entity_id,gst_registration_id,financial_year,"
                 "        official_invoice_number "
@@ -623,7 +647,7 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
             or 0
         ),
         "unknown_payments": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM finance.payments WHERE status='unknown'"
             )
             or 0
@@ -677,7 +701,7 @@ async def sample_resources() -> dict:
     return {
         "rss_bytes": memory_rss_bytes(),
         "db_connections": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM pg_stat_activity "
                 "WHERE datname=current_database()"
             )
@@ -688,13 +712,13 @@ async def sample_resources() -> dict:
         "redis_rejected_connections": rejected,
         "redis_ping": bool(ping),
         "payment_unknown_total": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM finance.payments WHERE status='unknown'"
             )
             or 0
         ),
         "reconciliation_open_total": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) "
                 "FROM public.platform_accounting_reconciliation_items "
                 "WHERE resolution_status<>'resolved'"
@@ -702,14 +726,14 @@ async def sample_resources() -> dict:
             or 0
         ),
         "finance_outbox_backlog": int(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT count(*) FROM finance.outbox_events "
                 "WHERE status IN ('pending','processing','failed')"
             )
             or 0
         ),
         "oldest_finance_outbox_age_seconds": float(
-            await fetch_scalar(
+            await observer_scalar(
                 "SELECT coalesce(extract(epoch FROM "
                 "(clock_timestamp()-min(created_at))),0) "
                 "FROM finance.outbox_events "
