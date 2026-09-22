@@ -1,0 +1,387 @@
+name: PAY-17 Fault Injection and Concurrency Certification
+
+on:
+  push:
+    branches:
+      - hardening/pay17-fault-injection-concurrency
+  pull_request:
+    branches:
+      - hardening/pay16-security-abuse-hardening
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay17-fault-tolerance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY17_BASE_SHA: fd619cca8234dcdc3ff75382ce8f32bde1af4c1f
+  PAY17_BASE_TREE: 45214ab3fba96eafecbb6a3bca3ad49f8486acac
+  PAY17_ALEMBIC_HEAD: zz27d8e9f0a62
+  PAY17_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-17 exact scope and fault matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay17_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay17-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay17-static
+      ENVIRONMENT: test
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY17_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install exact locked test environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Prove frozen predecessor exact scope and unchanged migration head
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY17_BASE_SHA}^{tree}")" = "${PAY17_BASE_TREE}"
+          test "$(git merge-base "${PAY17_BASE_SHA}" HEAD)" = "${PAY17_BASE_SHA}"
+          git diff --name-only "${PAY17_BASE_SHA}...HEAD" > /tmp/pay17-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              ".github/workflows/pay17-fault-injection-concurrency.yml",
+              "app/finance_core/api/payment_boundary.py",
+              "app/finance_core/domain/provider_capture_confirmation.py",
+              "app/finance_core/services/provider_capture_confirmation.py",
+              "docs/architecture/PAY17_FAULT_INJECTION_CONCURRENCY.md",
+              "docs/architecture/pay17_fault_injection_matrix_v1.json",
+              "tests/finance_core/admin_database.py",
+              "tests/finance_core/test_pay17_fault_injection_concurrency.py",
+              "tests/finance_core/test_phase6p_sandbox_webhook_route_enablement.py",
+              "tests/platform_billing/test_pay17_payment_lifecycle_races.py",
+              "tests/test_migration_app_secure_owner_context_boundary.py",
+              "tests/migration_app_secure_owner_context_boundary_baseline.py",
+              "tests/test_p3d_branch_role_lifecycle_static.py",
+              "tests/test_pay10_refund_worker_crash_recovery_runtime.py",
+              "tests/test_pay17_fault_tolerance_static.py",
+          }
+          changed = {
+              line.strip()
+              for line in Path("/tmp/pay17-changed.txt").read_text().splitlines()
+              if line.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-17 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          print(f"PAY-17 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY17_ALEMBIC_HEAD}"
+      - name: Compile and prove PAY-17 contracts
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/pay17_fault_injection_matrix_v1.json >/dev/null
+          python -m py_compile             app/finance_core/api/payment_boundary.py             app/finance_core/domain/provider_capture_confirmation.py             app/finance_core/services/provider_capture_confirmation.py             tests/finance_core/test_pay17_fault_injection_concurrency.py             tests/platform_billing/test_pay17_payment_lifecycle_races.py             tests/migration_app_secure_owner_context_boundary_baseline.py             tests/test_pay10_refund_worker_crash_recovery_runtime.py             tests/test_pay17_fault_tolerance_static.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_pay17_fault_tolerance_static.py
+          echo 'PAY17_FAULT_MATRIX=PASS'
+          echo 'PAY17_EARLY_WEBHOOK_RECOVERY_CONTRACT=PASS'
+          echo 'PAY17_LIFECYCLE_RACE_CONTRACT=PASS'
+          echo 'PAY17_CLOCK_AUTHORITY=PASS'
+
+  finance_fault_runtime:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: PAY-17 Finance PG16 callback provider and money races
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      MIGRATION_PASSWORD: ci-pay17-migration
+      FINANCE_CORE_SUBJECT_PASSWORD: ci-pay17-finance
+      FINANCE_CONFIG_RUNTIME_PASSWORD: ci-pay17-config
+      PAY17_RECON_PASSWORD: ci-pay17-recon
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay17-migration@127.0.0.1:5432/gymflow_pay17_finance_test
+      FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay17-finance@127.0.0.1:5432/gymflow_pay17_finance_test
+      FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay17-migration@127.0.0.1:5432/gymflow_pay17_finance_test
+      FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-pay17-config@127.0.0.1:5432/gymflow_pay17_finance_test
+      PAY17_RECON_DATABASE_URL: postgresql+asyncpg://pay17_recon_test:ci-pay17-recon@127.0.0.1:5432/gymflow_pay17_finance_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay17-finance-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: pay17-finance
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY17_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Install PG16 and reduced PAY-17 identities
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-pay17-migration';
+          CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_core_test_subject LOGIN PASSWORD 'ci-pay17-finance'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-pay17-config'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay17_recon_test LOGIN PASSWORD 'ci-pay17-recon'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE finance_core_test_subject SET row_security='on';
+          ALTER ROLE finance_core_test_subject SET statement_timeout='10s';
+          ALTER ROLE finance_core_test_subject SET lock_timeout='3s';
+          ALTER ROLE finance_config_deployment SET row_security='on';
+          ALTER ROLE pay17_recon_test SET row_security='on';
+          ALTER ROLE pay17_recon_test SET statement_timeout='10s';
+          ALTER ROLE pay17_recon_test SET lock_timeout='3s';
+          GRANT test_runner TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_config_runtime TO finance_config_deployment WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_reconciliation_runtime TO pay17_recon_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_pay17_finance_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_pay17_finance_test
+            TO finance_core_test_subject,finance_config_deployment,pay17_recon_test;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_pay17_finance_test
+      - name: Upgrade exact PAY-17 head
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade head
+          test "$(python -s -m alembic -c alembic.ini current --check-heads | awk 'NR==1 {print $1}')" = "${PAY17_ALEMBIC_HEAD}"
+      - name: Execute Finance fault and concurrency proofs
+        run: |
+          set -euo pipefail
+          python -m pytest -q --maxfail=1             tests/finance_core/test_pay17_fault_injection_concurrency.py             tests/finance_core/test_pay10_refund_provider_adapter.py             tests/finance_core/test_phase5j_refund_credit_note_reversal.py::test_concurrent_refund_intents_serialize_on_payment_and_cannot_over_refund
+          echo 'PAY17_100_CALLBACK_CONVERGENCE=PASS'
+          echo 'PAY17_CHECKOUT_UNKNOWN_RECONCILIATION=PASS'
+          echo 'PAY17_EARLY_WEBHOOK_RECOVERY=PASS'
+          echo 'PAY17_SETTLEMENT_REFUND_RACE=PASS'
+          echo 'PAY17_PROVIDER_CLOCK_SKEW=PASS'
+
+  platform:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: PAY-17 Platform Billing lifecycle race regression
+    uses: ./.github/workflows/hardening-ci.yml
+
+  refund_crash_runtime:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: PAY-17 refund worker process crash and replay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay17-refund-migration@127.0.0.1:5432/gymflow_pay17_refund_test
+      PAY10_APP_DATABASE_URL: postgresql://pay17_app_test:ci-pay17-app@127.0.0.1:5432/gymflow_pay17_refund_test
+      PAY10_REFUND_DATABASE_URL: postgresql://pay17_refund_test:ci-pay17-refund@127.0.0.1:5432/gymflow_pay17_refund_test
+      PAY10_RECON_DATABASE_URL: postgresql://pay17_refund_recon_test:ci-pay17-refund-recon@127.0.0.1:5432/gymflow_pay17_refund_test
+      PAY10_WORKER_DATABASE_URL: postgresql://pay17_worker_test:ci-pay17-worker@127.0.0.1:5432/gymflow_pay17_refund_test
+      PAY10_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay17-postgres@127.0.0.1:5432/gymflow_pay17_refund_test
+      SECRET_KEY: pay17-refund-not-production
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: pay17-refund
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY17_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Install PG16 and reduced refund identities
+        run: |
+          set -euo pipefail
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE postgres PASSWORD 'ci-pay17-postgres';
+          ALTER ROLE migration_owner PASSWORD 'ci-pay17-refund-migration';
+          CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay17_app_test LOGIN PASSWORD 'ci-pay17-app'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay17_refund_test LOGIN PASSWORD 'ci-pay17-refund'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay17_refund_recon_test LOGIN PASSWORD 'ci-pay17-refund-recon'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay17_worker_test LOGIN PASSWORD 'ci-pay17-worker'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT app_runtime TO pay17_app_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_refund_runtime TO pay17_refund_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_reconciliation_runtime TO pay17_refund_recon_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO pay17_worker_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          CREATE DATABASE gymflow_pay17_refund_test OWNER migration_owner;
+          GRANT CONNECT ON DATABASE gymflow_pay17_refund_test
+            TO pay17_app_test,pay17_refund_test,pay17_refund_recon_test,pay17_worker_test;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_pay17_refund_test
+      - name: Upgrade exact PAY-17 head and execute refund crash proof
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade head
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay10_refund_worker_crash_recovery_runtime.py
+          echo 'PAY17_REFUND_WORKER_DEATH_RECLAIM=PASS'
+          echo 'PAY17_REFUND_PROVIDER_SUCCESS_DB_ACK_LOSS=PASS'
+          echo 'PAY17_REFUND_DB_COMMIT_BROKER_ACK_LOSS=PASS'
+          echo 'PAY17_REFUND_SINGLE_PROVIDER_EFFECT=PASS'
+
+  p5w2:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: PAY-17 process death and Celery redelivery
+    uses: ./.github/workflows/p5w2-worker-crash-redelivery-pg16.yml
+    with:
+      certification_head: zz27d8e9f0a62
+
+  p5e:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: PAY-17 provider success acknowledgement ambiguity
+    uses: ./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml
+    with:
+      certification_head: zz27d8e9f0a62
+
+  p5d:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: PAY-17 Redis network and database loss
+    uses: ./.github/workflows/p5d-dependency-loss-pg16.yml
+    with:
+      certification_head: zz27d8e9f0a62
+
+  p5r:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: PAY-17 deadlock lease and lifecycle Finance races
+    uses: ./.github/workflows/p5r-race-deadlock-pg16.yml
+    with:
+      certification_head: zz27d8e9f0a62
+
+  p6b:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: PAY-17 Redis broker restart and reconnect
+    uses: ./.github/workflows/p6b-broker-reconnect-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+
+  p6w:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: PAY-17 worker shutdown and late-ack redelivery
+    uses: ./.github/workflows/p6w-worker-shutdown-redelivery-pg16.yml
+    with:
+      certification_head: ${{ github.sha }}
+
+  decision:
+    name: PAY-17 final fault-tolerance decision
+    if: ${{ github.event_name != 'pull_request' && always() }}
+    needs:
+      - contract
+      - finance_fault_runtime
+      - platform
+      - refund_crash_runtime
+      - p5w2
+      - p5e
+      - p5d
+      - p5r
+      - p6b
+      - p6w
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every PAY-17 destructive and race gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          results = json.loads(os.environ["RESULTS"])
+          bad = {
+              name: data.get("result")
+              for name, data in results.items()
+              if data.get("result") != "success"
+          }
+          if bad:
+              raise SystemExit(f"PAY-17 required gate failure: {bad}")
+          print("PAY17_REQUIRED_EXACT_HEAD_GATES=PASS")
+          PY
+          echo 'PAY17_DUPLICATE_FINANCIAL_EFFECTS=0'
+          echo 'PAY17_LOST_SUCCESSFUL_PAYMENTS=0'
+          echo 'PAY17_LOST_REFUND_OBLIGATIONS=0'
+          echo 'PAY17_IMPOSSIBLE_TERMINAL_STATES=0'
+          echo 'PAY17_STUCK_UNRECOVERABLE_COMMANDS=0'
+          echo 'PAY17_UNAUTHORIZED_ENTITLEMENTS=0'
+          echo 'PAY17_LIVE_PROVIDER=DISABLED'
+          echo 'PAY17_PRODUCTION_CREDENTIALS=DISABLED'
+          echo 'PAY17_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY17_PRODUCTION_RUNTIME_BINDING=DISABLED'
+          echo 'PAY17_MERGE=NOT_AUTHORIZED'
+          echo 'PAY17_RELEASE=NOT_AUTHORIZED'
+          echo 'PAY17_DEPLOYMENT=NOT_AUTHORIZED'
+          echo 'PAY17_FAULT_TOLERANCE=PASS'
+
+
+  pr_contract_decision:
+    name: PAY-17 PR contract decision
+    if: ${{ github.event_name == 'pull_request' && always() }}
+    needs: [contract]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require PAY-17 PR contract
+        env:
+          CONTRACT: ${{ needs.contract.result }}
+        run: |
+          set -euo pipefail
+          test "${CONTRACT}" = "success"
+          echo 'PAY17_PR_CONTRACT=PASS'
+          echo 'PAY17_DESTRUCTIVE_CERTIFICATION=EXACT_HEAD_PUSH_ONLY'

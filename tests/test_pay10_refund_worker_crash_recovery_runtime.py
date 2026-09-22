@@ -35,7 +35,7 @@ from tests.test_pay10_refund_financial_finalization_runtime import (
     PROVIDER_CODE,
     PROVIDER_PAYMENT_REF,
     REFUND_ID,
-    _reset_state,
+    _reset_state as _base_reset_state,
 )
 
 
@@ -184,6 +184,62 @@ class ErrorRefundProvider(DurableFakeRefundProvider):
             failure_class=self._failure_class,
             message="Synthetic PAY-10-E provider failure.",
         )
+
+
+def _reset_state(
+    refund_amount: Decimal = Decimal("25.00"),
+    *,
+    include_credit_accounting: bool = True,
+) -> None:
+    """Reset only the disposable PAY-10-E database under the test admin.
+
+    PAY-16 makes finance.security_audit_events immutable. Production/runtime
+    identities keep that trigger permanently enabled. This isolated crash
+    harness temporarily disables the immutable trigger only around the explicit
+    FK-closed fixture reset, then restores and verifies it before any worker
+    behavior is exercised.
+    """
+    assert ADMIN_URL
+    admin = make_url(ADMIN_URL)
+    if "test" not in str(admin.database or "").lower():
+        raise RuntimeError("PAY-10-E reset requires a disposable test database")
+    if admin.username != "postgres":
+        raise RuntimeError("PAY-10-E immutable-audit reset requires test postgres admin")
+
+    with psycopg.connect(ADMIN_URL, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "ALTER TABLE finance.security_audit_events "
+                "DISABLE TRIGGER trg_pay16_security_audit_immutable"
+            )
+    try:
+        _base_reset_state(
+            refund_amount,
+            include_credit_accounting=include_credit_accounting,
+        )
+    finally:
+        with psycopg.connect(ADMIN_URL, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "ALTER TABLE finance.security_audit_events "
+                    "ENABLE TRIGGER trg_pay16_security_audit_immutable"
+                )
+
+    with psycopg.connect(ADMIN_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.tgenabled
+                FROM pg_catalog.pg_trigger t
+                JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
+                JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+                WHERE n.nspname='finance'
+                  AND c.relname='security_audit_events'
+                  AND t.tgname='trg_pay16_security_audit_immutable'
+                """
+            )
+            row = cur.fetchone()
+            assert row == ("O",)
 
 
 def _provider_counts(path: Path) -> tuple[int, int]:

@@ -105,7 +105,21 @@ def test_p3d_reserved_control_plane_roles_are_not_normal_owner_login_roles() -> 
     assert 'ACCESS_TOKEN_PRINCIPAL_TYPES = frozenset({"owner", "organization_user"})' in security
     assert 'role: str = "owner"' in security
     login = _function_source("app/services/auth_service.py", "login")
-    assert "create_access_token(owner.id, owner.org_id, owner.email)" in login
+    login_tree = ast.parse(login)
+    access_calls = [
+        node
+        for node in ast.walk(login_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "create_access_token"
+    ]
+    assert len(access_calls) == 1
+    call = access_calls[0]
+    assert len(call.args) >= 3
+    assert ast.unparse(call.args[0]) == "owner.id"
+    assert ast.unparse(call.args[1]) == "owner.org_id"
+    assert ast.unparse(call.args[2]) == "owner.email"
+    assert all(keyword.arg != "role" for keyword in call.keywords)
     assert 'role="superadmin"' not in auth_service
     assert 'role="compliance"' not in auth_service
 

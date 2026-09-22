@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "phase": "PAY-17",
+  "predecessor_sha": "fd619cca8234dcdc3ff75382ce8f32bde1af4c1f",
+  "predecessor_tree": "45214ab3fba96eafecbb6a3bca3ad49f8486acac",
+  "alembic_head": "zz27d8e9f0a62",
+  "policy": "fail_closed",
+  "faults": {
+    "process_dies_before_db_commit": {
+      "proof": [
+        "pay17_finance_rollback_reclaim",
+        "p5w2_process_faults"
+      ],
+      "required_outcome": "uncommitted money effect is absent and durable work remains reclaimable"
+    },
+    "process_dies_after_db_commit": {
+      "proof": [
+        "p5w2_process_faults",
+        "pay17_100_callback_convergence"
+      ],
+      "required_outcome": "redelivery observes terminal durable truth and creates no second effect"
+    },
+    "process_dies_before_provider_call": {
+      "proof": [
+        "pay17_checkout_crash_before_provider",
+        "p5w2_process_faults"
+      ],
+      "required_outcome": "expired in-flight attempt becomes UNKNOWN; reconciliation may close not-found without any provider call"
+    },
+    "provider_succeeds_then_process_dies": {
+      "proof": [
+        "pay17_checkout_provider_success_crash_reconciliation",
+        "pay10e_refund_crash_recovery",
+        "p5e_provider_ack_ambiguity"
+      ],
+      "required_outcome": "one provider effect is reconciled into Finance truth without a second provider submission"
+    },
+    "provider_times_out": {
+      "proof": [
+        "test_pay10_refund_provider_adapter",
+        "p5d_dependency_loss"
+      ],
+      "required_outcome": "ambiguous outcome becomes reconciliation-required rather than duplicate provider mutation"
+    },
+    "provider_returns_malformed_response": {
+      "proof": [
+        "test_pay10_refund_provider_adapter"
+      ],
+      "required_outcome": "malformed or authority-mismatched response cannot finalize money"
+    },
+    "webhook_arrives_before_checkout_response": {
+      "proof": [
+        "pay17_early_webhook_recovery"
+      ],
+      "required_outcome": "signed evidence is queued as retryable until provider order binding commits"
+    },
+    "duplicate_webhook": {
+      "proof": [
+        "phase6d_webhook_replay",
+        "pay17_100_callback_convergence"
+      ],
+      "required_outcome": "one inbox event and one payment event"
+    },
+    "100_concurrent_callbacks": {
+      "proof": [
+        "pay17_100_callback_provider_event_convergence"
+      ],
+      "required_outcome": "one durable provider/payment event and captured payment state; zero allocations, ledger postings or paid-invoice transition until explicit PAY-9 application authority"
+    },
+    "two_refunds_race": {
+      "proof": [
+        "phase5j_concurrent_refund_intents"
+      ],
+      "required_outcome": "payment row serialization prevents over-refund"
+    },
+    "payment_and_cancellation_race": {
+      "proof": [
+        "pay17_payment_cancellation_version_race",
+        "pay9_entitlement_authority_separation"
+      ],
+      "required_outcome": "one expected-version mutation wins; stale writer re-reads and cancellation intent is preserved"
+    },
+    "payment_and_renewal_race": {
+      "proof": [
+        "pay17_payment_renewal_version_race",
+        "pay12_recurring_job_fencing"
+      ],
+      "required_outcome": "one expected-version mutation wins and convergence yields one active renewed period"
+    },
+    "payment_and_expiry_race": {
+      "proof": [
+        "pay17_payment_expiry_version_race",
+        "pay12_late_payment_recovery"
+      ],
+      "required_outcome": "stale expiry cannot overwrite confirmed payment; payment recovery is never lost"
+    },
+    "settlement_and_refund_race": {
+      "proof": [
+        "pay17_settlement_refund_race"
+      ],
+      "required_outcome": "both operations serialize on payment truth; one settlement effect and one durable requested refund plus refund-intent outbox event commit, with zero premature provider execution commands"
+    },
+    "db_deadlock": {
+      "proof": [
+        "p5r_race_deadlock"
+      ],
+      "required_outcome": "deadlock victim is explicit and retryable; no split authoritative state"
+    },
+    "db_restart": {
+      "proof": [
+        "p5d_dependency_loss"
+      ],
+      "required_outcome": "durable work survives PostgreSQL loss and resumes after recovery"
+    },
+    "network_partition": {
+      "proof": [
+        "p5d_dependency_loss"
+      ],
+      "required_outcome": "external ambiguity is durable and recoverable"
+    },
+    "redis_loss": {
+      "proof": [
+        "p5d_dependency_loss",
+        "p6b_broker_reconnect"
+      ],
+      "required_outcome": "database monetary truth survives broker loss and processing resumes"
+    },
+    "celery_redelivery": {
+      "proof": [
+        "p5w2_process_faults",
+        "p6w_shutdown_redelivery"
+      ],
+      "required_outcome": "late acknowledgement/redelivery converges to one logical effect"
+    },
+    "worker_sigkill": {
+      "proof": [
+        "p5w2_process_faults"
+      ],
+      "required_outcome": "real prefork child SIGKILL cannot lose or duplicate durable work"
+    },
+    "lease_expiry": {
+      "proof": [
+        "p5w2_process_faults",
+        "p5r_race_deadlock",
+        "pay17_finance_rollback_reclaim"
+      ],
+      "required_outcome": "expired lease is reclaimed with a higher fence and stale completion cannot win"
+    },
+    "clock_skew": {
+      "proof": [
+        "pay17_database_clock_authority",
+        "p5r_race_deadlock"
+      ],
+      "required_outcome": "money-worker leases use PostgreSQL clock_timestamp rather than caller clocks"
+    },
+    "provider_clock_skew": {
+      "proof": [
+        "pay17_provider_clock_skew_runtime",
+        "pay16_provider_future_skew"
+      ],
+      "required_outcome": "future provider timestamps beyond the bounded skew window are rejected"
+    }
+  },
+  "hard_gates": {
+    "duplicate_financial_effects": 0,
+    "lost_successful_payments": 0,
+    "lost_refund_obligations": 0,
+    "impossible_terminal_states": 0,
+    "stuck_unrecoverable_commands": 0,
+    "unauthorized_entitlements": 0
+  },
+  "inherited_same_head_workflows": [
+    ".github/workflows/p5w2-worker-crash-redelivery-pg16.yml",
+    ".github/workflows/p5e-provider-ack-ambiguity-pg16.yml",
+    ".github/workflows/p5d-dependency-loss-pg16.yml",
+    ".github/workflows/p5r-race-deadlock-pg16.yml",
+    ".github/workflows/p6b-broker-reconnect-pg16.yml",
+    ".github/workflows/p6w-worker-shutdown-redelivery-pg16.yml"
+  ],
+  "terminal_marker": "PAY17_FAULT_TOLERANCE=PASS"
+}

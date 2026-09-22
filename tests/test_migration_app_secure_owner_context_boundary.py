@@ -128,6 +128,9 @@ _PAY10_REFUND_FINALIZATION_MIGRATION = (
 _PAY15_LEGACY_RETIREMENT_MIGRATION = (
     "zz17d8e9f0a61_pay15_legacy_payment_retirement.py"
 )
+_PAY16_SECURITY_MIGRATION = (
+    "zz27d8e9f0a62_pay16_security_abuse_hardening.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -177,6 +180,7 @@ APP_SECURE_FILES.update(
         _PAY10_REFUND_PROVIDER_MIGRATION,
         _PAY10_REFUND_EXECUTION_MIGRATION,
         _PAY10_REFUND_FINALIZATION_MIGRATION,
+        _PAY16_SECURITY_MIGRATION,
     }
 )
 
@@ -378,6 +382,15 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "create_policy",
             "drop_policy",
             "grant_schema",
+        },
+        # PAY-16 installs the immutable security-audit and signed recovery
+        # capabilities under app_security_owner and FORCE-RLS policy boundaries.
+        # The schema CREATE grant is installation-only and revoked on exit.
+        _PAY16_SECURITY_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+            "grant_schema",
+            "revoke_schema",
         },
         A1.name: view_contract,
     }

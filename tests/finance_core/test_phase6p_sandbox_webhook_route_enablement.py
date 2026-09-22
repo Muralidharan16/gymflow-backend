@@ -152,7 +152,7 @@ async def test_sandbox_webhook_route_replay_is_idempotent_and_does_not_duplicate
 
 
 @pytest.mark.asyncio
-async def test_sandbox_webhook_route_rejects_unknown_provider_reference_without_mutation(client):
+async def test_sandbox_webhook_route_queues_unknown_provider_reference_without_money_mutation(client):
     await seed_checkout()
     raw = razorpay_payload(event_id="evt_phase6p_unknown_order", order_id="order_missing", payment_id="pay_missing")
     override_webhook_dependencies(sandbox_webhook_posture())
@@ -166,9 +166,21 @@ async def test_sandbox_webhook_route_rejects_unknown_provider_reference_without_
     finally:
         clear_webhook_dependency_overrides()
 
-    assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "FINANCE_WEBHOOK_PAYLOAD_INVALID"
-    assert await finance_counts() == before
+    # A correctly signed provider event can precede local checkout-order
+    # acknowledgement. PAY-17 preserves it as bounded retry evidence rather
+    # than dead-lettering a potentially successful payment.
+    assert response.status_code == 202
+    assert response.json() == {"status": "queued"}
+    after = await finance_counts()
+    assert after["payments"] == before["payments"]
+    assert after["events"] == before["events"]
+    assert after["allocations"] == before["allocations"]
+    assert after["ledger"] == before["ledger"]
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.provider_webhook_inbox "
+        "WHERE provider_event_id='evt_phase6p_unknown_order' "
+        "AND status='retry'"
+    ) == 1
 
 
 @pytest.mark.asyncio

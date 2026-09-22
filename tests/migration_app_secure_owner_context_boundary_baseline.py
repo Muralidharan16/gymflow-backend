@@ -12,6 +12,7 @@ M361 = VERSIONS / "361c32e72e93_add_geo_fields_to_branches.py"
 M0023 = VERSIONS / "0023_rbac_p2_ref_tables.py"
 M0025 = VERSIONS / "0025_rbac_p4_bsr_expand.py"
 M0027 = VERSIONS / "0027_rbac_p6_perm_snapshots.py"
+PAY16 = VERSIONS / "zz27d8e9f0a62_pay16_security_abuse_hardening.py"
 
 APP_SECURE_FILES = {
     "0022_rbac_phase1_roles_extensions.py",
@@ -20,6 +21,7 @@ APP_SECURE_FILES = {
     "0029_rbac_p8_contract.py",
     "6f708192a3b4_address_runtime_privilege_boundary.py",
     "zz17d8e9f0a61_pay15_legacy_payment_retirement.py",
+    PAY16.name,
     A1.name,
 }
 
@@ -487,6 +489,7 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "revoke_schema",
         },
         "zz17d8e9f0a61_pay15_legacy_payment_retirement.py": set(),
+        PAY16.name: {"grant_schema", "revoke_schema"},
         A1.name: view_contract,
     }
     actual = {

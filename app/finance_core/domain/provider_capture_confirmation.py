@@ -55,3 +55,8 @@ class FinanceProviderEvidenceError(Exception):
 
     def __str__(self) -> str:
         return f"{self.code}: {self.message}"
+
+
+@dataclass(frozen=True)
+class FinanceProviderEvidenceDeferredError(FinanceProviderEvidenceError):
+    """Verified provider evidence that is valid but not locally bindable yet."""

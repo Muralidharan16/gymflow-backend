@@ -48,7 +48,10 @@ from app.finance_core.domain.payment_ledger import (
     FinancePaymentNotFoundError,
     FinancePaymentStateError,
 )
-from app.finance_core.domain.provider_capture_confirmation import FinanceProviderEvidenceError
+from app.finance_core.domain.provider_capture_confirmation import (
+    FinanceProviderEvidenceDeferredError,
+    FinanceProviderEvidenceError,
+)
 from app.finance_core.domain.provider_boundary import (
     CheckoutProviderRegistry,
     FinanceProviderConfigError,
@@ -466,6 +469,20 @@ async def receive_razorpay_webhook(
         # Payment state + payment_event + outbox + inbox completion commit
         # together. Crash before commit leaves the durable inbox reclaimable.
         await db.commit()
+    except FinanceProviderEvidenceDeferredError:
+        # A correctly signed provider event can race ahead of the checkout
+        # response that binds provider_order_ref to the local payment. Preserve
+        # the durable inbox and retry later instead of dead-lettering a real
+        # successful payment.
+        await db.rollback()
+        await webhook_service.fail_claimed_webhook(
+            claimed=claimed,
+            lease_owner=lease_owner,
+            error_code="provider_binding_pending",
+            retryable=True,
+        )
+        await db.commit()
+        return {"status": "queued"}
     except FinanceProviderEvidenceError as exc:
         await db.rollback()
         await webhook_service.fail_claimed_webhook(

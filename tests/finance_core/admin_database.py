@@ -167,7 +167,50 @@ async def truncate_finance_test_tables(
         )
 
     relations = ", ".join(f'finance."{name}"' for name in names)
+
+    # PAY-16 deliberately makes finance.security_audit_events immutable even
+    # to ordinary DML. The disposable Finance test-admin is migration_owner,
+    # which owns the table and may temporarily disable the trigger solely to
+    # reset an isolated test database. The disable and re-enable occur in the
+    # same transaction; a failed TRUNCATE rolls the disable back as well.
+    reset_security_audit = "security_audit_events" in names
+    if reset_security_audit:
+        owner_check = (
+            await session.execute(
+                text(
+                    """
+                    SELECT
+                        pg_catalog.pg_get_userbyid(relation_data.relowner)
+                            = current_user
+                    FROM pg_catalog.pg_class AS relation_data
+                    JOIN pg_catalog.pg_namespace AS namespace_data
+                      ON namespace_data.oid = relation_data.relnamespace
+                    WHERE namespace_data.nspname='finance'
+                      AND relation_data.relname='security_audit_events'
+                    """
+                )
+            )
+        ).scalar_one()
+        if owner_check is not True:
+            raise RuntimeError(
+                "Finance security-audit reset requires the disposable table owner"
+            )
+        await session.execute(
+            text(
+                "ALTER TABLE finance.security_audit_events "
+                "DISABLE TRIGGER trg_pay16_security_audit_immutable"
+            )
+        )
+
     await session.execute(text(f"TRUNCATE TABLE {relations} RESTART IDENTITY"))
+
+    if reset_security_audit:
+        await session.execute(
+            text(
+                "ALTER TABLE finance.security_audit_events "
+                "ENABLE TRIGGER trg_pay16_security_audit_immutable"
+            )
+        )
 
 
 @asynccontextmanager
