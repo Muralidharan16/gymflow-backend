@@ -85,6 +85,8 @@ def test_pay20_inherits_frozen_p10_budgets_instead_of_loosening_them() -> None:
     assert 'max_write_p99_ms' in source
     assert "candidate_rate < base_rate * 0.60" in source
     assert "float(summary[\"p95_ms\"]) > base_p95 * 2.0" in source
+    assert c["finance_calibration"]["concurrency"] == c["finance_load"]["concurrency"] == 16
+    assert c["finance_calibration"]["profile"] == "same_pressure_as_load"
 
 
 def test_finance_harness_uses_certified_real_finance_paths_and_no_live_provider() -> None:
@@ -141,7 +143,8 @@ def test_workflow_requires_real_pg16_redis_multi_tenant_and_two_soaks() -> None:
         "--duration-seconds 300",
         "run_p10b_baseline_calibration.sh",
         "p10l_verify_representative_load.py",
-        "run_p10s_soak.sh",
+        "run_pay20_system_soak.sh",
+        "PAY20_SYSTEM_WARMUP_SECONDS=120",
         "P10_SOAK=PASS",
         "tests/finance_core/test_pay17_fault_injection_concurrency.py",
         "scripts/ci/pay20_prepare_system_pg16.sh",
