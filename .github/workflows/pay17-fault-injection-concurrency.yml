@@ -73,7 +73,6 @@ jobs:
               "tests/finance_core/admin_database.py",
               "tests/finance_core/test_pay17_fault_injection_concurrency.py",
               "tests/finance_core/test_phase6p_sandbox_webhook_route_enablement.py",
-              "tests/finance_core/admin_database.py",
               "tests/platform_billing/test_pay17_payment_lifecycle_races.py",
               "tests/test_pay17_fault_tolerance_static.py",
           }
@@ -103,6 +102,7 @@ jobs:
           echo 'PAY17_CLOCK_AUTHORITY=PASS'
 
   finance_fault_runtime:
+    if: ${{ github.event_name != 'pull_request' }}
     name: PAY-17 Finance PG16 callback provider and money races
     runs-on: ubuntu-24.04
     timeout-minutes: 80
@@ -198,10 +198,12 @@ jobs:
           echo 'PAY17_PROVIDER_CLOCK_SKEW=PASS'
 
   platform:
+    if: ${{ github.event_name != 'pull_request' }}
     name: PAY-17 Platform Billing lifecycle race regression
     uses: ./.github/workflows/hardening-ci.yml
 
   refund_crash_runtime:
+    if: ${{ github.event_name != 'pull_request' }}
     name: PAY-17 refund worker process crash and replay
     runs-on: ubuntu-24.04
     timeout-minutes: 80
@@ -274,36 +276,42 @@ jobs:
           echo 'PAY17_REFUND_SINGLE_PROVIDER_EFFECT=PASS'
 
   p5w2:
+    if: ${{ github.event_name != 'pull_request' }}
     name: PAY-17 process death and Celery redelivery
     uses: ./.github/workflows/p5w2-worker-crash-redelivery-pg16.yml
     with:
       certification_head: zz27d8e9f0a62
 
   p5e:
+    if: ${{ github.event_name != 'pull_request' }}
     name: PAY-17 provider success acknowledgement ambiguity
     uses: ./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml
     with:
       certification_head: zz27d8e9f0a62
 
   p5d:
+    if: ${{ github.event_name != 'pull_request' }}
     name: PAY-17 Redis network and database loss
     uses: ./.github/workflows/p5d-dependency-loss-pg16.yml
     with:
       certification_head: zz27d8e9f0a62
 
   p5r:
+    if: ${{ github.event_name != 'pull_request' }}
     name: PAY-17 deadlock lease and lifecycle Finance races
     uses: ./.github/workflows/p5r-race-deadlock-pg16.yml
     with:
       certification_head: zz27d8e9f0a62
 
   p6b:
+    if: ${{ github.event_name != 'pull_request' }}
     name: PAY-17 Redis broker restart and reconnect
     uses: ./.github/workflows/p6b-broker-reconnect-pg16.yml
     with:
       certification_head: ${{ github.sha }}
 
   p6w:
+    if: ${{ github.event_name != 'pull_request' }}
     name: PAY-17 worker shutdown and late-ack redelivery
     uses: ./.github/workflows/p6w-worker-shutdown-redelivery-pg16.yml
     with:
@@ -311,7 +319,7 @@ jobs:
 
   decision:
     name: PAY-17 final fault-tolerance decision
-    if: ${{ always() }}
+    if: ${{ github.event_name != 'pull_request' && always() }}
     needs:
       - contract
       - finance_fault_runtime
@@ -357,3 +365,19 @@ jobs:
           echo 'PAY17_RELEASE=NOT_AUTHORIZED'
           echo 'PAY17_DEPLOYMENT=NOT_AUTHORIZED'
           echo 'PAY17_FAULT_TOLERANCE=PASS'
+
+
+  pr_contract_decision:
+    name: PAY-17 PR contract decision
+    if: ${{ github.event_name == 'pull_request' && always() }}
+    needs: [contract]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require PAY-17 PR contract
+        env:
+          CONTRACT: ${{ needs.contract.result }}
+        run: |
+          set -euo pipefail
+          test "${CONTRACT}" = "success"
+          echo 'PAY17_PR_CONTRACT=PASS'
+          echo 'PAY17_DESTRUCTIVE_CERTIFICATION=EXACT_HEAD_PUSH_ONLY'
