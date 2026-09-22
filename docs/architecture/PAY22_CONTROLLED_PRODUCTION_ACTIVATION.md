@@ -59,6 +59,17 @@ organizations, capped at 1,000 basis points (10%). A rollout seed is mandatory.
 All organizations are cohort-eligible. Exact-SHA authorization, provider-egress
 fencing and all individual kill switches remain authoritative.
 
+## Progressive transition rule
+
+Forward activation may remain at the same stage or advance by exactly one stage.
+Skipping forward stages is forbidden. For example, Stage 0 cannot jump directly
+to Stage 3, 4 or 5.
+
+Emergency rollback is intentionally asymmetric: operators may move immediately
+to any lower stage, provided the proposed lower-stage posture itself validates.
+This lets DOers reduce exposure rapidly during an incident without being forced
+through intermediate rollout stages.
+
 ## Independent kill switches
 
 Exactly these switches exist:
@@ -107,8 +118,18 @@ requires:
 `authorized_sha == certified_sha == deployed_sha`
 
 The executable candidate first earns `PAY22_CONTROL_PLANE_CERTIFIED=PASS`. A
-human must then explicitly authorize that exact SHA before the external release
-system may record:
+human must then explicitly authorize that exact SHA. The authorization is
+recorded in a non-executable evidence envelope:
+
+`docs/architecture/pay22_production_activation_authorization.json`
+
+That authorization-only commit must have the certified executable candidate as
+its direct parent and may change no executable file. The first production
+authorization is Stage 0 only: live provider configuration present, provider
+egress blocked, and all capability switches disabled.
+
+Only after that evidence commit passes the same exact-head certification may the
+release system record:
 
 `PAY22_PRODUCTION_ACTIVATION_AUTHORIZED`
 
