@@ -110,6 +110,25 @@ def _seed_extra(index: int) -> None:
                     f"P20B{index:06d}",
                 ),
             )
+            # PAY-4 binding authority requires the authoritative invoice plan
+            # snapshot to be represented by exactly one matching invoice line.
+            cur.execute(
+                """
+                INSERT INTO finance.invoice_lines(
+                    id,invoice_id,line_number,description,hsn_sac,quantity,
+                    unit_amount,discount_amount,taxable_amount,
+                    gst_rate_basis_points,cgst_amount,sgst_amount,igst_amount,
+                    total_tax_amount,line_total_amount,pricing_mode
+                ) VALUES(
+                    pg_catalog.gen_random_uuid(),%s,1,%s,'9999',1,
+                    100,0,100,0,0,0,0,0,100,'tax_inclusive'
+                )
+                """,
+                (
+                    invoice,
+                    f"Membership subscription P20-DISP-{index:05d}",
+                ),
+            )
         conn.commit()
 
     with psycopg.connect(pay4.APP_URL) as conn:
