@@ -212,3 +212,35 @@ def test_pay20_system_setup_is_current_head_no_migration_setup_not_risk_bypass()
         for line in workflow.splitlines()
         if line.strip().startswith('"')
     }
+
+
+def test_pay20_performance_fixes_preserve_authority_while_shortening_hot_paths() -> None:
+    checkout = (
+        ROOT / "app/finance_core/services/checkout_orchestration.py"
+    ).read_text(encoding="utf-8")
+    issue_at = checkout.index("issued = await self._invoice_engine.issue_invoice(")
+    commit_at = checkout.index("await self._session.commit()", issue_at)
+    intent_at = checkout.index(
+        "intent = await self._checkout_intents.create_checkout_intent(",
+        issue_at,
+    )
+    assert issue_at < commit_at < intent_at
+    assert "legal invoice/brand series rows are global" in checkout
+
+    repository = (ROOT / "app/repositories/member_repo.py").read_text(
+        encoding="utf-8"
+    )
+    service = (ROOT / "app/services/member_service.py").read_text(
+        encoding="utf-8"
+    )
+    search_org = repository.split("async def search_org(", 1)[1].split(
+        "async def get_all_for_gym", 1
+    )[0]
+    assert "total_scalar" in search_org
+    assert "current_organization_slug()" in search_org
+    assert 'total_scalar.label("total_count")' in search_org
+    assert 'org_slug_scalar.label("org_slug")' in search_org
+    list_service = service.split("async def list_members_org(", 1)[1].split(
+        "async def get_member_org", 1
+    )[0]
+    assert "_current_organization_slug()" not in list_service
