@@ -116,6 +116,8 @@ def test_pay17_finance_runtime_attacks_money_boundaries():
         assert f"async def {test_name}" in source
 
     assert "range(100)" in source
+    assert "asyncio.Semaphore(20)" in source
+    assert "async with db_slots" in source
     assert "await session.rollback()" in source
     assert "lease_fence == first_claim.lease_fence + 1" in source
     assert "FinanceProviderEvidenceDeferredError" in source
@@ -262,3 +264,27 @@ def test_pay17_workflow_requires_dedicated_finance_and_platform_runtime_lanes():
     assert "tests/finance_core/test_pay17_fault_injection_concurrency.py" in workflow
     assert "tests/platform_billing/test_pay17_payment_lifecycle_races.py" in workflow
     assert "PAY17_FAULT_TOLERANCE=PASS" in workflow
+
+
+def test_pay17_refund_crash_fixture_restores_pay16_immutable_audit_guard():
+    source = _source(
+        "tests/test_pay10_refund_worker_crash_recovery_runtime.py"
+    )
+    assert "_reset_state as _base_reset_state" in source
+    assert '"test" not in str(admin.database or "").lower()' in source
+    assert "DISABLE TRIGGER trg_pay16_security_audit_immutable" in source
+    assert "ENABLE TRIGGER trg_pay16_security_audit_immutable" in source
+    assert "finally:" in source
+    assert 'assert row == ("O",)' in source
+
+
+def test_pay17_closes_inherited_app_secure_inventory_over_pay16():
+    source = _source(
+        "tests/migration_app_secure_owner_context_boundary_baseline.py"
+    )
+    assert (
+        'PAY16 = VERSIONS / "zz27d8e9f0a62_pay16_security_abuse_hardening.py"'
+        in source
+    )
+    assert "PAY16.name" in source
+    assert '{"grant_schema", "revoke_schema"}' in source
