@@ -131,6 +131,12 @@ _PAY15_LEGACY_RETIREMENT_MIGRATION = (
 _PAY16_SECURITY_MIGRATION = (
     "zz27d8e9f0a62_pay16_security_abuse_hardening.py"
 )
+_PAY18_OBSERVABILITY_MIGRATION = (
+    "zz37d8e9f0a63_pay18_financial_observability.py"
+)
+_PAY20_DELIVERY_CAPACITY_MIGRATION = (
+    "zz47d8e9f0a64_pay20_finance_delivery_capacity.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -181,6 +187,8 @@ APP_SECURE_FILES.update(
         _PAY10_REFUND_EXECUTION_MIGRATION,
         _PAY10_REFUND_FINALIZATION_MIGRATION,
         _PAY16_SECURITY_MIGRATION,
+        _PAY18_OBSERVABILITY_MIGRATION,
+        _PAY20_DELIVERY_CAPACITY_MIGRATION,
     }
 )
 
@@ -389,6 +397,20 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         _PAY16_SECURITY_MIGRATION: {
             "create_policy",
             "drop_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
+        # PAY-18 installs the aggregate financial-observability snapshot and
+        # its FORCE-RLS policy under the established reduced-owner boundary.
+        _PAY18_OBSERVABILITY_MIGRATION: {
+            "create_policy",
+            "drop_policy",
+            "grant_schema",
+            "revoke_schema",
+        },
+        # PAY-20 installs bounded Finance delivery-capacity helpers only; the
+        # schema CREATE grant is installation-only and revoked before exit.
+        _PAY20_DELIVERY_CAPACITY_MIGRATION: {
             "grant_schema",
             "revoke_schema",
         },
