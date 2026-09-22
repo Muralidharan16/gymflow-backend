@@ -100,6 +100,16 @@ class FinanceCheckoutOrchestrationService:
                 idempotency_key=f"{command.idempotency_key}:invoice:issue",
             )
         )
+
+        # PAY-20 capacity hardening: legal invoice/brand series rows are global
+        # serialization points for a series. Issuance is already complete,
+        # immutable and idempotently replayable at this point, so persist that
+        # authority immediately instead of holding the series row locks while
+        # checkout-intent/provider-operation preparation continues. The session
+        # context is transaction-safe and is reinstalled automatically on the
+        # next transaction.
+        await self._session.commit()
+
         invoice = await self._get_invoice(issued.invoice_id)
         amount = money(invoice.grand_total_amount)
         intent = await self._checkout_intents.create_checkout_intent(
