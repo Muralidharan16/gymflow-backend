@@ -265,10 +265,20 @@ def test_pay20_capacity_migration_preserves_frozen_pay18_global_outbox_observabi
     assert 'down_revision = "zz37d8e9f0a63"' in source
     assert "CREATE OR REPLACE FUNCTION app_secure.claim_member_subscription_finance_events" in source
     assert "member_subscription_finance_bindings" in source
+    assert "pay20_member_subscription_binding_exists" in source
+    assert "pg_catalog.set_config(" in source
+    assert "'app.current_org_id'" in source
+    assert "helper_worker_execute" in source
+    assert "REVOKE ALL ON FUNCTION" in source
+    assert (
+        "GRANT EXECUTE ON FUNCTION "
+        "app_secure.pay20_member_subscription_binding_exists"
+    ) not in source
     assert "FOR UPDATE OF e SKIP LOCKED" in source
     assert "CREATE OR REPLACE FUNCTION app_secure.pay18_financial_observability_snapshot" not in source
     assert "PAY-20 must not narrow PAY-18 global Finance outbox observability" in source
     assert "_replace_claim_function(bounded=False)" in source
+    assert "_drop_binding_helper()" in source
 
 
 def test_pay20_dispatcher_capacity_is_bounded_and_fail_closed() -> None:

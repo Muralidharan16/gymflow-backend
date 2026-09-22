@@ -252,7 +252,7 @@ jobs:
           test "$(
             sudo -u postgres psql -X -qAt -d "$SOURCE_DB" -c "
               SELECT position(
-                'member_subscription_finance_bindings'
+                'pay20_member_subscription_binding_exists'
                 IN pg_catalog.pg_get_functiondef(p.oid)
               ) > 0
               FROM pg_catalog.pg_proc p
@@ -262,6 +262,24 @@ jobs:
                 AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, integer, integer'
             "
           )" = "t"
+          test "$(
+            sudo -u postgres psql -X -qAt -d "$SOURCE_DB" -c "
+              SELECT pg_catalog.to_regprocedure(
+                'app_secure.pay20_member_subscription_binding_exists(uuid,uuid)'
+              ) IS NOT NULL
+            "
+          )" = "t"
+          test "$(
+            sudo -u postgres psql -X -qAt -d "$SOURCE_DB" -c "
+              SELECT pg_catalog.has_function_privilege(
+                'worker_runtime',
+                pg_catalog.to_regprocedure(
+                  'app_secure.pay20_member_subscription_binding_exists(uuid,uuid)'
+                ),
+                'EXECUTE'
+              )
+            "
+          )" = "f"
 
           python -s -m alembic -c alembic.ini downgrade zz37d8e9f0a63
           test "$(python -s -m alembic -c alembic.ini current | awk 'NR==1 {print $1}')" = "zz37d8e9f0a63"
@@ -279,7 +297,7 @@ jobs:
           test "$(
             sudo -u postgres psql -X -qAt -d "$SOURCE_DB" -c "
               SELECT position(
-                'member_subscription_finance_bindings'
+                'pay20_member_subscription_binding_exists'
                 IN pg_catalog.pg_get_functiondef(p.oid)
               ) > 0
               FROM pg_catalog.pg_proc p
@@ -289,6 +307,13 @@ jobs:
                 AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, integer, integer'
             "
           )" = "f"
+          test "$(
+            sudo -u postgres psql -X -qAt -d "$SOURCE_DB" -c "
+              SELECT pg_catalog.to_regprocedure(
+                'app_secure.pay20_member_subscription_binding_exists(uuid,uuid)'
+              ) IS NULL
+            "
+          )" = "t"
 
           python -s -m alembic -c alembic.ini upgrade zz47d8e9f0a64
           test "$(python -s -m alembic -c alembic.ini current | awk 'NR==1 {print $1}')" = "${PAY20_ALEMBIC_HEAD}"
@@ -303,6 +328,37 @@ jobs:
             "
           )"
           test "$snapshot_after" = "$snapshot_before"
+          test "$(
+            sudo -u postgres psql -X -qAt -d "$SOURCE_DB" -c "
+              SELECT position(
+                'pay20_member_subscription_binding_exists'
+                IN pg_catalog.pg_get_functiondef(p.oid)
+              ) > 0
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+              WHERE n.nspname='app_secure'
+                AND p.proname='claim_member_subscription_finance_events'
+                AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, integer, integer'
+            "
+          )" = "t"
+          test "$(
+            sudo -u postgres psql -X -qAt -d "$SOURCE_DB" -c "
+              SELECT pg_catalog.to_regprocedure(
+                'app_secure.pay20_member_subscription_binding_exists(uuid,uuid)'
+              ) IS NOT NULL
+            "
+          )" = "t"
+          test "$(
+            sudo -u postgres psql -X -qAt -d "$SOURCE_DB" -c "
+              SELECT pg_catalog.has_function_privilege(
+                'worker_runtime',
+                pg_catalog.to_regprocedure(
+                  'app_secure.pay20_member_subscription_binding_exists(uuid,uuid)'
+                ),
+                'EXECUTE'
+              )
+            "
+          )" = "f"
           echo 'PAY20_MIGRATION_ROUNDTRIP=PASS'
           echo 'PAY20_PAY18_GLOBAL_OUTBOX_OBSERVABILITY=PASS'
       - name: Calibrate current-head Finance paths

@@ -27,6 +27,9 @@ depends_on = None
 
 _MIGRATION_OWNER = "migration_owner"
 _SECURITY_OWNER = "app_security_owner"
+_BINDING_HELPER = (
+    "app_secure.pay20_member_subscription_binding_exists(uuid,uuid)"
+)
 
 
 def _require_identity(bind) -> None:
@@ -48,14 +51,93 @@ def _require_identity(bind) -> None:
         )
 
 
+def _install_binding_helper() -> None:
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        op.execute(
+            r"""
+            CREATE FUNCTION app_secure.pay20_member_subscription_binding_exists(
+                p_organization_id uuid,
+                p_invoice_id uuid
+            )
+            RETURNS boolean
+            LANGUAGE plpgsql
+            SECURITY DEFINER
+            SET search_path=pg_catalog,public,finance
+            SET row_security=on
+            AS $function$
+            DECLARE
+                v_previous_org text;
+                v_bound boolean := false;
+            BEGIN
+                IF NOT pg_catalog.pg_has_role(
+                    session_user,'worker_runtime','MEMBER'
+                ) THEN
+                    RAISE EXCEPTION
+                        'PAY-20 binding eligibility requires worker_runtime'
+                        USING ERRCODE='42501';
+                END IF;
+                IF p_organization_id IS NULL OR p_invoice_id IS NULL THEN
+                    RETURN false;
+                END IF;
+
+                v_previous_org :=
+                    pg_catalog.current_setting('app.current_org_id',true);
+                PERFORM pg_catalog.set_config(
+                    'app.current_org_id',
+                    p_organization_id::text,
+                    true
+                );
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM finance.member_subscription_finance_bindings b
+                    WHERE b.organization_id=p_organization_id
+                      AND b.finance_invoice_id=p_invoice_id
+                )
+                INTO v_bound;
+                PERFORM pg_catalog.set_config(
+                    'app.current_org_id',
+                    pg_catalog.coalesce(v_previous_org,''),
+                    true
+                );
+                RETURN v_bound;
+            EXCEPTION WHEN OTHERS THEN
+                PERFORM pg_catalog.set_config(
+                    'app.current_org_id',
+                    pg_catalog.coalesce(v_previous_org,''),
+                    true
+                );
+                RAISE;
+            END
+            $function$
+            """
+        )
+        op.execute(
+            "REVOKE ALL ON FUNCTION "
+            "app_secure.pay20_member_subscription_binding_exists(uuid,uuid) "
+            "FROM PUBLIC"
+        )
+    finally:
+        op.execute("RESET ROLE")
+
+
+def _drop_binding_helper() -> None:
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        op.execute(
+            "DROP FUNCTION "
+            "app_secure.pay20_member_subscription_binding_exists(uuid,uuid)"
+        )
+    finally:
+        op.execute("RESET ROLE")
+
+
 def _claim_sql(*, bound_only: bool) -> str:
     binding_predicate = (
         """
-                      AND EXISTS (
-                          SELECT 1
-                          FROM finance.member_subscription_finance_bindings b
-                          WHERE b.organization_id=e.organization_id
-                            AND b.finance_invoice_id=e.aggregate_id
+                      AND app_secure.pay20_member_subscription_binding_exists(
+                          e.organization_id,
+                          e.aggregate_id
                       )
         """
         if bound_only
@@ -164,6 +246,32 @@ def _postflight(bind) -> None:
             """
         )
     ).scalar_one()
+    helper = bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.pg_get_functiondef(p.oid)
+            FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+            WHERE n.nspname='app_secure'
+              AND p.proname='pay20_member_subscription_binding_exists'
+              AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, uuid'
+            """
+        )
+    ).scalar_one()
+    helper_worker_execute = bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.has_function_privilege(
+                'worker_runtime',p.oid,'EXECUTE'
+            )
+            FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+            WHERE n.nspname='app_secure'
+              AND p.proname='pay20_member_subscription_binding_exists'
+              AND pg_catalog.oidvectortypes(p.proargtypes)='uuid, uuid'
+            """
+        )
+    ).scalar_one()
     snapshot = bind.execute(
         sa.text(
             """
@@ -176,12 +284,21 @@ def _postflight(bind) -> None:
             """
         )
     ).scalar_one()
+    helper_name = "pay20_member_subscription_binding_exists"
     predicate = "member_subscription_finance_bindings"
-    if predicate not in claim:
+    if helper_name not in claim:
         raise RuntimeError(
-            "PAY-20 delivery eligibility predicate missing from claim function"
+            "PAY-20 delivery eligibility helper missing from claim function"
         )
-    if predicate in snapshot:
+    if predicate not in helper or "app.current_org_id" not in helper:
+        raise RuntimeError(
+            "PAY-20 binding helper does not preserve tenant-scoped RLS lookup"
+        )
+    if helper_worker_execute:
+        raise RuntimeError(
+            "PAY-20 binding helper must not be directly executable by worker_runtime"
+        )
+    if predicate in snapshot or helper_name in snapshot:
         raise RuntimeError(
             "PAY-20 must not narrow PAY-18 global Finance outbox observability"
         )
@@ -209,6 +326,7 @@ def upgrade() -> None:
     if not had_create:
         op.execute("GRANT CREATE ON SCHEMA app_secure TO app_security_owner")
     try:
+        _install_binding_helper()
         _replace_claim_function(bounded=True)
     finally:
         if not had_create:
@@ -236,6 +354,7 @@ def downgrade() -> None:
         op.execute("GRANT CREATE ON SCHEMA app_secure TO app_security_owner")
     try:
         _replace_claim_function(bounded=False)
+        _drop_binding_helper()
     finally:
         if not had_create:
             op.execute(
