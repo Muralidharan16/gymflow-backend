@@ -36,8 +36,11 @@ from tests.finance_core.test_phase5i_settlement_reconciliation import (
 from tests.finance_core.test_phase5j_refund_credit_note_reversal import (
     create_refund_intent,
 )
+from app.finance_core.domain.razorpay_sandbox import (
+    RazorpayOrderCreateRequest,
+    RazorpayOrderCreateResponse,
+)
 from tests.finance_core.test_phase6c_checkout_orchestration import (
-    FakeRazorpayClient,
     command,
     orchestrate,
 )
@@ -51,6 +54,25 @@ from tests.finance_core.test_phase6e_payment_application_gate import (
 from tests.finance_core.test_pay17_fault_injection_concurrency import (
     _webhook_service,
 )
+
+
+class Pay20RazorpayClient:
+    def __init__(self, prefix: str):
+        self.prefix = prefix.replace("-", "_")
+        self.requests: list[RazorpayOrderCreateRequest] = []
+
+    async def create_order(
+        self,
+        request: RazorpayOrderCreateRequest,
+    ) -> RazorpayOrderCreateResponse:
+        self.requests.append(request)
+        return RazorpayOrderCreateResponse(
+            order_id=f"order_{self.prefix}_{len(self.requests)}",
+            amount_subunits=request.amount_subunits,
+            currency_code=request.currency_code,
+            receipt=request.receipt,
+            status="created",
+        )
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -89,7 +111,7 @@ async def finance_cycle(
     sequence: int,
     *,
     prefix: str,
-    provider_client: FakeRazorpayClient,
+    provider_client: Pay20RazorpayClient,
     latencies: dict[str, list[float]],
 ) -> None:
     checkout, _ = await timed(
@@ -171,7 +193,7 @@ async def run_cycles(
     cycles: int,
     concurrency: int,
 ) -> dict:
-    provider_client = FakeRazorpayClient()
+    provider_client = Pay20RazorpayClient(prefix)
     latencies: dict[str, list[float]] = defaultdict(list)
     errors: list[str] = []
     semaphore = asyncio.Semaphore(concurrency)
@@ -256,7 +278,7 @@ async def run_duration(
     if duration_seconds < 300:
         raise RuntimeError("PAY-20 Finance soak requires at least 300 seconds")
 
-    provider_client = FakeRazorpayClient()
+    provider_client = Pay20RazorpayClient(prefix)
     latencies: dict[str, list[float]] = defaultdict(list)
     errors: list[str] = []
     sequence = 0
