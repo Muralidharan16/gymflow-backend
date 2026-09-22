@@ -90,7 +90,12 @@ def test_pay20_inherits_frozen_p10_budgets_instead_of_loosening_them() -> None:
     assert "candidate_rate < base_rate * 0.60" in source
     assert "float(summary[\"p95_ms\"]) > base_p95 * 2.0" in source
     assert c["finance_calibration"]["concurrency"] == c["finance_load"]["concurrency"] == 16
-    assert c["finance_calibration"]["profile"] == "same_pressure_as_load"
+    assert c["finance_calibration"]["cycles"] == c["finance_load"]["cycles"] == 96
+    assert c["finance_calibration"]["profile"] == "fresh_isolated_same_workload_as_load"
+    assert c["finance_calibration"]["fresh_database"] is True
+    assert c["finance_load"]["fresh_database"] is True
+    assert c["measurement_method"]["database_reset_between_windows"] is True
+    assert c["measurement_method"]["relative_p95_threshold_unchanged"] == 2
 
 
 def test_finance_harness_uses_certified_real_finance_paths_and_no_live_provider() -> None:
