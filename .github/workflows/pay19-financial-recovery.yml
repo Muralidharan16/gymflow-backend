@@ -71,6 +71,7 @@ jobs:
               "scripts/ci/pay19_financial_fingerprint.sql",
               "scripts/ci/pay19_recovery_replay_guards.py",
               "scripts/ci/pay19_seed_financial_state.py",
+              "tests/finance_core/test_phase5b_foundation.py",
               "tests/test_pay19_financial_recovery_static.py",
           }
           changed = {
@@ -275,7 +276,8 @@ jobs:
           set -euo pipefail
           python -s -m alembic -c alembic.ini upgrade head
           test "$(python -s -m alembic -c alembic.ini current | awk 'NR==1 {print $1}')" = "${PAY19_ALEMBIC_HEAD}"
-          PAY19_SEED_EVIDENCE="$EVIDENCE_DIR/seed.json" \
+          DATABASE_URL="$FINANCE_CORE_TEST_DATABASE_URL" \
+            PAY19_SEED_EVIDENCE="$EVIDENCE_DIR/seed.json" \
             PYTHONPATH="$GITHUB_WORKSPACE" \
             python -s scripts/ci/pay19_seed_financial_state.py \
             | tee "$EVIDENCE_DIR/seed.log"
@@ -505,7 +507,7 @@ jobs:
           trap - EXIT
       - name: Replay recovered money commands and prove duplicate prevention
         env:
-          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:55440/gymflow_pay19_recovery_test
+          DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay19-finance@127.0.0.1:55440/gymflow_pay19_recovery_test
           FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay19-finance@127.0.0.1:55440/gymflow_pay19_recovery_test
           FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:55440/gymflow_pay19_recovery_test
           TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-pay19-app@127.0.0.1:55440/gymflow_pay19_recovery_test
