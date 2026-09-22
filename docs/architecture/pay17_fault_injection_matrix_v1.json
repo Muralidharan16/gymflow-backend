@@ -63,9 +63,9 @@
     },
     "100_concurrent_callbacks": {
       "proof": [
-        "pay17_100_callback_convergence"
+        "pay17_100_callback_provider_event_convergence"
       ],
-      "required_outcome": "one claim winner and one financial application"
+      "required_outcome": "one durable provider/payment event and captured payment state; zero allocations, ledger postings or paid-invoice transition until explicit PAY-9 application authority"
     },
     "two_refunds_race": {
       "proof": [
