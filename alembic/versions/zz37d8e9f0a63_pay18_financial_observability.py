@@ -33,6 +33,7 @@ _APP = "app_runtime"
 _WORKER = "worker_runtime"
 _SNAPSHOT_NAME = "pay18_financial_observability_snapshot"
 _SNAPSHOT = "app_secure.pay18_financial_observability_snapshot()"
+_ACL_STATE = "app_private.pay18_financial_observability_acl_delta"
 
 _POLICY_TABLES = (
     ("finance", "payment_events"),
@@ -172,12 +173,90 @@ def _policy_name(schema_name: str, table_name: str) -> str:
 
 
 def _install_read_boundary(bind) -> None:
-    for (schema_name, table_name), columns in _COLUMN_GRANTS.items():
-        rendered = ",".join(columns)
-        op.execute(
-            f"GRANT SELECT({rendered}) ON TABLE "
-            f"{schema_name}.{table_name} TO {_SECURITY_OWNER}"
+    if bind.execute(
+        sa.text("SELECT pg_catalog.to_regclass(:relation) IS NOT NULL"),
+        {"relation": _ACL_STATE},
+    ).scalar_one():
+        raise RuntimeError("PAY-18 ACL delta state already exists")
+
+    op.execute(
+        """
+        CREATE TABLE app_private.pay18_financial_observability_acl_delta (
+            schema_name text NOT NULL,
+            table_name text NOT NULL,
+            column_name text NOT NULL,
+            privilege_name text NOT NULL,
+            CONSTRAINT pk_pay18_financial_observability_acl_delta
+                PRIMARY KEY (
+                    schema_name,
+                    table_name,
+                    column_name,
+                    privilege_name
+                ),
+            CONSTRAINT chk_pay18_financial_observability_acl_privilege
+                CHECK (privilege_name = 'SELECT')
         )
+        """
+    )
+    op.execute(
+        """
+        REVOKE ALL
+        ON TABLE app_private.pay18_financial_observability_acl_delta
+        FROM PUBLIC
+        """
+    )
+
+    for (schema_name, table_name), columns in _COLUMN_GRANTS.items():
+        for column_name in columns:
+            relation = f"{schema_name}.{table_name}"
+            already_present = bind.execute(
+                sa.text(
+                    """
+                    SELECT pg_catalog.has_column_privilege(
+                        :role_name,
+                        :relation,
+                        :column_name,
+                        'SELECT'
+                    )
+                    """
+                ),
+                {
+                    "role_name": _SECURITY_OWNER,
+                    "relation": relation,
+                    "column_name": column_name,
+                },
+            ).scalar_one()
+            if already_present:
+                continue
+
+            op.execute(
+                f"GRANT SELECT({column_name}) ON TABLE "
+                f"{relation} TO {_SECURITY_OWNER}"
+            )
+            bind.execute(
+                sa.text(
+                    """
+                    INSERT INTO
+                        app_private.pay18_financial_observability_acl_delta (
+                            schema_name,
+                            table_name,
+                            column_name,
+                            privilege_name
+                        )
+                    VALUES (
+                        :schema_name,
+                        :table_name,
+                        :column_name,
+                        'SELECT'
+                    )
+                    """
+                ),
+                {
+                    "schema_name": schema_name,
+                    "table_name": table_name,
+                    "column_name": column_name,
+                },
+            )
 
     # PAY-18 deliberately gives only the non-login security owner a global
     # SELECT policy. Runtime identities retain their existing tenant policies
@@ -450,6 +529,60 @@ def _postflight(bind) -> None:
             "PAY-18 maintenance runtime missing snapshot EXECUTE"
         )
 
+    if not bind.execute(
+        sa.text("SELECT pg_catalog.to_regclass(:relation) IS NOT NULL"),
+        {"relation": _ACL_STATE},
+    ).scalar_one():
+        raise RuntimeError("PAY-18 ACL delta state missing")
+
+    expected_grants = {
+        (schema_name, table_name, column_name, "SELECT")
+        for (schema_name, table_name), columns in _COLUMN_GRANTS.items()
+        for column_name in columns
+    }
+    delta_rows = {
+        (
+            row["schema_name"],
+            row["table_name"],
+            row["column_name"],
+            row["privilege_name"],
+        )
+        for row in bind.execute(
+            sa.text(
+                """
+                SELECT schema_name,table_name,column_name,privilege_name
+                FROM app_private.pay18_financial_observability_acl_delta
+                """
+            )
+        ).mappings()
+    }
+    if not delta_rows.issubset(expected_grants):
+        raise RuntimeError("PAY-18 ACL delta contains unexpected authority")
+
+    for schema_name, table_name, column_name, privilege_name in expected_grants:
+        if not bind.execute(
+            sa.text(
+                """
+                SELECT pg_catalog.has_column_privilege(
+                    :role_name,
+                    :relation,
+                    :column_name,
+                    :privilege_name
+                )
+                """
+            ),
+            {
+                "role_name": _SECURITY_OWNER,
+                "relation": f"{schema_name}.{table_name}",
+                "column_name": column_name,
+                "privilege_name": privilege_name,
+            },
+        ).scalar_one():
+            raise RuntimeError(
+                "PAY-18 required observability column privilege missing: "
+                f"{schema_name}.{table_name}.{column_name}"
+            )
+
     for runtime in (_APP, _WORKER):
         if bind.execute(
             sa.text(
@@ -517,9 +650,46 @@ def downgrade() -> None:
             f"ON {schema_name}.{table_name}"
         )
 
-    for (schema_name, table_name), columns in _COLUMN_GRANTS.items():
-        rendered = ",".join(columns)
+    state_exists = bind.execute(
+        sa.text("SELECT pg_catalog.to_regclass(:relation) IS NOT NULL"),
+        {"relation": _ACL_STATE},
+    ).scalar_one()
+    if not state_exists:
+        raise RuntimeError(
+            "PAY-18 downgrade blocked: ACL delta state is missing; "
+            "refusing to revoke predecessor authority"
+        )
+
+    rows = bind.execute(
+        sa.text(
+            """
+            SELECT schema_name,table_name,column_name,privilege_name
+            FROM app_private.pay18_financial_observability_acl_delta
+            ORDER BY schema_name DESC,table_name DESC,column_name DESC
+            """
+        )
+    ).mappings().all()
+
+    expected_grants = {
+        (schema_name, table_name, column_name, "SELECT")
+        for (schema_name, table_name), columns in _COLUMN_GRANTS.items()
+        for column_name in columns
+    }
+    for row in rows:
+        key = (
+            row["schema_name"],
+            row["table_name"],
+            row["column_name"],
+            row["privilege_name"],
+        )
+        if key not in expected_grants:
+            raise RuntimeError("PAY-18 downgrade ACL delta contains unexpected authority")
+        schema_name, table_name, column_name, privilege_name = key
         op.execute(
-            f"REVOKE SELECT({rendered}) ON TABLE "
+            f"REVOKE {privilege_name}({column_name}) ON TABLE "
             f"{schema_name}.{table_name} FROM {_SECURITY_OWNER}"
         )
+
+    op.execute(
+        "DROP TABLE app_private.pay18_financial_observability_acl_delta"
+    )
