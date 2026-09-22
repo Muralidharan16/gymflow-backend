@@ -15,7 +15,7 @@ def contract() -> dict:
     return json.loads(CONTRACT.read_text(encoding="utf-8"))
 
 
-def test_pay20_exact_predecessor_and_unchanged_migration_head() -> None:
+def test_pay20_exact_predecessor_and_bounded_capacity_migration_head() -> None:
     c = contract()
     assert c["phase"] == "PAY-20"
     assert c["predecessor"] == {
@@ -24,8 +24,12 @@ def test_pay20_exact_predecessor_and_unchanged_migration_head() -> None:
         "tree": "61cce864dd6208451f79b68318507802b5a53313",
         "alembic_head": "zz37d8e9f0a63",
     }
-    assert c["alembic_head"] == "zz37d8e9f0a63"
+    assert c["alembic_head"] == "zz47d8e9f0a64"
     assert c["no_new_money_authority"] is True
+    assert c["migration"]["predecessor"] == "zz37d8e9f0a63"
+    assert c["migration"]["revision"] == "zz47d8e9f0a64"
+    assert c["migration"]["money_authority_added"] is False
+    assert c["migration"]["pay18_global_finance_outbox_metric_preserved"] is True
     assert c["terminal_marker"] == "PAY20_PAYMENT_PERFORMANCE=PASS"
 
 
@@ -148,6 +152,8 @@ def test_workflow_requires_real_pg16_redis_multi_tenant_and_two_soaks() -> None:
         "P10_SOAK=PASS",
         "tests/finance_core/test_pay17_fault_injection_concurrency.py",
         "scripts/ci/pay20_prepare_system_pg16.sh",
+        "scripts/ci/pay20_finance_dispatcher_capacity.py",
+        "PAY20_FINANCE_OUTBOX_DRAIN=PASS",
         "tests/platform_billing/test_pay17_payment_lifecycle_races.py",
     ):
         assert token in source
@@ -204,17 +210,13 @@ def test_pay20_system_setup_is_current_head_no_migration_setup_not_risk_bypass()
     assert 'PAY20_SYSTEM_PG16_READY=PASS' in source
     assert "migration_semantics_gate.py" not in source
 
-    # PAY-20 exact scope contains no Alembic revision, so bypassing a migration
-    # scan is structurally impossible; this helper only prepares current-head
-    # runtime databases for load.
+    # PAY-20 now owns one bounded runtime-function migration. Current-head
+    # load databases must apply that exact revision rather than pinning PAY-19.
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert '"scripts/ci/pay20_prepare_system_pg16.sh"' in workflow
     assert "bash scripts/ci/pay20_prepare_system_pg16.sh" in workflow
-    assert "alembic/versions/" not in {
-        line.strip()
-        for line in workflow.splitlines()
-        if line.strip().startswith('"')
-    }
+    assert "zz47d8e9f0a64" in workflow
+    assert "zz47d8e9f0a64_pay20_finance_delivery_capacity.py" in workflow
 
 
 def test_pay20_performance_fixes_preserve_authority_while_shortening_hot_paths() -> None:
@@ -247,3 +249,38 @@ def test_pay20_performance_fixes_preserve_authority_while_shortening_hot_paths()
         "async def get_member_org", 1
     )[0]
     assert "_current_organization_slug()" not in list_service
+
+
+def test_pay20_capacity_migration_preserves_frozen_pay18_global_outbox_observability() -> None:
+    source = (
+        ROOT
+        / "alembic/versions/zz47d8e9f0a64_pay20_finance_delivery_capacity.py"
+    ).read_text(encoding="utf-8")
+    assert 'revision = "zz47d8e9f0a64"' in source
+    assert 'down_revision = "zz37d8e9f0a63"' in source
+    assert "CREATE OR REPLACE FUNCTION app_secure.claim_member_subscription_finance_events" in source
+    assert "member_subscription_finance_bindings" in source
+    assert "FOR UPDATE OF e SKIP LOCKED" in source
+    assert "CREATE OR REPLACE FUNCTION app_secure.pay18_financial_observability_snapshot" not in source
+    assert "PAY-20 must not narrow PAY-18 global Finance outbox observability" in source
+    assert "_replace_claim_function(bounded=False)" in source
+
+
+def test_pay20_dispatcher_capacity_is_bounded_and_fail_closed() -> None:
+    capacity = (
+        ROOT / "scripts/ci/pay20_finance_dispatcher_capacity.py"
+    ).read_text(encoding="utf-8")
+    dispatcher = (
+        ROOT / "app/tasks/finance_event_dispatcher.py"
+    ).read_text(encoding="utf-8")
+    c = contract()
+
+    assert c["dispatcher_capacity"]["synthetic_events"] == 500
+    assert c["dispatcher_capacity"]["max_drain_seconds"] == 60
+    assert c["dispatcher_capacity"]["global_pay18_finance_outbox_backlog_remains_global"] is True
+    assert "PAY20_FINANCE_OUTBOX_DRAIN=PASS" in capacity
+    assert "eligible_backlog_after" in capacity
+    assert "eligible_oldest_age_after" in capacity
+    assert "_MAX_BATCHES_PER_RUN = 10" in dispatcher
+    assert "_PROCESS_CONCURRENCY = 8" in dispatcher
+    assert "_BATCH_SIZE = 100" in dispatcher
