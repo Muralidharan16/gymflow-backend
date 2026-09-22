@@ -85,6 +85,18 @@ _FINANCE_SECURITY_EVENTS = frozenset(
     }
 )
 _SECURITY_SEVERITIES = frozenset({"info", "warning", "critical", "unknown"})
+_FINANCE_MANDATE_STATES = frozenset({"failed", "expired", "revoked", "unknown"})
+_FINANCE_DUNNING_STAGES = frozenset(
+    {
+        "full_grace",
+        "limited_write",
+        "read_only",
+        "billing_only",
+        "recovered",
+        "unknown",
+    }
+)
+_WEBHOOK_SIGNATURE_FAILURE_REASONS = frozenset({"missing", "invalid", "unknown"})
 _PROVIDERS = frozenset(
     {
         "opensearch",
@@ -216,6 +228,56 @@ class RuntimeMetrics:
         )
         self.finance_security_events = meter.create_counter(
             "doers.finance.security_events", unit="1"
+        )
+
+        # PAY-18 financial operations. Snapshot-derived totals/backlogs are
+        # gauges because PostgreSQL durable state is authoritative and can move
+        # both up and down as work progresses. Signature failures are a counter
+        # because rejected signatures intentionally never become durable rows.
+        self.payment_attempt_total = meter.create_gauge(
+            "doers.finance.payment_attempt.total", unit="1"
+        )
+        self.payment_failure_total = meter.create_gauge(
+            "doers.finance.payment_failure.total", unit="1"
+        )
+        self.payment_unknown_total = meter.create_gauge(
+            "doers.finance.payment_unknown.total", unit="1"
+        )
+        self.webhook_signature_failure_total = meter.create_counter(
+            "doers.finance.webhook_signature_failure", unit="1"
+        )
+        self.webhook_backlog = meter.create_gauge(
+            "doers.finance.webhook_backlog", unit="1"
+        )
+        self.payment_application_backlog = meter.create_gauge(
+            "doers.finance.payment_application_backlog", unit="1"
+        )
+        self.finance_outbox_backlog = meter.create_gauge(
+            "doers.finance.outbox_backlog", unit="1"
+        )
+        self.refund_backlog = meter.create_gauge(
+            "doers.finance.refund_backlog", unit="1"
+        )
+        self.refund_unknown_total = meter.create_gauge(
+            "doers.finance.refund_unknown.total", unit="1"
+        )
+        self.settlement_mismatch_total = meter.create_gauge(
+            "doers.finance.settlement_mismatch.total", unit="1"
+        )
+        self.reconciliation_open_total = meter.create_gauge(
+            "doers.finance.reconciliation_open.total", unit="1"
+        )
+        self.mandate_failure_total = meter.create_gauge(
+            "doers.finance.mandate_failure.total", unit="1"
+        )
+        self.dunning_stage_total = meter.create_gauge(
+            "doers.finance.dunning_stage.total", unit="1"
+        )
+        self.chargeback_open_total = meter.create_gauge(
+            "doers.finance.chargeback_open.total", unit="1"
+        )
+        self.duplicate_payment_allegation_open_total = meter.create_gauge(
+            "doers.finance.duplicate_payment_allegation_open.total", unit="1"
         )
 
         # Providers
@@ -413,6 +475,96 @@ class RuntimeMetrics:
         return self._safe(
             "finance_security_event",
             lambda: self.finance_security_events.add(1, attrs),
+        )
+
+    def financial_observability_snapshot(
+        self,
+        *,
+        payment_attempt_total: int,
+        payment_failure_total: int,
+        payment_unknown_total: int,
+        webhook_backlog: int,
+        payment_application_backlog: int,
+        finance_outbox_backlog: int,
+        refund_backlog: int,
+        refund_unknown_total: int,
+        settlement_mismatch_total: int,
+        reconciliation_open_total: int,
+        mandate_failed_total: int,
+        mandate_expired_total: int,
+        mandate_revoked_total: int,
+        dunning_full_grace_total: int,
+        dunning_limited_write_total: int,
+        dunning_read_only_total: int,
+        dunning_billing_only_total: int,
+        dunning_recovered_total: int,
+        chargeback_open_total: int,
+        duplicate_payment_allegation_open_total: int,
+    ) -> bool:
+        """Record aggregate financial truth without entity-identity labels."""
+
+        def _record() -> None:
+            self.payment_attempt_total.set(_count(payment_attempt_total), {})
+            self.payment_failure_total.set(_count(payment_failure_total), {})
+            self.payment_unknown_total.set(_count(payment_unknown_total), {})
+            self.webhook_backlog.set(_count(webhook_backlog), {})
+            self.payment_application_backlog.set(
+                _count(payment_application_backlog), {}
+            )
+            self.finance_outbox_backlog.set(_count(finance_outbox_backlog), {})
+            self.refund_backlog.set(_count(refund_backlog), {})
+            self.refund_unknown_total.set(_count(refund_unknown_total), {})
+            self.settlement_mismatch_total.set(
+                _count(settlement_mismatch_total), {}
+            )
+            self.reconciliation_open_total.set(
+                _count(reconciliation_open_total), {}
+            )
+
+            mandate_values = {
+                "failed": mandate_failed_total,
+                "expired": mandate_expired_total,
+                "revoked": mandate_revoked_total,
+            }
+            for state, value in mandate_values.items():
+                self.mandate_failure_total.set(
+                    _count(value),
+                    {"state": _enum(state, _FINANCE_MANDATE_STATES)},
+                )
+
+            dunning_values = {
+                "full_grace": dunning_full_grace_total,
+                "limited_write": dunning_limited_write_total,
+                "read_only": dunning_read_only_total,
+                "billing_only": dunning_billing_only_total,
+                "recovered": dunning_recovered_total,
+            }
+            for stage, value in dunning_values.items():
+                self.dunning_stage_total.set(
+                    _count(value),
+                    {"stage": _enum(stage, _FINANCE_DUNNING_STAGES)},
+                )
+
+            self.chargeback_open_total.set(_count(chargeback_open_total), {})
+            self.duplicate_payment_allegation_open_total.set(
+                _count(duplicate_payment_allegation_open_total), {}
+            )
+
+        return self._safe("financial_observability_snapshot", _record)
+
+    def webhook_signature_failure(
+        self,
+        *,
+        provider: str,
+        reason: str,
+    ) -> bool:
+        attrs = {
+            "provider": _enum(provider, _PROVIDERS),
+            "reason": _enum(reason, _WEBHOOK_SIGNATURE_FAILURE_REASONS),
+        }
+        return self._safe(
+            "webhook_signature_failure",
+            lambda: self.webhook_signature_failure_total.add(1, attrs),
         )
 
     def provider_call(
