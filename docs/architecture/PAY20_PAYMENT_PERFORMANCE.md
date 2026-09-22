@@ -33,9 +33,11 @@ pressure.
 
 PAY-20 inherits the already frozen P10 production-container budgets rather than
 inventing looser limits. The committed P10 budget digest remains mandatory.
-Finance-path calibration is measured on the same exact head at the same
-concurrency-16 pressure as the certification load. The larger certification
-sample must retain at least 60% of calibration cycle throughput and no Finance
+Finance-path calibration and certification load are measured on the same exact
+head with **identical 96-cycle, concurrency-16 workloads on independently fresh
+current-head databases**. This prevents calibration history from contaminating
+the load cohort while keeping the relative gate strict. The certification load
+must retain at least 60% of calibration cycle throughput and no Finance
 operation may exceed 2x its same-pressure calibration p95.
 
 In addition, every Finance operation is bounded by the frozen P10 write p95/p99
@@ -44,11 +46,11 @@ to convert failure into pass.
 
 ## Finance load lane
 
-The same-pressure calibration uses 48 complete money cycles at concurrency 16.
-The certification load uses 96 complete cycles at concurrency 16. This avoids
-mistaking the expected queueing effect of a 4x concurrency jump for a code
-regression while preserving both the relative 2x p95 gate and frozen P10
-absolute p95/p99 ceilings.
+Calibration and certification load each use 96 complete money cycles at
+concurrency 16. The database is rebuilt from the exact PAY-20 Alembic head
+between the two windows, so both cohorts begin from the same state. The 2x p95
+gate and frozen P10 absolute p95/p99 ceilings are unchanged; PAY-20 does not
+convert a noisy or contaminated benchmark into a pass by loosening limits.
 
 Each cycle performs:
 
