@@ -11,6 +11,7 @@ on:
       - 'app/services/member_service.py'
       - 'scripts/operations/pay23_*'
       - 'scripts/verify_head_workflow_bootstrap.py'
+      - 'tests/test_dafd_app_private_owner_context_boundary.py'
       - 'tests/test_head_workflow_bootstrap_wrappers.py'
       - 'tests/test_migration_app_secure_owner_context_boundary.py'
       - 'tests/test_pay23_pay18_acl_reversibility.py'
@@ -82,6 +83,7 @@ jobs:
               "scripts/operations/pay23_certify_postlaunch.py",
               "scripts/operations/pay23_local_snapshot.sql",
               "scripts/verify_head_workflow_bootstrap.py",
+              "tests/test_dafd_app_private_owner_context_boundary.py",
               "tests/test_head_workflow_bootstrap_wrappers.py",
               "tests/test_migration_app_secure_owner_context_boundary.py",
               "tests/test_pay23_pay18_acl_reversibility.py",
