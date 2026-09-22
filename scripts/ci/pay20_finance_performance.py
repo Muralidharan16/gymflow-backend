@@ -14,6 +14,7 @@ import json
 import math
 import os
 import resource
+import re
 import statistics
 import time
 import uuid
@@ -123,9 +124,14 @@ async def observer_scalar(
     url = os.environ["PAY20_OBSERVER_DATABASE_URL"]
 
     def call():
+        rendered_sql = re.sub(
+            r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)",
+            r"%(\\1)s",
+            sql,
+        )
         with psycopg.connect(url) as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, params or {})
+                cur.execute(rendered_sql, params or {})
                 row = cur.fetchone()
                 if row is None:
                     raise RuntimeError("PAY-20 observer query returned no row")
