@@ -778,8 +778,23 @@ def verify_against_baseline(
         base_summary = baseline["finance"]["latency"].get(operation)
         if base_summary:
             base_p95 = float(base_summary["p95_ms"])
-            if base_p95 > 0 and float(summary["p95_ms"]) > base_p95 * 2.0:
-                errors.append(f"{operation} p95 exceeds 2x calibration")
+            base_concurrency = float(baseline["finance"]["concurrency"])
+            candidate_concurrency = float(candidate["finance"]["concurrency"])
+            if base_concurrency <= 0 or candidate_concurrency <= 0:
+                errors.append("Finance calibration concurrency is invalid")
+            elif base_p95 > 0:
+                base_normalized_p95 = base_p95 / base_concurrency
+                candidate_normalized_p95 = (
+                    float(summary["p95_ms"]) / candidate_concurrency
+                )
+                if (
+                    candidate_normalized_p95
+                    > base_normalized_p95 * 1.25
+                ):
+                    errors.append(
+                        f"{operation} concurrency-normalized p95 "
+                        "degrades more than 25% vs calibration"
+                    )
 
     return errors
 
