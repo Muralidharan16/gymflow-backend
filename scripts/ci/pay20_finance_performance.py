@@ -25,6 +25,9 @@ import psycopg
 import redis
 
 from app.core.database import AsyncSessionLocal
+from app.finance_core.services.payment_settlement import (
+    FinanceVerifiedPaymentSettlementService,
+)
 from tests import test_pay4_member_finance_binding_runtime as pay4
 from tests import test_pay5_finance_event_delivery_runtime as pay5
 from tests.finance_core.test_phase5c_invoice_engine import (
@@ -110,6 +113,33 @@ async def timed(bucket: dict[str, list[float]], name: str, awaitable):
     return result
 
 
+async def apply_verified_payment_decision(
+    payment_id: uuid.UUID,
+    payment_event_id: uuid.UUID,
+):
+    """Execute the PAY-9 capability through its dedicated reduced runtime."""
+    url = os.environ["PAY9_PAYMENT_DATABASE_URL"]
+
+    def call():
+        with psycopg.connect(url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        application_record_id,payment_id,invoice_id,allocation_id,
+                        allocated_amount,unapplied_amount,invoice_outstanding_amount,
+                        invoice_status,decision_code,replayed
+                    FROM app_secure.apply_verified_provider_payment(%s,%s)
+                    """,
+                    (payment_id, payment_event_id),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return row
+
+    return await asyncio.to_thread(call)
+
+
 async def finance_cycle(
     sequence: int,
     *,
@@ -164,12 +194,26 @@ async def finance_cycle(
         (time.perf_counter() - webhook_started) * 1000.0
     )
 
+    pay9_started = time.perf_counter()
+    pay9 = await apply_verified_payment_decision(
+        checkout.finance_checkout_intent_id,
+        result.payment_event_id,
+    )
+    latencies["payment_application_decision"].append(
+        (time.perf_counter() - pay9_started) * 1000.0
+    )
+    if pay9[8] != "unapplied_no_checkout_binding":
+        raise RuntimeError(
+            f"PAY-20 generic checkout PAY-9 decision drift: {pay9[8]!r}"
+        )
+
     # A generic checkout is intentionally not a member-subscription entitlement
     # binding, so verified provider evidence may remain unapplied. PAY-20 must
     # load the certified explicit PAY-9 application boundary rather than
     # weakening settlement to accept an unapplied payment.
     await timed(
         latencies,
+        "payment_application_decision",
         "payment_application_ledger",
         apply_gate(
             checkout.finance_checkout_intent_id,
@@ -256,6 +300,7 @@ async def run_cycles(
     for operation in (
         "checkout",
         "webhook",
+        "payment_application_decision",
         "payment_application_ledger",
         "settlement_reconciliation",
         "refund_creation",
@@ -349,6 +394,7 @@ async def run_duration(
     for operation in (
         "checkout",
         "webhook",
+        "payment_application_decision",
         "payment_application_ledger",
         "settlement_reconciliation",
         "refund_creation",
