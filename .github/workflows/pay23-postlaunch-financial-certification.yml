@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - 'app/payment_certification/**'
+      - 'app/services/member_service.py'
       - 'scripts/operations/pay23_*'
       - 'scripts/verify_head_workflow_bootstrap.py'
       - 'tests/test_migration_app_secure_owner_context_boundary.py'
@@ -71,6 +72,7 @@ jobs:
               ".github/workflows/pay23-postlaunch-financial-certification.yml",
               "app/payment_certification/__init__.py",
               "app/payment_certification/post_launch.py",
+              "app/services/member_service.py",
               "docs/architecture/PAY23_POST_LAUNCH_FINANCIAL_CERTIFICATION.md",
               "docs/architecture/pay23_postlaunch_financial_certification_v1.json",
               "scripts/operations/pay23_certify_postlaunch.py",
