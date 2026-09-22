@@ -94,6 +94,7 @@ def test_finance_harness_uses_certified_real_finance_paths_and_no_live_provider(
         "record_verified_webhook(",
         "process_claimed_webhook(",
         "complete_claimed_webhook(",
+        "apply_gate(",
         "reconcile_payment(",
         "create_refund_intent(",
         "issued_invoice(",
@@ -182,7 +183,7 @@ def test_pay20_document_forbids_correctness_weakening_for_performance() -> None:
     text = DOC.read_text(encoding="utf-8")
     assert "Performance failure may never disable RLS" in text
     assert "exactly one activation" in text
-    assert "five-minute Finance soak" in text
+    assert "five-minute finance soak" in text.lower()
     assert "production-container" in text
 
 
