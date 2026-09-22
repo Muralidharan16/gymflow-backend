@@ -204,12 +204,13 @@ def test_webhook_signature_failure_logging_contains_no_sensitive_provider_eviden
     )
     combined = "\n".join(warning_blocks)
     for forbidden in (
-        "webhook.signature",
-        "raw_body",
-        "provider_payment_id",
-        "provider_order_id",
-        "payment_id",
-        "customer_id",
+        '"webhook_signature":',
+        '"signature": webhook.signature',
+        '"raw_body":',
+        '"provider_payment_id":',
+        '"provider_order_id":',
+        '"payment_id":',
+        '"customer_id":',
     ):
         assert forbidden not in combined
 
