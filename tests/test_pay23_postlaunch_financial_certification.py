@@ -7,16 +7,19 @@ import pytest
 
 from app.payment_certification.post_launch import (
     PostLaunchEvidence,
+    canonical_evidence_manifest_sha256,
     certify_post_launch,
 )
 
 
 def good_payload() -> dict:
-    return {
+    payload = {
         "schema_version": 1,
         "evidence_class": "production_live",
         "environment": "live",
         "activation_stage": 1,
+        "activation_authorization_id": "PAY22-STAGE1-TEST",
+        "activation_authorization_sha": "b" * 40,
         "window_start": "2026-09-22T00:00:00+00:00",
         "window_end": "2026-09-23T00:00:00+00:00",
         "read_only_snapshot": True,
@@ -82,8 +85,15 @@ def good_payload() -> dict:
             "unexplained_entitlement_grants": 0,
             "unresolved_cross_tenant_anomalies": 0,
         },
-        "evidence_manifest_sha256": "a" * 64,
+        "evidence_manifest_sha256": "",
     }
+    payload["evidence_manifest_sha256"] = canonical_evidence_manifest_sha256(payload)
+    return payload
+
+
+def rehash(payload: dict) -> dict:
+    payload["evidence_manifest_sha256"] = canonical_evidence_manifest_sha256(payload)
+    return payload
 
 
 def decision(payload: dict):
@@ -181,6 +191,7 @@ def test_refunds_may_legitimately_be_zero_if_both_sides_match():
         "finance_amount_minor": 0,
     }
     payload["anomalies"]["duplicate_refunds"] = 0
+    rehash(payload)
     assert decision(payload).certified is True
 
 
@@ -219,12 +230,18 @@ def test_window_is_bounded_and_timezone_aware():
         PostLaunchEvidence.from_dict(payload)
 
 
-def test_manifest_hash_is_mandatory():
+def test_manifest_hash_is_mandatory_and_binds_the_evidence_body():
     payload = good_payload()
     payload["evidence_manifest_sha256"] = "not-a-hash"
     result = decision(payload)
     assert result.certified is False
     assert "pay23.evidence_manifest_sha256.invalid" in result.failures
+
+    payload = good_payload()
+    payload["payments"]["finance_amount_minor"] += 1
+    result = decision(payload)
+    assert result.certified is False
+    assert "pay23.evidence_manifest_sha256.mismatch" in result.failures
 
 
 def test_counter_disagreement_is_itself_a_failure():
@@ -237,3 +254,31 @@ def test_counter_disagreement_is_itself_a_failure():
     payload["anomalies"]["unexplained_entitlement_grants"] = 1
     result = decision(payload)
     assert "pay23.anomaly.entitlement_counter_disagrees" in result.failures
+
+
+def test_activation_authorization_identity_and_stage_range_are_required():
+    payload = good_payload()
+    payload["activation_authorization_id"] = ""
+    rehash(payload)
+    assert "pay23.activation_authorization.id_missing" in decision(payload).failures
+
+    payload = good_payload()
+    payload["activation_authorization_sha"] = "not-a-sha"
+    rehash(payload)
+    assert "pay23.activation_authorization.sha_invalid" in decision(payload).failures
+
+    payload = good_payload()
+    payload["activation_stage"] = 6
+    rehash(payload)
+    assert "pay23.activation_stage.invalid" in decision(payload).failures
+
+
+def test_accounting_closure_must_cover_at_least_all_provider_money_objects():
+    payload = good_payload()
+    payload["accounting_closure"]["expected_object_count"] = 14
+    payload["accounting_closure"]["observed_object_count"] = 14
+    payload["accounting_closure"]["resolved_object_count"] = 14
+    rehash(payload)
+    result = decision(payload)
+    assert result.certified is False
+    assert "pay23.accounting_closure.coverage_too_small" in result.failures
