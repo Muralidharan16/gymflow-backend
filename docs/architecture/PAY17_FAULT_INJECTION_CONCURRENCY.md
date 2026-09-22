@@ -21,8 +21,10 @@ Finance PostgreSQL lane.
 **100 concurrent callbacks.** One signed captured webhook is submitted to the
 durable inbox from 100 concurrent sessions. The provider event identity must
 collapse to one inbox row. One of 100 lease contenders may win. Processing the
-winner must create one payment event, one allocation and one corresponding
-financial effect.
+winner must create one provider-backed payment event and converge payment state
+to captured exactly once. It must create **zero** payment allocations, ledger
+entries or paid-invoice transitions: verified provider evidence is not PAY-9
+payment-application authority.
 
 **Crash before financial commit.** A webhook is durably accepted and claimed,
 then Finance processing is deliberately rolled back as though the process died
