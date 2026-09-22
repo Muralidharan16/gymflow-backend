@@ -15,8 +15,10 @@ from app.core.database import update_session_context, worker_async_session_maker
 
 logger = logging.getLogger("doers.finance_event_dispatcher")
 
-_BATCH_SIZE = 20
+_BATCH_SIZE = 100
 _LEASE_SECONDS = 600
+_MAX_BATCHES_PER_RUN = 10
+_PROCESS_CONCURRENCY = 8
 _MAINTENANCE_TOKEN = "finance_event_delivery"
 _SAFE_ERROR = re.compile(r"[^A-Za-z0-9:._/-]+")
 
@@ -237,25 +239,42 @@ async def _process_claimed_event(
 
 
 async def _poll_finance_events() -> dict[str, int]:
+    """Drain bounded batches so one Beat tick can absorb a short payment burst."""
+
     worker_id = uuid.uuid4()
-    events = await _claim_ready_events(worker_id)
     summary = {
-        "claimed": len(events),
+        "claimed": 0,
         "delivered": 0,
         "retry": 0,
         "failed": 0,
         "ack_pending": 0,
         "lease_lost": 0,
+        "batches": 0,
     }
+    semaphore = asyncio.Semaphore(_PROCESS_CONCURRENCY)
 
-    for event in events:
-        outcome = await _process_claimed_event(event, worker_id)
-        if outcome in summary:
-            summary[outcome] += 1
+    async def process(event: dict[str, Any]) -> str:
+        async with semaphore:
+            return await _process_claimed_event(event, worker_id)
 
-    if events:
+    for _ in range(_MAX_BATCHES_PER_RUN):
+        events = await _claim_ready_events(worker_id)
+        if not events:
+            break
+
+        summary["batches"] += 1
+        summary["claimed"] += len(events)
+        outcomes = await asyncio.gather(*(process(event) for event in events))
+        for outcome in outcomes:
+            if outcome in summary:
+                summary[outcome] += 1
+
+        if len(events) < _BATCH_SIZE:
+            break
+
+    if summary["claimed"]:
         logger.info(
-            "PAY-5 Finance-event poll completed",
+            "PAY-20 Finance-event drain completed",
             extra={"worker_id": str(worker_id), **summary},
         )
     return summary
