@@ -173,9 +173,9 @@ async def test_sandbox_webhook_route_queues_unknown_provider_reference_without_m
     assert response.json() == {"status": "queued"}
     after = await finance_counts()
     assert after["payments"] == before["payments"]
-    assert after["payment_events"] == before["payment_events"]
+    assert after["events"] == before["events"]
     assert after["allocations"] == before["allocations"]
-    assert after["ledger_entries"] == before["ledger_entries"]
+    assert after["ledger"] == before["ledger"]
     assert await fetch_scalar(
         "SELECT count(*) FROM finance.provider_webhook_inbox "
         "WHERE provider_event_id='evt_phase6p_unknown_order' "
