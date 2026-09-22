@@ -302,26 +302,67 @@ jobs:
           sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
             -d "$SOURCE_DB" -f scripts/ci/pay19_financial_fingerprint.sql \
             > "$EVIDENCE_DIR/source-finance.txt"
-          grep -q '^alembic=zz37d8e9f0a63$' "$EVIDENCE_DIR/source-finance.txt"
-          grep -q '^invoice_integrity=0,1,1,1$' "$EVIDENCE_DIR/source-finance.txt"
-          grep -q '^provider_integrity=0,0,1$' "$EVIDENCE_DIR/source-finance.txt"
-          grep -q '^refund_integrity=1,0,0$' "$EVIDENCE_DIR/source-finance.txt"
-          grep -q '^subscription_binding_integrity=1,0,0$' "$EVIDENCE_DIR/source-finance.txt"
-          grep -q '^payment_application_integrity=1,0,0$' "$EVIDENCE_DIR/source-finance.txt"
           python - <<'PY'
+          import re
           from pathlib import Path
+
           rows = dict(
               line.split("=", 1)
               for line in Path("pay19-evidence/source-finance.txt").read_text().splitlines()
               if "=" in line
           )
+
+          if rows.get("alembic") != "zz37d8e9f0a63":
+              raise SystemExit(f"PAY-19 Alembic drift: {rows.get('alembic')!r}")
+
+          invoice = [int(value) for value in rows["invoice_integrity"].split(",")]
+          if (
+              invoice[0] != 0
+              or invoice[1] < 1
+              or invoice[2] < 1
+              or invoice[1] != invoice[2]
+              or invoice[3] != 1
+          ):
+              raise SystemExit(f"PAY-19 source invoice integrity failed: {invoice}")
+
           ledger = rows["ledger_integrity"].split(",")
           if ledger[0] != "0" or ledger[1] != ledger[2]:
               raise SystemExit(f"PAY-19 source ledger imbalance: {ledger}")
+
+          provider = [int(value) for value in rows["provider_integrity"].split(",")]
+          if provider[0:2] != [0, 0] or provider[2] < 1:
+              raise SystemExit(f"PAY-19 source provider-reference integrity failed: {provider}")
+
+          refund = [int(value) for value in rows["refund_integrity"].split(",")]
+          if refund[0] < 1 or refund[1:] != [0, 0]:
+              raise SystemExit(f"PAY-19 source refund-command integrity failed: {refund}")
+
           if rows["idempotency_integrity"].split(",") != ["0", "0", "0"]:
               raise SystemExit("PAY-19 source idempotency integrity failed")
           if rows["outbox_integrity"].split(",") != ["0", "0", "0"]:
               raise SystemExit("PAY-19 source outbox integrity failed")
+
+          binding = [
+              int(value)
+              for value in rows["subscription_binding_integrity"].split(",")
+          ]
+          if binding[0] < 2 or binding[1:] != [0, 0]:
+              raise SystemExit(
+                  f"PAY-19 source subscription-binding integrity failed: {binding}"
+              )
+
+          application = [
+              int(value)
+              for value in rows["payment_application_integrity"].split(",")
+          ]
+          if application[0] < 1 or application[1:] != [0, 0]:
+              raise SystemExit(
+                  f"PAY-19 source payment-application integrity failed: {application}"
+              )
+
+          digest = rows.get("stable_digest", "")
+          if not re.fullmatch(r"[0-9a-f]{32}", digest):
+              raise SystemExit(f"PAY-19 source financial digest invalid: {digest!r}")
           PY
           sha256sum "$EVIDENCE_DIR/source-finance.txt" > "$EVIDENCE_DIR/source-finance.sha256"
           echo 'PAY19_SOURCE_FINANCE_INTEGRITY=PASS'
