@@ -71,6 +71,7 @@ jobs:
               "scripts/ci/pay19_financial_fingerprint.sql",
               "scripts/ci/pay19_recovery_replay_guards.py",
               "scripts/ci/pay19_seed_financial_state.py",
+              "tests/finance_core/conftest.py",
               "tests/finance_core/test_phase5b_foundation.py",
               "tests/test_pay19_financial_recovery_static.py",
           }
@@ -184,6 +185,17 @@ jobs:
       MAINTENANCE_RUNTIME_PASSWORD: ci-pay19-maintenance
       FINANCE_CONFIG_RUNTIME_PASSWORD: ci-pay19-config
       PAY17_RECON_PASSWORD: ci-pay19-recon
+      PAY9_PAYMENT_PASSWORD: ci-pay19-pay9-payment
+      POSTGRES_PASSWORD: ci-pay19-postgres
+      PAY9_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay19-app@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY9_PAYMENT_DATABASE_URL: postgresql://pay9_payment_test:ci-pay19-pay9-payment@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY9_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay19-worker@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY9_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay19-postgres@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY9_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay19-migration@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY4_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay19-app@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY4_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay19-worker@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY4_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay19-postgres@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY4_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay19-migration@127.0.0.1:5432/gymflow_pay19_recovery_test
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:5432/gymflow_pay19_recovery_test
       FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay19-finance@127.0.0.1:5432/gymflow_pay19_recovery_test
       FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:5432/gymflow_pay19_recovery_test
@@ -240,6 +252,7 @@ jobs:
           set -euo pipefail
           bash scripts/ci/bootstrap_cluster_roles.sh
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE postgres PASSWORD 'ci-pay19-postgres';
           ALTER ROLE migration_owner PASSWORD 'ci-pay19-migration';
           CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE finance_core_test_subject LOGIN PASSWORD 'ci-pay19-finance' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
@@ -248,6 +261,7 @@ jobs:
           CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-pay19-maintenance' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-pay19-config' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE pay17_recon_test LOGIN PASSWORD 'ci-pay19-recon' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay9_payment_test LOGIN PASSWORD 'ci-pay19-pay9-payment' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           GRANT test_runner TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_runtime TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
@@ -257,17 +271,20 @@ jobs:
           GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT finance_config_runtime TO finance_config_deployment WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT finance_reconciliation_runtime TO pay17_recon_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_payment_runtime TO pay9_payment_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           ALTER ROLE finance_core_test_subject SET row_security='on';
           ALTER ROLE app_test_runtime SET row_security='on';
           ALTER ROLE worker_test_runtime SET row_security='on';
           ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
           ALTER ROLE finance_config_deployment SET row_security='on';
           ALTER ROLE pay17_recon_test SET row_security='on';
+          ALTER ROLE pay9_payment_test SET row_security='on';
           CREATE DATABASE gymflow_pay19_recovery_test OWNER migration_owner;
           REVOKE ALL ON DATABASE gymflow_pay19_recovery_test FROM PUBLIC;
           GRANT CONNECT ON DATABASE gymflow_pay19_recovery_test
             TO finance_core_test_subject,app_test_runtime,worker_test_runtime,
-               lifecycle_maintenance_test_runtime,finance_config_deployment,pay17_recon_test;
+               lifecycle_maintenance_test_runtime,finance_config_deployment,pay17_recon_test,
+               pay9_payment_test;
           SQL
           bash scripts/ci/provision_infrastructure_extensions.sh "$SOURCE_DB"
           bash scripts/ci/verify_cluster_roles.sh
@@ -514,6 +531,15 @@ jobs:
           TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:55440/gymflow_pay19_recovery_test
           FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-pay19-config@127.0.0.1:55440/gymflow_pay19_recovery_test
           PAY17_RECON_DATABASE_URL: postgresql+asyncpg://pay17_recon_test:ci-pay19-recon@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY9_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay19-app@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY9_PAYMENT_DATABASE_URL: postgresql://pay9_payment_test:ci-pay19-pay9-payment@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY9_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay19-worker@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY9_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay19-postgres@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY9_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay19-migration@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY4_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay19-app@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY4_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay19-worker@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY4_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay19-postgres@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY4_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay19-migration@127.0.0.1:55440/gymflow_pay19_recovery_test
         run: |
           set -euo pipefail
           PYTHONPATH="$GITHUB_WORKSPACE" \
