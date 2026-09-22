@@ -49,6 +49,7 @@ from tests.finance_core.test_phase6d_razorpay_webhook_normalization import (
     signed_webhook,
 )
 from tests.finance_core.test_phase6e_payment_application_gate import (
+    apply_gate,
     seed_ledger_accounts_only,
 )
 from tests.finance_core.test_pay17_fault_injection_concurrency import (
@@ -149,11 +150,7 @@ async def finance_cycle(
         if not claimed.claimed:
             raise RuntimeError("PAY-20 fresh webhook was not claimable")
 
-        apply_started = time.perf_counter()
         result = await service.process_claimed_webhook(claimed)
-        latencies["payment_application_ledger"].append(
-            (time.perf_counter() - apply_started) * 1000.0
-        )
         await service.complete_claimed_webhook(
             claimed=claimed,
             lease_owner=owner,
@@ -163,6 +160,20 @@ async def finance_cycle(
 
     latencies["webhook"].append(
         (time.perf_counter() - webhook_started) * 1000.0
+    )
+
+    # A generic checkout is intentionally not a member-subscription entitlement
+    # binding, so verified provider evidence may remain unapplied. PAY-20 must
+    # load the certified explicit PAY-9 application boundary rather than
+    # weakening settlement to accept an unapplied payment.
+    await timed(
+        latencies,
+        "payment_application_ledger",
+        apply_gate(
+            checkout.finance_checkout_intent_id,
+            checkout.finance_invoice_id,
+            idempotency_key=f"{prefix}-apply-{sequence}",
+        ),
     )
 
     await timed(
