@@ -1,0 +1,260 @@
+name: PAY-18 Financial Observability Audit and Incident Response
+
+on:
+  push:
+    branches:
+      - hardening/pay18-financial-observability
+  pull_request:
+    branches:
+      - hardening/pay17-fault-injection-concurrency
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay18-financial-observability-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY18_BASE_SHA: ec165905756d625117f3cd5e9e4437fbab36dbb5
+  PAY18_BASE_TREE: fae1abba458aa03c3e0923ce76c6eafe8e1e2694
+  PAY18_ALEMBIC_HEAD: zz37d8e9f0a63
+  PAY18_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-18 metrics logging alerts and runbooks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay18_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay18-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay18-static
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY18_CANDIDATE_SHA }}
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install exact locked test environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+
+      - name: Prove frozen PAY-17 predecessor exact scope and migration head
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY18_BASE_SHA}^{tree}")" = "${PAY18_BASE_TREE}"
+          test "$(git merge-base "${PAY18_BASE_SHA}" HEAD)" = "${PAY18_BASE_SHA}"
+          git diff --name-only "${PAY18_BASE_SHA}...HEAD" > /tmp/pay18-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+
+          allowed = {
+              ".github/workflows/pay18-financial-observability.yml",
+              "alembic/versions/zz37d8e9f0a63_pay18_financial_observability.py",
+              "app/finance_core/observability.py",
+              "app/finance_core/services/razorpay_webhooks.py",
+              "app/observability/runtime_metrics.py",
+              "app/tasks/external_effect_observability.py",
+              "docs/architecture/PAY18_FINANCIAL_OBSERVABILITY.md",
+              "docs/architecture/pay18_financial_observability_contract_v1.json",
+              "docs/runbooks/pay18/chargeback.md",
+              "docs/runbooks/pay18/credential-compromise.md",
+              "docs/runbooks/pay18/database-recovery.md",
+              "docs/runbooks/pay18/duplicate-payment-allegation.md",
+              "docs/runbooks/pay18/expired-mandate.md",
+              "docs/runbooks/pay18/provider-outage.md",
+              "docs/runbooks/pay18/queue-backlog.md",
+              "docs/runbooks/pay18/refund-ambiguity.md",
+              "docs/runbooks/pay18/settlement-mismatch.md",
+              "docs/runbooks/pay18/unknown-payment.md",
+              "docs/runbooks/pay18/webhook-outage.md",
+              "ops/observability/pay18_financial_rules.yml",
+              "scripts/ci/pay18_financial_observability_pg16.sh",
+              "tests/test_pay18_financial_observability_static.py",
+          }
+          changed = {
+              line.strip()
+              for line in Path("/tmp/pay18-changed.txt").read_text().splitlines()
+              if line.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-18 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          print(f"PAY-18 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY18_ALEMBIC_HEAD}"
+
+      - name: Validate contracts compile and alert YAML
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/pay18_financial_observability_contract_v1.json >/dev/null
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          data = yaml.safe_load(
+              Path("ops/observability/pay18_financial_rules.yml").read_text()
+          )
+          assert isinstance(data, dict)
+          groups = data.get("groups")
+          assert isinstance(groups, list) and len(groups) == 1
+          rules = groups[0].get("rules")
+          assert isinstance(rules, list) and len(rules) == 11
+          assert len({item["alert"] for item in rules}) == 11
+          PY
+          python -m py_compile             alembic/versions/zz37d8e9f0a63_pay18_financial_observability.py             app/finance_core/observability.py             app/finance_core/services/razorpay_webhooks.py             app/observability/runtime_metrics.py             app/tasks/external_effect_observability.py             tests/test_pay18_financial_observability_static.py
+
+      - name: Prove PAY-18 metric logging alert and runbook contracts
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay18_financial_observability_static.py
+          echo 'PAY18_METRIC_LABEL_SAFETY=PASS'
+          echo 'PAY18_SANITIZED_CORRELATION_LOGGING=PASS'
+          echo 'PAY18_ALERT_RUNBOOK_BINDING=PASS'
+          echo 'PAY18_INCIDENT_RUNBOOK_COVERAGE=PASS'
+
+  pg16:
+    name: PAY-18 PG16 aggregate observability authority
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay18-migration@127.0.0.1:5432/gymflow_pay18_test
+      SECRET_KEY: pay18-pg16-not-production
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay18-pg16
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY18_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Execute disposable PostgreSQL 16 aggregate proof
+        run: |
+          set -euo pipefail
+          bash scripts/ci/pay18_financial_observability_pg16.sh
+
+  inherited:
+    name: PAY-18 inherited P8 and PAY-16 observability security
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay18_inherited
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay18-inherited-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay18-inherited
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY18_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Reprove P8 bounded metrics logging redaction and runbooks
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1             tests/test_p8_logging_redaction_contracts.py             tests/test_p8_metrics_contracts.py             tests/test_p8_alert_slo_contracts.py             tests/test_p8_runbook_contracts.py
+          echo 'PAY18_INHERITED_P8_OBSERVABILITY=PASS'
+      - name: Reprove PAY-16 tamper-evident security and alert boundary
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1             tests/finance_core/test_pay16_security_abuse_static.py             tests/finance_core/test_pay16_security_audit_static.py
+          echo 'PAY18_INHERITED_PAY16_AUDIT=PASS'
+
+  pr_decision:
+    name: PAY-18 PR contract decision
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [contract]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require PR contract
+        env:
+          CONTRACT: ${{ needs.contract.result }}
+        run: |
+          set -euo pipefail
+          test "${CONTRACT}" = success
+          echo 'PAY18_PR_CONTRACT=PASS'
+
+  decision:
+    name: PAY-18 final financial observability decision
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [contract, pg16, inherited]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every PAY-18 gate
+        env:
+          CONTRACT: ${{ needs.contract.result }}
+          PG16: ${{ needs.pg16.result }}
+          INHERITED: ${{ needs.inherited.result }}
+        run: |
+          set -euo pipefail
+          test "${CONTRACT}" = success
+          test "${PG16}" = success
+          test "${INHERITED}" = success
+          echo 'PAY18_REQUIRED_EXACT_HEAD_GATES=PASS'
+          echo 'PAY18_METRIC_LABEL_SAFETY=PASS'
+          echo 'PAY18_SANITIZED_CORRELATION_LOGGING=PASS'
+          echo 'PAY18_AGGREGATE_FINANCE_SNAPSHOT=PASS'
+          echo 'PAY18_ALERT_RUNBOOK_BINDING=PASS'
+          echo 'PAY18_INCIDENT_RUNBOOK_COVERAGE=PASS'
+          echo 'PAY18_TAMPER_EVIDENT_AUDIT_INHERITED=PASS'
+          echo 'PAY18_LIVE_PROVIDER=DISABLED'
+          echo 'PAY18_PRODUCTION_CREDENTIALS=DISABLED'
+          echo 'PAY18_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY18_PRODUCTION_RUNTIME_BINDING=DISABLED'
+          echo 'PAY18_MERGE=NOT_AUTHORIZED'
+          echo 'PAY18_RELEASE=NOT_AUTHORIZED'
+          echo 'PAY18_DEPLOYMENT=NOT_AUTHORIZED'
+          echo 'PAY18_FINANCIAL_OBSERVABILITY=PASS'
