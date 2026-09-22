@@ -1,0 +1,743 @@
+name: PAY-19 Backup Restore PITR and Accounting Reconstruction
+
+on:
+  push:
+    branches:
+      - hardening/pay19-financial-recovery
+  pull_request:
+    branches:
+      - hardening/pay18-financial-observability
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay19-financial-recovery-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY19_BASE_SHA: 5de9b1f0997c4e5a6df5af7a2acf5ba1f1df1eee
+  PAY19_BASE_TREE: f17dbc3316a15b7a91b4deb877ce89df67ed75d7
+  PAY19_ALEMBIC_HEAD: zz37d8e9f0a63
+  PAY19_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-19 exact scope and recovery contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay19_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay19-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay19-static
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY19_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install exact locked test environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Prove frozen PAY-18 predecessor exact scope and unchanged migration head
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY19_BASE_SHA}^{tree}")" = "${PAY19_BASE_TREE}"
+          test "$(git merge-base "${PAY19_BASE_SHA}" HEAD)" = "${PAY19_BASE_SHA}"
+          git diff --name-only "${PAY19_BASE_SHA}...HEAD" > /tmp/pay19-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              ".github/workflows/pay19-financial-recovery.yml",
+              "docs/architecture/PAY19_FINANCIAL_RECOVERY.md",
+              "docs/architecture/pay19_financial_recovery_contract_v1.json",
+              "scripts/ci/pay19_financial_fingerprint.sql",
+              "scripts/ci/pay19_recovery_replay_guards.py",
+              "scripts/ci/pay19_seed_financial_state.py",
+              "tests/finance_core/conftest.py",
+              "tests/finance_core/test_phase5b_foundation.py",
+              "tests/finance_core/test_phase6p_sandbox_webhook_route_enablement.py",
+              "tests/finance_core/test_phase6w_test_mode_webhook_route_signature.py",
+              "tests/test_pay19_financial_recovery_static.py",
+          }
+          changed = {
+              line.strip()
+              for line in Path("/tmp/pay19-changed.txt").read_text().splitlines()
+              if line.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-19 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          print(f"PAY-19 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY19_ALEMBIC_HEAD}"
+      - name: Compile and prove PAY-19 contracts
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/pay19_financial_recovery_contract_v1.json >/dev/null
+          python -m py_compile \
+            scripts/ci/pay19_seed_financial_state.py \
+            scripts/ci/pay19_recovery_replay_guards.py \
+            tests/test_pay19_financial_recovery_static.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_pay19_financial_recovery_static.py
+          echo 'PAY19_RECOVERY_CONTRACT=PASS'
+          echo 'PAY19_ACCOUNTING_RECONSTRUCTION_CONTRACT=PASS'
+
+  inherited_static:
+    name: PAY-19 inherited PAY-17 and PAY-18 safety contracts
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay19_inherited
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay19-inherited-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay19-inherited
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY19_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Reprove inherited money safety contracts
+        run: |
+          set -euo pipefail
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_pay17_fault_tolerance_static.py \
+            tests/test_pay18_financial_observability_static.py
+          echo 'PAY19_INHERITED_PAY17_FAULT_TOLERANCE=PASS'
+          echo 'PAY19_INHERITED_PAY18_OBSERVABILITY=PASS'
+
+  finance_regression:
+    name: PAY-19 current-head Finance regression
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  recovery:
+    name: PAY-19 real PG16 backup restore PITR and reconstruction
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      SOURCE_DB: gymflow_pay19_recovery_test
+      LOGICAL_DB: gymflow_pay19_logical_restore_test
+      LOGICAL_BACKUP: /tmp/pay19-finance.dump
+      CORRUPT_LOGICAL_BACKUP: /tmp/pay19-finance-corrupt.dump
+      WAL_ARCHIVE: /tmp/pay19-wal-archive
+      PHYSICAL_BASE: /tmp/pay19-physical-base
+      FULL_RESTORE: /tmp/pay19-full-restore
+      PITR_RESTORE: /tmp/pay19-pitr-restore
+      FULL_SOCKET: /tmp/pay19-full-socket
+      PITR_SOCKET: /tmp/pay19-pitr-socket
+      FULL_PORT: '55439'
+      PITR_PORT: '55440'
+      EVIDENCE_DIR: pay19-evidence
+      RPO_TARGET_MS: '10000'
+      RTO_TARGET_MS: '120000'
+      MIGRATION_PASSWORD: ci-pay19-migration
+      FINANCE_CORE_SUBJECT_PASSWORD: ci-pay19-finance
+      APP_RUNTIME_PASSWORD: ci-pay19-app
+      WORKER_RUNTIME_PASSWORD: ci-pay19-worker
+      MAINTENANCE_RUNTIME_PASSWORD: ci-pay19-maintenance
+      FINANCE_CONFIG_RUNTIME_PASSWORD: ci-pay19-config
+      PAY17_RECON_PASSWORD: ci-pay19-recon
+      PAY9_PAYMENT_PASSWORD: ci-pay19-pay9-payment
+      POSTGRES_PASSWORD: ci-pay19-postgres
+      PAY9_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay19-app@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY9_PAYMENT_DATABASE_URL: postgresql://pay9_payment_test:ci-pay19-pay9-payment@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY9_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay19-worker@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY9_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay19-postgres@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY9_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay19-migration@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY4_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay19-app@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY4_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay19-worker@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY4_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay19-postgres@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY4_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay19-migration@127.0.0.1:5432/gymflow_pay19_recovery_test
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:5432/gymflow_pay19_recovery_test
+      FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay19-finance@127.0.0.1:5432/gymflow_pay19_recovery_test
+      FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:5432/gymflow_pay19_recovery_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-pay19-app@127.0.0.1:5432/gymflow_pay19_recovery_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:5432/gymflow_pay19_recovery_test
+      FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-pay19-config@127.0.0.1:5432/gymflow_pay19_recovery_test
+      PAY17_RECON_DATABASE_URL: postgresql+asyncpg://pay17_recon_test:ci-pay19-recon@127.0.0.1:5432/gymflow_pay19_recovery_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay19-recovery-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: pay19-recovery
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY19_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install exact locked environment and PostgreSQL 16
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          bash scripts/ci/install_pg16_test_stack.sh
+          test -x /usr/lib/postgresql/16/bin/pg_basebackup
+          test -x /usr/lib/postgresql/16/bin/pg_verifybackup
+          mkdir -p "$EVIDENCE_DIR"
+      - name: Enable disposable WAL archive before source construction
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0700 -o postgres -g postgres "$WAL_ARCHIVE"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres \
+            -c "ALTER SYSTEM SET archive_mode = 'on';"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres \
+            -c "ALTER SYSTEM SET archive_command = 'test -f /tmp/pay19-wal-archive/%f || cp %p /tmp/pay19-wal-archive/%f';"
+          sudo systemctl restart postgresql
+          test "$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW archive_mode')" = "on"
+          test "$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW wal_level')" = "replica"
+          echo 'PAY19_WAL_ARCHIVE_CONFIG=PASS'
+      - name: Bootstrap reduced identities and source database
+        run: |
+          set -euo pipefail
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE postgres PASSWORD 'ci-pay19-postgres';
+          ALTER ROLE migration_owner PASSWORD 'ci-pay19-migration';
+          CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_core_test_subject LOGIN PASSWORD 'ci-pay19-finance' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-pay19-app' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-pay19-worker' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-pay19-maintenance' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-pay19-config' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay17_recon_test LOGIN PASSWORD 'ci-pay19-recon' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay9_payment_test LOGIN PASSWORD 'ci-pay19-pay9-payment' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT test_runner TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_config_runtime TO finance_config_deployment WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_reconciliation_runtime TO pay17_recon_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_payment_runtime TO pay9_payment_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE finance_core_test_subject SET row_security='on';
+          ALTER ROLE app_test_runtime SET row_security='on';
+          ALTER ROLE worker_test_runtime SET row_security='on';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
+          ALTER ROLE finance_config_deployment SET row_security='on';
+          ALTER ROLE pay17_recon_test SET row_security='on';
+          ALTER ROLE pay9_payment_test SET row_security='on';
+          CREATE DATABASE gymflow_pay19_recovery_test OWNER migration_owner;
+          REVOKE ALL ON DATABASE gymflow_pay19_recovery_test FROM PUBLIC;
+          GRANT CONNECT ON DATABASE gymflow_pay19_recovery_test
+            TO finance_core_test_subject,app_test_runtime,worker_test_runtime,
+               lifecycle_maintenance_test_runtime,finance_config_deployment,pay17_recon_test,
+               pay9_payment_test;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh "$SOURCE_DB"
+          bash scripts/ci/verify_cluster_roles.sh
+      - name: Build current PAY-18 schema and synthetic financial source
+        run: |
+          set -euo pipefail
+          python -s -m alembic -c alembic.ini upgrade head
+          test "$(python -s -m alembic -c alembic.ini current | awk 'NR==1 {print $1}')" = "${PAY19_ALEMBIC_HEAD}"
+          DATABASE_URL="$FINANCE_CORE_TEST_DATABASE_URL" \
+            PAY19_SEED_EVIDENCE="$EVIDENCE_DIR/seed.json" \
+            PYTHONPATH="$GITHUB_WORKSPACE" \
+            python -s scripts/ci/pay19_seed_financial_state.py \
+            | tee "$EVIDENCE_DIR/seed.log"
+          grep -q 'PAY19_SYNTHETIC_FINANCIAL_STATE=PASS' "$EVIDENCE_DIR/seed.log"
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
+            -d "$SOURCE_DB" -f scripts/ci/pay19_financial_fingerprint.sql \
+            > "$EVIDENCE_DIR/source-finance.txt"
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          rows = dict(
+              line.split("=", 1)
+              for line in Path("pay19-evidence/source-finance.txt").read_text().splitlines()
+              if "=" in line
+          )
+
+          if rows.get("alembic") != "zz37d8e9f0a63":
+              raise SystemExit(f"PAY-19 Alembic drift: {rows.get('alembic')!r}")
+
+          invoice = [int(value) for value in rows["invoice_integrity"].split(",")]
+          if (
+              invoice[0] != 0
+              or invoice[1] < 1
+              or invoice[2] < 1
+              or invoice[1] != invoice[2]
+              or invoice[3] != 1
+          ):
+              raise SystemExit(f"PAY-19 source invoice integrity failed: {invoice}")
+
+          ledger = rows["ledger_integrity"].split(",")
+          if ledger[0] != "0" or ledger[1] != ledger[2]:
+              raise SystemExit(f"PAY-19 source ledger imbalance: {ledger}")
+
+          provider = [int(value) for value in rows["provider_integrity"].split(",")]
+          if provider[0:2] != [0, 0] or provider[2] < 1:
+              raise SystemExit(f"PAY-19 source provider-reference integrity failed: {provider}")
+
+          refund = [int(value) for value in rows["refund_integrity"].split(",")]
+          if refund[0] < 1 or refund[1:] != [0, 0]:
+              raise SystemExit(f"PAY-19 source refund-command integrity failed: {refund}")
+
+          if rows["idempotency_integrity"].split(",") != ["0", "0", "0"]:
+              raise SystemExit("PAY-19 source idempotency integrity failed")
+          if rows["outbox_integrity"].split(",") != ["0", "0", "0"]:
+              raise SystemExit("PAY-19 source outbox integrity failed")
+
+          binding = [
+              int(value)
+              for value in rows["subscription_binding_integrity"].split(",")
+          ]
+          if binding[0] < 2 or binding[1:] != [0, 0]:
+              raise SystemExit(
+                  f"PAY-19 source subscription-binding integrity failed: {binding}"
+              )
+
+          application = [
+              int(value)
+              for value in rows["payment_application_integrity"].split(",")
+          ]
+          if application[0] < 1 or application[1:] != [0, 0]:
+              raise SystemExit(
+                  f"PAY-19 source payment-application integrity failed: {application}"
+              )
+
+          digest = rows.get("stable_digest", "")
+          if not re.fullmatch(r"[0-9a-f]{32}", digest):
+              raise SystemExit(f"PAY-19 source financial digest invalid: {digest!r}")
+          PY
+          sha256sum "$EVIDENCE_DIR/source-finance.txt" > "$EVIDENCE_DIR/source-finance.sha256"
+          echo 'PAY19_SOURCE_FINANCE_INTEGRITY=PASS'
+      - name: Create checksum validate and restore logical backup
+        run: |
+          set -euo pipefail
+          sudo -u postgres pg_dump --format=custom --dbname="$SOURCE_DB" --file="$LOGICAL_BACKUP"
+          sudo -u postgres test -s "$LOGICAL_BACKUP"
+          sudo -u postgres sha256sum "$LOGICAL_BACKUP" > "$EVIDENCE_DIR/logical-backup.sha256"
+          sudo -u postgres pg_restore --list "$LOGICAL_BACKUP" > "$EVIDENCE_DIR/logical-backup-toc.txt"
+          test -s "$EVIDENCE_DIR/logical-backup-toc.txt"
+          grep -q 'payment_application_records' "$EVIDENCE_DIR/logical-backup-toc.txt"
+          grep -q 'refund_execution_commands' "$EVIDENCE_DIR/logical-backup-toc.txt"
+          sudo -u postgres cp "$LOGICAL_BACKUP" "$CORRUPT_LOGICAL_BACKUP"
+          sudo -u postgres truncate -s 128 "$CORRUPT_LOGICAL_BACKUP"
+          if sudo -u postgres pg_restore --list "$CORRUPT_LOGICAL_BACKUP" >"$EVIDENCE_DIR/corrupt-logical.stdout" 2>"$EVIDENCE_DIR/corrupt-logical.stderr"; then
+            echo 'PAY-19 corrupt logical backup unexpectedly accepted' >&2
+            exit 1
+          fi
+          sudo -u postgres createdb -T template0 -O migration_owner "$LOGICAL_DB"
+          sudo -u postgres pg_restore --exit-on-error --dbname="$LOGICAL_DB" "$LOGICAL_BACKUP" > "$EVIDENCE_DIR/logical-restore.log"
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
+            -d "$LOGICAL_DB" -f scripts/ci/pay19_financial_fingerprint.sql \
+            > "$EVIDENCE_DIR/logical-finance.txt"
+          cmp "$EVIDENCE_DIR/source-finance.txt" "$EVIDENCE_DIR/logical-finance.txt"
+          echo 'PAY19_LOGICAL_BACKUP=PASS'
+          echo 'PAY19_LOGICAL_RESTORE=PASS'
+      - name: Prove WAL archive and create verified physical base backup
+        run: |
+          set -euo pipefail
+          wal_file="$(sudo -u postgres psql -X -qAt -d postgres -c "SELECT pg_catalog.pg_walfile_name(pg_catalog.pg_switch_wal())")"
+          for _ in $(seq 1 60); do
+            if sudo -u postgres test -f "$WAL_ARCHIVE/$wal_file"; then break; fi
+            sleep 1
+          done
+          sudo -u postgres test -f "$WAL_ARCHIVE/$wal_file"
+          sudo -u postgres rm -rf "$PHYSICAL_BASE"
+          sudo -u postgres /usr/lib/postgresql/16/bin/pg_basebackup \
+            --pgdata="$PHYSICAL_BASE" --format=plain --wal-method=stream \
+            --checkpoint=fast --manifest-checksums=SHA256 --dbname='dbname=postgres' --verbose \
+            2>&1 | tee "$EVIDENCE_DIR/pg-basebackup.log"
+          sudo -u postgres /usr/lib/postgresql/16/bin/pg_verifybackup "$PHYSICAL_BASE" \
+            2>&1 | tee "$EVIDENCE_DIR/pg-verifybackup.log"
+          grep -q 'backup successfully verified' "$EVIDENCE_DIR/pg-verifybackup.log"
+          sudo -u postgres sha256sum "$PHYSICAL_BASE/backup_manifest" > "$EVIDENCE_DIR/physical-manifest.sha256"
+          echo 'PAY19_PHYSICAL_BACKUP=PASS'
+      - name: Boot isolated physical restore and compare Finance fingerprint
+        run: |
+          set -euo pipefail
+          sudo -u postgres rm -rf "$FULL_RESTORE" "$FULL_SOCKET"
+          sudo -u postgres cp -a "$PHYSICAL_BASE" "$FULL_RESTORE"
+          sudo install -d -m 0700 -o postgres -g postgres "$FULL_SOCKET"
+          source_max_connections="$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW max_connections')"
+          source_max_prepared="$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW max_prepared_transactions')"
+          source_max_locks="$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW max_locks_per_transaction')"
+          source_max_wal_senders="$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW max_wal_senders')"
+          source_max_workers="$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW max_worker_processes')"
+          sudo tee /tmp/pay19-full.conf >/dev/null <<EOF
+          port = ${FULL_PORT}
+          listen_addresses = '127.0.0.1'
+          unix_socket_directories = '${FULL_SOCKET}'
+          max_connections = ${source_max_connections}
+          max_prepared_transactions = ${source_max_prepared}
+          max_locks_per_transaction = ${source_max_locks}
+          max_wal_senders = ${source_max_wal_senders}
+          max_worker_processes = ${source_max_workers}
+          EOF
+          sudo tee /tmp/pay19-full-hba.conf >/dev/null <<'EOF'
+          local all all trust
+          host all all 127.0.0.1/32 scram-sha-256
+          EOF
+          sudo chown postgres:postgres /tmp/pay19-full.conf /tmp/pay19-full-hba.conf
+          sudo chmod 0600 /tmp/pay19-full.conf /tmp/pay19-full-hba.conf
+          cleanup_full() {
+            sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl -D "$FULL_RESTORE" -m fast -w stop >/dev/null 2>&1 || true
+          }
+          trap cleanup_full EXIT
+          sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \
+            -D "$FULL_RESTORE" -l /tmp/pay19-full.log \
+            -o "-c config_file=/tmp/pay19-full.conf -c hba_file=/tmp/pay19-full-hba.conf -c archive_mode=off -c archive_command=/bin/true" \
+            -w start
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
+            -h "$FULL_SOCKET" -p "$FULL_PORT" -d "$SOURCE_DB" \
+            -f scripts/ci/pay19_financial_fingerprint.sql > "$EVIDENCE_DIR/full-finance.txt"
+          cmp "$EVIDENCE_DIR/source-finance.txt" "$EVIDENCE_DIR/full-finance.txt"
+          echo 'PAY19_PHYSICAL_RESTORE=PASS'
+          cleanup_full
+          trap - EXIT
+      - name: Create named PITR boundary then commit catastrophic Finance loss
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$SOURCE_DB" <<'SQL'
+          CREATE SCHEMA pay19_ci;
+          CREATE TABLE pay19_ci.recovery_sentinels(
+              name text PRIMARY KEY,
+              created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp()
+          );
+          INSERT INTO pay19_ci.recovery_sentinels(name) VALUES ('pre_target');
+          SQL
+          date +%s%3N > "$EVIDENCE_DIR/target-boundary-ms.txt"
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d "$SOURCE_DB" \
+            -c "SELECT pg_catalog.pg_create_restore_point('pay19_financial_target')" \
+            > "$EVIDENCE_DIR/restore-point.txt"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d "$SOURCE_DB" <<'SQL'
+          INSERT INTO pay19_ci.recovery_sentinels(name) VALUES ('post_target');
+          UPDATE finance.invoice_series
+             SET last_number=9999
+           WHERE series_code='VS' AND financial_year='2425' AND last_number=1;
+          DELETE FROM finance.payment_application_records;
+          DELETE FROM finance.refund_execution_commands;
+          SQL
+          date +%s%3N > "$EVIDENCE_DIR/failure-boundary-ms.txt"
+          test "$(sudo -u postgres psql -X -qAt -d "$SOURCE_DB" -c "SELECT count(*) FROM finance.payment_application_records")" = "0"
+          test "$(sudo -u postgres psql -X -qAt -d "$SOURCE_DB" -c "SELECT count(*) FROM finance.refund_execution_commands")" = "0"
+          test "$(sudo -u postgres psql -X -qAt -d "$SOURCE_DB" -c "SELECT max(last_number) FROM finance.invoice_series")" = "9999"
+          wal_file="$(sudo -u postgres psql -X -qAt -d postgres -c "SELECT pg_catalog.pg_walfile_name(pg_catalog.pg_switch_wal())")"
+          for _ in $(seq 1 60); do
+            if sudo -u postgres test -f "$WAL_ARCHIVE/$wal_file"; then break; fi
+            sleep 1
+          done
+          sudo -u postgres test -f "$WAL_ARCHIVE/$wal_file"
+          echo 'PAY19_CATASTROPHIC_LOSS_INJECTED=PASS'
+      - name: Recover exact financial state by named-target PITR
+        run: |
+          set -euo pipefail
+          rto_start_ms="$(date +%s%3N)"
+          printf '%s\n' "$rto_start_ms" > "$EVIDENCE_DIR/rto-start-ms.txt"
+          sudo -u postgres rm -rf "$PITR_RESTORE" "$PITR_SOCKET"
+          sudo -u postgres cp -a "$PHYSICAL_BASE" "$PITR_RESTORE"
+          sudo install -d -m 0700 -o postgres -g postgres "$PITR_SOCKET"
+          sudo -u postgres touch "$PITR_RESTORE/recovery.signal"
+          sudo -u postgres bash -c "cat >> '$PITR_RESTORE/postgresql.auto.conf' <<'EOF'
+          restore_command = 'cp /tmp/pay19-wal-archive/%f %p'
+          recovery_target_name = 'pay19_financial_target'
+          recovery_target_action = 'promote'
+          EOF"
+          source_max_connections="$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW max_connections')"
+          source_max_prepared="$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW max_prepared_transactions')"
+          source_max_locks="$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW max_locks_per_transaction')"
+          source_max_wal_senders="$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW max_wal_senders')"
+          source_max_workers="$(sudo -u postgres psql -X -qAt -d postgres -c 'SHOW max_worker_processes')"
+          sudo tee /tmp/pay19-pitr.conf >/dev/null <<EOF
+          port = ${PITR_PORT}
+          listen_addresses = '127.0.0.1'
+          unix_socket_directories = '${PITR_SOCKET}'
+          max_connections = ${source_max_connections}
+          max_prepared_transactions = ${source_max_prepared}
+          max_locks_per_transaction = ${source_max_locks}
+          max_wal_senders = ${source_max_wal_senders}
+          max_worker_processes = ${source_max_workers}
+          EOF
+          sudo tee /tmp/pay19-pitr-hba.conf >/dev/null <<'EOF'
+          local all all trust
+          host all all 127.0.0.1/32 scram-sha-256
+          EOF
+          sudo chown postgres:postgres /tmp/pay19-pitr.conf /tmp/pay19-pitr-hba.conf
+          sudo chmod 0600 /tmp/pay19-pitr.conf /tmp/pay19-pitr-hba.conf
+          cleanup_pitr() {
+            sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl -D "$PITR_RESTORE" -m fast -w stop >/dev/null 2>&1 || true
+          }
+          trap cleanup_pitr EXIT
+          sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \
+            -D "$PITR_RESTORE" -l /tmp/pay19-pitr.log \
+            -o "-c config_file=/tmp/pay19-pitr.conf -c hba_file=/tmp/pay19-pitr-hba.conf -c archive_mode=off -c archive_command=/bin/true" \
+            -w start
+          promotion_deadline="$(( $(date +%s%3N) + RTO_TARGET_MS ))"
+          while true; do
+            recovery="$(sudo -u postgres psql -X -qAt -h "$PITR_SOCKET" -p "$PITR_PORT" -d "$SOURCE_DB" -c 'SELECT pg_catalog.pg_is_in_recovery()' 2>/dev/null || true)"
+            if [ "$recovery" = "f" ]; then break; fi
+            if [ "$(date +%s%3N)" -ge "$promotion_deadline" ]; then
+              sudo cat /tmp/pay19-pitr.log >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          pre_count="$(sudo -u postgres psql -X -qAt -h "$PITR_SOCKET" -p "$PITR_PORT" -d "$SOURCE_DB" -c "SELECT count(*) FROM pay19_ci.recovery_sentinels WHERE name='pre_target'")"
+          post_count="$(sudo -u postgres psql -X -qAt -h "$PITR_SOCKET" -p "$PITR_PORT" -d "$SOURCE_DB" -c "SELECT count(*) FROM pay19_ci.recovery_sentinels WHERE name='post_target'")"
+          test "$pre_count" = "1"
+          test "$post_count" = "0"
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
+            -h "$PITR_SOCKET" -p "$PITR_PORT" -d "$SOURCE_DB" \
+            -f scripts/ci/pay19_financial_fingerprint.sql > "$EVIDENCE_DIR/pitr-finance.txt"
+          cmp "$EVIDENCE_DIR/source-finance.txt" "$EVIDENCE_DIR/pitr-finance.txt"
+          rto_end_ms="$(date +%s%3N)"
+          printf '%s\n' "$rto_end_ms" > "$EVIDENCE_DIR/rto-end-ms.txt"
+          target_ms="$(cat "$EVIDENCE_DIR/target-boundary-ms.txt")"
+          failure_ms="$(cat "$EVIDENCE_DIR/failure-boundary-ms.txt")"
+          rpo_ms="$((failure_ms - target_ms))"
+          rto_ms="$((rto_end_ms - rto_start_ms))"
+          printf '%s\n' "$rpo_ms" > "$EVIDENCE_DIR/rpo-ms.txt"
+          printf '%s\n' "$rto_ms" > "$EVIDENCE_DIR/rto-ms.txt"
+          test "$rpo_ms" -ge 0
+          test "$rpo_ms" -le "$RPO_TARGET_MS"
+          test "$rto_ms" -le "$RTO_TARGET_MS"
+          echo 'PAY19_PRE_TARGET_SURVIVES=PASS'
+          echo 'PAY19_POST_TARGET_EXCLUDED=PASS'
+          echo 'PAY19_PITR_FINGERPRINT=PASS'
+          echo 'PAY19_RPO_MEASURED=PASS'
+          echo 'PAY19_RTO_MEASURED=PASS'
+          trap - EXIT
+      - name: Replay recovered money commands and prove duplicate prevention
+        env:
+          DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay19-finance@127.0.0.1:55440/gymflow_pay19_recovery_test
+          FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay19-finance@127.0.0.1:55440/gymflow_pay19_recovery_test
+          FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:55440/gymflow_pay19_recovery_test
+          TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-pay19-app@127.0.0.1:55440/gymflow_pay19_recovery_test
+          TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:55440/gymflow_pay19_recovery_test
+          FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-pay19-config@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY17_RECON_DATABASE_URL: postgresql+asyncpg://pay17_recon_test:ci-pay19-recon@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY9_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay19-app@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY9_PAYMENT_DATABASE_URL: postgresql://pay9_payment_test:ci-pay19-pay9-payment@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY9_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay19-worker@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY9_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay19-postgres@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY9_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay19-migration@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY4_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay19-app@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY4_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay19-worker@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY4_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay19-postgres@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY4_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay19-migration@127.0.0.1:55440/gymflow_pay19_recovery_test
+        run: |
+          set -euo pipefail
+          PYTHONPATH="$GITHUB_WORKSPACE" \
+            python -s scripts/ci/pay19_recovery_replay_guards.py | tee "$EVIDENCE_DIR/replay-guards.log"
+          grep -q 'PAY19_NO_DUPLICATE_PROVIDER_OPERATION=PASS' "$EVIDENCE_DIR/replay-guards.log"
+          grep -q 'PAY19_NO_REUSED_INVOICE_NUMBER=PASS' "$EVIDENCE_DIR/replay-guards.log"
+          grep -q 'PAY19_NO_REPEATED_REFUND=PASS' "$EVIDENCE_DIR/replay-guards.log"
+          grep -q 'PAY19_NO_REPEATED_PAYMENT_APPLICATION=PASS' "$EVIDENCE_DIR/replay-guards.log"
+      - name: Reconcile provider success safely on recovered PITR database
+        env:
+          DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:55440/gymflow_pay19_recovery_test
+          FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay19-finance@127.0.0.1:55440/gymflow_pay19_recovery_test
+          FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay19-migration@127.0.0.1:55440/gymflow_pay19_recovery_test
+          FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-pay19-config@127.0.0.1:55440/gymflow_pay19_recovery_test
+          PAY17_RECON_DATABASE_URL: postgresql+asyncpg://pay17_recon_test:ci-pay19-recon@127.0.0.1:55440/gymflow_pay19_recovery_test
+        run: |
+          set -euo pipefail
+          python -m pytest -q --maxfail=1 \
+            tests/finance_core/test_pay17_fault_injection_concurrency.py::test_provider_success_then_process_death_reconciles_without_second_provider_call
+          echo 'PAY19_RECONCILIATION_AFTER_PITR=PASS'
+      - name: Emit machine-readable recovery evidence and hard gates
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          evidence = Path(os.environ["EVIDENCE_DIR"])
+          def digest(name: str) -> str:
+              return hashlib.sha256((evidence / name).read_bytes()).hexdigest()
+          source = digest("source-finance.txt")
+          logical = digest("logical-finance.txt")
+          full = digest("full-finance.txt")
+          pitr = digest("pitr-finance.txt")
+          if len({source, logical, full, pitr}) != 1:
+              raise SystemExit("PAY-19 recovery fingerprints differ")
+          payload = {
+              "candidate_sha": os.environ["PAY19_CANDIDATE_SHA"],
+              "alembic_head": os.environ["PAY19_ALEMBIC_HEAD"],
+              "postgresql_major": 16,
+              "logical_backup_sha256": (evidence / "logical-backup.sha256").read_text().split()[0],
+              "physical_manifest_sha256": (evidence / "physical-manifest.sha256").read_text().split()[0],
+              "financial_fingerprint_sha256": source,
+              "logical_restore_equal": True,
+              "physical_restore_equal": True,
+              "pitr_equal": True,
+              "pre_target_survives": True,
+              "post_target_excluded": True,
+              "rpo_ms": int((evidence / "rpo-ms.txt").read_text()),
+              "rpo_target_ms": int(os.environ["RPO_TARGET_MS"]),
+              "rto_ms": int((evidence / "rto-ms.txt").read_text()),
+              "rto_target_ms": int(os.environ["RTO_TARGET_MS"]),
+              "duplicate_provider_operation": 0,
+              "reused_invoice_number": 0,
+              "repeated_refund": 0,
+              "repeated_payment_application": 0,
+              "provider_reconciliation_after_pitr": True,
+              "live_provider": "disabled",
+              "production_credentials": "disabled",
+              "decision": "PASS",
+          }
+          if payload["rpo_ms"] > payload["rpo_target_ms"]:
+              raise SystemExit("PAY-19 RPO target exceeded")
+          if payload["rto_ms"] > payload["rto_target_ms"]:
+              raise SystemExit("PAY-19 RTO target exceeded")
+          (evidence / "pay19-decision.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          cat "$EVIDENCE_DIR/pay19-decision.json"
+          echo 'PAY19_BACKUP=PASS'
+          echo 'PAY19_RESTORE=PASS'
+          echo 'PAY19_PITR=PASS'
+          echo 'PAY19_FINANCE_TABLE_INTEGRITY=PASS'
+          echo 'PAY19_INVOICE_NUMBERING_INTEGRITY=PASS'
+          echo 'PAY19_LEDGER_BALANCE_INTEGRITY=PASS'
+          echo 'PAY19_PROVIDER_REFERENCE_INTEGRITY=PASS'
+          echo 'PAY19_REFUND_COMMAND_INTEGRITY=PASS'
+          echo 'PAY19_IDEMPOTENCY_INTEGRITY=PASS'
+          echo 'PAY19_OUTBOX_INTEGRITY=PASS'
+          echo 'PAY19_SUBSCRIPTION_BINDING_INTEGRITY=PASS'
+          echo 'PAY19_PAYMENT_APPLICATION_INTEGRITY=PASS'
+          echo 'PAY19_ACCOUNTING_RECONSTRUCTION=PASS'
+          echo 'PAY19_RECOVERY_RECONCILIATION=PASS'
+      - name: Stop PITR cluster
+        if: ${{ always() }}
+        run: |
+          sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl \
+            -D "$PITR_RESTORE" -m fast -w stop >/dev/null 2>&1 || true
+      - name: Upload PAY-19 recovery evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay19-recovery-${{ env.PAY19_CANDIDATE_SHA }}
+          path: pay19-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+  pr_decision:
+    name: PAY-19 PR contract decision
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [contract]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require PAY-19 PR contract
+        env:
+          CONTRACT: ${{ needs.contract.result }}
+        run: |
+          set -euo pipefail
+          test "$CONTRACT" = success
+          echo 'PAY19_PR_CONTRACT=PASS'
+          echo 'PAY19_DESTRUCTIVE_RECOVERY=EXACT_HEAD_PUSH_ONLY'
+
+  decision:
+    name: PAY-19 final financial recovery decision
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [contract, inherited_static, finance_regression, recovery]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every PAY-19 exact-head gate
+        env:
+          CONTRACT: ${{ needs.contract.result }}
+          INHERITED: ${{ needs.inherited_static.result }}
+          FINANCE: ${{ needs.finance_regression.result }}
+          RECOVERY: ${{ needs.recovery.result }}
+        run: |
+          set -euo pipefail
+          test "$CONTRACT" = success
+          test "$INHERITED" = success
+          test "$FINANCE" = success
+          test "$RECOVERY" = success
+          echo 'PAY19_REQUIRED_EXACT_HEAD_GATES=PASS'
+          echo 'PAY19_BACKUP=PASS'
+          echo 'PAY19_RESTORE=PASS'
+          echo 'PAY19_PITR=PASS'
+          echo 'PAY19_FINANCE_TABLE_INTEGRITY=PASS'
+          echo 'PAY19_INVOICE_NUMBERING_INTEGRITY=PASS'
+          echo 'PAY19_LEDGER_BALANCE_INTEGRITY=PASS'
+          echo 'PAY19_PROVIDER_REFERENCE_INTEGRITY=PASS'
+          echo 'PAY19_REFUND_COMMAND_INTEGRITY=PASS'
+          echo 'PAY19_IDEMPOTENCY_INTEGRITY=PASS'
+          echo 'PAY19_OUTBOX_INTEGRITY=PASS'
+          echo 'PAY19_SUBSCRIPTION_BINDING_INTEGRITY=PASS'
+          echo 'PAY19_NO_DUPLICATE_PROVIDER_OPERATION=PASS'
+          echo 'PAY19_NO_REUSED_INVOICE_NUMBER=PASS'
+          echo 'PAY19_NO_REPEATED_REFUND=PASS'
+          echo 'PAY19_NO_REPEATED_PAYMENT_APPLICATION=PASS'
+          echo 'PAY19_RECONCILIATION_AFTER_PITR=PASS'
+          echo 'PAY19_LIVE_PROVIDER=DISABLED'
+          echo 'PAY19_PRODUCTION_CREDENTIALS=DISABLED'
+          echo 'PAY19_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY19_PRODUCTION_RUNTIME_BINDING=DISABLED'
+          echo 'PAY19_MERGE=NOT_AUTHORIZED'
+          echo 'PAY19_RELEASE=NOT_AUTHORIZED'
+          echo 'PAY19_DEPLOYMENT=NOT_AUTHORIZED'
+          echo 'PAY19_FINANCIAL_RECOVERY=PASS'

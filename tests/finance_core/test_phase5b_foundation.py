@@ -53,6 +53,7 @@ from app.finance_core.models import (
     FinanceRefundExecutionCommand,
     FinanceRefundObligationBinding,
     FinanceRefundProviderEvidence,
+    FinanceSecurityAuditEvent,
     FinanceTaxCode,
     FinanceTaxRecord,
 )
@@ -108,6 +109,7 @@ FINANCE_TABLES = {
     "legacy_payment_dispositions",
     "legacy_subscription_financial_links",
     "legacy_retirement_audit",
+    "security_audit_events",
 }
 
 MODEL_TABLES = {
@@ -156,6 +158,7 @@ MODEL_TABLES = {
         FinanceRefundExecutionCommand,
         FinanceRefundObligationBinding,
         FinanceRefundProviderEvidence,
+        FinanceSecurityAuditEvent,
         FinanceTaxCode,
         FinanceTaxRecord,
     }
