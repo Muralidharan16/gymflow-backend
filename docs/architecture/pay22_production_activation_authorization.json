@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-22",
+  "authorization_id": "PAY22-STAGE0-20260922-5EE1ED92",
+  "authorized_candidate_sha": "5ee1ed92c1d16b7d7f18da6f7c0f2ed4d8c215da",
+  "authorized_by": "human-owner",
+  "authorized_at": "2026-09-22T21:02:00+05:30",
+  "authorized_stage": 0,
+  "provider_egress_enabled": false,
+  "kill_switches": {
+    "checkout": false,
+    "webhooks": false,
+    "payment_application": false,
+    "subscription_activation": false,
+    "refund_execution": false,
+    "recurring_billing": false,
+    "dunning": false,
+    "platform_billing": false
+  },
+  "authorization_scope": "stage_0_only",
+  "live_money_movement_authorized": false,
+  "production_customer_data_authorized": false
+}
