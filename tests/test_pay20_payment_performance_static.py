@@ -286,6 +286,8 @@ def test_pay20_dispatcher_capacity_is_bounded_and_fail_closed() -> None:
     assert "PAY20_FINANCE_OUTBOX_DRAIN=PASS" in capacity
     assert "eligible_backlog_after" in capacity
     assert "eligible_oldest_age_after" in capacity
+    assert "INSERT INTO finance.invoice_lines" in capacity
+    assert "Membership subscription P20-DISP-" in capacity
     assert "_MAX_BATCHES_PER_RUN = 10" in dispatcher
     assert "_PROCESS_CONCURRENCY = 8" in dispatcher
     assert "_BATCH_SIZE = 100" in dispatcher
