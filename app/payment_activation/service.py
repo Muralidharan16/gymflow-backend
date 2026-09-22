@@ -9,6 +9,7 @@ from app.payment_activation.domain import (
     ActivationRuntime,
     KillSwitches,
     ProductionActivationPolicy,
+    validate_stage_transition,
 )
 
 
@@ -43,3 +44,13 @@ class PaymentActivationService:
         return PaymentActivationService(
             replace(self._runtime, provider_egress_enabled=enabled)
         )
+
+    def transition(self, proposed_runtime: ActivationRuntime) -> "PaymentActivationService":
+        decision = validate_stage_transition(self._runtime, proposed_runtime)
+        if not decision.allowed:
+            raise PaymentActivationTransitionDenied(decision.code)
+        return PaymentActivationService(proposed_runtime)
+
+
+class PaymentActivationTransitionDenied(RuntimeError):
+    pass
