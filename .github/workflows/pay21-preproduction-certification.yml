@@ -1,0 +1,605 @@
+name: PAY-21 Pre-Production Certification
+
+on:
+  push:
+    branches:
+      - hardening/pay21-preproduction-certification
+  pull_request:
+    branches:
+      - hardening/pay20-payment-performance
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay21-preproduction-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY21_BASE_SHA: 5abfeb7a9a3cee44fc362e1a80f74599a6f694ee
+  PAY21_BASE_TREE: 996da603e4cdd088e91e0fef1ecc0dc7d7cddfea
+  PAY21_ALEMBIC_HEAD: zz47d8e9f0a64
+  PAY21_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-21 exact scope and pre-production contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay21_static_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay21-static-not-production
+      AWS_ACCESS_KEY_ID: pay21-static
+      AWS_SECRET_ACCESS_KEY: pay21-static
+      S3_BUCKET_NAME: pay21-static
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY21_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Prove frozen PAY-20 predecessor and exact PAY-21 scope
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "$PAY21_BASE_SHA^{tree}")" = "$PAY21_BASE_TREE"
+          test "$(git merge-base "$PAY21_BASE_SHA" HEAD)" = "$PAY21_BASE_SHA"
+          git diff --name-only "$PAY21_BASE_SHA...HEAD" > /tmp/pay21-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              ".github/workflows/pay21-preproduction-certification.yml",
+              "docs/architecture/PAY21_PREPRODUCTION_CERTIFICATION.md",
+              "docs/architecture/pay21_preproduction_contract_v1.json",
+              "scripts/ci/pay21_razorpay_test_mode_probe.py",
+              "scripts/ci/run_pay21_preproduction_runtime.sh",
+              "tests/test_pay21_preproduction_certification_static.py",
+          }
+          changed = {
+              line.strip()
+              for line in Path("/tmp/pay21-changed.txt").read_text().splitlines()
+              if line.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-21 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          migrations = sorted(path for path in changed if path.startswith("alembic/versions/"))
+          if migrations:
+              raise SystemExit(f"PAY-21 must not add a migration: {migrations}")
+          print(f"PAY-21 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "$PAY21_ALEMBIC_HEAD"
+      - name: Compile and prove PAY-21 contracts
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/pay21_preproduction_contract_v1.json >/dev/null
+          bash -n scripts/ci/run_pay21_preproduction_runtime.sh
+          python -m py_compile scripts/ci/pay21_razorpay_test_mode_probe.py tests/test_pay21_preproduction_certification_static.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_pay21_preproduction_certification_static.py
+          echo 'PAY21_PREPRODUCTION_CONTRACT=PASS'
+          echo 'PAY21_NO_MIGRATION=PASS'
+          echo 'PAY21_NO_NEW_MONEY_AUTHORITY=PASS'
+
+  provider_test_mode:
+    name: PAY-21 real Razorpay test-account HTTPS proof
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RAZORPAY_PROVIDER_MODE: test
+      RAZORPAY_KEY_ID: ${{ secrets.PAY21_RAZORPAY_TEST_KEY_ID || secrets.RAZORPAY_KEY_ID }}
+      RAZORPAY_KEY_SECRET: ${{ secrets.PAY21_RAZORPAY_TEST_KEY_SECRET || secrets.RAZORPAY_KEY_SECRET }}
+      RAZORPAY_WEBHOOK_SECRET: ${{ secrets.PAY21_RAZORPAY_TEST_WEBHOOK_SECRET || secrets.RAZORPAY_WEBHOOK_SECRET }}
+      PAY21_PROVIDER_EVIDENCE: pay21-provider-evidence/razorpay-test-account.json
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY21_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Prove encrypted test credentials and real Razorpay HTTPS
+        run: |
+          set -euo pipefail
+          mkdir -p pay21-provider-evidence
+          python -s scripts/ci/pay21_razorpay_test_mode_probe.py | tee pay21-provider-evidence/provider.log
+          grep -q '^PAY21_RAZORPAY_TEST_ACCOUNT=PASS$' pay21-provider-evidence/provider.log
+          grep -q '^PAY21_RAZORPAY_REAL_HTTPS=PASS$' pay21-provider-evidence/provider.log
+          grep -q '^PAY21_RAZORPAY_LIVE_KEY=REJECTED$' pay21-provider-evidence/provider.log
+          grep -q '^PAY21_REAL_MONEY_MOVEMENT=0$' pay21-provider-evidence/provider.log
+          test -n "$RAZORPAY_KEY_SECRET"
+          test -n "$RAZORPAY_WEBHOOK_SECRET"
+          if grep -Fq "$RAZORPAY_KEY_SECRET" pay21-provider-evidence/provider.log; then
+            echo 'PAY-21 Razorpay key secret leaked into provider log' >&2
+            exit 1
+          fi
+          if grep -Fq "$RAZORPAY_WEBHOOK_SECRET" pay21-provider-evidence/provider.log; then
+            echo 'PAY-21 Razorpay webhook secret leaked into provider log' >&2
+            exit 1
+          fi
+      - name: Upload provider evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay21-provider-${{ env.PAY21_CANDIDATE_SHA }}
+          path: pay21-provider-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  production_runtime:
+    name: PAY-21 production-image TLS PostgreSQL Redis Celery runtime
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      PAY21_RUNTIME_EVIDENCE: pay21-runtime-evidence/runtime.json
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY21_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Run production-shaped private-network runtime
+        run: |
+          set -euo pipefail
+          mkdir -p pay21-runtime-evidence
+          bash scripts/ci/run_pay21_preproduction_runtime.sh | tee pay21-runtime-evidence/runtime.log
+          for marker in             PAY21_REAL_POSTGRESQL=PASS             PAY21_REAL_REDIS_TLS=PASS             PAY21_REAL_CELERY=PASS             PAY21_REAL_TLS_INGRESS=PASS             PAY21_PRODUCTION_IMAGE=PASS             PAY21_PRODUCTION_DB_ROLES=PASS             PAY21_NETWORK_CONTROLS=PASS
+          do
+            grep -q "^$marker$" pay21-runtime-evidence/runtime.log
+          done
+      - name: Upload runtime evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay21-runtime-${{ env.PAY21_CANDIDATE_SHA }}
+          path: pay21-runtime-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  finance_regression:
+    name: PAY-21 exact-head Finance end-to-end matrix
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  member_payment_scenarios:
+    name: PAY-21 member admission cash partial and renewal
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      PAY20_ALEMBIC_HEAD: zz47d8e9f0a64
+      PAY20_SYSTEM_DB: gymflow_pay21_member_test
+      PAY20_MIGRATION_DB: gymflow_pay21_member_migration_test
+      MIGRATION_PASSWORD: ci-pay21-member-migration
+      GENERAL_RUNTIME_PASSWORD: ci-pay21-member-app
+      AUTH_RUNTIME_PASSWORD: ci-pay21-member-auth
+      WORKER_RUNTIME_PASSWORD: ci-pay21-member-worker
+      MAINTENANCE_RUNTIME_PASSWORD: ci-pay21-member-maintenance
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-member-migration@127.0.0.1:5432/gymflow_pay21_member_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-pay21-member-app@127.0.0.1:5432/gymflow_pay21_member_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-member-migration@127.0.0.1:5432/gymflow_pay21_member_test
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-pay21-member-auth@127.0.0.1:5432/gymflow_pay21_member_test
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-pay21-member-maintenance@127.0.0.1:5432/gymflow_pay21_member_test
+      PAY4_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay21-member-app@127.0.0.1:5432/gymflow_pay21_member_test
+      PAY4_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay21-member-worker@127.0.0.1:5432/gymflow_pay21_member_test
+      PAY4_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay21-member-migration@127.0.0.1:5432/gymflow_pay21_member_test
+      PAY4_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay21-member-postgres@127.0.0.1:5432/gymflow_pay21_member_test
+      PAY6_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay21-member-app@127.0.0.1:5432/gymflow_pay21_member_test
+      PAY6_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay21-member-migration@127.0.0.1:5432/gymflow_pay21_member_test
+      PAY6_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay21-member-postgres@127.0.0.1:5432/gymflow_pay21_member_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay21-member-not-production
+      AWS_ACCESS_KEY_ID: pay21-member
+      AWS_SECRET_ACCESS_KEY: pay21-member
+      S3_BUCKET_NAME: pay21-member
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY21_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install and provision exact current head
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          bash scripts/ci/pay20_prepare_system_pg16.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres             -c "ALTER ROLE postgres PASSWORD 'ci-pay21-member-postgres';"
+          test "$(python -s -m alembic -c alembic.ini current | awk '{print $1}')" = "$PAY21_ALEMBIC_HEAD"
+      - name: Execute member-commerce pre-production matrix
+        run: |
+          set -euo pipefail
+          python -m pytest -q --maxfail=1             tests/test_pay4_member_finance_binding_runtime.py::test_pending_admission_and_binding_are_canonical_and_runtime_table_blind             tests/test_pay4_member_finance_binding_runtime.py::test_fully_applied_payment_activates_exactly_once_under_concurrency             tests/test_pay4_member_finance_binding_runtime.py::test_future_paid_term_is_scheduled_not_prematurely_active             tests/test_pay6_offline_payments_runtime.py::test_checker_approval_creates_canonical_payment_allocation_ledger_and_paid_event             tests/test_pay6_offline_payments_runtime.py::test_partial_offline_payment_updates_invoice_but_does_not_emit_paid_event
+          echo 'PAY21_MEMBER_ADMISSION=PASS'
+          echo 'PAY21_CASH_PAYMENT=PASS'
+          echo 'PAY21_PARTIAL_PAYMENT=PASS'
+          echo 'PAY21_RENEWAL=PASS'
+
+  finance_matrix_decision:
+    name: PAY-21 online payment refund settlement and failed-payment decision
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs:
+      - provider_test_mode
+      - finance_regression
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require provider and full Finance matrix
+        env:
+          PROVIDER_RESULT: ${{ needs.provider_test_mode.result }}
+          FINANCE_RESULT: ${{ needs.finance_regression.result }}
+        run: |
+          set -euo pipefail
+          test "$PROVIDER_RESULT" = success
+          test "$FINANCE_RESULT" = success
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY21_CANDIDATE_SHA }}
+      - name: Bind scenario coverage to current Finance tests
+        run: |
+          set -euo pipefail
+          grep -q 'test_phase6v_sandbox_checkout_route_uses_razorpay_test_mode_adapter_with_injected_transport' tests/finance_core/test_phase6v_test_mode_checkout_route_integration.py
+          grep -q 'test_phase6w_sandbox_webhook_route_verifies_raw_body_signature_and_updates_state_only' tests/finance_core/test_phase6w_test_mode_webhook_route_signature.py
+          grep -q 'test_create_refund_intent_for_eligible_payment_without_provider_execution' tests/finance_core/test_phase5j_refund_credit_note_reversal.py
+          grep -q 'test_concurrent_refund_intents_serialize_on_payment_and_cannot_over_refund' tests/finance_core/test_phase5j_refund_credit_note_reversal.py
+          grep -q 'test_partial_and_full_explicit_settlement_update_invoice_status' tests/finance_core/test_phase5h_invoice_settlement_gate.py
+          grep -q 'test_non_captured_or_non_settled_payment_cannot_be_applied' tests/finance_core/test_phase5h_invoice_settlement_gate.py
+          echo 'PAY21_ONLINE_PAYMENT=PASS'
+          echo 'PAY21_REFUND=PASS'
+          echo 'PAY21_PARTIAL_REFUND=PASS'
+          echo 'PAY21_SETTLEMENT=PASS'
+          echo 'PAY21_FAILED_PAYMENT=PASS'
+
+  platform_scenarios:
+    name: PAY-21 platform subscription recurring dunning mandate dispute reconciliation
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-platform-migration@127.0.0.1:5432/gymflow_platform_billing_test_pay21
+      PLATFORM_BILLING_TEST_DATABASE_URL: postgresql+asyncpg://pay21_platform_runtime:ci-pay21-platform-runtime@127.0.0.1:5432/gymflow_platform_billing_test_pay21
+      PLATFORM_BILLING_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-platform-migration@127.0.0.1:5432/gymflow_platform_billing_test_pay21
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay21-platform-not-production
+      AWS_ACCESS_KEY_ID: pay21-platform
+      AWS_SECRET_ACCESS_KEY: pay21-platform
+      S3_BUCKET_NAME: pay21-platform
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY21_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Provision Platform Billing database
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-pay21-platform-migration';
+          CREATE ROLE pay21_platform_runtime LOGIN PASSWORD 'ci-pay21-platform-runtime'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT app_runtime TO pay21_platform_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO pay21_platform_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE pay21_platform_runtime SET row_security='on';
+          ALTER ROLE pay21_platform_runtime SET statement_timeout='5s';
+          ALTER ROLE pay21_platform_runtime SET lock_timeout='2s';
+          ALTER ROLE pay21_platform_runtime SET idle_in_transaction_session_timeout='15s';
+          CREATE DATABASE gymflow_platform_billing_test_pay21 OWNER migration_owner;
+          REVOKE ALL ON DATABASE gymflow_platform_billing_test_pay21 FROM PUBLIC;
+          GRANT CONNECT ON DATABASE gymflow_platform_billing_test_pay21 TO pay21_platform_runtime;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh gymflow_platform_billing_test_pay21
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+      - name: Execute Platform Billing pre-production matrix
+        run: |
+          set -euo pipefail
+          python -m pytest -q --maxfail=1             tests/platform_billing/test_pay11_production_model.py::test_pay11_provider_invoice_payment_credit_and_refund_invariants             tests/platform_billing/test_pay12_recurring_dunning_pg16.py::test_pay12_pg16_durable_lifecycle_invariants             tests/platform_billing/test_pay12_recurring_dunning_pg16.py::test_pay12_recurring_job_final_attempt_crash_reclaim_and_exact_owner             tests/platform_billing/test_pay13_disputes_pg16.py::test_pay13_open_dispute_preserves_capture_and_freezes_money_actions             tests/platform_billing/test_pay14_reconciliation_accounting_pg16.py::test_pay14_authoritative_three_way_match_closes_without_money_mutation
+          echo 'PAY21_PLATFORM_SUBSCRIPTION=PASS'
+          echo 'PAY21_RECURRING_ATTEMPT=PASS'
+          echo 'PAY21_DUNNING=PASS'
+          echo 'PAY21_MANDATE_REVOCATION=PASS'
+          echo 'PAY21_DISPUTE_SIMULATION=PASS'
+          echo 'PAY21_SETTLEMENT_RECONCILIATION=PASS'
+
+  backup_restore:
+    name: PAY-21 current-head financial backup and restore
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      SOURCE_DB: gymflow_pay21_recovery_test
+      RESTORE_DB: gymflow_pay21_recovery_restore_test
+      BACKUP_FILE: /tmp/pay21-finance.dump
+      EVIDENCE_DIR: pay21-recovery-evidence
+      MIGRATION_PASSWORD: ci-pay21-recovery-migration
+      FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay21-recovery-finance@127.0.0.1:5432/gymflow_pay21_recovery_test
+      FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-recovery-migration@127.0.0.1:5432/gymflow_pay21_recovery_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-pay21-recovery-app@127.0.0.1:5432/gymflow_pay21_recovery_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-recovery-migration@127.0.0.1:5432/gymflow_pay21_recovery_test
+      FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-pay21-recovery-config@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY17_RECON_DATABASE_URL: postgresql+asyncpg://pay17_recon_test:ci-pay21-recovery-recon@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY9_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay21-recovery-app@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY9_PAYMENT_DATABASE_URL: postgresql://pay9_payment_test:ci-pay21-recovery-payment@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY9_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay21-recovery-worker@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY9_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay21-recovery-postgres@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY9_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay21-recovery-migration@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY4_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay21-recovery-app@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY4_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay21-recovery-worker@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY4_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay21-recovery-postgres@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY4_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay21-recovery-migration@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY5_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay21-recovery-worker@127.0.0.1:5432/gymflow_pay21_recovery_test
+      PAY5_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay21-recovery-postgres@127.0.0.1:5432/gymflow_pay21_recovery_test
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-pay21-recovery-worker@127.0.0.1:5432/gymflow_pay21_recovery_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay21-recovery-not-production
+      AWS_ACCESS_KEY_ID: pay21-recovery
+      AWS_SECRET_ACCESS_KEY: pay21-recovery
+      S3_BUCKET_NAME: pay21-recovery
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY21_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Provision recovery source
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          bash scripts/ci/install_pg16_test_stack.sh
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          mkdir -p "$EVIDENCE_DIR"
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE postgres PASSWORD 'ci-pay21-recovery-postgres';
+          ALTER ROLE migration_owner PASSWORD 'ci-pay21-recovery-migration';
+          CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_core_test_subject LOGIN PASSWORD 'ci-pay21-recovery-finance' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-pay21-recovery-app' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-pay21-recovery-worker' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-pay21-recovery-maintenance' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-pay21-recovery-config' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay17_recon_test LOGIN PASSWORD 'ci-pay21-recovery-recon' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay9_payment_test LOGIN PASSWORD 'ci-pay21-recovery-payment' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT test_runner TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_config_runtime TO finance_config_deployment WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_reconciliation_runtime TO pay17_recon_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_payment_runtime TO pay9_payment_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE finance_core_test_subject SET row_security='on';
+          ALTER ROLE app_test_runtime SET row_security='on';
+          ALTER ROLE worker_test_runtime SET row_security='on';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
+          ALTER ROLE finance_config_deployment SET row_security='on';
+          ALTER ROLE pay17_recon_test SET row_security='on';
+          ALTER ROLE pay9_payment_test SET row_security='on';
+          CREATE DATABASE gymflow_pay21_recovery_test OWNER migration_owner;
+          REVOKE ALL ON DATABASE gymflow_pay21_recovery_test FROM PUBLIC;
+          GRANT CONNECT ON DATABASE gymflow_pay21_recovery_test TO finance_core_test_subject,app_test_runtime,worker_test_runtime,lifecycle_maintenance_test_runtime,finance_config_deployment,pay17_recon_test,pay9_payment_test;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh "$SOURCE_DB"
+          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini current --check-heads
+          DATABASE_URL="$FINANCE_CORE_TEST_DATABASE_URL" PAY19_SEED_EVIDENCE="$EVIDENCE_DIR/seed.json" PYTHONPATH="$GITHUB_WORKSPACE"             python -s scripts/ci/pay19_seed_financial_state.py | tee "$EVIDENCE_DIR/seed.log"
+          grep -q '^PAY19_SYNTHETIC_FINANCIAL_STATE=PASS$' "$EVIDENCE_DIR/seed.log"
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d "$SOURCE_DB"             -f scripts/ci/pay19_financial_fingerprint.sql > "$EVIDENCE_DIR/source-finance.txt"
+      - name: Backup restore and compare financial fingerprint
+        run: |
+          set -euo pipefail
+          sudo -u postgres pg_dump --format=custom --dbname="$SOURCE_DB" --file="$BACKUP_FILE"
+          sudo -u postgres test -s "$BACKUP_FILE"
+          sudo -u postgres sha256sum "$BACKUP_FILE" > "$EVIDENCE_DIR/backup.sha256"
+          sudo -u postgres pg_restore --list "$BACKUP_FILE" > "$EVIDENCE_DIR/backup-toc.txt"
+          grep -q 'payment_application_records' "$EVIDENCE_DIR/backup-toc.txt"
+          grep -q 'refund_execution_commands' "$EVIDENCE_DIR/backup-toc.txt"
+          sudo -u postgres createdb -T template0 -O migration_owner "$RESTORE_DB"
+          sudo -u postgres pg_restore --exit-on-error --no-owner --role=migration_owner --dbname="$RESTORE_DB" "$BACKUP_FILE"
+          sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d "$RESTORE_DB"             -f scripts/ci/pay19_financial_fingerprint.sql > "$EVIDENCE_DIR/restored-finance.txt"
+          diff -u "$EVIDENCE_DIR/source-finance.txt" "$EVIDENCE_DIR/restored-finance.txt"
+          echo 'PAY21_BACKUP_RESTORE=PASS'
+          echo 'PAY21_FINANCIAL_FINGERPRINT_PRESERVED=PASS'
+      - name: Upload recovery evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay21-recovery-${{ env.PAY21_CANDIDATE_SHA }}
+          path: pay21-recovery-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  bad_deployment_rollback:
+    name: PAY-21 inherited real bad-deployment rollback
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/p9d-bad-deployment-rollback.yml
+
+  rollback_decision:
+    name: PAY-21 bad-deployment rollback decision
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs:
+      - bad_deployment_rollback
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          set -euo pipefail
+          test "${{ needs.bad_deployment_rollback.result }}" = success
+          echo 'PAY21_BAD_DEPLOYMENT_ROLLBACK=PASS'
+
+  certify:
+    name: PAY-21 final pre-production decision
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs:
+      - contract
+      - provider_test_mode
+      - production_runtime
+      - finance_regression
+      - member_payment_scenarios
+      - finance_matrix_decision
+      - platform_scenarios
+      - backup_restore
+      - bad_deployment_rollback
+      - rollback_decision
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every exact-head PAY-21 gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          data = json.loads(os.environ["RESULTS"])
+          bad = {key: value["result"] for key, value in data.items() if value["result"] != "success"}
+          if bad:
+              raise SystemExit(f"PAY-21 prerequisite failure: {bad}")
+          print("PAY21_REQUIRED_EXACT_HEAD_GATES=PASS")
+          PY
+      - name: Bind terminal decision to exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY21_CANDIDATE_SHA }}
+      - run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PAY21_CANDIDATE_SHA"
+          test "$(git rev-parse "$PAY21_BASE_SHA^{tree}")" = "$PAY21_BASE_TREE"
+          test "$(git merge-base "$PAY21_BASE_SHA" HEAD)" = "$PAY21_BASE_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo 'PAY21_REAL_POSTGRESQL=PASS'
+          echo 'PAY21_REAL_REDIS=PASS'
+          echo 'PAY21_REAL_CELERY=PASS'
+          echo 'PAY21_REAL_TLS=PASS'
+          echo 'PAY21_REAL_SECRETS_SYSTEM=PASS'
+          echo 'PAY21_REAL_RAZORPAY_TEST_ACCOUNT=PASS'
+          echo 'PAY21_PRODUCTION_STYLE_NETWORK_CONTROLS=PASS'
+          echo 'PAY21_PRODUCTION_IMAGES=PASS'
+          echo 'PAY21_PRODUCTION_DB_ROLES=PASS'
+          echo 'PAY21_MEMBER_ADMISSION=PASS'
+          echo 'PAY21_ONLINE_PAYMENT=PASS'
+          echo 'PAY21_CASH_PAYMENT=PASS'
+          echo 'PAY21_PARTIAL_PAYMENT=PASS'
+          echo 'PAY21_RENEWAL=PASS'
+          echo 'PAY21_REFUND=PASS'
+          echo 'PAY21_PARTIAL_REFUND=PASS'
+          echo 'PAY21_SETTLEMENT=PASS'
+          echo 'PAY21_FAILED_PAYMENT=PASS'
+          echo 'PAY21_PLATFORM_SUBSCRIPTION=PASS'
+          echo 'PAY21_RECURRING_ATTEMPT=PASS'
+          echo 'PAY21_DUNNING=PASS'
+          echo 'PAY21_MANDATE_REVOCATION=PASS'
+          echo 'PAY21_DISPUTE_SIMULATION=PASS'
+          echo 'PAY21_BACKUP_RESTORE=PASS'
+          echo 'PAY21_BAD_DEPLOYMENT_ROLLBACK=PASS'
+          echo 'PAY21_PRODUCTION_CUSTOMER_DATA=0'
+          echo 'PAY21_REAL_MONEY_MOVEMENT=0'
+          echo 'PAY21_LIVE_RAZORPAY_KEY=0'
+          echo 'PAY21_PRODUCTION_DEPLOYMENT=NOT_AUTHORIZED'
+          echo 'PAY21_PREPRODUCTION_CERTIFICATION=PASS'
