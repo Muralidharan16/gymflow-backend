@@ -355,12 +355,9 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
         ),
         "settlements": int(
             await fetch_scalar(
-                "SELECT count(*) FROM finance.ledger_entries "
-                "WHERE source_type='settlement' "
-                "AND id IN ("
-                "  SELECT ledger_entry_id FROM finance.payment_settlements "
-                "  WHERE settlement_ref LIKE :prefix"
-                ")",
+                "SELECT count(*) FROM finance.outbox_events "
+                "WHERE event_type='finance.payment.reconciled' "
+                "AND payload_json->>'settlement_ref' LIKE :prefix",
                 {"prefix": settlement_prefix},
             )
             or 0
@@ -368,7 +365,7 @@ async def assert_financial_integrity(prefix: str, cycles: int) -> dict:
         "refunds": int(
             await fetch_scalar(
                 "SELECT count(*) FROM finance.refunds "
-                "WHERE refund_ref LIKE :prefix",
+                "WHERE reason_code LIKE :prefix",
                 {"prefix": refund_prefix},
             )
             or 0
