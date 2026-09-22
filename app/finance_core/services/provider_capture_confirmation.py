@@ -14,6 +14,7 @@ from app.finance_core.domain.provider_capture_confirmation import (
     SUPPORTED_CAPTURE_CONFIRMATION_EVENTS,
     VERIFIED_RAZORPAY_WEBHOOK_SOURCE,
     ConfirmProviderPaymentEvidenceCommand,
+    FinanceProviderEvidenceDeferredError,
     FinanceProviderEvidenceError,
     ProviderPaymentEvidenceResult,
 )
@@ -117,12 +118,13 @@ def _translate_provider_evidence_db_error(
         getattr(exc, "orig", None) or exc
     )
 
-    provider_errors = (
-        (
-            "P4D provider evidence payment not found",
+    if "P4D provider evidence payment not found" in message:
+        return FinanceProviderEvidenceDeferredError(
             "PROVIDER_EVIDENCE_PAYMENT_NOT_FOUND",
-            "Provider evidence references an unknown payment.",
-        ),
+            "Verified provider evidence is not locally bindable yet.",
+        )
+
+    provider_errors = (
         (
             "P4D provider evidence order mismatch",
             "PROVIDER_EVIDENCE_ORDER_MISMATCH",
