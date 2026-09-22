@@ -20,6 +20,29 @@ _D11_KEY = "organization-create:synthetic:test:finance-razorpay-smoke"
 _FINANCE_LANE_ENV = "FINANCE_CORE_TEST_DATABASE_URL"
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def initialize_finance_security_redis():
+    """Give Finance route tests a real revocation backend on their event loop.
+
+    The ASGI test transport does not execute FastAPI lifespan startup, while
+    PAY-16 privileged finance dependencies intentionally fail closed if Redis
+    revocation truth is unavailable. Recreate the shared Redis utility for each
+    Finance test loop without changing production fail-closed behavior.
+    """
+    if not os.environ.get(_FINANCE_LANE_ENV):
+        yield
+        return
+
+    from app.core.redis import close_redis, init_redis
+
+    await close_redis()
+    await init_redis()
+    try:
+        yield
+    finally:
+        await close_redis()
+
+
 def pytest_collection_modifyitems(config, items):
     """Keep Finance Core out of the general runtime lane.
 
