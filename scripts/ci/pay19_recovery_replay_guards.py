@@ -37,18 +37,56 @@ async def _replay_finance() -> None:
     )
     outbox_before = await fetch_scalar("SELECT count(*) FROM finance.outbox_events")
 
-    client = FakeRazorpayClient()
-    checkout, _ = await orchestrate(
-        command(idempotency_key="pay19-checkout"),
-        client=client,
+    payment_id = await fetch_scalar(
+        "SELECT id FROM finance.payments "
+        "WHERE provider_code='razorpay_sandbox' "
+        "AND provider_order_ref='order_test_1'"
     )
-    if not checkout.replayed:
-        raise RuntimeError("PAY-19 recovered checkout did not idempotently replay")
+    invoice_id = await fetch_scalar(
+        "SELECT invoice_id FROM finance.payment_allocations "
+        "WHERE payment_id=:payment_id",
+        {"payment_id": payment_id},
+    )
+    provider_status_before = await fetch_scalar(
+        "SELECT status FROM finance.provider_operations "
+        "WHERE payment_id=:payment_id AND operation_type='create_checkout'",
+        {"payment_id": payment_id},
+    )
+    provider_object_before = await fetch_scalar(
+        "SELECT provider_object_id FROM finance.provider_operations "
+        "WHERE payment_id=:payment_id AND operation_type='create_checkout'",
+        {"payment_id": payment_id},
+    )
+    if provider_status_before != "succeeded" or provider_object_before != "order_test_1":
+        raise RuntimeError("PAY-19 recovered provider operation is not canonical")
+
+    client = FakeRazorpayClient()
+    try:
+        checkout, _ = await orchestrate(
+            command(idempotency_key="pay19-checkout"),
+            client=client,
+        )
+    except ValueError as exc:
+        if str(exc) != "Checkout orchestration requires an issued invoice":
+            raise
+        invoice_status = await fetch_scalar(
+            "SELECT status FROM finance.invoices WHERE id=:invoice_id",
+            {"invoice_id": invoice_id},
+        )
+        if invoice_status != "paid":
+            raise RuntimeError(
+                "PAY-19 recovered checkout replay failed for a non-paid invoice"
+            ) from exc
+    else:
+        if not checkout.replayed:
+            raise RuntimeError("PAY-19 recovered checkout did not idempotently replay")
+        if checkout.finance_checkout_intent_id != payment_id:
+            raise RuntimeError("PAY-19 recovered checkout payment identity drift")
+        if checkout.finance_invoice_id != invoice_id:
+            raise RuntimeError("PAY-19 recovered checkout invoice identity drift")
+
     if client.requests:
         raise RuntimeError("PAY-19 replay made a duplicate provider operation")
-
-    payment_id = checkout.finance_checkout_intent_id
-    invoice_id = checkout.finance_invoice_id
     application = await apply_gate(
         payment_id,
         invoice_id,
@@ -68,6 +106,18 @@ async def _replay_finance() -> None:
         "WHERE operation_type='create_checkout'"
     ) != provider_before:
         raise RuntimeError("PAY-19 duplicate provider operation after recovery")
+    if await fetch_scalar(
+        "SELECT status FROM finance.provider_operations "
+        "WHERE payment_id=:payment_id AND operation_type='create_checkout'",
+        {"payment_id": payment_id},
+    ) != provider_status_before:
+        raise RuntimeError("PAY-19 provider operation status drift after replay")
+    if await fetch_scalar(
+        "SELECT provider_object_id FROM finance.provider_operations "
+        "WHERE payment_id=:payment_id AND operation_type='create_checkout'",
+        {"payment_id": payment_id},
+    ) != provider_object_before:
+        raise RuntimeError("PAY-19 provider object drift after replay")
     if await fetch_scalar("SELECT count(*) FROM finance.invoices") != invoice_before:
         raise RuntimeError("PAY-19 checkout replay created duplicate invoice")
     if await fetch_scalar(
