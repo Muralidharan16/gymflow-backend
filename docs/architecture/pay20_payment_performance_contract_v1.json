@@ -29,11 +29,12 @@
     "multi_tenant_http_8_tenants"
   ],
   "finance_calibration": {
-    "cycles": 48,
+    "cycles": 96,
     "concurrency": 16,
     "invoice_items": 16,
     "activation_iterations": 4,
-    "profile": "same_pressure_as_load"
+    "profile": "fresh_isolated_same_workload_as_load",
+    "fresh_database": true
   },
   "finance_load": {
     "cycles": 96,
@@ -41,14 +42,16 @@
     "invoice_items": 32,
     "activation_iterations": 8,
     "min_throughput_ratio_vs_calibration": 0.6,
-    "max_p95_ratio_vs_calibration": 2
+    "max_p95_ratio_vs_calibration": 2,
+    "fresh_database": true
   },
   "finance_soak": {
     "duration_seconds": 300,
     "concurrency": 6,
     "invoice_items": 16,
     "activation_iterations": 4,
-    "sample_interval_seconds": 5
+    "sample_interval_seconds": 5,
+    "fresh_database": true
   },
   "inherited_p10_budgets": {
     "artifact": "docs/architecture/p10_performance_budgets.v1.json",
@@ -147,5 +150,13 @@
       "lease_lost": 0
     },
     "global_pay18_finance_outbox_backlog_remains_global": true
+  },
+  "measurement_method": {
+    "calibration_and_load_identical_start_state": true,
+    "calibration_and_load_identical_cycles": true,
+    "calibration_and_load_identical_concurrency": true,
+    "database_reset_between_windows": true,
+    "relative_p95_threshold_unchanged": 2,
+    "inherited_p10_absolute_budgets_unchanged": true
   }
 }
