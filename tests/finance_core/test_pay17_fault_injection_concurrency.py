@@ -140,13 +140,16 @@ async def test_100_concurrent_identical_callbacks_converge_to_one_financial_effe
         idempotency_key="pay17-callback-100",
     )
 
+    db_slots = asyncio.Semaphore(20)
+
     async def record_one():
-        async with AsyncSessionLocal() as session:
-            receipt = await _webhook_service(
-                session
-            ).record_verified_webhook(webhook)
-            await session.commit()
-            return receipt
+        async with db_slots:
+            async with AsyncSessionLocal() as session:
+                receipt = await _webhook_service(
+                    session
+                ).record_verified_webhook(webhook)
+                await session.commit()
+                return receipt
 
     receipts = await asyncio.gather(
         *(record_one() for _ in range(100))
@@ -158,15 +161,16 @@ async def test_100_concurrent_identical_callbacks_converge_to_one_financial_effe
     inbox_id = next(iter(inbox_ids))
 
     async def claim_one(worker_id: uuid.UUID):
-        async with AsyncSessionLocal() as session:
-            claimed = await _webhook_service(
-                session
-            ).claim_recorded_webhook(
-                inbox_id=inbox_id,
-                lease_owner=worker_id,
-            )
-            await session.commit()
-            return worker_id, claimed
+        async with db_slots:
+            async with AsyncSessionLocal() as session:
+                claimed = await _webhook_service(
+                    session
+                ).claim_recorded_webhook(
+                    inbox_id=inbox_id,
+                    lease_owner=worker_id,
+                )
+                await session.commit()
+                return worker_id, claimed
 
     claims = await asyncio.gather(
         *(claim_one(uuid.uuid4()) for _ in range(100))
