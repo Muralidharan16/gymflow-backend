@@ -235,49 +235,49 @@ class RuntimeMetrics:
         # both up and down as work progresses. Signature failures are a counter
         # because rejected signatures intentionally never become durable rows.
         self.payment_attempt_total = meter.create_gauge(
-            "doers.finance.payment_attempt.total", unit="1"
+            "payment_attempt_total", unit="1"
         )
         self.payment_failure_total = meter.create_gauge(
-            "doers.finance.payment_failure.total", unit="1"
+            "payment_failure_total", unit="1"
         )
         self.payment_unknown_total = meter.create_gauge(
-            "doers.finance.payment_unknown.total", unit="1"
+            "payment_unknown_total", unit="1"
         )
         self.webhook_signature_failure_total = meter.create_counter(
-            "doers.finance.webhook_signature_failure", unit="1"
+            "webhook_signature_failure", unit="1"
         )
         self.webhook_backlog = meter.create_gauge(
-            "doers.finance.webhook_backlog", unit="1"
+            "webhook_backlog", unit="1"
         )
         self.payment_application_backlog = meter.create_gauge(
-            "doers.finance.payment_application_backlog", unit="1"
+            "payment_application_backlog", unit="1"
         )
         self.finance_outbox_backlog = meter.create_gauge(
-            "doers.finance.outbox_backlog", unit="1"
+            "finance_outbox_backlog", unit="1"
         )
         self.refund_backlog = meter.create_gauge(
-            "doers.finance.refund_backlog", unit="1"
+            "refund_backlog", unit="1"
         )
         self.refund_unknown_total = meter.create_gauge(
-            "doers.finance.refund_unknown.total", unit="1"
+            "refund_unknown_total", unit="1"
         )
         self.settlement_mismatch_total = meter.create_gauge(
-            "doers.finance.settlement_mismatch.total", unit="1"
+            "settlement_mismatch_total", unit="1"
         )
         self.reconciliation_open_total = meter.create_gauge(
-            "doers.finance.reconciliation_open.total", unit="1"
+            "reconciliation_open_total", unit="1"
         )
         self.mandate_failure_total = meter.create_gauge(
-            "doers.finance.mandate_failure.total", unit="1"
+            "mandate_failure_total", unit="1"
         )
         self.dunning_stage_total = meter.create_gauge(
-            "doers.finance.dunning_stage.total", unit="1"
+            "dunning_stage_total", unit="1"
         )
         self.chargeback_open_total = meter.create_gauge(
-            "doers.finance.chargeback_open.total", unit="1"
+            "chargeback_open_total", unit="1"
         )
         self.duplicate_payment_allegation_open_total = meter.create_gauge(
-            "doers.finance.duplicate_payment_allegation_open.total", unit="1"
+            "duplicate_payment_allegation_open_total", unit="1"
         )
 
         # Providers
