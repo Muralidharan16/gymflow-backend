@@ -1,0 +1,119 @@
+name: PAY-22 Controlled Production Activation
+
+on:
+  push:
+    branches:
+      - hardening/pay22-controlled-production-activation
+  pull_request:
+    paths:
+      - 'app/payment_activation/**'
+      - 'tests/test_pay22_controlled_production_activation.py'
+      - 'docs/architecture/PAY22_CONTROLLED_PRODUCTION_ACTIVATION.md'
+      - 'docs/architecture/pay22_production_activation_contract_v1.json'
+      - '.github/workflows/pay22-controlled-production-activation.yml'
+
+permissions:
+  contents: read
+
+env:
+  PAY22_BASE_SHA: fd5370320e3117b4220e79ebc8e45d227ccf0077
+  PAY22_BASE_TREE: f66f789328e4ad934b8a59758bd91f87b365ecb3
+  PAY22_ALEMBIC_HEAD: zz47d8e9f0a64
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  scope_and_contract:
+    name: PAY-22 exact scope and activation contract
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Prove PAY-21 predecessor and PAY-22 exact scope
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "$PAY22_BASE_SHA^{tree}")" = "$PAY22_BASE_TREE"
+          test "$(git merge-base "$PAY22_BASE_SHA" HEAD)" = "$PAY22_BASE_SHA"
+          git diff --name-only "$PAY22_BASE_SHA...HEAD" > /tmp/pay22-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              ".github/workflows/pay22-controlled-production-activation.yml",
+              "app/payment_activation/__init__.py",
+              "app/payment_activation/domain.py",
+              "app/payment_activation/service.py",
+              "docs/architecture/PAY22_CONTROLLED_PRODUCTION_ACTIVATION.md",
+              "docs/architecture/pay22_production_activation_contract_v1.json",
+              "tests/test_pay22_controlled_production_activation.py",
+          }
+          changed = {
+              line.strip()
+              for line in Path("/tmp/pay22-changed.txt").read_text().splitlines()
+              if line.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-22 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          if any(path.startswith("alembic/versions/") for path in changed):
+              raise SystemExit("PAY-22 control-plane slice must not add a migration")
+          print(f"PAY-22 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "$PAY22_ALEMBIC_HEAD"
+      - name: Prove machine contract and unit boundary
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/pay22_production_activation_contract_v1.json >/dev/null
+          python -m py_compile app/payment_activation/domain.py app/payment_activation/service.py tests/test_pay22_controlled_production_activation.py
+          python -m pytest --noconftest -q --maxfail=1 tests/test_pay22_controlled_production_activation.py
+          echo 'PAY22_PROGRESSIVE_STAGES=PASS'
+          echo 'PAY22_INDEPENDENT_KILL_SWITCHES=PASS'
+          echo 'PAY22_PROVIDER_EGRESS_FENCE=PASS'
+          echo 'PAY22_EXACT_SHA_AUTHORITY=PASS'
+          echo 'PAY22_NO_GLOBAL_PAYMENT_SWITCH=PASS'
+          echo 'PAY22_NO_MIGRATION=PASS'
+
+  finance_regression:
+    name: PAY-22 exact-head Finance regression
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  readiness:
+    name: PAY-22 controlled production activation readiness
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs:
+      - scope_and_contract
+      - finance_regression
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require exact-head gates
+        env:
+          SCOPE_RESULT: ${{ needs.scope_and_contract.result }}
+          FINANCE_RESULT: ${{ needs.finance_regression.result }}
+        run: |
+          set -euo pipefail
+          test "$SCOPE_RESULT" = success
+          test "$FINANCE_RESULT" = success
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+      - name: Bind readiness to exact candidate
+        run: |
+          set -euo pipefail
+          candidate="$(git rev-parse HEAD)"
+          test "$(git merge-base "$PAY22_BASE_SHA" "$candidate")" = "$PAY22_BASE_SHA"
+          echo "PAY22_CERTIFIED_CANDIDATE_SHA=$candidate"
+          echo 'PAY22_STAGE0_EGRESS_BLOCKED=PASS'
+          echo 'PAY22_PAYMENT_OUTAGE_PLATFORM_INDEPENDENCE=PASS'
+          echo 'PAY22_CONTROL_PLANE_CERTIFIED=PASS'
+          echo 'PAY22_LIVE_MONEY_MOVEMENT=0'
+          echo 'PAY22_PRODUCTION_CUSTOMER_DATA=0'
+          echo 'PAY22_PRODUCTION_ACTIVATION_AUTHORIZED=REQUIRES_EXTERNAL_HUMAN_AUTHORIZATION'

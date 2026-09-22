@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-22",
+  "title": "Controlled Production Activation",
+  "predecessor": {
+    "phase": "PAY-21",
+    "sha": "fd5370320e3117b4220e79ebc8e45d227ccf0077",
+    "tree": "f66f789328e4ad934b8a59758bd91f87b365ecb3",
+    "workflow_run": 35733153483,
+    "terminal_marker": "PAY21_PREPRODUCTION_CERTIFICATION=PASS"
+  },
+  "new_migration": false,
+  "no_global_payment_switch": true,
+  "stages": [
+    {"stage": 0, "name": "live_config_egress_blocked"},
+    {"stage": 1, "name": "internal_organization"},
+    {"stage": 2, "name": "selected_test_organization"},
+    {"stage": 3, "name": "small_merchant_cohort", "max_merchants": 10},
+    {"stage": 4, "name": "limited_percentage", "max_basis_points": 1000},
+    {"stage": 5, "name": "general_availability"}
+  ],
+  "kill_switches": [
+    "checkout",
+    "webhooks",
+    "payment_application",
+    "subscription_activation",
+    "refund_execution",
+    "recurring_billing",
+    "dunning",
+    "platform_billing"
+  ],
+  "provider_egress": {
+    "independent_fence": true,
+    "stage_0_must_be_blocked": true,
+    "outbound_capabilities": [
+      "checkout",
+      "refund_execution",
+      "recurring_billing"
+    ],
+    "inbound_or_internal_capabilities_may_continue_during_provider_outage": [
+      "webhooks",
+      "payment_application",
+      "subscription_activation",
+      "dunning",
+      "platform_billing"
+    ]
+  },
+  "authorization": {
+    "human_authorization_required": true,
+    "authorized_sha_must_equal_certified_sha": true,
+    "deployed_sha_must_equal_certified_sha": true,
+    "authorization_must_be_external_to_executable_candidate": true
+  },
+  "activation_safety": {
+    "default": "deny",
+    "production_customer_data_in_ci": false,
+    "live_money_movement_in_ci": false,
+    "live_provider_egress_in_ci": false,
+    "migration_alone_can_enable_payments": false,
+    "payment_outage_requires_whole_platform_shutdown": false
+  },
+  "readiness_marker": "PAY22_CONTROL_PLANE_CERTIFIED=PASS",
+  "authorization_marker": "PAY22_PRODUCTION_ACTIVATION_AUTHORIZED"
+}
