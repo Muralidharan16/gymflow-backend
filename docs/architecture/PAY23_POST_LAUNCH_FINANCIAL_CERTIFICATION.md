@@ -18,7 +18,8 @@ post-launch gate merely because every count is zero.
 The terminal marker requires:
 
 - `environment=live`;
-- PAY-22 activation Stage 1 or later;
+- PAY-22 activation Stage 1 through Stage 5;
+- the active PAY-22 authorization ID and exact authorization evidence SHA;
 - at least one real provider payment in the evidence window;
 - at least one real provider settlement in the evidence window;
 - a window between one hour and 31 days;
@@ -84,7 +85,9 @@ PAY-14 durable accounting closure:
 - `platform_accounting_incidents`.
 
 A qualifying closure is live, closed, non-empty, fully resolved, and has zero
-mismatch, retry, manual-review, or incident count.
+mismatch, retry, manual-review, or incident count. Its expected object count must
+also cover at least every provider payment, settlement, and refund included in
+the PAY-23 evidence window.
 
 ## Required zero anomalies
 
@@ -115,6 +118,12 @@ The evidence manifest must contain no raw customer identifiers and no raw provid
 object identifiers. Durable provider/object-level evidence remains in the
 authorized production reconciliation store; PAY-23 carries only aggregate
 certification data and a SHA-256 manifest digest.
+
+The SHA-256 is not a format-only field. It is recomputed over the UTF-8 canonical
+JSON envelope (sorted keys, compact separators) excluding only the
+`evidence_manifest_sha256` field. Any change to the financial totals, anomaly
+counts, certification window, PAY-22 stage, or PAY-22 authorization identity
+after assembly causes certification to fail.
 
 Run the terminal certifier only on the controlled production evidence host:
 
