@@ -25,6 +25,7 @@ import redis
 
 from app.core.database import AsyncSessionLocal
 from tests import test_pay4_member_finance_binding_runtime as pay4
+from tests import test_pay5_finance_event_delivery_runtime as pay5
 from tests.finance_core.test_phase5c_invoice_engine import (
     fetch_scalar,
     seed_master_data,
@@ -403,27 +404,56 @@ async def run_invoice_generation(
 
 
 def run_hot_subscription_activation(iterations: int) -> dict:
+    """Race PAY-5 delivery ownership, then consume through the sanctioned worker capability.
+
+    PAY-5 intentionally forbids worker_runtime from executing the underlying
+    PAY-4 activation function directly. The performance harness must preserve
+    that boundary while stressing the exact-once business effect.
+    """
     latencies: list[float] = []
     exact_once = 0
+    workers = (pay5.WORKER_A, pay5.WORKER_B)
+
     for _ in range(iterations):
-        pay4._cleanup()
-        term = pay4._seed_pending()
-        pay4._seed_invoice_and_binding(term)
-        pay4._finance_event(
-            payment_status="captured",
-            allocated="100.00",
-        )
+        pay5._cleanup_pay5()
+        term = pay5._seed_ready()
+
         started = time.perf_counter()
+
+        def attempt(worker_id):
+            return worker_id, pay5._claim(worker_id)
+
         with ThreadPoolExecutor(max_workers=2) as pool:
-            rows = list(pool.map(lambda _: pay4._apply(), range(2)))
+            claimed = list(pool.map(attempt, workers))
+
+        winners = [
+            (worker_id, rows[0])
+            for worker_id, rows in claimed
+            if rows
+        ]
+        if len(winners) != 1:
+            raise RuntimeError(
+                f"PAY-20 Finance-event claim drift: winners={len(winners)}"
+            )
+
+        worker_id, row = winners[0]
+        fence = int(row[5])
+        consumed = pay5._consume(worker_id, fence)
+        acknowledged = pay5._ack(worker_id, fence)
+
         latencies.append((time.perf_counter() - started) * 1000.0)
         if (
-            pay4._status(term) == "active"
-            and sorted((row[2], row[3]) for row in rows)
-            == [(False, True), (True, False)]
+            acknowledged is True
+            and consumed[0] == term
+            and consumed[2] is True
+            and consumed[3] is False
+            and pay4._status(term) == "active"
+            and pay5._consumption_count() == 1
+            and pay5._finance_subscription_event_count() == 1
         ):
             exact_once += 1
-    pay4._cleanup()
+
+    pay5._cleanup_pay5()
     if exact_once != iterations:
         raise RuntimeError(
             f"PAY-20 subscription exact-once drift: {exact_once}/{iterations}"
