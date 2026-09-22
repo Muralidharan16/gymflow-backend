@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import time
 import uuid
+from contextlib import asynccontextmanager
 from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.core.database import AsyncSessionLocal, update_session_context
 from app.finance_core.domain.payment_ledger import (
@@ -15,10 +22,17 @@ from app.finance_core.domain.payment_ledger import (
 from app.finance_core.domain.provider_capture_confirmation import (
     FinanceProviderEvidenceDeferredError,
 )
+from app.finance_core.domain.provider_boundary import (
+    FinanceWebhookNormalizationError,
+)
 from app.finance_core.services.checkout_orchestration import (
     FinanceCheckoutOrchestrationService,
 )
 from app.finance_core.services.payment_ledger import FinancePaymentLedgerService
+from app.finance_core.services.provider_operations import (
+    FinanceProviderOperationService,
+    provider_checkout_success_hash,
+)
 from app.finance_core.services.razorpay_sandbox import RazorpaySandboxAdapter
 from app.finance_core.services.razorpay_webhooks import (
     RazorpayWebhookConfirmationService,
@@ -55,6 +69,58 @@ def _webhook_service(session) -> RazorpayWebhookConfirmationService:
         ),
         provider_config=PROVIDER_CONFIG,
     )
+
+
+@asynccontextmanager
+async def _reconciliation_session():
+    raw = os.environ.get("PAY17_RECON_DATABASE_URL")
+    if not raw:
+        pytest.skip(
+            "PAY17_RECON_DATABASE_URL is required for reduced reconciliation identity proof"
+        )
+    runtime_raw = os.environ.get("FINANCE_CORE_TEST_DATABASE_URL")
+    if not runtime_raw:
+        raise RuntimeError("FINANCE_CORE_TEST_DATABASE_URL is required")
+    recon = make_url(raw)
+    runtime = make_url(runtime_raw)
+    if recon.database != runtime.database or "test" not in str(recon.database or "").lower():
+        raise RuntimeError("PAY-17 reconciliation URL must target the Finance disposable test database")
+    if recon.username != "pay17_recon_test":
+        raise RuntimeError("PAY-17 reconciliation proof requires pay17_recon_test")
+    engine = create_async_engine(
+        raw,
+        poolclass=NullPool,
+        pool_pre_ping=True,
+        echo=False,
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            await session.execute(
+                text(
+                    "SELECT pg_catalog.set_config("
+                    "'app.current_org_id',:organization_id,true)"
+                ),
+                {"organization_id": str(ORG_ID)},
+            )
+            yield session
+    finally:
+        await engine.dispose()
+
+
+async def _expire_provider_operation(operation_id: uuid.UUID) -> None:
+    async with finance_admin_session() as admin:
+        await admin.execute(
+            text(
+                """
+                UPDATE finance.provider_operations
+                   SET lease_until=pg_catalog.clock_timestamp()-interval '1 second'
+                 WHERE id=:operation_id
+                """
+            ),
+            {"operation_id": operation_id},
+        )
+        await admin.commit()
 
 
 @pytest.mark.asyncio
@@ -426,6 +492,216 @@ async def test_settlement_and_refund_race_serializes_without_lost_obligation():
         "WHERE payment_id=:payment_id",
         {"payment_id": payment.payment_id},
     ) >= 1
+
+
+@pytest.mark.asyncio
+async def test_death_after_claim_before_provider_call_becomes_unknown_then_reconciles_not_found():
+    await seed_master_data()
+    provider_client = FakeRazorpayClient()
+
+    async with AsyncSessionLocal() as session:
+        await update_session_context(session, org_id=str(ORG_ID))
+        service = FinanceCheckoutOrchestrationService(
+            session,
+            plan_resolver=FakePlanResolver(),
+            razorpay_adapter=RazorpaySandboxAdapter(
+                config=sandbox_config(),
+                client=provider_client,
+            ),
+        )
+        prepared = await service.prepare_checkout_session(
+            command(idempotency_key="pay17-before-provider-call")
+        )
+        await session.commit()
+        assert prepared.provider_operation is not None
+        first_owner = uuid.uuid4()
+        first_claim = await service.claim_provider_operation(
+            prepared,
+            lease_owner=first_owner,
+        )
+        await session.commit()
+        assert first_claim.claimed is True
+
+    # Process dies here: the provider was never called, but the database cannot
+    # safely infer that fact from an abandoned in-flight lease.
+    assert provider_client.requests == []
+    await _expire_provider_operation(prepared.provider_operation.operation_id)
+
+    async with AsyncSessionLocal() as session:
+        await update_session_context(session, org_id=str(ORG_ID))
+        operation_service = FinanceProviderOperationService(session)
+        second_claim = await operation_service.claim(
+            operation_id=prepared.provider_operation.operation_id,
+            lease_owner=uuid.uuid4(),
+        )
+        await session.commit()
+
+    assert second_claim.claimed is False
+    assert second_claim.status == "unknown"
+    assert provider_client.requests == []
+
+    async with _reconciliation_session() as session:
+        operation_id, status_value, provider_object_id = (
+            await FinanceProviderOperationService(session).reconcile_unknown(
+                operation_id=prepared.provider_operation.operation_id,
+                outcome="failed_final",
+                provider_object_id=None,
+                error_code="provider_object_not_found",
+                evidence_sha256="a" * 64,
+            )
+        )
+        await session.commit()
+
+    assert operation_id == prepared.provider_operation.operation_id
+    assert status_value == "failed_final"
+    assert provider_object_id is None
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.provider_operations "
+        "WHERE id=:id AND status='failed_final'",
+        {"id": prepared.provider_operation.operation_id},
+    ) == 1
+    assert provider_client.requests == []
+
+
+@pytest.mark.asyncio
+async def test_provider_success_then_process_death_reconciles_without_second_provider_call():
+    await seed_master_data()
+    provider_client = FakeRazorpayClient()
+
+    async with AsyncSessionLocal() as session:
+        await update_session_context(session, org_id=str(ORG_ID))
+        service = FinanceCheckoutOrchestrationService(
+            session,
+            plan_resolver=FakePlanResolver(),
+            razorpay_adapter=RazorpaySandboxAdapter(
+                config=sandbox_config(),
+                client=provider_client,
+            ),
+        )
+        prepared = await service.prepare_checkout_session(
+            command(idempotency_key="pay17-provider-success-crash")
+        )
+        await session.commit()
+        assert prepared.provider_operation is not None
+        first_owner = uuid.uuid4()
+        first_claim = await service.claim_provider_operation(
+            prepared,
+            lease_owner=first_owner,
+        )
+        await session.commit()
+        assert first_claim.claimed is True
+        response = await service.call_provider(prepared)
+
+    # Provider succeeded, then the process dies before local acknowledgement.
+    assert len(provider_client.requests) == 1
+    assert await fetch_scalar(
+        "SELECT provider_order_ref FROM finance.payments WHERE id=:id",
+        {"id": prepared.finance_checkout_intent_id},
+    ) != response.provider_order_ref
+
+    await _expire_provider_operation(prepared.provider_operation.operation_id)
+    async with AsyncSessionLocal() as session:
+        await update_session_context(session, org_id=str(ORG_ID))
+        second_claim = await FinanceProviderOperationService(session).claim(
+            operation_id=prepared.provider_operation.operation_id,
+            lease_owner=uuid.uuid4(),
+        )
+        await session.commit()
+
+    assert second_claim.claimed is False
+    assert second_claim.status == "unknown"
+    assert len(provider_client.requests) == 1
+
+    async with _reconciliation_session() as session:
+        operation_id, status_value, provider_object_id = (
+            await FinanceProviderOperationService(session).reconcile_unknown(
+                operation_id=prepared.provider_operation.operation_id,
+                outcome="succeeded",
+                provider_object_id=response.provider_order_ref,
+                error_code=None,
+                evidence_sha256=provider_checkout_success_hash(response),
+            )
+        )
+        await session.commit()
+
+    assert operation_id == prepared.provider_operation.operation_id
+    assert status_value == "succeeded"
+    assert provider_object_id == response.provider_order_ref
+    assert await fetch_scalar(
+        "SELECT provider_order_ref FROM finance.payments WHERE id=:id",
+        {"id": prepared.finance_checkout_intent_id},
+    ) == response.provider_order_ref
+
+    # Replaying checkout returns the reconciled provider object and performs no
+    # second external create.
+    async with AsyncSessionLocal() as session:
+        await update_session_context(session, org_id=str(ORG_ID))
+        replay_service = FinanceCheckoutOrchestrationService(
+            session,
+            plan_resolver=FakePlanResolver(),
+            razorpay_adapter=RazorpaySandboxAdapter(
+                config=sandbox_config(),
+                client=provider_client,
+            ),
+        )
+        replay = await replay_service.prepare_checkout_session(
+            command(idempotency_key="pay17-provider-success-crash")
+        )
+        await session.commit()
+
+    assert replay.provider_order_id == response.provider_order_ref
+    assert len(provider_client.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_clock_skew_outside_window_is_rejected_before_durable_inbox_write():
+    checkout = await _seed_finished_checkout(
+        idempotency_key="pay17-provider-clock-skew"
+    )
+    payload = json.loads(
+        razorpay_payload(
+            event_id="evt_pay17_clock_skew",
+            event_type="payment.captured",
+            payment_id="pay_pay17_clock_skew",
+            order_id=checkout.provider_order_id,
+            status="captured",
+        ).decode("utf-8")
+    )
+    payload["created_at"] = int(time.time()) + 301
+    raw = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    async with AsyncSessionLocal() as session:
+        service = _webhook_service(session)
+        with pytest.raises(FinanceWebhookNormalizationError):
+            await service.record_verified_webhook(
+                signed_webhook(
+                    raw,
+                    idempotency_key="pay17-provider-clock-skew",
+                )
+            )
+        await session.rollback()
+
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.provider_webhook_inbox "
+        "WHERE provider_event_id='evt_pay17_clock_skew'"
+    ) == 0
+
+
+def test_finance_lease_and_timeout_authority_uses_database_clock_not_process_clock():
+    repo_root = __import__("pathlib").Path(__file__).resolve().parents[2]
+    migration = (
+        repo_root
+        / "alembic"
+        / "versions"
+        / "zr07d8e9f0a52_pay8_durable_checkout_webhooks.py"
+    ).read_text(encoding="utf-8")
+    assert "pg_catalog.clock_timestamp()+interval '30 seconds'" in migration
+    assert "lease_until<=pg_catalog.clock_timestamp()" in migration
+    assert "datetime.now(" not in migration
 
 
 async def _seed_finished_checkout(*, idempotency_key: str):
