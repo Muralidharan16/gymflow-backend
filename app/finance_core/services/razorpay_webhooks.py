@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from typing import Any
@@ -31,6 +32,8 @@ from app.finance_core.services.provider_webhook_inbox import (
 from app.finance_core.services.payment_settlement import (
     FinanceVerifiedPaymentSettlementService,
 )
+from app.finance_core.observability import sanitized_finance_correlation
+from app.observability.runtime_metrics import runtime_metrics
 
 
 RAZORPAY_EVENT_STATUS_MAP = {
@@ -42,6 +45,7 @@ RAZORPAY_EVENT_STATUS_MAP = {
 _EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 _PROVIDER_REF_PATTERN = re.compile(r"^[A-Za-z0-9_:-]{1,200}$")
 MAX_RAZORPAY_FUTURE_SKEW_SECONDS = 300
+logger = logging.getLogger("doers.finance.webhook")
 
 
 class RazorpayWebhookConfirmationService:
@@ -189,6 +193,19 @@ class RazorpayWebhookConfirmationService:
 
     def normalize(self, webhook: RazorpayWebhookInput) -> RazorpayWebhookPaymentReference:
         if not webhook.signature:
+            runtime_metrics().webhook_signature_failure(
+                provider="razorpay",
+                reason="missing",
+            )
+            logger.warning(
+                "Finance webhook signature rejected",
+                extra={
+                    "event": "finance.webhook.signature_rejected",
+                    "provider": "razorpay",
+                    "reason": "missing",
+                    "finance_correlation": sanitized_finance_correlation(),
+                },
+            )
             raise FinanceWebhookSignatureError("Missing Razorpay webhook signature")
         if not webhook.raw_body:
             raise FinanceWebhookNormalizationError("Missing Razorpay webhook raw body")
@@ -208,6 +225,19 @@ class RazorpayWebhookConfirmationService:
                 webhook_secret=self._razorpay_config.previous_webhook_secret,
             )
         if not (current_secret_valid or previous_secret_valid):
+            runtime_metrics().webhook_signature_failure(
+                provider="razorpay",
+                reason="invalid",
+            )
+            logger.warning(
+                "Finance webhook signature rejected",
+                extra={
+                    "event": "finance.webhook.signature_rejected",
+                    "provider": "razorpay",
+                    "reason": "invalid",
+                    "finance_correlation": sanitized_finance_correlation(),
+                },
+            )
             raise FinanceWebhookSignatureError("Invalid Razorpay webhook signature")
 
         provider_event_id = _authoritative_event_id(webhook.provider_event_id)
