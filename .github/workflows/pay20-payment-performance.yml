@@ -73,6 +73,7 @@ jobs:
               "docs/architecture/pay20_payment_performance_contract_v1.json",
               "scripts/ci/pay20_finance_performance.py",
               "scripts/ci/pay20_prepare_system_pg16.sh",
+              "scripts/ci/run_pay20_system_soak.sh",
               "tests/finance_core/test_phase6c_checkout_orchestration.py",
               "tests/test_pay20_payment_performance_static.py",
           }
@@ -234,7 +235,7 @@ jobs:
           set -euo pipefail
           DATABASE_URL="$FINANCE_CORE_TEST_DATABASE_URL" PYTHONPATH="$GITHUB_WORKSPACE" \
           python -s scripts/ci/pay20_finance_performance.py \
-            --mode calibration --prefix pay20cal --cycles 24 --concurrency 4 \
+            --mode calibration --prefix pay20cal --cycles 48 --concurrency 16 \
             --invoice-items 16 --activation-iterations 4 \
             --output "$EVIDENCE_DIR/calibration.json" \
             | tee "$EVIDENCE_DIR/calibration.log"
@@ -395,7 +396,8 @@ jobs:
           set -euo pipefail
           export EVIDENCE_DIR=pay20-system-soak-evidence
           rm -rf "$EVIDENCE_DIR"
-          bash scripts/ci/run_p10s_soak.sh
+          PAY20_SYSTEM_WARMUP_SECONDS=120 \
+            bash scripts/ci/run_pay20_system_soak.sh
           grep -q '^P10_SOAK=PASS$' "$EVIDENCE_DIR/decision.log"
           echo 'PAY20_SYSTEM_SOAK=PASS'
       - name: Upload system load and soak evidence
