@@ -62,15 +62,25 @@ printf '%s
 ' "${actual_nano_cpus}" >"${EVIDENCE_DIR}/cpu-limit-nanocpus.txt"
 echo 'PAY20_SYSTEM_SOAK_CPU_ENVELOPE=PASS'
 
+# PAY-20 measures steady-state contention, not cold Celery-worker bootstrap.
+# Start the exact sustained worker workload before HTTP warmup so the worker,
+# PostgreSQL plans/buffers, and shared DB paths are already hot when the frozen
+# 300-second P10-S windows begin. Keep a fixed overlap margin so worker activity
+# remains present through the final measured HTTP/resource sample even though
+# the worker script includes its own startup/readiness time.
+WORKER_OVERLAP_MARGIN_SECONDS=30
+WORKER_TOTAL_SECONDS=$((WARMUP_SECONDS + P10S_DURATION_SECONDS + WORKER_OVERLAP_MARGIN_SECONDS))
+python -s scripts/ci/p10s_worker_activity.py   --duration-seconds "${WORKER_TOTAL_SECONDS}"   --output "${EVIDENCE_DIR}/worker.json"   --log "${EVIDENCE_DIR}/worker.log"   >"${EVIDENCE_DIR}/worker-run.log" 2>&1 &
+echo $! >/tmp/p10s-worker.pid
+
 # Warm the production container, PostgreSQL plan/buffer state, Python hot paths,
-# and connection pools without counting this interval toward the measured soak.
+# connection pools, and the concurrent durable-worker path without counting this
+# interval toward the measured soak.
 python -s scripts/ci/p10b_load_calibration.py   --base-url http://127.0.0.1:8000   --secret-key "${P10S_SECRET_KEY}"   --duration-seconds "${WARMUP_SECONDS}"   --concurrency 24   --tenants 8   --output "${EVIDENCE_DIR}/warmup.json"   | tee "${EVIDENCE_DIR}/warmup.log"
+kill -0 "$(cat /tmp/p10s-worker.pid)"
 echo 'PAY20_SYSTEM_SOAK_WARMUP=PASS'
 
 # Measured soak remains the complete frozen 300s P10-S window set.
-python -s scripts/ci/p10s_worker_activity.py   --duration-seconds "${P10S_DURATION_SECONDS}"   --output "${EVIDENCE_DIR}/worker.json"   --log "${EVIDENCE_DIR}/worker.log"   >"${EVIDENCE_DIR}/worker-run.log" 2>&1 &
-echo $! >/tmp/p10s-worker.pid
-
 python -s scripts/ci/p10s_resource_sampler.py   --duration-seconds "${P10S_DURATION_SECONDS}"   --output "${EVIDENCE_DIR}/resources.jsonl"   >"${EVIDENCE_DIR}/sampler.log" 2>&1 &
 echo $! >/tmp/p10s-sampler.pid
 
