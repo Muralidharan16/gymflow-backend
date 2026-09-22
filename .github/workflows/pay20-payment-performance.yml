@@ -1,0 +1,470 @@
+name: PAY-20 Payment Performance Soak and Capacity
+
+on:
+  push:
+    branches:
+      - hardening/pay20-payment-performance
+  pull_request:
+    branches:
+      - hardening/pay19-financial-recovery
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay20-payment-performance-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PAY20_BASE_SHA: 39d4bcb486f797dbabcb1ea934db29db6ea8c012
+  PAY20_BASE_TREE: 61cce864dd6208451f79b68318507802b5a53313
+  PAY20_ALEMBIC_HEAD: zz37d8e9f0a63
+  PAY20_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  contract:
+    name: PAY-20 exact scope and performance contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay20_static
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay20-static-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay20-static
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY20_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install exact locked test environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+      - name: Prove frozen PAY-19 predecessor and exact PAY-20 scope
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "${PAY20_BASE_SHA}^{tree}")" = "${PAY20_BASE_TREE}"
+          test "$(git merge-base "${PAY20_BASE_SHA}" HEAD)" = "${PAY20_BASE_SHA}"
+          git diff --name-only "${PAY20_BASE_SHA}...HEAD" > /tmp/pay20-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              ".github/workflows/pay20-payment-performance.yml",
+              "docs/architecture/PAY20_PAYMENT_PERFORMANCE.md",
+              "docs/architecture/pay20_payment_performance_contract_v1.json",
+              "scripts/ci/pay20_finance_performance.py",
+              "tests/test_pay20_payment_performance_static.py",
+          }
+          changed = {
+              line.strip()
+              for line in Path("/tmp/pay20-changed.txt").read_text().splitlines()
+              if line.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  f"PAY-20 exact scope mismatch: missing={sorted(allowed-changed)}, "
+                  f"unexpected={sorted(changed-allowed)}"
+              )
+          print(f"PAY-20 exact allowlist paths: {len(changed)}")
+          PY
+          python -s scripts/verify_alembic_graph.py
+          test "$(python -s -m alembic -c alembic.ini heads | awk '{print $1}')" = "${PAY20_ALEMBIC_HEAD}"
+      - name: Compile and prove PAY-20 contracts
+        run: |
+          set -euo pipefail
+          python -m json.tool docs/architecture/pay20_payment_performance_contract_v1.json >/dev/null
+          python -m py_compile scripts/ci/pay20_finance_performance.py tests/test_pay20_payment_performance_static.py
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/test_pay20_payment_performance_static.py \
+            tests/test_pay17_fault_tolerance_static.py \
+            tests/test_pay18_financial_observability_static.py \
+            tests/test_pay19_financial_recovery_static.py
+          python scripts/ci/verify_p10_performance_budgets.py | tee /tmp/pay20-p10-budget.log
+          grep -q '^P10_BASELINE_BUDGETS=PASS$' /tmp/pay20-p10-budget.log
+          echo 'PAY20_PERFORMANCE_CONTRACT=PASS'
+          echo 'PAY20_INHERITED_P10_BUDGETS=PASS'
+
+  finance_regression:
+    name: PAY-20 current-head Finance regression
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  finance_performance:
+    name: PAY-20 Finance load hot contention and five-minute soak
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      SOURCE_DB: gymflow_pay20_finance_test
+      EVIDENCE_DIR: pay20-finance-evidence
+      MIGRATION_PASSWORD: ci-pay20-migration
+      POSTGRES_PASSWORD: ci-pay20-postgres
+      FINANCE_CORE_SUBJECT_PASSWORD: ci-pay20-finance
+      APP_RUNTIME_PASSWORD: ci-pay20-app
+      WORKER_RUNTIME_PASSWORD: ci-pay20-worker
+      MAINTENANCE_RUNTIME_PASSWORD: ci-pay20-maintenance
+      FINANCE_CONFIG_RUNTIME_PASSWORD: ci-pay20-config
+      PAY17_RECON_PASSWORD: ci-pay20-recon
+      PAY9_PAYMENT_PASSWORD: ci-pay20-pay9-payment
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay20-migration@127.0.0.1:5432/gymflow_pay20_finance_test
+      FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay20-finance@127.0.0.1:5432/gymflow_pay20_finance_test
+      FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay20-migration@127.0.0.1:5432/gymflow_pay20_finance_test
+      FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-pay20-config@127.0.0.1:5432/gymflow_pay20_finance_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-pay20-app@127.0.0.1:5432/gymflow_pay20_finance_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay20-migration@127.0.0.1:5432/gymflow_pay20_finance_test
+      PAY17_RECON_DATABASE_URL: postgresql+asyncpg://pay17_recon_test:ci-pay20-recon@127.0.0.1:5432/gymflow_pay20_finance_test
+      PAY9_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay20-app@127.0.0.1:5432/gymflow_pay20_finance_test
+      PAY9_PAYMENT_DATABASE_URL: postgresql://pay9_payment_test:ci-pay20-pay9-payment@127.0.0.1:5432/gymflow_pay20_finance_test
+      PAY9_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay20-worker@127.0.0.1:5432/gymflow_pay20_finance_test
+      PAY9_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay20-postgres@127.0.0.1:5432/gymflow_pay20_finance_test
+      PAY9_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay20-migration@127.0.0.1:5432/gymflow_pay20_finance_test
+      PAY4_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay20-app@127.0.0.1:5432/gymflow_pay20_finance_test
+      PAY4_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay20-worker@127.0.0.1:5432/gymflow_pay20_finance_test
+      PAY4_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay20-postgres@127.0.0.1:5432/gymflow_pay20_finance_test
+      PAY4_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay20-migration@127.0.0.1:5432/gymflow_pay20_finance_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay20-finance-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: pay20-finance
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY20_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install locked environment and PostgreSQL 16
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          bash scripts/ci/install_pg16_test_stack.sh
+          mkdir -p "$EVIDENCE_DIR"
+      - name: Bootstrap reduced Finance identities and disposable database
+        run: |
+          set -euo pipefail
+          bash scripts/ci/bootstrap_cluster_roles.sh
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE postgres PASSWORD 'ci-pay20-postgres';
+          ALTER ROLE migration_owner PASSWORD 'ci-pay20-migration';
+          CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_core_test_subject LOGIN PASSWORD 'ci-pay20-finance' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-pay20-app' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-pay20-worker' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE lifecycle_maintenance_test_runtime LOGIN PASSWORD 'ci-pay20-maintenance' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-pay20-config' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay17_recon_test LOGIN PASSWORD 'ci-pay20-recon' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE pay9_payment_test LOGIN PASSWORD 'ci-pay20-pay9-payment' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          GRANT test_runner TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT lifecycle_maintenance_runtime TO lifecycle_maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_config_runtime TO finance_config_deployment WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_reconciliation_runtime TO pay17_recon_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_payment_runtime TO pay9_payment_test WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          ALTER ROLE finance_core_test_subject SET row_security='on';
+          ALTER ROLE app_test_runtime SET row_security='on';
+          ALTER ROLE worker_test_runtime SET row_security='on';
+          ALTER ROLE lifecycle_maintenance_test_runtime SET row_security='on';
+          ALTER ROLE finance_config_deployment SET row_security='on';
+          ALTER ROLE pay17_recon_test SET row_security='on';
+          ALTER ROLE pay9_payment_test SET row_security='on';
+          CREATE DATABASE gymflow_pay20_finance_test OWNER migration_owner;
+          REVOKE ALL ON DATABASE gymflow_pay20_finance_test FROM PUBLIC;
+          GRANT CONNECT ON DATABASE gymflow_pay20_finance_test
+            TO finance_core_test_subject,app_test_runtime,worker_test_runtime,
+               lifecycle_maintenance_test_runtime,finance_config_deployment,
+               pay17_recon_test,pay9_payment_test;
+          SQL
+          bash scripts/ci/provision_infrastructure_extensions.sh "$SOURCE_DB"
+          bash scripts/ci/verify_cluster_roles.sh
+          python -s -m alembic -c alembic.ini upgrade head
+          test "$(python -s -m alembic -c alembic.ini current | awk 'NR==1 {print $1}')" = "${PAY20_ALEMBIC_HEAD}"
+      - name: Calibrate current-head Finance paths
+        run: |
+          set -euo pipefail
+          DATABASE_URL="$FINANCE_CORE_TEST_DATABASE_URL" PYTHONPATH="$GITHUB_WORKSPACE" \
+          python -s scripts/ci/pay20_finance_performance.py \
+            --mode calibration --prefix pay20cal --cycles 24 --concurrency 4 \
+            --invoice-items 16 --activation-iterations 4 \
+            --output "$EVIDENCE_DIR/calibration.json" \
+            | tee "$EVIDENCE_DIR/calibration.log"
+          grep -q '^PAY20_FINANCE_CALIBRATION=PASS$' "$EVIDENCE_DIR/calibration.log"
+      - name: Run high-concurrency Finance load against calibration and frozen P10 ceilings
+        run: |
+          set -euo pipefail
+          DATABASE_URL="$FINANCE_CORE_TEST_DATABASE_URL" PYTHONPATH="$GITHUB_WORKSPACE" \
+          python -s scripts/ci/pay20_finance_performance.py \
+            --mode load --prefix pay20load --cycles 96 --concurrency 16 \
+            --invoice-items 32 --activation-iterations 8 \
+            --baseline "$EVIDENCE_DIR/calibration.json" \
+            --output "$EVIDENCE_DIR/load.json" \
+            | tee "$EVIDENCE_DIR/load.log"
+          grep -q '^PAY20_FINANCE_LOAD=PASS$' "$EVIDENCE_DIR/load.log"
+      - name: Run five-minute Finance soak
+        run: |
+          set -euo pipefail
+          DATABASE_URL="$FINANCE_CORE_TEST_DATABASE_URL" PYTHONPATH="$GITHUB_WORKSPACE" \
+          python -s scripts/ci/pay20_finance_performance.py \
+            --mode soak --prefix pay20soak --duration-seconds 300 \
+            --concurrency 6 --invoice-items 16 --activation-iterations 4 \
+            --sample-interval-seconds 5 \
+            --baseline "$EVIDENCE_DIR/calibration.json" \
+            --output "$EVIDENCE_DIR/soak.json" \
+            | tee "$EVIDENCE_DIR/soak.log"
+          grep -q '^PAY20_FINANCE_SOAK=PASS$' "$EVIDENCE_DIR/soak.log"
+      - name: Reprove hot monetary races on exact candidate
+        run: |
+          set -euo pipefail
+          DATABASE_URL="$FINANCE_CORE_TEST_DATABASE_URL" \
+          python -m pytest -q --maxfail=1 \
+            tests/finance_core/test_pay17_fault_injection_concurrency.py::test_one_hundred_identical_callbacks_converge_to_one_evidence_transition \
+            tests/finance_core/test_phase5j_refund_credit_note_reversal.py::test_concurrent_refund_intents_serialize_on_payment_and_cannot_over_refund
+          echo 'PAY20_HOT_FINANCE_RACES=PASS'
+      - name: Upload Finance performance evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay20-finance-${{ env.PAY20_CANDIDATE_SHA }}
+          path: pay20-finance-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+  system_load_soak:
+    name: PAY-20 production-container multi-tenant load and soak
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: [6379:6379]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      MIGRATION_PASSWORD: ci-migration-owner
+      GENERAL_RUNTIME_PASSWORD: ci-app-test-runtime
+      AUTH_RUNTIME_PASSWORD: ci-auth-test-runtime
+      WORKER_RUNTIME_PASSWORD: ci-worker-test-runtime
+      MAINTENANCE_RUNTIME_PASSWORD: ci-lifecycle-maintenance-runtime
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_migration_test
+      TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+      TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+      AUTH_DATABASE_URL: postgresql+asyncpg://auth_test_runtime:ci-auth-test-runtime@127.0.0.1:5432/gymflow_test
+      WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-test-runtime@127.0.0.1:5432/gymflow_test
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://lifecycle_maintenance_test_runtime:ci-lifecycle-maintenance-runtime@127.0.0.1:5432/gymflow_test
+      P10B_APP_DATABASE_URL: postgresql://app_test_runtime:ci-app-test-runtime@127.0.0.1:5432/gymflow_test
+      P10S_ADMIN_DATABASE_URL: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay20-system-not-production
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      AWS_REGION_NAME: us-east-1
+      S3_BUCKET_NAME: pay20-system
+      ENVIRONMENT: test
+      PYTHONDONTWRITEBYTECODE: '1'
+      P10B_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      P10B_ALEMBIC_HEAD: zz37d8e9f0a63
+      P10B_DB: gymflow_test
+      P10B_SECRET_KEY: pay20-system-not-production
+      P10B_METRICS_PORT: '4322'
+      P10B_API_PORT: '8000'
+      P10B_DURATION_SECONDS: '60'
+      P10B_CONCURRENCY: '24'
+      P10B_CPU_LIMIT: '1.25'
+      P10S_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      P10S_DB: gymflow_test
+      P10S_SECRET_KEY: pay20-system-not-production
+      P10S_METRICS_PORT: '4323'
+      P10S_DURATION_SECONDS: '300'
+      P10S_CPU_LIMIT: '1.25'
+      EVIDENCE_DIR: pay20-system-evidence
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY20_CANDIDATE_SHA }}
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - name: Install locked environment and prepare real PG16
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          bash scripts/ci/prepare_p3e_pg16.sh
+          python scripts/ci/verify_p10_performance_budgets.py | tee /tmp/pay20-budget.log
+          grep -q '^P10_BASELINE_BUDGETS=PASS$' /tmp/pay20-budget.log
+      - name: Run eight-tenant production-container representative load
+        run: |
+          set -euo pipefail
+          rm -rf "$EVIDENCE_DIR"
+          bash scripts/ci/run_p10b_baseline_calibration.sh
+          python -s scripts/ci/p10l_verify_representative_load.py \
+            --http "$EVIDENCE_DIR/http-calibration.json" \
+            --resources "$EVIDENCE_DIR/resource-calibration.json" \
+            --postgres "$EVIDENCE_DIR/postgres-after.txt" \
+            --redis-stats "$EVIDENCE_DIR/redis-stats.txt" \
+            --redis-ping "$EVIDENCE_DIR/redis-ping.txt" \
+            --output "$EVIDENCE_DIR/pay20-load-decision.json" \
+            | tee "$EVIDENCE_DIR/pay20-load-decision.log"
+          grep -q '^P10_REPRESENTATIVE_LOAD=PASS$' "$EVIDENCE_DIR/pay20-load-decision.log"
+          echo 'PAY20_MULTI_TENANT_LOAD=PASS'
+      - name: Run current-head five-minute production-container system soak
+        run: |
+          set -euo pipefail
+          export EVIDENCE_DIR=pay20-system-soak-evidence
+          rm -rf "$EVIDENCE_DIR"
+          bash scripts/ci/run_p10s_soak.sh
+          grep -q '^P10_SOAK=PASS$' "$EVIDENCE_DIR/decision.log"
+          echo 'PAY20_SYSTEM_SOAK=PASS'
+      - name: Upload system load and soak evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pay20-system-${{ env.PAY20_CANDIDATE_SHA }}
+          path: |
+            pay20-system-evidence/
+            pay20-system-soak-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+  lifecycle_contention:
+    name: PAY-20 payment lifecycle contention
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@127.0.0.1:5432/pay20_lifecycle_static
+      SECRET_KEY: pay20-lifecycle-not-production
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      AWS_ACCESS_KEY_ID: ci
+      AWS_SECRET_ACCESS_KEY: ci
+      S3_BUCKET_NAME: pay20-lifecycle
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.PAY20_CANDIDATE_SHA }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+      - run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+          python -m pytest --noconftest -q --maxfail=1 \
+            tests/platform_billing/test_pay17_payment_lifecycle_races.py
+          echo 'PAY20_LIFECYCLE_RACE_CONTRACT=PASS'
+
+  pr_decision:
+    name: PAY-20 PR contract decision
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [contract]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require PAY-20 PR contract
+        env:
+          CONTRACT: ${{ needs.contract.result }}
+        run: |
+          set -euo pipefail
+          test "$CONTRACT" = success
+          echo 'PAY20_PR_CONTRACT=PASS'
+          echo 'PAY20_DESTRUCTIVE_PERFORMANCE=EXACT_HEAD_PUSH_ONLY'
+
+  decision:
+    name: PAY-20 final payment performance decision
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [contract, finance_regression, finance_performance, system_load_soak, lifecycle_contention]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every PAY-20 exact-head gate
+        env:
+          CONTRACT: ${{ needs.contract.result }}
+          FINANCE_REGRESSION: ${{ needs.finance_regression.result }}
+          FINANCE_PERFORMANCE: ${{ needs.finance_performance.result }}
+          SYSTEM_LOAD_SOAK: ${{ needs.system_load_soak.result }}
+          LIFECYCLE_CONTENTION: ${{ needs.lifecycle_contention.result }}
+        run: |
+          set -euo pipefail
+          test "$CONTRACT" = success
+          test "$FINANCE_REGRESSION" = success
+          test "$FINANCE_PERFORMANCE" = success
+          test "$SYSTEM_LOAD_SOAK" = success
+          test "$LIFECYCLE_CONTENTION" = success
+          echo 'PAY20_REQUIRED_EXACT_HEAD_GATES=PASS'
+          echo 'PAY20_FINANCE_CALIBRATION=PASS'
+          echo 'PAY20_FINANCE_LOAD=PASS'
+          echo 'PAY20_FINANCE_SOAK=PASS'
+          echo 'PAY20_MULTI_TENANT_LOAD=PASS'
+          echo 'PAY20_SYSTEM_SOAK=PASS'
+          echo 'PAY20_PAYMENT_CORRECTNESS_UNDER_LOAD=PASS'
+          echo 'PAY20_DB_POOL_EXHAUSTION=0'
+          echo 'PAY20_UNEXPECTED_DEADLOCKS=0'
+          echo 'PAY20_REDIS_REJECTED_CONNECTIONS=0'
+          echo 'PAY20_DUPLICATE_FINANCIAL_EFFECTS=0'
+          echo 'PAY20_LIVE_PROVIDER=DISABLED'
+          echo 'PAY20_PRODUCTION_CREDENTIALS=DISABLED'
+          echo 'PAY20_LIVE_MONEY_MOVEMENT=DISABLED'
+          echo 'PAY20_PRODUCTION_RUNTIME_BINDING=DISABLED'
+          echo 'PAY20_MERGE=NOT_AUTHORIZED'
+          echo 'PAY20_RELEASE=NOT_AUTHORIZED'
+          echo 'PAY20_DEPLOYMENT=NOT_AUTHORIZED'
+          echo 'PAY20_PAYMENT_PERFORMANCE=PASS'
