@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-20",
+  "title": "Performance, Soak and Capacity",
+  "predecessor": {
+    "phase": "PAY-19",
+    "sha": "39d4bcb486f797dbabcb1ea934db29db6ea8c012",
+    "tree": "61cce864dd6208451f79b68318507802b5a53313",
+    "alembic_head": "zz37d8e9f0a63"
+  },
+  "alembic_head": "zz37d8e9f0a63",
+  "objective": "financial_correctness_survives_production_load",
+  "no_new_money_authority": true,
+  "load_surfaces": [
+    "checkout",
+    "webhooks",
+    "payment_application",
+    "ledger_posting",
+    "invoice_generation",
+    "subscription_activation",
+    "refund_creation",
+    "settlement_reconciliation"
+  ],
+  "contention": [
+    "invoice_series_hot_lock",
+    "same_subscription_activation_two_contenders",
+    "refund_race_inherited_from_PAY17",
+    "payment_lifecycle_races_inherited_from_PAY17",
+    "multi_tenant_http_8_tenants"
+  ],
+  "finance_calibration": {
+    "cycles": 24,
+    "concurrency": 4,
+    "invoice_items": 16,
+    "activation_iterations": 4
+  },
+  "finance_load": {
+    "cycles": 96,
+    "concurrency": 16,
+    "invoice_items": 32,
+    "activation_iterations": 8,
+    "min_throughput_ratio_vs_calibration": 0.6,
+    "max_p95_ratio_vs_calibration": 2
+  },
+  "finance_soak": {
+    "duration_seconds": 300,
+    "concurrency": 6,
+    "invoice_items": 16,
+    "activation_iterations": 4,
+    "sample_interval_seconds": 5
+  },
+  "inherited_p10_budgets": {
+    "artifact": "docs/architecture/p10_performance_budgets.v1.json",
+    "digest_file": "docs/architecture/p10_performance_budgets.v1.sha256",
+    "apply_write_p95_to_finance_operations": true,
+    "apply_write_p99_to_finance_operations": true,
+    "production_container_soak": true,
+    "multi_tenant_http_load": true
+  },
+  "production_container_lane": {
+    "tenants": 8,
+    "load_duration_seconds": 60,
+    "load_concurrency": 24,
+    "soak_duration_seconds": 300,
+    "tracks": [
+      "cpu",
+      "rss",
+      "database_connections",
+      "redis_connected_clients",
+      "worker_broker_depth",
+      "http_latency",
+      "throughput"
+    ]
+  },
+  "finance_soak_tracks": [
+    "database_deadlocks",
+    "database_connections",
+    "process_rss",
+    "redis_memory",
+    "redis_rejected_connections",
+    "webhook_latency",
+    "finance_outbox_backlog",
+    "oldest_finance_outbox_age",
+    "payment_unknown_total",
+    "reconciliation_open_total",
+    "settlement_reconciliation_latency"
+  ],
+  "correctness_hard_stops": [
+    "any_duplicate_provider_payment_reference",
+    "any_duplicate_invoice_number",
+    "any_unbalanced_posted_ledger_entry",
+    "any_unknown_payment_created_by_load",
+    "any_open_accounting_reconciliation_created_by_load",
+    "any_missing_payment_event",
+    "any_missing_payment_application",
+    "any_missing_payment_allocation",
+    "any_missing_settlement_evidence",
+    "any_missing_refund_intent",
+    "subscription_activation_not_exactly_once",
+    "unexpected_database_deadlock",
+    "redis_rejected_connection",
+    "performance_budget_failure",
+    "resource_growth_budget_failure",
+    "worker_backlog_not_recovered",
+    "live_provider_or_production_credentials",
+    "merge_release_or_deployment"
+  ],
+  "safety": {
+    "synthetic_only": true,
+    "live_provider": "disabled",
+    "production_credentials": "disabled",
+    "live_money_movement": "disabled",
+    "production_runtime_binding": "disabled",
+    "merge": "not_authorized",
+    "release": "not_authorized",
+    "deployment": "not_authorized"
+  },
+  "terminal_marker": "PAY20_PAYMENT_PERFORMANCE=PASS"
+}
