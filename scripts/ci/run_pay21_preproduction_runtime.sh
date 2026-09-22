@@ -175,6 +175,12 @@ maxmemory 128mb
 maxmemory-policy noeviction
 EOF
 
+# The runner uses umask 077, while Redis and the production application image
+# run as non-root users. Keep the generated material read-only but make the
+# bind-mount directories traversable by those container identities.
+chmod 0755 "$TLS_DIR" "$REDIS_DIR" "$NGINX_DIR"
+chmod 0644 "$REDIS_DIR/redis.conf" "$TLS_DIR/ca.crt" "$TLS_DIR/server.crt" "$TLS_DIR/server.key"
+
 docker run -d --name pay21-redis --network "$NET"   -v "$TLS_DIR:/tls:ro" -v "$REDIS_DIR:/config:ro"   redis:7-alpine redis-server /config/redis.conf >/dev/null
 
 for attempt in $(seq 1 60); do
@@ -227,6 +233,7 @@ EOF
 }
 
 write_nginx_target pay21-api
+chmod 0644 "$NGINX_DIR/default.conf"
 docker run -d --name pay21-ingress --network "$NET" -p 127.0.0.1:8443:8443   -v "$TLS_DIR:/tls:ro" -v "$NGINX_DIR:/etc/nginx/conf.d:ro"   nginx:1.27-alpine >/dev/null
 
 for attempt in $(seq 1 120); do
