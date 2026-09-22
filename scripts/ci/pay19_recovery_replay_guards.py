@@ -19,7 +19,10 @@ from tests.finance_core.test_phase6c_checkout_orchestration import (
 )
 from tests.finance_core.test_phase6e_payment_application_gate import apply_gate
 from tests import test_pay9_payment_application_entitlement_runtime as pay9
-from tests.test_p4d_refund_authority_runtime import _connect
+from tests.test_p4d_refund_authority_runtime import (
+    _connect,
+    _security_owner_fetchone,
+)
 from tests.test_p4d_refund_obligation_resolution_runtime import _SOURCE_C
 
 
@@ -184,21 +187,17 @@ async def _replay_finance() -> None:
 
 
 def _replay_refund_command() -> None:
-    with _connect("migration_owner", "MIGRATION_PASSWORD") as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT refund_id,command_id
-                FROM finance.refund_execution_commands
-                WHERE source_id=%s
-                """,
-                (_SOURCE_C,),
-            )
-            row = cur.fetchone()
-            if row is None:
-                raise RuntimeError("PAY-19 recovered refund command missing")
-            refund_id, command_id = row
-        conn.commit()
+    row = _security_owner_fetchone(
+        """
+        SELECT refund_id,command_id
+        FROM finance.refund_execution_commands
+        WHERE source_id=%s
+        """,
+        (_SOURCE_C,),
+    )
+    if row is None:
+        raise RuntimeError("PAY-19 recovered refund command missing")
+    refund_id, command_id = row
 
     with _connect("worker_test_runtime", "WORKER_RUNTIME_PASSWORD") as conn:
         with conn.cursor() as cur:
@@ -218,16 +217,13 @@ def _replay_refund_command() -> None:
                 )
         conn.commit()
 
-    with _connect("migration_owner", "MIGRATION_PASSWORD") as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT count(*) FROM finance.refund_execution_commands "
-                "WHERE source_id=%s",
-                (_SOURCE_C,),
-            )
-            if cur.fetchone()[0] != 1:
-                raise RuntimeError("PAY-19 repeated refund execution command")
-        conn.commit()
+    count = _security_owner_fetchone(
+        "SELECT count(*) FROM finance.refund_execution_commands "
+        "WHERE source_id=%s",
+        (_SOURCE_C,),
+    )
+    if count is None or count[0] != 1:
+        raise RuntimeError("PAY-19 repeated refund execution command")
 
 
 async def main() -> None:
