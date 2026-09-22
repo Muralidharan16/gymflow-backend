@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -110,6 +112,8 @@ class PostLaunchEvidence:
     evidence_class: str
     environment: str
     activation_stage: int
+    activation_authorization_id: str
+    activation_authorization_sha: str
     window_start: datetime
     window_end: datetime
     read_only_snapshot: bool
@@ -125,6 +129,7 @@ class PostLaunchEvidence:
     accounting_closure: AccountingClosureIntegrity
     anomalies: AnomalyCounts
     evidence_manifest_sha256: str
+    computed_manifest_sha256: str
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "PostLaunchEvidence":
@@ -133,6 +138,8 @@ class PostLaunchEvidence:
             evidence_class=str(value["evidence_class"]),
             environment=str(value["environment"]),
             activation_stage=int(value["activation_stage"]),
+            activation_authorization_id=str(value["activation_authorization_id"]),
+            activation_authorization_sha=str(value["activation_authorization_sha"]),
             window_start=_aware_datetime(value["window_start"]),
             window_end=_aware_datetime(value["window_end"]),
             read_only_snapshot=bool(value["read_only_snapshot"]),
@@ -154,6 +161,7 @@ class PostLaunchEvidence:
             ),
             anomalies=AnomalyCounts.from_dict(value["anomalies"]),
             evidence_manifest_sha256=str(value["evidence_manifest_sha256"]),
+            computed_manifest_sha256=canonical_evidence_manifest_sha256(value),
         )
 
 
@@ -174,6 +182,12 @@ def certify_post_launch(evidence: PostLaunchEvidence) -> CertificationDecision:
         failures.append("pay23.environment.not_live")
     if evidence.activation_stage < 1:
         failures.append("pay23.activation_stage.not_live")
+    if evidence.activation_stage > 5:
+        failures.append("pay23.activation_stage.invalid")
+    if not evidence.activation_authorization_id.strip():
+        failures.append("pay23.activation_authorization.id_missing")
+    if not _git_sha(evidence.activation_authorization_sha):
+        failures.append("pay23.activation_authorization.sha_invalid")
     if not evidence.read_only_snapshot:
         failures.append("pay23.snapshot.not_read_only")
     if not evidence.reduced_read_role:
@@ -248,6 +262,13 @@ def certify_post_launch(evidence: PostLaunchEvidence) -> CertificationDecision:
         failures.append("pay23.accounting_closure.no_objects")
     if closure.expected_object_count != closure.observed_object_count:
         failures.append("pay23.accounting_closure.expected_observed_mismatch")
+    minimum_provider_objects = (
+        evidence.payments.provider_count
+        + evidence.settlements.provider_count
+        + evidence.refunds.provider_count
+    )
+    if closure.expected_object_count < minimum_provider_objects:
+        failures.append("pay23.accounting_closure.coverage_too_small")
     if closure.resolved_object_count != closure.expected_object_count:
         failures.append("pay23.accounting_closure.not_fully_resolved")
     for name in ("mismatch_count", "retry_count", "manual_review_count", "incident_count"):
@@ -270,6 +291,11 @@ def certify_post_launch(evidence: PostLaunchEvidence) -> CertificationDecision:
 
     if not _sha256(evidence.evidence_manifest_sha256):
         failures.append("pay23.evidence_manifest_sha256.invalid")
+    elif (
+        evidence.evidence_manifest_sha256.lower()
+        != evidence.computed_manifest_sha256
+    ):
+        failures.append("pay23.evidence_manifest_sha256.mismatch")
 
     return CertificationDecision(
         certified=not failures,
@@ -308,6 +334,30 @@ def _aware_datetime(value: Any) -> datetime:
     if result.tzinfo is None or result.utcoffset() is None:
         raise ValueError("PAY-23 evidence timestamps must be timezone-aware")
     return result
+
+
+def canonical_evidence_manifest_sha256(value: dict[str, Any]) -> str:
+    """Hash the exact JSON evidence envelope, excluding its self-hash field."""
+    body = {
+        key: item
+        for key, item in value.items()
+        if key != "evidence_manifest_sha256"
+    }
+    canonical = json.dumps(
+        body,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _git_sha(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        len(normalized) == 40
+        and all(character in "0123456789abcdef" for character in normalized)
+    )
 
 
 def _sha256(value: str) -> bool:
