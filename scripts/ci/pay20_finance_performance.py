@@ -247,6 +247,99 @@ async def run_cycles(
     }
 
 
+async def run_duration(
+    *,
+    prefix: str,
+    duration_seconds: int,
+    concurrency: int,
+) -> dict:
+    if duration_seconds < 300:
+        raise RuntimeError("PAY-20 Finance soak requires at least 300 seconds")
+
+    provider_client = FakeRazorpayClient()
+    latencies: dict[str, list[float]] = defaultdict(list)
+    errors: list[str] = []
+    sequence = 0
+    sequence_lock = asyncio.Lock()
+    deadlocks_before = int(
+        await fetch_scalar(
+            "SELECT deadlocks FROM pg_stat_database "
+            "WHERE datname=current_database()"
+        )
+        or 0
+    )
+    started = time.perf_counter()
+    deadline = started + duration_seconds
+
+    async def next_sequence() -> int:
+        nonlocal sequence
+        async with sequence_lock:
+            sequence += 1
+            return sequence
+
+    async def worker() -> None:
+        while time.perf_counter() < deadline:
+            index = await next_sequence()
+            try:
+                await finance_cycle(
+                    index,
+                    prefix=prefix,
+                    provider_client=provider_client,
+                    latencies=latencies,
+                )
+            except Exception as exc:
+                errors.append(f"{type(exc).__name__}:{exc}")
+                return
+
+    await asyncio.gather(*(worker() for _ in range(concurrency)))
+    elapsed = time.perf_counter() - started
+    deadlocks_after = int(
+        await fetch_scalar(
+            "SELECT deadlocks FROM pg_stat_database "
+            "WHERE datname=current_database()"
+        )
+        or 0
+    )
+
+    cycles = sequence
+    if errors:
+        raise RuntimeError(
+            f"PAY-20 Finance soak had {len(errors)} errors; first={errors[:3]}"
+        )
+    if len(provider_client.requests) != cycles:
+        raise RuntimeError(
+            "PAY-20 soak provider-call cardinality drift: "
+            f"{len(provider_client.requests)} != {cycles}"
+        )
+    for operation in (
+        "checkout",
+        "webhook",
+        "payment_application_ledger",
+        "settlement_reconciliation",
+        "refund_creation",
+    ):
+        if len(latencies[operation]) != cycles:
+            raise RuntimeError(
+                f"PAY-20 soak missing {operation} samples: "
+                f"{len(latencies[operation])} != {cycles}"
+            )
+
+    return {
+        "cycles": cycles,
+        "concurrency": concurrency,
+        "duration_seconds": round(elapsed, 3),
+        "throughput_cycles_per_second": round(cycles / elapsed, 3),
+        "deadlocks_before": deadlocks_before,
+        "deadlocks_after": deadlocks_after,
+        "deadlocks_delta": deadlocks_after - deadlocks_before,
+        "provider_calls": len(provider_client.requests),
+        "latency": {
+            name: latency_summary(values)
+            for name, values in sorted(latencies.items())
+        },
+    }
+
+
 async def run_invoice_generation(
     *,
     prefix: str,
@@ -472,6 +565,20 @@ async def sample_resources() -> dict:
         "redis_used_memory": int(memory.get("used_memory", 0)),
         "redis_rejected_connections": rejected,
         "redis_ping": bool(ping),
+        "payment_unknown_total": int(
+            await fetch_scalar(
+                "SELECT count(*) FROM finance.payments WHERE status='unknown'"
+            )
+            or 0
+        ),
+        "reconciliation_open_total": int(
+            await fetch_scalar(
+                "SELECT count(*) "
+                "FROM public.platform_accounting_reconciliation_items "
+                "WHERE resolution_status<>'resolved'"
+            )
+            or 0
+        ),
         "finance_outbox_backlog": int(
             await fetch_scalar(
                 "SELECT count(*) FROM finance.outbox_events "
@@ -534,6 +641,8 @@ async def main() -> int:
     parser.add_argument("--invoice-items", type=int, default=16)
     parser.add_argument("--activation-iterations", type=int, default=4)
     parser.add_argument("--baseline")
+    parser.add_argument("--duration-seconds", type=int, default=0)
+    parser.add_argument("--sample-interval-seconds", type=int, default=5)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
@@ -546,19 +655,58 @@ async def main() -> int:
     await seed_ledger_accounts_only()
 
     resource_before = await sample_resources()
-    finance = await run_cycles(
-        prefix=args.prefix,
-        cycles=args.cycles,
-        concurrency=args.concurrency,
-    )
+    resource_samples: list[dict] = [dict(resource_before, elapsed_seconds=0.0)]
+    sampler_stop = asyncio.Event()
+    sampler_started = time.perf_counter()
+
+    async def sampler() -> None:
+        while not sampler_stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    sampler_stop.wait(),
+                    timeout=max(1, args.sample_interval_seconds),
+                )
+            except asyncio.TimeoutError:
+                row = await sample_resources()
+                row["elapsed_seconds"] = round(
+                    time.perf_counter() - sampler_started,
+                    3,
+                )
+                resource_samples.append(row)
+
+    sampler_task = asyncio.create_task(sampler())
+    try:
+        if args.mode == "soak":
+            finance = await run_duration(
+                prefix=args.prefix,
+                duration_seconds=args.duration_seconds,
+                concurrency=args.concurrency,
+            )
+            actual_cycles = int(finance["cycles"])
+        else:
+            finance = await run_cycles(
+                prefix=args.prefix,
+                cycles=args.cycles,
+                concurrency=args.concurrency,
+            )
+            actual_cycles = args.cycles
+    finally:
+        sampler_stop.set()
+        await sampler_task
+
     invoice = await run_invoice_generation(
         prefix=args.prefix,
         items=args.invoice_items,
         concurrency=min(args.concurrency, 12),
     )
     activation = run_hot_subscription_activation(args.activation_iterations)
-    integrity = await assert_financial_integrity(args.prefix, args.cycles)
+    integrity = await assert_financial_integrity(args.prefix, actual_cycles)
     resource_after = await sample_resources()
+    resource_after["elapsed_seconds"] = round(
+        time.perf_counter() - sampler_started,
+        3,
+    )
+    resource_samples.append(resource_after)
 
     record = {
         "schema_version": 1,
@@ -585,6 +733,23 @@ async def main() -> int:
                 resource_after["redis_used_memory"]
                 - resource_before["redis_used_memory"]
             ),
+            "samples": resource_samples,
+            "max_db_connections": max(
+                int(row["db_connections"]) for row in resource_samples
+            ),
+            "max_finance_outbox_backlog": max(
+                int(row["finance_outbox_backlog"]) for row in resource_samples
+            ),
+            "max_oldest_finance_outbox_age_seconds": max(
+                float(row["oldest_finance_outbox_age_seconds"])
+                for row in resource_samples
+            ),
+            "max_payment_unknown_total": max(
+                int(row["payment_unknown_total"]) for row in resource_samples
+            ),
+            "max_reconciliation_open_total": max(
+                int(row["reconciliation_open_total"]) for row in resource_samples
+            ),
         },
         "errors": [],
     }
@@ -595,6 +760,12 @@ async def main() -> int:
         record["errors"].append("Redis PING failed")
     if resource_after["redis_rejected_connections"] != 0:
         record["errors"].append("Redis rejected connections")
+    if record["resources"]["max_payment_unknown_total"] != 0:
+        record["errors"].append("payment unknown state appeared under load")
+    if record["resources"]["max_reconciliation_open_total"] != 0:
+        record["errors"].append("open accounting reconciliation appeared under load")
+    if args.mode == "soak" and args.duration_seconds < 300:
+        record["errors"].append("Finance soak duration below 300 seconds")
 
     if args.baseline:
         baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8"))
