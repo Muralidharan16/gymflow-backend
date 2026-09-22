@@ -19,7 +19,10 @@
     "nonzero_provider_settlements": true,
     "read_only_snapshot": true,
     "reduced_read_role": true,
-    "raw_customer_or_provider_identifiers_in_evidence": false
+    "raw_customer_or_provider_identifiers_in_evidence": false,
+    "activation_authorization_id": true,
+    "activation_authorization_sha": true,
+    "maximum_activation_stage": 5
   },
   "equalities": [
     "provider_payments == finance_payments",
@@ -51,12 +54,21 @@
     "mismatch_count": 0,
     "retry_count": 0,
     "manual_review_count": 0,
-    "incident_count": 0
+    "incident_count": 0,
+    "must_cover_all_provider_money_objects": true
   },
   "ci_policy": {
     "synthetic_evidence_may_test_certifier_logic": true,
     "synthetic_evidence_may_emit_terminal_marker": false,
     "stage_0_may_emit_terminal_marker": false
   },
-  "terminal_marker": "PAY23_ENTERPRISE_PAYMENT_SYSTEM=CERTIFIED"
+  "terminal_marker": "PAY23_ENTERPRISE_PAYMENT_SYSTEM=CERTIFIED",
+  "evidence_manifest": {
+    "algorithm": "sha256",
+    "canonicalization": "utf8-json-sort-keys-compact-separators",
+    "excludes_fields": [
+      "evidence_manifest_sha256"
+    ],
+    "mismatch_fails_certification": true
+  }
 }
