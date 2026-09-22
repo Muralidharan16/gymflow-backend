@@ -1,0 +1,157 @@
+groups:
+  - name: doers.pay18.financial.incidents
+    interval: 30s
+    rules:
+      - alert: DoersPay18ProviderOutage
+        expr: 'sum(increase(doers_provider_errors_total{provider="razorpay"}[5m])) >= 5 or sum(increase(doers_provider_timeouts_total{provider="razorpay"}[5m])) >= 3 or max(doers_provider_circuit_open{provider="razorpay"}) > 0'
+        for: 2m
+        labels:
+          severity: critical
+          owner: finance-reliability
+          failure_mode: provider_outage
+          dedupe_key: pay18/provider-outage
+        annotations:
+          customer_impact: 'Payment or refund provider operations may be delayed or ambiguous while local financial truth must remain authoritative.'
+          runbook: 'docs/runbooks/pay18/provider-outage.md'
+          safe_first_actions: 'Stop blind external retries; inspect provider health and reconcile any ambiguous durable operation.'
+          escalation_condition: 'Provider failures persist for five minutes, circuit remains open, or unknown payment/refund counts rise.'
+
+      - alert: DoersPay18WebhookOutage
+        expr: 'max(webhook_backlog) >= 20'
+        for: 5m
+        labels:
+          severity: critical
+          owner: finance-reliability
+          failure_mode: webhook_outage
+          dedupe_key: pay18/webhook-outage
+        annotations:
+          customer_impact: 'Verified provider events are not being applied promptly, delaying payment confirmation or reconciliation.'
+          runbook: 'docs/runbooks/pay18/webhook-outage.md'
+          safe_first_actions: 'Verify webhook ingress and worker health; preserve inbox rows and allow fenced replay/reclaim.'
+          escalation_condition: 'Backlog continues growing, oldest work exceeds operational target, or payment unknown count rises.'
+
+      - alert: DoersPay18UnknownPayment
+        expr: 'max(payment_unknown_total) > 0'
+        for: 1m
+        labels:
+          severity: critical
+          owner: finance-reliability
+          failure_mode: unknown_payment
+          dedupe_key: pay18/unknown-payment
+        annotations:
+          customer_impact: 'A payment outcome cannot yet be proven locally; repeating the provider operation could duplicate money movement.'
+          runbook: 'docs/runbooks/pay18/unknown-payment.md'
+          safe_first_actions: 'Preserve provider evidence and use the certified reconciliation path before any retry.'
+          escalation_condition: 'Any unknown payment is actionable; escalate immediately if customer access or invoice state is affected.'
+
+      - alert: DoersPay18DuplicatePaymentAllegation
+        expr: 'max(duplicate_payment_allegation_open_total) > 0'
+        for: 0m
+        labels:
+          severity: critical
+          owner: finance-reliability
+          failure_mode: duplicate_payment_allegation
+          dedupe_key: pay18/duplicate-payment-allegation
+        annotations:
+          customer_impact: 'A customer or provider alleges duplicate payment and the financial dispute remains unresolved.'
+          runbook: 'docs/runbooks/pay18/duplicate-payment-allegation.md'
+          safe_first_actions: 'Preserve both local and provider evidence and compare idempotency/provider references through authorized tooling.'
+          escalation_condition: 'Every open allegation requires Finance review; escalate immediately if two captured effects are evidenced.'
+
+      - alert: DoersPay18SettlementMismatch
+        expr: 'max(settlement_mismatch_total) > 0'
+        for: 1m
+        labels:
+          severity: critical
+          owner: finance-reliability
+          failure_mode: settlement_mismatch
+          dedupe_key: pay18/settlement-mismatch
+        annotations:
+          customer_impact: 'Provider settlement or bank evidence disagrees with recorded financial state.'
+          runbook: 'docs/runbooks/pay18/settlement-mismatch.md'
+          safe_first_actions: 'Preserve closure evidence and keep automated financial correction disabled while reconciling authoritative records.'
+          escalation_condition: 'Any unresolved settlement mismatch is actionable; escalate if amount/currency or duplicate-provider-object mismatch exists.'
+
+      - alert: DoersPay18RefundAmbiguity
+        expr: 'max(refund_unknown_total) > 0'
+        for: 1m
+        labels:
+          severity: critical
+          owner: finance-reliability
+          failure_mode: refund_ambiguity
+          dedupe_key: pay18/refund-ambiguity
+        annotations:
+          customer_impact: 'A refund provider outcome is uncertain and a blind retry could create duplicate customer credit.'
+          runbook: 'docs/runbooks/pay18/refund-ambiguity.md'
+          safe_first_actions: 'Freeze automatic resubmission for the ambiguous obligation and reconcile provider evidence using the durable command.'
+          escalation_condition: 'Any unknown/reconciliation-pending refund is actionable; escalate if provider success evidence exists without local finalization.'
+
+      - alert: DoersPay18ChargebackOpen
+        expr: 'max(chargeback_open_total) > 0'
+        for: 0m
+        labels:
+          severity: critical
+          owner: finance-reliability
+          failure_mode: chargeback
+          dedupe_key: pay18/chargeback
+        annotations:
+          customer_impact: 'A chargeback is open and the associated financial hold/evidence workflow requires operator attention.'
+          runbook: 'docs/runbooks/pay18/chargeback.md'
+          safe_first_actions: 'Preserve dispute evidence and financial hold state; follow the append-only PAY-13 evidence workflow.'
+          escalation_condition: 'Every open chargeback is actionable; escalate before evidence deadlines or when liability changes.'
+
+      - alert: DoersPay18ExpiredMandate
+        expr: 'max(mandate_failure_total{state="expired"}) > 0'
+        for: 1m
+        labels:
+          severity: critical
+          owner: finance-reliability
+          failure_mode: expired_mandate
+          dedupe_key: pay18/expired-mandate
+        annotations:
+          customer_impact: 'Recurring collection cannot safely continue for at least one unreplaced expired mandate.'
+          runbook: 'docs/runbooks/pay18/expired-mandate.md'
+          safe_first_actions: 'Verify replacement-mandate state and use customer re-authorization paths; do not revive the expired mandate.'
+          escalation_condition: 'Expired mandate lacks replacement, triggers dunning, or affects a due recurring billing job.'
+
+      - alert: DoersPay18QueueBacklog
+        expr: 'max(webhook_backlog) >= 50 or max(payment_application_backlog) >= 50 or max(finance_outbox_backlog) >= 100 or max(refund_backlog) >= 25'
+        for: 5m
+        labels:
+          severity: critical
+          owner: finance-reliability
+          failure_mode: queue_backlog
+          dedupe_key: pay18/financial-queue-backlog
+        annotations:
+          customer_impact: 'Financial work is accumulating and may delay confirmations, applications, notifications, or refunds.'
+          runbook: 'docs/runbooks/pay18/queue-backlog.md'
+          safe_first_actions: 'Identify the growing durable backlog and verify worker/dependency health before replaying any work.'
+          escalation_condition: 'Backlog grows for ten minutes, dead letters appear, or any unknown financial state is created.'
+
+      - alert: DoersPay18DatabaseRecovery
+        expr: 'sum(increase(doers_database_disconnects_total{pool="finance"}[5m])) > 0 or sum(increase(doers_database_pool_timeouts_total{pool="finance"}[5m])) > 0'
+        for: 1m
+        labels:
+          severity: critical
+          owner: data-reliability
+          failure_mode: database_recovery
+          dedupe_key: pay18/database-recovery
+        annotations:
+          customer_impact: 'Finance database connectivity was interrupted and in-flight commands may require durable recovery/reconciliation.'
+          runbook: 'docs/runbooks/pay18/database-recovery.md'
+          safe_first_actions: 'Confirm PostgreSQL/TLS/runtime-principal recovery, then inspect durable leases and unknown commands before replay.'
+          escalation_condition: 'Any Finance DB disconnect during money-changing work or inability to reconnect within the bounded retry window.'
+
+      - alert: DoersPay18CredentialCompromise
+        expr: 'sum(increase(webhook_signature_failure_total{reason="invalid"}[5m])) >= 5 or sum(increase(doers_finance_security_events_total{severity="critical"}[5m])) > 0'
+        for: 0m
+        labels:
+          severity: critical
+          owner: finance-security
+          failure_mode: credential_compromise
+          dedupe_key: pay18/credential-compromise
+        annotations:
+          customer_impact: 'Repeated invalid webhook signatures or critical Finance security events may indicate compromised credentials or active forgery.'
+          runbook: 'docs/runbooks/pay18/credential-compromise.md'
+          safe_first_actions: 'Preserve evidence, revoke affected sessions/secrets through the approved rotation path, and keep high-risk Finance writes fail-closed.'
+          escalation_condition: 'Five invalid signatures in five minutes, any confirmed secret exposure, or any critical privileged Finance security event.'
