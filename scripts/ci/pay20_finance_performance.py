@@ -126,7 +126,7 @@ async def observer_scalar(
     def call():
         rendered_sql = re.sub(
             r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)",
-            r"%(\\1)s",
+            lambda match: f"%({match.group(1)})s",
             sql,
         )
         with psycopg.connect(url) as conn:
