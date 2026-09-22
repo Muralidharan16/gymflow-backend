@@ -1,0 +1,265 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-18",
+  "title": "Financial Observability, Audit and Incident Response",
+  "predecessor": {
+    "phase": "PAY-17",
+    "sha": "ec165905756d625117f3cd5e9e4437fbab36dbb5",
+    "tree": "fae1abba458aa03c3e0923ce76c6eafe8e1e2694",
+    "alembic_head": "zz27d8e9f0a62"
+  },
+  "alembic_head": "zz37d8e9f0a63",
+  "policy": "observability_is_evidence_not_financial_authority",
+  "metrics": {
+    "payment_attempt_total": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "public.platform_payment_attempts all durable rows"
+    },
+    "payment_failure_total": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "public.platform_payment_attempts status=failed"
+    },
+    "payment_unknown_total": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "public.platform_payment_attempts status=unknown"
+    },
+    "webhook_signature_failure_total": {
+      "kind": "counter",
+      "otel_instrument": "webhook_signature_failure",
+      "labels": [
+        "provider",
+        "reason"
+      ],
+      "bounded": {
+        "provider": [
+          "razorpay",
+          "unknown"
+        ],
+        "reason": [
+          "missing",
+          "invalid",
+          "unknown"
+        ]
+      },
+      "source": "rejected webhook verification path before persistence"
+    },
+    "webhook_backlog": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "finance.provider_webhook_inbox received|processing|retry|dead_letter"
+    },
+    "payment_application_backlog": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "captured/order-paid finance.payment_events lacking payment_application_records"
+    },
+    "finance_outbox_backlog": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "finance.outbox_events pending|processing|failed"
+    },
+    "refund_backlog": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "platform_refunds unresolved + Finance refund execution unresolved/dead-letter"
+    },
+    "refund_unknown_total": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "platform_refunds unknown + Finance refund reconciliation_pending"
+    },
+    "settlement_mismatch_total": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "unresolved PAY-14 settlement-related reconciliation mismatch"
+    },
+    "reconciliation_open_total": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "PAY-14 reconciliation items resolution_status != resolved"
+    },
+    "mandate_failure_total": {
+      "kind": "gauge",
+      "labels": [
+        "state"
+      ],
+      "bounded": {
+        "state": [
+          "failed",
+          "expired",
+          "revoked",
+          "unknown"
+        ]
+      },
+      "source": "unreplaced platform_mandates failed|expired|revoked"
+    },
+    "dunning_stage_total": {
+      "kind": "gauge",
+      "labels": [
+        "stage"
+      ],
+      "bounded": {
+        "stage": [
+          "full_grace",
+          "limited_write",
+          "read_only",
+          "billing_only",
+          "recovered",
+          "unknown"
+        ]
+      },
+      "source": "platform_dunning_cases durable stage/status"
+    },
+    "chargeback_open_total": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "unresolved platform_disputes dispute_type=chargeback"
+    }
+  },
+  "supplemental_metrics": {
+    "duplicate_payment_allegation_open_total": {
+      "kind": "gauge",
+      "labels": [],
+      "source": "unresolved platform_disputes dispute_type=duplicate_charge_allegation"
+    }
+  },
+  "forbidden_metric_labels": [
+    "payment_id",
+    "customer_id",
+    "organization_id",
+    "tenant_id",
+    "invoice_id",
+    "refund_id",
+    "dispute_id",
+    "provider_payment_ref",
+    "provider_order_ref",
+    "provider_refund_ref",
+    "external_dispute_ref",
+    "request_id",
+    "correlation_id",
+    "principal_id",
+    "actor_id",
+    "email",
+    "phone",
+    "amount",
+    "currency",
+    "signature",
+    "token",
+    "secret",
+    "payload"
+  ],
+  "logging": {
+    "correlation_field": "finance_correlation",
+    "format": "fin-<first 20 hex chars of HMAC-SHA256(secret, bounded request correlation)>",
+    "raw_request_id_forbidden": true,
+    "raw_correlation_id_forbidden": true,
+    "payment_customer_provider_identifiers_forbidden": true,
+    "shared_pre_sink_redaction": "app.observability.redaction"
+  },
+  "audit": {
+    "privileged_finance_actions": "finance.security_audit_events from PAY-16",
+    "immutable_chain": true,
+    "provider_financial_evidence": "durable Finance/Platform Billing evidence rows",
+    "incident_evidence_preserved": true,
+    "observability_may_not_mutate_business_state": true
+  },
+  "snapshot": {
+    "function": "app_secure.pay18_financial_observability_snapshot()",
+    "owner": "app_security_owner",
+    "execution_role": "lifecycle_maintenance_runtime",
+    "security_definer": true,
+    "stable": true,
+    "aggregate_only": true,
+    "returns_identifiers": false,
+    "maintenance_direct_table_select": false
+  },
+  "incidents": {
+    "provider_outage": {
+      "owner": "finance-reliability",
+      "severity": "critical",
+      "runbook": "docs/runbooks/pay18/provider-outage.md"
+    },
+    "webhook_outage": {
+      "owner": "finance-reliability",
+      "severity": "critical",
+      "runbook": "docs/runbooks/pay18/webhook-outage.md"
+    },
+    "unknown_payment": {
+      "owner": "finance-reliability",
+      "severity": "critical",
+      "runbook": "docs/runbooks/pay18/unknown-payment.md"
+    },
+    "duplicate_payment_allegation": {
+      "owner": "finance-reliability",
+      "severity": "critical",
+      "runbook": "docs/runbooks/pay18/duplicate-payment-allegation.md"
+    },
+    "settlement_mismatch": {
+      "owner": "finance-reliability",
+      "severity": "critical",
+      "runbook": "docs/runbooks/pay18/settlement-mismatch.md"
+    },
+    "refund_ambiguity": {
+      "owner": "finance-reliability",
+      "severity": "critical",
+      "runbook": "docs/runbooks/pay18/refund-ambiguity.md"
+    },
+    "chargeback": {
+      "owner": "finance-reliability",
+      "severity": "critical",
+      "runbook": "docs/runbooks/pay18/chargeback.md"
+    },
+    "expired_mandate": {
+      "owner": "finance-reliability",
+      "severity": "critical",
+      "runbook": "docs/runbooks/pay18/expired-mandate.md"
+    },
+    "queue_backlog": {
+      "owner": "finance-reliability",
+      "severity": "critical",
+      "runbook": "docs/runbooks/pay18/queue-backlog.md"
+    },
+    "database_recovery": {
+      "owner": "data-reliability",
+      "severity": "critical",
+      "runbook": "docs/runbooks/pay18/database-recovery.md"
+    },
+    "credential_compromise": {
+      "owner": "finance-security",
+      "severity": "critical",
+      "runbook": "docs/runbooks/pay18/credential-compromise.md"
+    }
+  },
+  "required_runbook_sections": [
+    "Alert and ownership",
+    "Customer impact",
+    "Evidence to preserve",
+    "Diagnosis",
+    "Safe first actions",
+    "Forbidden actions",
+    "Escalation",
+    "Recovery verification"
+  ],
+  "hard_stops": [
+    "manual financial terminal-state mutation",
+    "blind provider retry after ambiguous outcome",
+    "delete or rewrite audit/reconciliation/dispute evidence",
+    "disable idempotency lease fencing or maker-checker",
+    "log payment/customer/provider identifiers or secrets",
+    "enable live provider or production credentials",
+    "merge release or deployment without later authorization"
+  ],
+  "safety": {
+    "live_provider": "disabled",
+    "production_credentials": "disabled",
+    "live_money_movement": "disabled",
+    "production_runtime_binding": "disabled",
+    "merge": "not_authorized",
+    "release": "not_authorized",
+    "deployment": "not_authorized"
+  },
+  "terminal_marker": "PAY18_FINANCIAL_OBSERVABILITY=PASS"
+}
