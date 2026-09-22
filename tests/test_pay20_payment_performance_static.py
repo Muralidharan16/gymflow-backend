@@ -268,6 +268,8 @@ def test_pay20_capacity_migration_preserves_frozen_pay18_global_outbox_observabi
     assert "pay20_member_subscription_binding_exists" in source
     assert "pg_catalog.set_config(" in source
     assert "'app.current_org_id'" in source
+    assert "pg_catalog.coalesce" not in source
+    assert "COALESCE(v_previous_org,'')" in source
     assert "helper_worker_execute" in source
     assert "REVOKE ALL ON FUNCTION" in source
     assert (
