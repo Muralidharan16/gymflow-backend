@@ -110,7 +110,15 @@ async def _reconciliation_session():
 
 async def _expire_provider_operation(operation_id: uuid.UUID) -> None:
     async with finance_admin_session() as admin:
+        await admin.execute(text("SET LOCAL ROLE app_security_owner"))
         await admin.execute(
+            text(
+                "SELECT pg_catalog.set_config("
+                "'app.current_org_id',:organization_id,true)"
+            ),
+            {"organization_id": str(ORG_ID)},
+        )
+        result = await admin.execute(
             text(
                 """
                 UPDATE finance.provider_operations
@@ -120,6 +128,26 @@ async def _expire_provider_operation(operation_id: uuid.UUID) -> None:
             ),
             {"operation_id": operation_id},
         )
+        assert result.rowcount == 1
+        await admin.execute(text("RESET ROLE"))
+        await admin.commit()
+
+
+async def _expire_webhook_inbox(inbox_id: uuid.UUID) -> None:
+    async with finance_admin_session() as admin:
+        await admin.execute(text("SET LOCAL ROLE app_security_owner"))
+        result = await admin.execute(
+            text(
+                """
+                UPDATE finance.provider_webhook_inbox
+                   SET lease_until=pg_catalog.clock_timestamp()-interval '1 second'
+                 WHERE id=:inbox_id
+                """
+            ),
+            {"inbox_id": inbox_id},
+        )
+        assert result.rowcount == 1
+        await admin.execute(text("RESET ROLE"))
         await admin.commit()
 
 
@@ -262,18 +290,7 @@ async def test_process_rollback_before_commit_is_reclaimable_without_duplicate_m
         {"payment_id": checkout.finance_checkout_intent_id},
     ) == 0
 
-    async with finance_admin_session() as admin:
-        await admin.execute(
-            text(
-                """
-                UPDATE finance.provider_webhook_inbox
-                   SET lease_until=pg_catalog.clock_timestamp()-interval '1 second'
-                 WHERE id=:inbox_id
-                """
-            ),
-            {"inbox_id": receipt.inbox_id},
-        )
-        await admin.commit()
+    await _expire_webhook_inbox(receipt.inbox_id)
 
     second_owner = uuid.uuid4()
     async with AsyncSessionLocal() as session:
@@ -564,11 +581,22 @@ async def test_death_after_claim_before_provider_call_becomes_unknown_then_recon
     assert operation_id == prepared.provider_operation.operation_id
     assert status_value == "failed_final"
     assert provider_object_id is None
-    assert await fetch_scalar(
-        "SELECT count(*) FROM finance.provider_operations "
-        "WHERE id=:id AND status='failed_final'",
-        {"id": prepared.provider_operation.operation_id},
-    ) == 1
+    async with AsyncSessionLocal() as session:
+        await update_session_context(session, org_id=str(ORG_ID))
+        replay_service = FinanceCheckoutOrchestrationService(
+            session,
+            plan_resolver=FakePlanResolver(),
+            razorpay_adapter=RazorpaySandboxAdapter(
+                config=sandbox_config(),
+                client=provider_client,
+            ),
+        )
+        replay = await replay_service.prepare_checkout_session(
+            command(idempotency_key="pay17-before-provider-call")
+        )
+        await session.commit()
+    assert replay.provider_operation is not None
+    assert replay.provider_operation.status == "failed_final"
     assert provider_client.requests == []
 
 
@@ -694,16 +722,33 @@ async def test_provider_clock_skew_outside_window_is_rejected_before_durable_inb
             )
         await session.rollback()
 
-    assert await fetch_scalar(
-        "SELECT count(*) FROM finance.provider_webhook_inbox "
-        "WHERE provider_event_id='evt_pay17_clock_skew'"
-    ) == 0
+    payload["created_at"] = int(time.time())
+    valid_raw = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    async with AsyncSessionLocal() as session:
+        receipt = await _webhook_service(session).record_verified_webhook(
+            signed_webhook(
+                valid_raw,
+                idempotency_key="pay17-provider-clock-skew-valid",
+            )
+        )
+        await session.commit()
+    # If the rejected future-skew delivery had written an inbox row, this
+    # corrected replay of the same provider event identity would be replayed.
+    assert receipt.replayed is False
+    assert receipt.status == "received"
 
 
-def test_pay17_never_uses_admin_visibility_to_assert_forced_rls_webhook_rows():
+def test_pay17_never_uses_admin_visibility_to_assert_forced_rls_provider_rows():
     source = __import__("pathlib").Path(__file__).read_text(encoding="utf-8")
     assert "fetch_scalar(\n        \"SELECT count(*) FROM finance.provider_webhook_inbox" not in source
     assert "fetch_scalar(\n        \"SELECT status FROM finance.provider_webhook_inbox" not in source
+    assert "fetch_scalar(\n        \"SELECT count(*) FROM finance.provider_operations" not in source
+    assert "SET LOCAL ROLE app_security_owner" in source
+    assert "assert result.rowcount == 1" in source
 
 
 def test_finance_lease_and_timeout_authority_uses_database_clock_not_process_clock():
