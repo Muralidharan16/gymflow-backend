@@ -25,9 +25,6 @@ import psycopg
 import redis
 
 from app.core.database import AsyncSessionLocal
-from app.finance_core.services.payment_settlement import (
-    FinanceVerifiedPaymentSettlementService,
-)
 from tests import test_pay4_member_finance_binding_runtime as pay4
 from tests import test_pay5_finance_event_delivery_runtime as pay5
 from tests.finance_core.test_phase5c_invoice_engine import (
@@ -213,7 +210,6 @@ async def finance_cycle(
     # weakening settlement to accept an unapplied payment.
     await timed(
         latencies,
-        "payment_application_decision",
         "payment_application_ledger",
         apply_gate(
             checkout.finance_checkout_intent_id,
