@@ -8,6 +8,8 @@ on:
     paths:
       - 'app/payment_certification/**'
       - 'scripts/operations/pay23_*'
+      - 'scripts/verify_head_workflow_bootstrap.py'
+      - 'tests/test_migration_app_secure_owner_context_boundary.py'
       - 'tests/test_pay23_postlaunch_financial_certification.py'
       - 'docs/architecture/PAY23_POST_LAUNCH_FINANCIAL_CERTIFICATION.md'
       - 'docs/architecture/pay23_postlaunch_financial_certification_v1.json'
@@ -73,6 +75,8 @@ jobs:
               "docs/architecture/pay23_postlaunch_financial_certification_v1.json",
               "scripts/operations/pay23_certify_postlaunch.py",
               "scripts/operations/pay23_local_snapshot.sql",
+              "scripts/verify_head_workflow_bootstrap.py",
+              "tests/test_migration_app_secure_owner_context_boundary.py",
               "tests/test_pay23_postlaunch_financial_certification.py",
           }
           changed = {
