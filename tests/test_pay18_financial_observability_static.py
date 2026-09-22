@@ -158,7 +158,9 @@ def test_real_sdk_records_pay18_metrics_with_only_bounded_dimensions() -> None:
     for name in expected_otel | {"duplicate_payment_allegation_open_total"}:
         for point in observed[name].data.data_points:
             attrs = dict(point.attributes)
-            assert not (set(attrs) & _contract()["forbidden_metric_labels"])
+            assert not (
+                set(attrs) & set(_contract()["forbidden_metric_labels"])
+            )
             assert set(attrs) <= {"provider", "reason", "state", "stage"}
 
     provider.shutdown()
