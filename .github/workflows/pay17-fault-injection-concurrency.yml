@@ -70,6 +70,7 @@ jobs:
               "app/finance_core/services/provider_capture_confirmation.py",
               "docs/architecture/PAY17_FAULT_INJECTION_CONCURRENCY.md",
               "docs/architecture/pay17_fault_injection_matrix_v1.json",
+              "tests/finance_core/admin_database.py",
               "tests/finance_core/test_pay17_fault_injection_concurrency.py",
               "tests/finance_core/test_phase6p_sandbox_webhook_route_enablement.py",
               "tests/finance_core/admin_database.py",
