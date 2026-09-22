@@ -111,37 +111,37 @@ jobs:
     name: PAY-17 process death and Celery redelivery
     uses: ./.github/workflows/p5w2-worker-crash-redelivery-pg16.yml
     with:
-      certification_head: ${{ github.event.pull_request.head.sha || github.sha }}
+      certification_head: ${{ github.sha }}
 
   p5e:
     name: PAY-17 provider success acknowledgement ambiguity
     uses: ./.github/workflows/p5e-provider-ack-ambiguity-pg16.yml
     with:
-      certification_head: ${{ github.event.pull_request.head.sha || github.sha }}
+      certification_head: ${{ github.sha }}
 
   p5d:
     name: PAY-17 Redis network and database loss
     uses: ./.github/workflows/p5d-dependency-loss-pg16.yml
     with:
-      certification_head: ${{ github.event.pull_request.head.sha || github.sha }}
+      certification_head: ${{ github.sha }}
 
   p5r:
     name: PAY-17 deadlock lease and lifecycle Finance races
     uses: ./.github/workflows/p5r-race-deadlock-pg16.yml
     with:
-      certification_head: ${{ github.event.pull_request.head.sha || github.sha }}
+      certification_head: ${{ github.sha }}
 
   p6b:
     name: PAY-17 Redis broker restart and reconnect
     uses: ./.github/workflows/p6b-broker-reconnect-pg16.yml
     with:
-      certification_head: ${{ github.event.pull_request.head.sha || github.sha }}
+      certification_head: ${{ github.sha }}
 
   p6w:
     name: PAY-17 worker shutdown and late-ack redelivery
     uses: ./.github/workflows/p6w-worker-shutdown-redelivery-pg16.yml
     with:
-      certification_head: ${{ github.event.pull_request.head.sha || github.sha }}
+      certification_head: ${{ github.sha }}
 
   decision:
     name: PAY-17 final fault-tolerance decision
