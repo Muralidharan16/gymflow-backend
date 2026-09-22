@@ -16,6 +16,7 @@ from tests.finance_core.test_phase6e_payment_application_gate import (
     apply_gate,
     seed_ledger_accounts_only,
 )
+from tests import test_pay9_payment_application_entitlement_runtime as pay9
 from tests.test_p4d_refund_obligation_resolution_runtime import (
     _INVOICE_A,
     _PAYMENT_A,
@@ -67,6 +68,21 @@ async def _seed_checkout_payment() -> dict[str, str]:
     }
 
 
+def _seed_pay9_application_record() -> dict[str, str]:
+    term_id = pay9._seed()
+    applied = pay9._apply()
+    if applied[8] != "applied_paid" or applied[9] is not False:
+        raise RuntimeError(f"PAY-19 PAY-9 application seed failed: {applied!r}")
+    return {
+        "subscription_term_id": str(term_id),
+        "payment_id": str(pay9.PROVIDER_PAYMENT),
+        "payment_event_id": str(pay9.EVENT_A),
+        "invoice_id": str(pay9.pay4.INVOICE),
+        "application_record_id": str(applied[0]),
+        "allocation_id": str(applied[3]),
+    }
+
+
 def _seed_subscription_refund() -> dict[str, str]:
     _ensure_p4d2_base_state()
     _allocate(amount="80.00")
@@ -107,11 +123,13 @@ async def main() -> None:
         os.environ.get("PAY19_SEED_EVIDENCE", "pay19-seed-evidence.json")
     )
     checkout = await _seed_checkout_payment()
+    pay9_application = _seed_pay9_application_record()
     refund = _seed_subscription_refund()
     payload = {
         "synthetic_only": True,
         "live_provider": False,
         "checkout": checkout,
+        "pay9_application": pay9_application,
         "subscription_refund": refund,
     }
     evidence_path.write_text(
