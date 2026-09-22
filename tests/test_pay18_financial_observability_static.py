@@ -236,7 +236,8 @@ def test_aggregate_snapshot_is_security_definer_read_only_and_reduced_role_only(
     assert "provider_ref" not in function.lower()
     assert "customer" not in function.lower()
 
-    assert "TO lifecycle_maintenance_runtime" in source
+    assert '_MAINTENANCE = "lifecycle_maintenance_runtime"' in source
+    assert 'f"GRANT EXECUTE ON FUNCTION {_SNAPSHOT} TO {_MAINTENANCE}"' in source
     assert "PAY-18 unexpected snapshot EXECUTE for" in source
     assert "PAY-18 maintenance runtime leaked direct SELECT" in source
     assert "TO app_security_owner" in source
