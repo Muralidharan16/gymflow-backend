@@ -172,6 +172,43 @@ class ActivationDecision:
     certified_sha: str
 
 
+@dataclass(frozen=True)
+class StageTransitionDecision:
+    allowed: bool
+    code: str
+    from_stage: ActivationStage
+    to_stage: ActivationStage
+
+
+def validate_stage_transition(
+    current: ActivationRuntime,
+    proposed: ActivationRuntime,
+) -> StageTransitionDecision:
+    proposed_failures = proposed.validate()
+    if proposed_failures:
+        return StageTransitionDecision(
+            allowed=False,
+            code=proposed_failures[0],
+            from_stage=current.stage,
+            to_stage=proposed.stage,
+        )
+
+    if proposed.stage > current.stage + 1:
+        return StageTransitionDecision(
+            allowed=False,
+            code="activation.stage_transition.skip_forbidden",
+            from_stage=current.stage,
+            to_stage=proposed.stage,
+        )
+
+    return StageTransitionDecision(
+        allowed=True,
+        code="activation.stage_transition.allowed",
+        from_stage=current.stage,
+        to_stage=proposed.stage,
+    )
+
+
 class ProductionActivationPolicy:
     """Fail-closed production activation authority."""
 
