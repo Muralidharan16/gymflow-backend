@@ -8,10 +8,11 @@ import pytest
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import AsyncSessionLocal, get_db
 from app.core.middleware import _is_exempt
 from app.finance_core.api.guards import FinanceWebhookRoutePosture, get_finance_webhook_route_posture
 from app.finance_core.api.payment_boundary import get_razorpay_webhook_confirmation_service
+from app.finance_core.domain.razorpay_webhooks import RazorpayWebhookInput
 from app.finance_core.services.razorpay_webhooks import RazorpayWebhookConfirmationService
 from app.main import app
 from tests.finance_core.test_phase5c_invoice_engine import fetch_scalar
@@ -176,11 +177,33 @@ async def test_sandbox_webhook_route_queues_unknown_provider_reference_without_m
     assert after["events"] == before["events"]
     assert after["allocations"] == before["allocations"]
     assert after["ledger"] == before["ledger"]
-    assert await fetch_scalar(
-        "SELECT count(*) FROM finance.provider_webhook_inbox "
-        "WHERE provider_event_id='evt_phase6p_unknown_order' "
-        "AND status='retry'"
-    ) == 1
+
+    # provider_webhook_inbox is FORCE RLS. Prove durable retry evidence through
+    # the sanctioned SECURITY DEFINER record capability instead of relying on
+    # migration-owner direct table visibility.
+    replay_headers = signed_headers(
+        raw,
+        idempotency_key="phase6p-unknown-order",
+    )
+    async with AsyncSessionLocal() as replay_session:
+        replay = await RazorpayWebhookConfirmationService(
+            replay_session,
+            razorpay_config=sandbox_config(
+                webhook_secret="rzp_webhook_secret"
+            ),
+            provider_config=PROVIDER_CONFIG,
+        ).record_verified_webhook(
+            RazorpayWebhookInput(
+                raw_body=raw,
+                signature=replay_headers["X-Razorpay-Signature"],
+                provider_event_id=replay_headers["X-Razorpay-Event-Id"],
+                idempotency_key="phase6p-unknown-order",
+            )
+        )
+        await replay_session.commit()
+
+    assert replay.replayed is True
+    assert replay.status == "retry"
 
 
 @pytest.mark.asyncio
