@@ -13,6 +13,7 @@ TARGET_DB="${PAY20_SYSTEM_DB:-gymflow_test}"
 MIGRATION_DB="${PAY20_MIGRATION_DB:-gymflow_migration_test}"
 
 bash scripts/ci/install_pg16_test_stack.sh
+bash scripts/ci/bootstrap_cluster_roles.sh
 
 sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<SQL
 ALTER ROLE migration_owner PASSWORD '${MIGRATION_PASSWORD}';
