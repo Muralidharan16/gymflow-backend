@@ -276,6 +276,7 @@ jobs:
           python -s -m alembic -c alembic.ini upgrade head
           test "$(python -s -m alembic -c alembic.ini current | awk 'NR==1 {print $1}')" = "${PAY19_ALEMBIC_HEAD}"
           PAY19_SEED_EVIDENCE="$EVIDENCE_DIR/seed.json" \
+            PYTHONPATH="$GITHUB_WORKSPACE" \
             python -s scripts/ci/pay19_seed_financial_state.py \
             | tee "$EVIDENCE_DIR/seed.log"
           grep -q 'PAY19_SYNTHETIC_FINANCIAL_STATE=PASS' "$EVIDENCE_DIR/seed.log"
@@ -513,7 +514,8 @@ jobs:
           PAY17_RECON_DATABASE_URL: postgresql+asyncpg://pay17_recon_test:ci-pay19-recon@127.0.0.1:55440/gymflow_pay19_recovery_test
         run: |
           set -euo pipefail
-          python -s scripts/ci/pay19_recovery_replay_guards.py | tee "$EVIDENCE_DIR/replay-guards.log"
+          PYTHONPATH="$GITHUB_WORKSPACE" \
+            python -s scripts/ci/pay19_recovery_replay_guards.py | tee "$EVIDENCE_DIR/replay-guards.log"
           grep -q 'PAY19_NO_DUPLICATE_PROVIDER_OPERATION=PASS' "$EVIDENCE_DIR/replay-guards.log"
           grep -q 'PAY19_NO_REUSED_INVOICE_NUMBER=PASS' "$EVIDENCE_DIR/replay-guards.log"
           grep -q 'PAY19_NO_REPEATED_REFUND=PASS' "$EVIDENCE_DIR/replay-guards.log"
