@@ -337,16 +337,33 @@ for attempt in $(seq 1 120); do
   sleep 1
 done
 
-for attempt in $(seq 1 60); do
-  if docker exec pay21-worker       python -m celery -A app.core.celery_app:celery_app inspect ping --timeout=3 2>/dev/null       | grep -q pong; then
+# Prove real broker -> worker -> PostgreSQL execution with a bounded,
+# read-only registered task. This is stronger and less topology-sensitive than
+# Celery remote-control broadcast ping.
+celery_probe_ok=0
+for attempt in $(seq 1 3); do
+  if docker exec pay21-worker python - <<'PY'
+from app.core.celery_app import celery_app
+
+result = celery_app.send_task(
+    "app.tasks.branch_hours_partition.run",
+    queue="pay21-preprod",
+)
+value = result.get(timeout=30, propagate=True)
+if value is not None:
+    raise SystemExit(f"unexpected PAY-21 Celery probe result: {value!r}")
+print("PAY21_CELERY_TASK_EXECUTION=PASS")
+PY
+  then
+    celery_probe_ok=1
     break
   fi
-  if [ "$attempt" -eq 60 ]; then
-    docker logs pay21-worker
-    exit 1
-  fi
-  sleep 1
+  sleep 2
 done
+if [ "$celery_probe_ok" != "1" ]; then
+  docker logs pay21-worker
+  exit 1
+fi
 
 # Prove a bad deployment fails readiness and the TLS router can restore the
 # exact current-head last-known-good container without schema or image rollback.
