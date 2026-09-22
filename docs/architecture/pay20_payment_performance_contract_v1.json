@@ -29,10 +29,11 @@
     "multi_tenant_http_8_tenants"
   ],
   "finance_calibration": {
-    "cycles": 24,
-    "concurrency": 4,
+    "cycles": 48,
+    "concurrency": 16,
     "invoice_items": 16,
-    "activation_iterations": 4
+    "activation_iterations": 4,
+    "profile": "same_pressure_as_load"
   },
   "finance_load": {
     "cycles": 96,
