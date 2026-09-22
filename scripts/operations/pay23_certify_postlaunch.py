@@ -29,6 +29,8 @@ def main() -> int:
                 "window_end": evidence.window_end.isoformat(),
                 "environment": evidence.environment,
                 "activation_stage": evidence.activation_stage,
+                "activation_authorization_id": evidence.activation_authorization_id,
+                "activation_authorization_sha": evidence.activation_authorization_sha,
                 "evidence_manifest_sha256": evidence.evidence_manifest_sha256,
             },
             sort_keys=True,
