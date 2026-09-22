@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "phase": "PAY-17",
+  "predecessor_sha": "fd619cca8234dcdc3ff75382ce8f32bde1af4c1f",
+  "predecessor_tree": "45214ab3fba96eafecbb6a3bca3ad49f8486acac",
+  "alembic_head": "zz27d8e9f0a62",
+  "policy": "fail_closed",
+  "faults": {
+    "process_dies_before_db_commit": {
+      "proof": ["pay17_finance_rollback_reclaim", "p5w2_process_faults"],
+      "required_outcome": "uncommitted money effect is absent and durable work remains reclaimable"
+    },
+    "process_dies_after_db_commit": {
+      "proof": ["p5w2_process_faults", "pay17_100_callback_convergence"],
+      "required_outcome": "redelivery observes terminal durable truth and creates no second effect"
+    },
+    "process_dies_before_provider_call": {
+      "proof": ["pay8_provider_operation_fence", "p5w2_process_faults"],
+      "required_outcome": "provider attempt is fenced durably before external I/O"
+    },
+    "provider_succeeds_then_process_dies": {
+      "proof": ["p5e_provider_ack_ambiguity", "pay17_early_webhook_recovery"],
+      "required_outcome": "successful provider evidence is retained for reconciliation and never blindly retried"
+    },
+    "provider_times_out": {
+      "proof": ["test_pay10_refund_provider_adapter", "p5d_dependency_loss"],
+      "required_outcome": "ambiguous outcome becomes reconciliation-required rather than duplicate provider mutation"
+    },
+    "provider_returns_malformed_response": {
+      "proof": ["test_pay10_refund_provider_adapter"],
+      "required_outcome": "malformed or authority-mismatched response cannot finalize money"
+    },
+    "webhook_arrives_before_checkout_response": {
+      "proof": ["pay17_early_webhook_recovery"],
+      "required_outcome": "signed evidence is queued as retryable until provider order binding commits"
+    },
+    "duplicate_webhook": {
+      "proof": ["phase6d_webhook_replay", "pay17_100_callback_convergence"],
+      "required_outcome": "one inbox event and one payment event"
+    },
+    "100_concurrent_callbacks": {
+      "proof": ["pay17_100_callback_convergence"],
+      "required_outcome": "one claim winner and one financial application"
+    },
+    "two_refunds_race": {
+      "proof": ["phase5j_concurrent_refund_intents"],
+      "required_outcome": "payment row serialization prevents over-refund"
+    },
+    "payment_and_cancellation_race": {
+      "proof": ["pay9_entitlement_authority_separation", "platform_contract_transition_rules"],
+      "required_outcome": "Finance cannot override cancellation or directly grant entitlement"
+    },
+    "payment_and_renewal_race": {
+      "proof": ["pay9_entitlement_authority_separation", "platform_idempotent_transition_authority"],
+      "required_outcome": "Finance emits durable facts only; renewal remains product-domain authority"
+    },
+    "payment_and_expiry_race": {
+      "proof": ["pay9_entitlement_authority_separation", "platform_timestamp_authority"],
+      "required_outcome": "payment confirmation cannot bypass expiry state authority"
+    },
+    "settlement_and_refund_race": {
+      "proof": ["pay17_settlement_refund_race"],
+      "required_outcome": "both operations serialize on payment truth with one settlement effect and one bounded refund obligation"
+    },
+    "db_deadlock": {
+      "proof": ["p5r_race_deadlock"],
+      "required_outcome": "deadlock victim is explicit and retryable; no split authoritative state"
+    },
+    "db_restart": {
+      "proof": ["p5d_dependency_loss"],
+      "required_outcome": "durable work survives PostgreSQL loss and resumes after recovery"
+    },
+    "network_partition": {
+      "proof": ["p5d_dependency_loss"],
+      "required_outcome": "external ambiguity is durable and recoverable"
+    },
+    "redis_loss": {
+      "proof": ["p5d_dependency_loss", "p6b_broker_reconnect"],
+      "required_outcome": "database monetary truth survives broker loss and processing resumes"
+    },
+    "celery_redelivery": {
+      "proof": ["p5w2_process_faults", "p6w_shutdown_redelivery"],
+      "required_outcome": "late acknowledgement/redelivery converges to one logical effect"
+    },
+    "worker_sigkill": {
+      "proof": ["p5w2_process_faults"],
+      "required_outcome": "real prefork child SIGKILL cannot lose or duplicate durable work"
+    },
+    "lease_expiry": {
+      "proof": ["p5w2_process_faults", "p5r_race_deadlock", "pay17_finance_rollback_reclaim"],
+      "required_outcome": "expired lease is reclaimed with a higher fence and stale completion cannot win"
+    },
+    "clock_skew": {
+      "proof": ["database_clock_lease_authority"],
+      "required_outcome": "money-worker leases use PostgreSQL clock_timestamp rather than caller clocks"
+    },
+    "provider_clock_skew": {
+      "proof": ["pay16_provider_future_skew"],
+      "required_outcome": "future provider timestamps beyond the bounded skew window are rejected"
+    }
+  },
+  "hard_gates": {
+    "duplicate_financial_effects": 0,
+    "lost_successful_payments": 0,
+    "lost_refund_obligations": 0,
+    "impossible_terminal_states": 0,
+    "stuck_unrecoverable_commands": 0,
+    "unauthorized_entitlements": 0
+  }
+}
