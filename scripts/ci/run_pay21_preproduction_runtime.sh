@@ -342,7 +342,14 @@ done
 # Celery remote-control broadcast ping.
 celery_probe_ok=0
 for attempt in $(seq 1 3); do
-  if docker exec pay21-worker python - <<'PY'
+  if ! docker inspect -f '{{.State.Running}}' pay21-worker 2>/dev/null | grep -qx true; then
+    docker logs pay21-worker
+    echo 'PAY-21 Celery worker exited before task execution proof' >&2
+    exit 1
+  fi
+
+  probe_output="$(
+    docker exec -i pay21-worker python - <<'PY'
 from app.core.celery_app import celery_app
 
 result = celery_app.send_task(
@@ -354,7 +361,10 @@ if value is not None:
     raise SystemExit(f"unexpected PAY-21 Celery probe result: {value!r}")
 print("PAY21_CELERY_TASK_EXECUTION=PASS")
 PY
-  then
+  )" || true
+
+  if printf '%s\n' "$probe_output" | grep -qx 'PAY21_CELERY_TASK_EXECUTION=PASS'; then
+    printf '%s\n' "$probe_output"
     celery_probe_ok=1
     break
   fi
@@ -362,6 +372,7 @@ PY
 done
 if [ "$celery_probe_ok" != "1" ]; then
   docker logs pay21-worker
+  echo 'PAY-21 real Celery task execution proof did not complete' >&2
   exit 1
 fi
 
