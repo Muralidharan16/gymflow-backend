@@ -172,7 +172,7 @@ for attempt in $(seq 1 30); do
   fi
   sleep 1
 done
-OTLP_ENDPOINT="http://host.docker.internal:4318/v1/metrics"
+OTLP_ENDPOINT="http://$GATEWAY:4318/v1/metrics"
 
 openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes   -keyout "$TLS_DIR/ca.key" -out "$TLS_DIR/ca.crt"   -subj '/CN=DOERS PAY21 Preproduction CA'
 openssl req -newkey rsa:2048 -sha256 -nodes   -keyout "$TLS_DIR/server.key" -out "$TLS_DIR/server.csr"   -subj '/CN=pay21-preprod'
@@ -224,7 +224,7 @@ IMAGE_ID="$(docker image inspect "$IMAGE" -f '{{.Id}}')"
 test -n "$IMAGE_ID"
 test "$(docker image inspect "$IMAGE" -f '{{.Config.User}}')" = "10001:10001"
 
-DB_HOST="host.docker.internal"
+DB_HOST="$GATEWAY"
 API_DB="postgresql+asyncpg://pay21_api_runtime:$API_PASSWORD@$DB_HOST:55432/$DB"
 AUTH_DB="postgresql+asyncpg://pay21_auth_runtime:$AUTH_PASSWORD@$DB_HOST:55432/$DB"
 WORKER_DB="postgresql+asyncpg://pay21_worker_runtime:$WORKER_PASSWORD@$DB_HOST:55432/$DB"
