@@ -245,6 +245,80 @@ async def test_live_provider_posture_blocks_before_adapter_client_call():
 
 
 @pytest.mark.asyncio
+async def test_pay20_invoice_issuance_is_durable_before_later_checkout_preparation_failure(
+    monkeypatch,
+):
+    await seed_master_data()
+    client = FakeRazorpayClient()
+    idempotency_key = "pay20-issuance-boundary"
+
+    async with AsyncSessionLocal() as session:
+        await update_session_context(session, org_id=str(ORG_ID))
+        service = FinanceCheckoutOrchestrationService(
+            session,
+            plan_resolver=FakePlanResolver(),
+            razorpay_adapter=RazorpaySandboxAdapter(
+                config=sandbox_config(),
+                client=client,
+            ),
+        )
+
+        async def fail_after_issuance(*args, **kwargs):
+            raise RuntimeError("PAY-20 injected post-issuance checkout failure")
+
+        monkeypatch.setattr(
+            service._checkout_intents,
+            "create_checkout_intent",
+            fail_after_issuance,
+        )
+        with pytest.raises(
+            RuntimeError,
+            match="PAY-20 injected post-issuance checkout failure",
+        ):
+            await service.prepare_checkout_session(
+                command(idempotency_key=idempotency_key)
+            )
+
+    # The legal number is already authoritative and immutable. A later checkout
+    # preparation failure must not roll it back or make it reusable.
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.invoices WHERE status='issued'"
+    ) == 1
+    assert await fetch_scalar(
+        "SELECT last_number FROM finance.invoice_series "
+        "WHERE legal_entity_id=:entity AND gst_registration_id=:gst "
+        "AND division_id=:division AND financial_year='2425' "
+        "AND series_code='VS'",
+        {
+            "entity": LEGAL_ENTITY_ID,
+            "gst": GST_REGISTRATION_ID,
+            "division": DIVISION_ID,
+        },
+    ) == 1
+    assert await fetch_scalar("SELECT count(*) FROM finance.payments") == 0
+
+    completed, _ = await orchestrate(
+        command(idempotency_key=idempotency_key),
+        client=client,
+    )
+    assert completed.replayed is True
+    assert await fetch_scalar("SELECT count(*) FROM finance.invoices") == 1
+    assert await fetch_scalar("SELECT count(*) FROM finance.payments") == 1
+    assert await fetch_scalar(
+        "SELECT last_number FROM finance.invoice_series "
+        "WHERE legal_entity_id=:entity AND gst_registration_id=:gst "
+        "AND division_id=:division AND financial_year='2425' "
+        "AND series_code='VS'",
+        {
+            "entity": LEGAL_ENTITY_ID,
+            "gst": GST_REGISTRATION_ID,
+            "division": DIVISION_ID,
+        },
+    ) == 1
+    assert len(client.requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_idempotent_replay_does_not_create_duplicate_invoices_checkout_intents_or_orders():
     await seed_master_data()
     client = FakeRazorpayClient()
