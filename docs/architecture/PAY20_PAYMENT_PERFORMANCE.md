@@ -2,8 +2,10 @@
 
 PAY-20 starts from frozen PAY-19 exact SHA
 `39d4bcb486f797dbabcb1ea934db29db6ea8c012`, tree
-`61cce864dd6208451f79b68318507802b5a53313`. PAY-20 introduces no schema
-change and no new money authority; Alembic remains `zz37d8e9f0a63`.
+`61cce864dd6208451f79b68318507802b5a53313`. PAY-20 introduces no new money authority. It adds one reversible runtime-
+capacity migration, `zz47d8e9f0a64`, stacked on PAY-18/PAY-19 head
+`zz37d8e9f0a63`. The migration adds no Finance table or money mutation
+authority; it bounds only PAY-5 member-subscription Finance-event claiming.
 
 ## Purpose
 
@@ -105,10 +107,33 @@ open accounting reconciliation count
 ```
 
 Webhook and settlement-reconciliation latencies are measured for every cycle.
-The outbox may accumulate synthetic events because this lane is a producer
-stress harness; backlog depth and age are recorded as capacity evidence rather
-than silently discarded. Worker-drain stability is independently required by
-the production-container soak/queue lane.
+The Finance producer soak may accumulate non-dispatchable synthetic outbox
+history because not every Finance event belongs to the member-subscription
+consumer. PAY-18's `finance_outbox_backlog` remains deliberately global across
+all pending/processing/failed Finance outbox rows; PAY-20 must never narrow that
+frozen observability definition merely to make a backlog metric smaller.
+
+Worker capacity is therefore certified separately against the exact PAY-5
+delivery obligation: bound `finance.invoice.paid` events for member
+subscriptions. A synthetic 500-event burst must drain to zero eligible backlog
+and zero oldest eligible age within 60 seconds, with zero retry, failed,
+ack-pending, or lease-lost outcomes. Unbound Finance history remains durable and
+globally observable.
+
+## PAY-20 delivery-capacity migration
+
+Revision `zz47d8e9f0a64` replaces only
+`app_secure.claim_member_subscription_finance_events(...)`. The claim query
+keeps PAY-5 lease/fence/SKIP LOCKED behavior but requires an authoritative
+`finance.member_subscription_finance_bindings` match for the paid invoice.
+This prevents the member-subscription worker from claiming unrelated Finance
+outbox history.
+
+The migration must round-trip `zz37 → zz47 → zz37 → zz47` on PostgreSQL 16.
+Downgrade restores the previous broad PAY-5 claim semantics. The PAY-18
+`app_secure.pay18_financial_observability_snapshot()` function is not replaced
+by PAY-20; its global `finance_outbox_backlog` contract must remain byte-
+semantically unchanged across the round trip.
 
 ## Production-container multi-tenant lane
 
