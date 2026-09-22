@@ -8,7 +8,7 @@
     "tree": "61cce864dd6208451f79b68318507802b5a53313",
     "alembic_head": "zz37d8e9f0a63"
   },
-  "alembic_head": "zz37d8e9f0a63",
+  "alembic_head": "zz47d8e9f0a64",
   "objective": "financial_correctness_survives_production_load",
   "no_new_money_authority": true,
   "load_surfaces": [
@@ -107,7 +107,9 @@
     "resource_growth_budget_failure",
     "worker_backlog_not_recovered",
     "live_provider_or_production_credentials",
-    "merge_release_or_deployment"
+    "merge_release_or_deployment",
+    "dispatchable_finance_event_backlog_not_drained",
+    "pay18_global_outbox_observability_narrowed"
   ],
   "safety": {
     "synthetic_only": true,
@@ -119,5 +121,31 @@
     "release": "not_authorized",
     "deployment": "not_authorized"
   },
-  "terminal_marker": "PAY20_PAYMENT_PERFORMANCE=PASS"
+  "terminal_marker": "PAY20_PAYMENT_PERFORMANCE=PASS",
+  "migration": {
+    "revision": "zz47d8e9f0a64",
+    "predecessor": "zz37d8e9f0a63",
+    "purpose": "bound PAY-5 member-subscription Finance-event claim eligibility only",
+    "schema_tables_added": 0,
+    "money_authority_added": false,
+    "pay18_global_finance_outbox_metric_preserved": true,
+    "downgrade_restores_prior_claim_semantics": true,
+    "roundtrip_required": true
+  },
+  "dispatcher_capacity": {
+    "synthetic_events": 500,
+    "max_drain_seconds": 60,
+    "batch_size": 100,
+    "max_batches_per_run": 10,
+    "process_concurrency": 8,
+    "required_after": {
+      "eligible_backlog": 0,
+      "oldest_eligible_age_seconds": 0,
+      "retry": 0,
+      "failed": 0,
+      "ack_pending": 0,
+      "lease_lost": 0
+    },
+    "global_pay18_finance_outbox_backlog_remains_global": true
+  }
 }
