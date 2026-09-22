@@ -74,6 +74,7 @@ jobs:
               "tests/finance_core/conftest.py",
               "tests/finance_core/test_phase5b_foundation.py",
               "tests/finance_core/test_phase6p_sandbox_webhook_route_enablement.py",
+              "tests/finance_core/test_phase6w_test_mode_webhook_route_signature.py",
               "tests/test_pay19_financial_recovery_static.py",
           }
           changed = {
