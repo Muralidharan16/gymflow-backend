@@ -70,14 +70,23 @@ for relation in \
   public.platform_disputes \
   public.platform_accounting_reconciliation_items
 do
+  schema_name="${relation%%.*}"
+  table_name="${relation#*.}"
   direct="$(
-    PGPASSWORD="${MAINT_PASSWORD}" psql -X -qAt -v ON_ERROR_STOP=1 \
-      -h 127.0.0.1 -U "${MAINT_LOGIN}" -d "${DB_NAME}" \
+    sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d "${DB_NAME}" \
+      -v role_name="${MAINT_LOGIN}" \
+      -v schema_name="${schema_name}" \
+      -v table_name="${table_name}" \
       -c "SELECT pg_catalog.has_table_privilege(
-            current_user,
-            pg_catalog.to_regclass('${relation}'),
+            :'role_name',
+            relation_data.oid,
             'SELECT'
-          )"
+          )
+          FROM pg_catalog.pg_class AS relation_data
+          JOIN pg_catalog.pg_namespace AS namespace_data
+            ON namespace_data.oid=relation_data.relnamespace
+          WHERE namespace_data.nspname=:'schema_name'
+            AND relation_data.relname=:'table_name'"
   )"
   test "${direct}" = "f"
 done
