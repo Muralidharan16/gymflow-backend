@@ -31,9 +31,10 @@ pressure.
 
 PAY-20 inherits the already frozen P10 production-container budgets rather than
 inventing looser limits. The committed P10 budget digest remains mandatory.
-Finance-path calibration is measured at low concurrency on the same exact head,
-then the high-concurrency run must retain at least 60% of calibration cycle
-throughput and no Finance operation may exceed 2x its calibration p95.
+Finance-path calibration is measured on the same exact head at the same
+concurrency-16 pressure as the certification load. The larger certification
+sample must retain at least 60% of calibration cycle throughput and no Finance
+operation may exceed 2x its same-pressure calibration p95.
 
 In addition, every Finance operation is bounded by the frozen P10 write p95/p99
 ceilings. A failing candidate may not loosen the inherited or relative budgets
@@ -41,8 +42,11 @@ to convert failure into pass.
 
 ## Finance load lane
 
-The low-concurrency calibration uses 24 complete money cycles at concurrency 4.
-The certification load uses 96 complete cycles at concurrency 16.
+The same-pressure calibration uses 48 complete money cycles at concurrency 16.
+The certification load uses 96 complete cycles at concurrency 16. This avoids
+mistaking the expected queueing effect of a 4x concurrency jump for a code
+regression while preserving both the relative 2x p95 gate and frozen P10
+absolute p95/p99 ceilings.
 
 Each cycle performs:
 
@@ -113,7 +117,10 @@ not historical evidence. It runs:
 
 1. a 60-second, concurrency-24 load across eight deterministic tenants and
    enforces the frozen P10 throughput/latency/CPU/RSS budgets; and
-2. a 300-second production-container API/worker/PostgreSQL/Redis soak.
+2. after a 120-second unscored cache/JIT/database warmup at the same
+   concurrency-24 workload, a full 300-second production-container
+   API/worker/PostgreSQL/Redis soak whose five measured windows all retain the
+   original frozen P10 budgets.
 
 The soak hard-stops on progressive RSS growth, DB connection growth, broker
 backlog, throughput degradation, latency growth or request errors.
