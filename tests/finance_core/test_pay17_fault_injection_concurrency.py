@@ -152,7 +152,7 @@ async def _expire_webhook_inbox(inbox_id: uuid.UUID) -> None:
 
 
 @pytest.mark.asyncio
-async def test_100_concurrent_identical_callbacks_converge_to_one_financial_effect():
+async def test_100_concurrent_identical_callbacks_converge_to_one_provider_event_without_financial_application():
     checkout = await _seed_finished_checkout(
         idempotency_key="pay17-callback-100"
     )
@@ -232,18 +232,26 @@ async def test_100_concurrent_identical_callbacks_converge_to_one_financial_effe
         "WHERE provider_event_id='evt_pay17_callback_100'"
     ) == 1
     assert await fetch_scalar(
+        "SELECT status FROM finance.payments WHERE id=:payment_id",
+        {"payment_id": checkout.finance_checkout_intent_id},
+    ) == "captured"
+    # Provider evidence is not payment-application authority. One hundred
+    # callbacks may converge the provider/payment state exactly once, but they
+    # must not allocate money, post accounting, or mark the invoice paid.
+    assert await fetch_scalar(
         "SELECT count(*) FROM finance.payment_allocations "
         "WHERE payment_id=:payment_id",
         {"payment_id": checkout.finance_checkout_intent_id},
-    ) == 1
+    ) == 0
     assert await fetch_scalar(
         "SELECT count(*) FROM finance.ledger_entries "
         "WHERE source_type='payment_allocation'"
-    ) == 1
+    ) == 0
     assert await fetch_scalar(
-        "SELECT status FROM finance.invoices WHERE id=:invoice_id",
+        "SELECT count(*) FROM finance.invoices "
+        "WHERE id=:invoice_id AND status='paid'",
         {"invoice_id": checkout.finance_invoice_id},
-    ) == "paid"
+    ) == 0
 
 
 @pytest.mark.asyncio
