@@ -104,8 +104,11 @@ def _payment_mutation() -> Mutation:
         name="payment",
         sql="""
             UPDATE platform_subscriptions
-               SET status='active',
-                   cancel_at_period_end=false,
+               SET status=CASE
+                       WHEN status='cancel_scheduled'
+                       THEN 'cancel_scheduled'
+                       ELSE 'active'
+                   END,
                    ended_at=NULL,
                    version=version+1,
                    updated_at=pg_catalog.clock_timestamp()
@@ -114,6 +117,31 @@ def _payment_mutation() -> Mutation:
                AND version=:expected_version
         """,
         params={},
+    )
+
+
+def _payment_after_expiry_mutation() -> Mutation:
+    return Mutation(
+        name="payment_after_expiry",
+        sql="""
+            UPDATE platform_subscriptions
+               SET status='active',
+                   current_period_start=:period_start,
+                   current_period_end=:period_end,
+                   cancel_at_period_end=false,
+                   cancellation_requested_at=NULL,
+                   cancellation_effective_at=NULL,
+                   ended_at=NULL,
+                   version=version+1,
+                   updated_at=pg_catalog.clock_timestamp()
+             WHERE id=:subscription
+               AND organization_id=:organization_id
+               AND version=:expected_version
+        """,
+        params={
+            "period_start": RACE_NOW,
+            "period_end": RACE_NOW + timedelta(days=30),
+        },
     )
 
 
@@ -212,6 +240,16 @@ async def test_payment_and_cancellation_race_has_one_commit_then_preserves_cance
             _cancellation_mutation(),
         )
         after = await _snapshot(ids["subscription"])
+    elif cancellation_won:
+        # Confirmed payment remains durable, but applying it after cancellation
+        # must preserve the already-scheduled cancellation rather than silently
+        # reactivating an unwanted subscription.
+        assert await _cas(
+            ids["subscription"],
+            int(after["version"]),
+            _payment_mutation(),
+        )
+        after = await _snapshot(ids["subscription"])
 
     assert cancellation_won or payment_won
     assert after["status"] == "cancel_scheduled"
@@ -256,7 +294,7 @@ async def test_payment_and_expiry_race_never_loses_confirmed_payment_or_grants_f
     ids = await _prepare_active_contract()
     payment_won, expiry_won, after = await _race(
         ids["subscription"],
-        _payment_mutation(),
+        _payment_after_expiry_mutation(),
         _expiry_mutation(),
     )
 
@@ -267,7 +305,7 @@ async def test_payment_and_expiry_race_never_loses_confirmed_payment_or_grants_f
         assert await _cas(
             ids["subscription"],
             int(after["version"]),
-            _payment_mutation(),
+            _payment_after_expiry_mutation(),
         )
     else:
         assert payment_won
@@ -281,6 +319,8 @@ async def test_payment_and_expiry_race_never_loses_confirmed_payment_or_grants_f
 
     final = await _snapshot(ids["subscription"])
     assert final["status"] == "active"
+    assert final["current_period_start"] == RACE_NOW
+    assert final["current_period_end"] == RACE_NOW + timedelta(days=30)
     assert final["ended_at"] is None
     assert final["cancel_at_period_end"] is False
 
