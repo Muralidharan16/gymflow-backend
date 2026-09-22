@@ -74,6 +74,8 @@ jobs:
               "tests/finance_core/test_pay17_fault_injection_concurrency.py",
               "tests/finance_core/test_phase6p_sandbox_webhook_route_enablement.py",
               "tests/platform_billing/test_pay17_payment_lifecycle_races.py",
+              "tests/migration_app_secure_owner_context_boundary_baseline.py",
+              "tests/test_pay10_refund_worker_crash_recovery_runtime.py",
               "tests/test_pay17_fault_tolerance_static.py",
           }
           changed = {
@@ -94,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m json.tool docs/architecture/pay17_fault_injection_matrix_v1.json >/dev/null
-          python -m py_compile             app/finance_core/api/payment_boundary.py             app/finance_core/domain/provider_capture_confirmation.py             app/finance_core/services/provider_capture_confirmation.py             tests/finance_core/test_pay17_fault_injection_concurrency.py             tests/platform_billing/test_pay17_payment_lifecycle_races.py             tests/test_pay17_fault_tolerance_static.py
+          python -m py_compile             app/finance_core/api/payment_boundary.py             app/finance_core/domain/provider_capture_confirmation.py             app/finance_core/services/provider_capture_confirmation.py             tests/finance_core/test_pay17_fault_injection_concurrency.py             tests/platform_billing/test_pay17_payment_lifecycle_races.py             tests/migration_app_secure_owner_context_boundary_baseline.py             tests/test_pay10_refund_worker_crash_recovery_runtime.py             tests/test_pay17_fault_tolerance_static.py
           python -m pytest --noconftest -q --maxfail=1 tests/test_pay17_fault_tolerance_static.py
           echo 'PAY17_FAULT_MATRIX=PASS'
           echo 'PAY17_EARLY_WEBHOOK_RECOVERY_CONTRACT=PASS'
