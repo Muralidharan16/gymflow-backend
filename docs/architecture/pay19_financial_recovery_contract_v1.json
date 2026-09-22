@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-19",
+  "title": "Backup, Restore, PITR and Accounting Reconstruction",
+  "predecessor": {
+    "phase": "PAY-18",
+    "sha": "5de9b1f0997c4e5a6df5af7a2acf5ba1f1df1eee",
+    "tree": "f17dbc3316a15b7a91b4deb877ce89df67ed75d7",
+    "alembic_head": "zz37d8e9f0a63"
+  },
+  "alembic_head": "zz37d8e9f0a63",
+  "authority": {
+    "durable_financial_truth": "postgresql",
+    "provider_truth": "authenticated_provider_evidence_plus_reconciliation",
+    "backup_artifact_is_business_authority": false,
+    "restored_environment_live_provider_access": "forbidden",
+    "production_data_in_ci": "forbidden"
+  },
+  "required_proofs": [
+    "checksummed_logical_backup_catalog_readable_and_restoreable",
+    "verified_physical_base_backup",
+    "wal_archive_present",
+    "full_physical_restore",
+    "named_restore_point_pitr_with_pre_target_survival_and_post_target_exclusion",
+    "finance_table_integrity",
+    "invoice_numbering_integrity",
+    "ledger_balance_integrity",
+    "provider_reference_integrity",
+    "refund_command_integrity",
+    "idempotency_integrity",
+    "outbox_integrity",
+    "subscription_binding_integrity",
+    "payment_application_integrity",
+    "provider_reconciliation_after_pitr"
+  ],
+  "post_restore_zero_duplicate_gates": [
+    "duplicate_provider_operation",
+    "reused_invoice_number",
+    "repeated_refund",
+    "repeated_payment_application"
+  ],
+  "fingerprint": {
+    "source": "scripts/ci/pay19_financial_fingerprint.sql",
+    "must_match": [
+      "logical_restore",
+      "physical_restore",
+      "pitr_before_replay"
+    ],
+    "sentinel_schema_excluded": "pay19_ci"
+  },
+  "recovery_rehearsal": {
+    "post_target_corruption": [
+      "invoice_series_last_number_corrupted",
+      "payment_application_record_deleted",
+      "refund_execution_command_deleted"
+    ],
+    "pitr_target": "pay19_financial_target",
+    "synthetic_ci_rpo_target_ms": 10000,
+    "synthetic_ci_rto_target_ms": 120000,
+    "targets_are_production_sla": false
+  },
+  "reconciliation": {
+    "exact_recovered_database_required": true,
+    "inherited_proof": "PAY-17 provider success then process death reconciliation",
+    "second_provider_call_allowed": false
+  },
+  "hard_stops": [
+    "backup_creation_without_restoreability",
+    "pitr_without_pre_post_boundary",
+    "fingerprint_mismatch",
+    "unbalanced_ledger",
+    "duplicate_provider_reference",
+    "refund_command_or_subscription_binding_orphan",
+    "idempotency_or_outbox_duplicate",
+    "invoice_number_reuse",
+    "provider_resubmission_on_replay",
+    "repeated_payment_application",
+    "repeated_refund_command",
+    "live_provider_or_production_credentials",
+    "merge_release_or_deployment"
+  ],
+  "safety": {
+    "live_provider": "disabled",
+    "production_credentials": "disabled",
+    "live_money_movement": "disabled",
+    "production_runtime_binding": "disabled",
+    "merge": "not_authorized",
+    "release": "not_authorized",
+    "deployment": "not_authorized"
+  },
+  "terminal_marker": "PAY19_FINANCIAL_RECOVERY=PASS"
+}
