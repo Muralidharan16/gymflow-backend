@@ -105,7 +105,7 @@ def test_pay17_finance_runtime_attacks_money_boundaries():
         "tests/finance_core/test_pay17_fault_injection_concurrency.py"
     )
     for test_name in (
-        "test_100_concurrent_identical_callbacks_converge_to_one_financial_effect",
+        "test_100_concurrent_identical_callbacks_converge_to_one_provider_event_without_financial_application",
         "test_process_rollback_before_commit_is_reclaimable_without_duplicate_money",
         "test_death_after_claim_before_provider_call_becomes_unknown_then_reconciles_not_found",
         "test_provider_success_then_process_death_reconciles_without_second_provider_call",
@@ -122,6 +122,8 @@ def test_pay17_finance_runtime_attacks_money_boundaries():
     assert "lease_fence == first_claim.lease_fence + 1" in source
     assert "FinanceProviderEvidenceDeferredError" in source
     assert "asyncio.gather(" in source
+    assert '"WHERE payment_id=:payment_id",\n        {"payment_id": checkout.finance_checkout_intent_id},\n    ) == 0' in source
+    assert '"WHERE source_type=\'payment_allocation\'"\n    ) == 0' in source
 
 
 def test_two_refund_race_is_real_concurrent_finance_runtime():
