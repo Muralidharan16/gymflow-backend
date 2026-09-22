@@ -125,8 +125,9 @@ def test_post_restore_replay_guards_require_zero_duplicate_money_effects() -> No
     assert "if client.requests:" in source
     assert "Checkout orchestration requires an issued invoice" in source
     assert 'invoice_status != "paid"' in source
-    assert "provider operation status drift after replay" in source
-    assert "provider object drift after replay" in source
+    assert "SET LOCAL ROLE app_security_owner" in source
+    assert "app.current_org_id" in source
+    assert "provider operation drift after replay" in source
     assert "duplicate provider operation" in source
     assert "repeated payment application record" in source
     assert "repeated payment allocation" in source
