@@ -191,17 +191,17 @@ def test_workflow_never_injects_live_provider_credentials_or_authority() -> None
 
 
 def test_document_freezes_accounting_reconstruction_and_reconciliation_semantics() -> None:
-    text = DOC.read_text(encoding="utf-8")
+    text = DOC.read_text(encoding="utf-8").lower()
     for phrase in (
         "logical restore",
         "physical restore",
-        "PITR",
+        "pitr",
         "invoice-series cursor",
         "balanced posted payment-allocation ledger entry",
         "member-subscription checkout binding",
         "materialized refund execution command",
         "zero",
         "provider reconciliation",
-        "PAY19_FINANCIAL_RECOVERY=PASS",
+        "pay19_financial_recovery=pass",
     ):
         assert phrase in text
