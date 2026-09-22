@@ -136,7 +136,9 @@ def test_post_restore_replay_guards_require_zero_duplicate_money_effects() -> No
 def test_workflow_requires_real_pg16_backup_restore_pitr_and_reconciliation() -> None:
     source = WORKFLOW.read_text(encoding="utf-8")
     for token in (
-        "postgresql-16",
+        "scripts/ci/install_pg16_test_stack.sh",
+        "/usr/lib/postgresql/16/bin/pg_basebackup",
+        "/usr/lib/postgresql/16/bin/pg_verifybackup",
         "pg_dump --format=custom",
         "pg_restore --list",
         "pg_basebackup",
