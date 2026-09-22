@@ -74,7 +74,7 @@ jobs:
               "tests/finance_core/test_pay17_fault_injection_concurrency.py",
               "tests/finance_core/test_phase6p_sandbox_webhook_route_enablement.py",
               "tests/platform_billing/test_pay17_payment_lifecycle_races.py",
-              "tests/migration_app_secure_owner_context_boundary.py",
+              "tests/test_migration_app_secure_owner_context_boundary.py",
               "tests/migration_app_secure_owner_context_boundary_baseline.py",
               "tests/test_pay10_refund_worker_crash_recovery_runtime.py",
               "tests/test_pay17_fault_tolerance_static.py",
