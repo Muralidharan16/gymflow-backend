@@ -98,7 +98,7 @@ def test_finance_harness_uses_certified_real_finance_paths_and_no_live_provider(
         "create_refund_intent(",
         "issued_invoice(",
         "pay4._apply()",
-        "FakeRazorpayClient",
+        "Pay20RazorpayClient",
     ):
         assert token in source
 
