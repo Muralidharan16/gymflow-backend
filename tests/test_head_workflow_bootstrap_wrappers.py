@@ -16,6 +16,8 @@ P3E_WRAPPER_COMMAND = "bash scripts/ci/prepare_p3e_pg16.sh"
 P3E_WRAPPER_PATH = "scripts/ci/prepare_p3e_pg16.sh"
 PAY20_WRAPPER_COMMAND = "bash scripts/ci/pay20_prepare_system_pg16.sh"
 PAY20_WRAPPER_PATH = "scripts/ci/pay20_prepare_system_pg16.sh"
+PAY20_WRAPPER_COMMAND = "bash scripts/ci/pay20_prepare_system_pg16.sh"
+PAY20_WRAPPER_PATH = "scripts/ci/pay20_prepare_system_pg16.sh"
 
 
 def _managed_roles() -> set[str]:
