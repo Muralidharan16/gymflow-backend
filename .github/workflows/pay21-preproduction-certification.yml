@@ -283,11 +283,109 @@ jobs:
             tests/test_pay5_finance_event_delivery_runtime.py::test_two_consumers_racing_same_live_claim_converge_to_one_effect \
             tests/test_pay6_offline_payments_runtime.py::test_checker_approval_creates_canonical_payment_allocation_ledger_and_paid_event \
             tests/test_pay6_offline_payments_runtime.py::test_partial_offline_payment_updates_invoice_but_does_not_emit_paid_event
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres \
-            -c "GRANT CONNECT ON DATABASE $PAY20_MIGRATION_DB TO app_test_runtime;"
-          DATABASE_URL="postgresql+asyncpg://migration_owner:$MIGRATION_PASSWORD@127.0.0.1:5432/$PAY20_MIGRATION_DB" \
-          python -m pytest -q --maxfail=1 \
-            tests/test_subscription_lifecycle_migrations.py::test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignment_integrity
+          # Re-seed one current-head pending admission outside pytest cleanup,
+          # then materialize a true scheduled renewal child through the bounded
+          # app_security_owner capability on the exact current schema. This
+          # avoids a predecessor downgrade rehearsal in a PAY-21 runtime gate.
+          PYTHONPATH="$GITHUB_WORKSPACE" python - <<'PY'
+          from tests import test_pay4_member_finance_binding_runtime as pay4
+          pay4._cleanup()
+          parent_term = pay4._seed_pending()
+          print(f"PAY21_RENEWAL_PARENT_TERM={parent_term}")
+          PY
+          PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U migration_owner -d "$PAY20_SYSTEM_DB" <<'SQL'
+          BEGIN;
+          SELECT pg_catalog.set_config(
+            'app.current_org_id',
+            '44000000-0000-4000-8000-000000000001',
+            true
+          );
+          SET LOCAL ROLE app_security_owner;
+
+          WITH parent AS (
+            SELECT *
+            FROM public.subscription_terms
+            WHERE legacy_member_subscription_v2_id =
+              '44000000-0000-4000-8000-000000000041'::uuid
+          ),
+          child AS (
+            INSERT INTO public.subscription_terms(
+              id,org_id,branch_id,series_id,sequence_number,term_code,
+              renewed_from_term_id,source_type,plan_id,
+              plan_code_snapshot,plan_name_snapshot,duration_unit_snapshot,
+              duration_value_snapshot,capacity_snapshot,currency_code,
+              list_price_amount,discount_amount,tax_amount,final_amount,
+              starts_on,base_ends_on,effective_ends_on,status,
+              source_metadata,version
+            )
+            SELECT
+              pg_catalog.gen_random_uuid(),org_id,branch_id,series_id,2,
+              'PAY21-RENEWAL-2',id,'renewal',plan_id,
+              plan_code_snapshot,plan_name_snapshot,duration_unit_snapshot,
+              duration_value_snapshot,capacity_snapshot,currency_code,
+              list_price_amount,discount_amount,tax_amount,final_amount,
+              effective_ends_on + 1,effective_ends_on + 30,
+              effective_ends_on + 30,'scheduled',
+              pg_catalog.jsonb_build_object(
+                'pay21','preproduction-renewal',
+                'renewed_from_term_id',id::text
+              ),1
+            FROM parent
+            RETURNING id,org_id,branch_id,series_id,renewed_from_term_id,
+                      starts_on,effective_ends_on
+          ),
+          slot AS (
+            INSERT INTO public.subscription_term_slots(
+              id,org_id,term_id,slot_index,slot_role
+            )
+            SELECT pg_catalog.gen_random_uuid(),org_id,id,1,'primary'
+            FROM child
+            RETURNING id,org_id,term_id
+          ),
+          assignment AS (
+            INSERT INTO public.subscription_slot_assignments(
+              id,org_id,term_id,term_slot_id,member_id,
+              effective_from,effective_until,assignment_state
+            )
+            SELECT
+              pg_catalog.gen_random_uuid(),c.org_id,c.id,s.id,
+              ser.primary_member_id,c.starts_on,c.effective_ends_on,'active'
+            FROM child c
+            JOIN slot s ON s.term_id=c.id
+            JOIN public.subscription_series ser
+              ON ser.id=c.series_id AND ser.org_id=c.org_id
+            RETURNING id
+          )
+          INSERT INTO public.subscription_events(
+            id,org_id,branch_id,series_id,term_id,event_type,
+            event_source,correlation_id,idempotency_key,metadata
+          )
+          SELECT
+            pg_catalog.gen_random_uuid(),org_id,branch_id,series_id,id,
+            'renewal_scheduled','pay21_preproduction',
+            'PAY21-RENEWAL-2','pay21:renewal:2',
+            pg_catalog.jsonb_build_object(
+              'renewed_from_term_id',renewed_from_term_id::text,
+              'scheduled',true
+            )
+          FROM child;
+          RESET ROLE;
+          COMMIT;
+          SQL
+          renewal_state="$(sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
+            -d "$PAY20_SYSTEM_DB" -c "
+              SELECT
+                t.source_type::text||'|'||t.status::text||'|'||
+                (t.renewed_from_term_id IS NOT NULL)::int||'|'||
+                count(e.id)::text
+              FROM public.subscription_terms t
+              LEFT JOIN public.subscription_events e
+                ON e.term_id=t.id AND e.event_type='renewal_scheduled'
+              WHERE t.term_code='PAY21-RENEWAL-2'
+              GROUP BY t.source_type,t.status,t.renewed_from_term_id
+            ")"
+          test "$renewal_state" = "renewal|scheduled|1|1"
           echo 'PAY21_MEMBER_ADMISSION=PASS'
           echo 'PAY21_MEMBER_ENTITLEMENT_EXACT_ONCE=PASS'
           echo 'PAY21_CASH_PAYMENT=PASS'
@@ -422,6 +520,11 @@ jobs:
       BACKUP_FILE: /tmp/pay21-finance.dump
       EVIDENCE_DIR: pay21-recovery-evidence
       MIGRATION_PASSWORD: ci-pay21-recovery-migration
+      AUTH_RUNTIME_PASSWORD: ci-pay21-recovery-auth
+      APP_RUNTIME_PASSWORD: ci-pay21-recovery-app
+      WORKER_RUNTIME_PASSWORD: ci-pay21-recovery-worker
+      MAINTENANCE_RUNTIME_PASSWORD: ci-pay21-recovery-maintenance
+      FINANCE_CONFIG_RUNTIME_PASSWORD: ci-pay21-recovery-config
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-recovery-migration@127.0.0.1:5432/gymflow_pay21_recovery_test
       FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay21-recovery-finance@127.0.0.1:5432/gymflow_pay21_recovery_test
       FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-recovery-migration@127.0.0.1:5432/gymflow_pay21_recovery_test
