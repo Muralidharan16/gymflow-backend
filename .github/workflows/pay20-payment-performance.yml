@@ -419,7 +419,7 @@ jobs:
     env:
       MIGRATION_PASSWORD: ci-pay20-platform-migration
       PLATFORM_BILLING_RUNTIME_PASSWORD: ci-pay20-platform-runtime
-      DATABASE_URL: postgresql+asyncpg://platform_billing_test_runtime:ci-pay20-platform-runtime@127.0.0.1:5432/gymflow_pay20_platform_test
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay20-platform-migration@127.0.0.1:5432/gymflow_pay20_platform_control_test
       PLATFORM_BILLING_TEST_DATABASE_URL: postgresql+asyncpg://platform_billing_test_runtime:ci-pay20-platform-runtime@127.0.0.1:5432/gymflow_pay20_platform_test
       PLATFORM_BILLING_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay20-platform-migration@127.0.0.1:5432/gymflow_pay20_platform_test
       REDIS_URL: redis://127.0.0.1:6379/0
