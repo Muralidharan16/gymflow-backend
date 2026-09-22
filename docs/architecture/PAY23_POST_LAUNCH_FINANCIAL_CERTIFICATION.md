@@ -135,6 +135,24 @@ The script exits non-zero for any failure. It emits
 `PAY23_ENTERPRISE_PAYMENT_SYSTEM=CERTIFIED` only for a complete live evidence
 bundle.
 
+## Inherited migration lifecycle repair
+
+Full same-head regression exposed a PAY-18 downgrade defect: the observability
+migration granted column-level SELECT authority to `app_security_owner` and its
+downgrade revoked the entire requested column set, including authority that
+already existed in the predecessor.
+
+PAY-23 repairs revision `zz37d8e9f0a63` without adding a new Alembic revision.
+The PAY-18 upgrade now journals only the column grants it actually adds in
+`app_private.pay18_financial_observability_acl_delta`. Downgrade revokes only
+that recorded delta and drops the journal. If the journal is missing, downgrade
+fails closed rather than guessing and potentially removing predecessor
+authority.
+
+This repair is pre-production migration hardening. It does not authorize a
+production deployment or money movement. Any executable SHA containing this
+repair still requires fresh PAY-22 exact-SHA authorization before live rollout.
+
 ## Current Stage 0 consequence
 
 CI proves the certifier, the read-only contract, and inherited Finance/platform
