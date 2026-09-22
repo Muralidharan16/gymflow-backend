@@ -70,5 +70,13 @@
       "evidence_manifest_sha256"
     ],
     "mismatch_fails_certification": true
+  },
+  "historical_migration_repair": {
+    "revision": "zz37d8e9f0a63",
+    "phase": "PAY-18",
+    "purpose": "preserve predecessor app_security_owner column authority across downgrade",
+    "mechanism": "upgrade-time ACL delta journal; downgrade revokes only PAY-18-owned grants",
+    "missing_delta_state_behavior": "fail_closed",
+    "adds_new_schema_revision": false
   }
 }
