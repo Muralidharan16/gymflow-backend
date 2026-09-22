@@ -35,8 +35,10 @@ once.
 **Settlement versus refund.** Settlement reconciliation and refund-intent
 creation race against the same captured/applied payment from independent
 sessions. Both operations lock the payment authority. The result must contain
-one settlement entry and one refund obligation without over-refund or lost
-obligation.
+one settlement entry and one durable requested refund obligation with one
+`finance.refund.intent.created` outbox event, without over-refund or lost
+obligation. No provider execution command may be created by the intent stage;
+PAY-10 owns later provider-execution materialization and claiming.
 
 ## Outbound provider crash windows
 
