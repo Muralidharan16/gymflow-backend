@@ -71,7 +71,10 @@
       "worker_broker_depth",
       "http_latency",
       "throughput"
-    ]
+    ],
+    "warmup_seconds": 120,
+    "measured_soak_duration_seconds": 300,
+    "warmup_excluded_from_measured_windows": true
   },
   "finance_soak_tracks": [
     "database_deadlocks",
