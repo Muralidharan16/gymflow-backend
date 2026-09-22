@@ -12,12 +12,32 @@
   "new_migration": false,
   "no_global_payment_switch": true,
   "stages": [
-    {"stage": 0, "name": "live_config_egress_blocked"},
-    {"stage": 1, "name": "internal_organization"},
-    {"stage": 2, "name": "selected_test_organization"},
-    {"stage": 3, "name": "small_merchant_cohort", "max_merchants": 10},
-    {"stage": 4, "name": "limited_percentage", "max_basis_points": 1000},
-    {"stage": 5, "name": "general_availability"}
+    {
+      "stage": 0,
+      "name": "live_config_egress_blocked"
+    },
+    {
+      "stage": 1,
+      "name": "internal_organization"
+    },
+    {
+      "stage": 2,
+      "name": "selected_test_organization"
+    },
+    {
+      "stage": 3,
+      "name": "small_merchant_cohort",
+      "max_merchants": 10
+    },
+    {
+      "stage": 4,
+      "name": "limited_percentage",
+      "max_basis_points": 1000
+    },
+    {
+      "stage": 5,
+      "name": "general_availability"
+    }
   ],
   "kill_switches": [
     "checkout",
@@ -49,7 +69,10 @@
     "human_authorization_required": true,
     "authorized_sha_must_equal_certified_sha": true,
     "deployed_sha_must_equal_certified_sha": true,
-    "authorization_must_be_external_to_executable_candidate": true
+    "authorization_must_be_external_to_executable_candidate": true,
+    "authorization_record_path": "docs/architecture/pay22_production_activation_authorization.json",
+    "authorization_record_must_be_only_change_after_certified_candidate": true,
+    "initial_authorized_stage": 0
   },
   "activation_safety": {
     "default": "deny",
@@ -60,5 +83,10 @@
     "payment_outage_requires_whole_platform_shutdown": false
   },
   "readiness_marker": "PAY22_CONTROL_PLANE_CERTIFIED=PASS",
-  "authorization_marker": "PAY22_PRODUCTION_ACTIVATION_AUTHORIZED"
+  "authorization_marker": "PAY22_PRODUCTION_ACTIVATION_AUTHORIZED",
+  "stage_transition": {
+    "forward_rule": "same_stage_or_next_stage_only",
+    "skipped_forward_stages_forbidden": true,
+    "emergency_rollback_to_lower_stage_allowed": true
+  }
 }
