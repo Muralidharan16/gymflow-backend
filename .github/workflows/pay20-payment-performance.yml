@@ -469,8 +469,12 @@ jobs:
       - name: Migrate current exact head and grant synthetic Platform Billing surface
         run: |
           set -euo pipefail
-          python -s -m alembic -c alembic.ini upgrade head
-          test "$(python -s -m alembic -c alembic.ini current | awk 'NR==1 {print $1}')" = "${PAY20_ALEMBIC_HEAD}"
+          DATABASE_URL="postgresql+asyncpg://migration_owner:$MIGRATION_PASSWORD@127.0.0.1:5432/gymflow_pay20_platform_test" \
+            python -s -m alembic -c alembic.ini upgrade head
+          test "$(
+            DATABASE_URL="postgresql+asyncpg://migration_owner:$MIGRATION_PASSWORD@127.0.0.1:5432/gymflow_pay20_platform_test" \
+              python -s -m alembic -c alembic.ini current | awk 'NR==1 {print $1}'
+          )" = "${PAY20_ALEMBIC_HEAD}"
           PGPASSWORD="$MIGRATION_PASSWORD" psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 -U migration_owner -d gymflow_pay20_platform_test <<'SQL'
           DO $$
