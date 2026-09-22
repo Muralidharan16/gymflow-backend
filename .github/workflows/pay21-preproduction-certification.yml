@@ -189,7 +189,7 @@ jobs:
           set -euo pipefail
           mkdir -p pay21-runtime-evidence
           bash scripts/ci/run_pay21_preproduction_runtime.sh | tee pay21-runtime-evidence/runtime.log
-          for marker in             PAY21_REAL_POSTGRESQL=PASS             PAY21_REAL_REDIS_TLS=PASS             PAY21_REAL_CELERY=PASS             PAY21_REAL_TLS_INGRESS=PASS             PAY21_PRODUCTION_IMAGE=PASS             PAY21_PRODUCTION_DB_ROLES=PASS             PAY21_NETWORK_CONTROLS=PASS
+          for marker in             PAY21_REAL_POSTGRESQL=PASS             PAY21_REAL_REDIS_TLS=PASS             PAY21_REAL_CELERY=PASS             PAY21_REAL_TLS_INGRESS=PASS             PAY21_REAL_OTLP_EXPORT=PASS             PAY21_PRODUCTION_IMAGE=PASS             PAY21_PRODUCTION_DB_ROLES=PASS             PAY21_NETWORK_CONTROLS=PASS             PAY21_BAD_DEPLOYMENT_ROLLBACK=PASS
           do
             grep -q "^$marker$" pay21-runtime-evidence/runtime.log
           done
