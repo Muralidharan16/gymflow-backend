@@ -74,19 +74,16 @@ do
   table_name="${relation#*.}"
   direct="$(
     sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 -d "${DB_NAME}" \
-      -v role_name="${MAINT_LOGIN}" \
-      -v schema_name="${schema_name}" \
-      -v table_name="${table_name}" \
       -c "SELECT pg_catalog.has_table_privilege(
-            :'role_name',
+            '${MAINT_LOGIN}',
             relation_data.oid,
             'SELECT'
           )
           FROM pg_catalog.pg_class AS relation_data
           JOIN pg_catalog.pg_namespace AS namespace_data
             ON namespace_data.oid=relation_data.relnamespace
-          WHERE namespace_data.nspname=:'schema_name'
-            AND relation_data.relname=:'table_name'"
+          WHERE namespace_data.nspname='${schema_name}'
+            AND relation_data.relname='${table_name}'"
   )"
   test "${direct}" = "f"
 done
