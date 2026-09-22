@@ -66,8 +66,23 @@ class MemberService:
         except (TypeError, ValueError) as exc:
             raise NotFoundError("Organization context not found", error_code="NOT_FOUND") from exc
 
-    async def _current_organization_slug(self) -> str:
-        """Return only the current tenant slug through the bounded DB capability."""
+    async def _current_organization_slug(
+        self,
+        verified_slug: str | None = None,
+    ) -> str:
+        """Return the current tenant slug through the bounded DB capability.
+
+        The member-list hot path may pass the slug already returned by
+        public.current_organization_slug() in its single optimized query. This
+        preserves PAY-20's one-round-trip list path without bypassing the
+        service-level tenant-slug boundary.
+        """
+        if verified_slug is not None:
+            normalized = str(verified_slug).strip()
+            if not normalized:
+                raise NotFoundError("Organization not found", error_code="NOT_FOUND")
+            return normalized
+
         org_slug = await self.session.scalar(
             select(func.public.current_organization_slug())
         )
@@ -310,6 +325,8 @@ class MemberService:
             page,
             size,
         )
+        if members:
+            org_slug = await self._current_organization_slug(org_slug)
         for member in members:
             member.member_display_code = _member_display_code(
                 org_slug,
