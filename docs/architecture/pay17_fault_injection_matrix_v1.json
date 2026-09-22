@@ -98,7 +98,7 @@
       "proof": [
         "pay17_settlement_refund_race"
       ],
-      "required_outcome": "both operations serialize on payment truth with one settlement effect and one bounded refund obligation"
+      "required_outcome": "both operations serialize on payment truth; one settlement effect and one durable requested refund plus refund-intent outbox event commit, with zero premature provider execution commands"
     },
     "db_deadlock": {
       "proof": [
