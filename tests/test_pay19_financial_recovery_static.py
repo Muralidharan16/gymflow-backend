@@ -123,6 +123,10 @@ def test_seed_uses_certified_services_and_real_refund_subscription_capabilities(
 def test_post_restore_replay_guards_require_zero_duplicate_money_effects() -> None:
     source = REPLAY.read_text(encoding="utf-8")
     assert "if client.requests:" in source
+    assert "Checkout orchestration requires an issued invoice" in source
+    assert 'invoice_status != "paid"' in source
+    assert "provider operation status drift after replay" in source
+    assert "provider object drift after replay" in source
     assert "duplicate provider operation" in source
     assert "repeated payment application record" in source
     assert "repeated payment allocation" in source
