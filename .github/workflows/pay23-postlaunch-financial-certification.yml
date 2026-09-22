@@ -6,12 +6,14 @@ on:
       - hardening/pay23-postlaunch-financial-certification
   pull_request:
     paths:
+      - 'alembic/versions/zz37d8e9f0a63_pay18_financial_observability.py'
       - 'app/payment_certification/**'
       - 'app/services/member_service.py'
       - 'scripts/operations/pay23_*'
       - 'scripts/verify_head_workflow_bootstrap.py'
       - 'tests/test_head_workflow_bootstrap_wrappers.py'
       - 'tests/test_migration_app_secure_owner_context_boundary.py'
+      - 'tests/test_pay23_pay18_acl_reversibility.py'
       - 'tests/test_pay23_postlaunch_financial_certification.py'
       - 'docs/architecture/PAY23_POST_LAUNCH_FINANCIAL_CERTIFICATION.md'
       - 'docs/architecture/pay23_postlaunch_financial_certification_v1.json'
@@ -71,6 +73,7 @@ jobs:
           from pathlib import Path
           allowed = {
               ".github/workflows/pay23-postlaunch-financial-certification.yml",
+              "alembic/versions/zz37d8e9f0a63_pay18_financial_observability.py",
               "app/payment_certification/__init__.py",
               "app/payment_certification/post_launch.py",
               "app/services/member_service.py",
@@ -81,6 +84,7 @@ jobs:
               "scripts/verify_head_workflow_bootstrap.py",
               "tests/test_head_workflow_bootstrap_wrappers.py",
               "tests/test_migration_app_secure_owner_context_boundary.py",
+              "tests/test_pay23_pay18_acl_reversibility.py",
               "tests/test_pay23_postlaunch_financial_certification.py",
           }
           changed = {
@@ -93,8 +97,16 @@ jobs:
                   f"PAY-23 exact scope mismatch: missing={sorted(allowed-changed)}, "
                   f"unexpected={sorted(changed-allowed)}"
               )
-          if any(path.startswith("alembic/versions/") for path in changed):
-              raise SystemExit("PAY-23 must not add or alter a migration")
+          migration_changes = {
+              path for path in changed if path.startswith("alembic/versions/")
+          }
+          if migration_changes != {
+              "alembic/versions/zz37d8e9f0a63_pay18_financial_observability.py"
+          }:
+              raise SystemExit(
+                  "PAY-23 migration scope must contain exactly the PAY-18 ACL "
+                  f"reversibility repair: {sorted(migration_changes)}"
+              )
           print(f"PAY-23 exact allowlist paths: {len(changed)}")
           PY
           python -s scripts/verify_alembic_graph.py
@@ -104,7 +116,7 @@ jobs:
           set -euo pipefail
           python -m json.tool docs/architecture/pay23_postlaunch_financial_certification_v1.json >/dev/null
           python -m py_compile             app/payment_certification/post_launch.py             scripts/operations/pay23_certify_postlaunch.py             tests/test_pay23_postlaunch_financial_certification.py
-          python -m pytest --noconftest -q --maxfail=1             tests/test_pay23_postlaunch_financial_certification.py             tests/platform_billing/test_pay14_reconciliation_accounting.py             tests/platform_billing/test_pay14_reconciliation_accounting_static.py
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay23_postlaunch_financial_certification.py             tests/test_pay23_pay18_acl_reversibility.py             tests/platform_billing/test_pay14_reconciliation_accounting.py             tests/platform_billing/test_pay14_reconciliation_accounting_static.py
           python - <<'PY'
           from pathlib import Path
           sql = Path("scripts/operations/pay23_local_snapshot.sql").read_text().upper()
