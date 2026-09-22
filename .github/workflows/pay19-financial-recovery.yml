@@ -445,7 +445,7 @@ jobs:
             -o "-c config_file=/tmp/pay19-full.conf -c hba_file=/tmp/pay19-full-hba.conf -c archive_mode=off -c archive_command=/bin/true" \
             -w start
           sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -p "$FULL_PORT" -d "$SOURCE_DB" \
+            -h "$FULL_SOCKET" -p "$FULL_PORT" -d "$SOURCE_DB" \
             -f scripts/ci/pay19_financial_fingerprint.sql > "$EVIDENCE_DIR/full-finance.txt"
           cmp "$EVIDENCE_DIR/source-finance.txt" "$EVIDENCE_DIR/full-finance.txt"
           echo 'PAY19_PHYSICAL_RESTORE=PASS'
@@ -530,7 +530,7 @@ jobs:
             -w start
           promotion_deadline="$(( $(date +%s%3N) + RTO_TARGET_MS ))"
           while true; do
-            recovery="$(sudo -u postgres psql -X -qAt -h 127.0.0.1 -p "$PITR_PORT" -d "$SOURCE_DB" -c 'SELECT pg_catalog.pg_is_in_recovery()' 2>/dev/null || true)"
+            recovery="$(sudo -u postgres psql -X -qAt -h "$PITR_SOCKET" -p "$PITR_PORT" -d "$SOURCE_DB" -c 'SELECT pg_catalog.pg_is_in_recovery()' 2>/dev/null || true)"
             if [ "$recovery" = "f" ]; then break; fi
             if [ "$(date +%s%3N)" -ge "$promotion_deadline" ]; then
               sudo cat /tmp/pay19-pitr.log >&2 || true
@@ -538,12 +538,12 @@ jobs:
             fi
             sleep 1
           done
-          pre_count="$(sudo -u postgres psql -X -qAt -h 127.0.0.1 -p "$PITR_PORT" -d "$SOURCE_DB" -c "SELECT count(*) FROM pay19_ci.recovery_sentinels WHERE name='pre_target'")"
-          post_count="$(sudo -u postgres psql -X -qAt -h 127.0.0.1 -p "$PITR_PORT" -d "$SOURCE_DB" -c "SELECT count(*) FROM pay19_ci.recovery_sentinels WHERE name='post_target'")"
+          pre_count="$(sudo -u postgres psql -X -qAt -h "$PITR_SOCKET" -p "$PITR_PORT" -d "$SOURCE_DB" -c "SELECT count(*) FROM pay19_ci.recovery_sentinels WHERE name='pre_target'")"
+          post_count="$(sudo -u postgres psql -X -qAt -h "$PITR_SOCKET" -p "$PITR_PORT" -d "$SOURCE_DB" -c "SELECT count(*) FROM pay19_ci.recovery_sentinels WHERE name='post_target'")"
           test "$pre_count" = "1"
           test "$post_count" = "0"
           sudo -u postgres psql -X -qAt -v ON_ERROR_STOP=1 \
-            -h 127.0.0.1 -p "$PITR_PORT" -d "$SOURCE_DB" \
+            -h "$PITR_SOCKET" -p "$PITR_PORT" -d "$SOURCE_DB" \
             -f scripts/ci/pay19_financial_fingerprint.sql > "$EVIDENCE_DIR/pitr-finance.txt"
           cmp "$EVIDENCE_DIR/source-finance.txt" "$EVIDENCE_DIR/pitr-finance.txt"
           rto_end_ms="$(date +%s%3N)"
