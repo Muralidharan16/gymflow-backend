@@ -193,10 +193,12 @@ async def test_100_concurrent_identical_callbacks_converge_to_one_financial_effe
         )
         await session.commit()
 
-    assert await fetch_scalar(
-        "SELECT count(*) FROM finance.provider_webhook_inbox "
-        "WHERE provider_event_id='evt_pay17_callback_100'"
-    ) == 1
+    async with AsyncSessionLocal() as session:
+        replay = await _webhook_service(session).record_verified_webhook(webhook)
+        await session.commit()
+    assert replay.inbox_id == inbox_id
+    assert replay.replayed is True
+    assert replay.status == "processed"
     assert await fetch_scalar(
         "SELECT count(*) FROM finance.payment_events "
         "WHERE provider_event_id='evt_pay17_callback_100'"
@@ -301,11 +303,12 @@ async def test_process_rollback_before_commit_is_reclaimable_without_duplicate_m
         "WHERE payment_id=:payment_id",
         {"payment_id": checkout.finance_checkout_intent_id},
     ) == 1
-    assert await fetch_scalar(
-        "SELECT status FROM finance.provider_webhook_inbox "
-        "WHERE id=:inbox_id",
-        {"inbox_id": receipt.inbox_id},
-    ) == "processed"
+    async with AsyncSessionLocal() as session:
+        replay = await _webhook_service(session).record_verified_webhook(webhook)
+        await session.commit()
+    assert replay.inbox_id == receipt.inbox_id
+    assert replay.replayed is True
+    assert replay.status == "processed"
 
 
 @pytest.mark.asyncio
@@ -409,10 +412,12 @@ async def test_webhook_before_checkout_response_is_deferred_then_recovers_paymen
         )
         await webhook_session.commit()
 
-    assert await fetch_scalar(
-        "SELECT status FROM finance.provider_webhook_inbox WHERE id=:id",
-        {"id": receipt.inbox_id},
-    ) == "processed"
+    async with AsyncSessionLocal() as session:
+        replay = await _webhook_service(session).record_verified_webhook(webhook)
+        await session.commit()
+    assert replay.inbox_id == receipt.inbox_id
+    assert replay.replayed is True
+    assert replay.status == "processed"
     assert await fetch_scalar(
         "SELECT count(*) FROM finance.payment_events "
         "WHERE provider_event_id='evt_pay17_early_webhook'"
@@ -693,6 +698,12 @@ async def test_provider_clock_skew_outside_window_is_rejected_before_durable_inb
         "SELECT count(*) FROM finance.provider_webhook_inbox "
         "WHERE provider_event_id='evt_pay17_clock_skew'"
     ) == 0
+
+
+def test_pay17_never_uses_admin_visibility_to_assert_forced_rls_webhook_rows():
+    source = __import__("pathlib").Path(__file__).read_text(encoding="utf-8")
+    assert "fetch_scalar(\n        \"SELECT count(*) FROM finance.provider_webhook_inbox" not in source
+    assert "fetch_scalar(\n        \"SELECT status FROM finance.provider_webhook_inbox" not in source
 
 
 def test_finance_lease_and_timeout_authority_uses_database_clock_not_process_clock():
