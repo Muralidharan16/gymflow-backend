@@ -43,8 +43,8 @@ finance_settlements AS (
     FROM finance.outbox_events o, params x
     WHERE o.created_at >= x.window_start
       AND o.created_at < x.window_end
-      AND o.aggregate_type = 'payment'
-      AND o.event_type = 'finance.payment.reconciled'
+      AND o.aggregate_type = 'settlement'
+      AND o.event_type = 'finance.settlement.reconciled'
 ),
 allocation_rollup AS (
     SELECT
