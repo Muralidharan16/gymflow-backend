@@ -10,6 +10,7 @@ on:
       - 'tests/test_pay22_controlled_production_activation.py'
       - 'docs/architecture/PAY22_CONTROLLED_PRODUCTION_ACTIVATION.md'
       - 'docs/architecture/pay22_production_activation_contract_v1.json'
+      - 'docs/architecture/pay22_production_activation_authorization.json'
       - '.github/workflows/pay22-controlled-production-activation.yml'
 
 permissions:
@@ -48,7 +49,11 @@ jobs:
           git diff --name-only "$PAY22_BASE_SHA...HEAD" > /tmp/pay22-changed.txt
           python - <<'PY'
           from pathlib import Path
-          allowed = {
+          import json
+          import subprocess
+          from pathlib import Path
+
+          executable_allowed = {
               ".github/workflows/pay22-controlled-production-activation.yml",
               "app/payment_activation/__init__.py",
               "app/payment_activation/domain.py",
@@ -57,18 +62,88 @@ jobs:
               "docs/architecture/pay22_production_activation_contract_v1.json",
               "tests/test_pay22_controlled_production_activation.py",
           }
+          authorization_path = "docs/architecture/pay22_production_activation_authorization.json"
           changed = {
               line.strip()
               for line in Path("/tmp/pay22-changed.txt").read_text().splitlines()
               if line.strip()
           }
-          if changed != allowed:
+          accepted = (executable_allowed, executable_allowed | {authorization_path})
+          if changed not in accepted:
               raise SystemExit(
-                  f"PAY-22 exact scope mismatch: missing={sorted(allowed-changed)}, "
-                  f"unexpected={sorted(changed-allowed)}"
+                  "PAY-22 exact scope mismatch: "
+                  f"changed={sorted(changed)}"
               )
           if any(path.startswith("alembic/versions/") for path in changed):
               raise SystemExit("PAY-22 control-plane slice must not add a migration")
+
+          auth_file = Path(authorization_path)
+          if authorization_path in changed:
+              if not auth_file.is_file():
+                  raise SystemExit("PAY-22 authorization path is in diff but file is missing")
+              data = json.loads(auth_file.read_text())
+              required = {
+                  "schema_version",
+                  "phase",
+                  "authorization_id",
+                  "authorized_candidate_sha",
+                  "authorized_by",
+                  "authorized_at",
+                  "authorized_stage",
+                  "provider_egress_enabled",
+                  "kill_switches",
+              }
+              missing = required - set(data)
+              if missing:
+                  raise SystemExit(f"PAY-22 authorization record missing fields: {sorted(missing)}")
+              if data["schema_version"] != 1 or data["phase"] != "PAY-22":
+                  raise SystemExit("PAY-22 authorization record identity mismatch")
+              candidate = str(data["authorized_candidate_sha"]).strip()
+              if len(candidate) != 40 or any(ch not in "0123456789abcdef" for ch in candidate.lower()):
+                  raise SystemExit("PAY-22 authorization candidate SHA is invalid")
+              if not str(data["authorization_id"]).strip() or not str(data["authorized_by"]).strip():
+                  raise SystemExit("PAY-22 human authorization identity is incomplete")
+              if not str(data["authorized_at"]).strip():
+                  raise SystemExit("PAY-22 human authorization timestamp is missing")
+              if data["authorized_stage"] != 0:
+                  raise SystemExit("PAY-22 first production authorization must be Stage 0")
+              if data["provider_egress_enabled"] is not False:
+                  raise SystemExit("PAY-22 Stage 0 provider egress must remain blocked")
+              expected_switches = {
+                  "checkout",
+                  "webhooks",
+                  "payment_application",
+                  "subscription_activation",
+                  "refund_execution",
+                  "recurring_billing",
+                  "dunning",
+                  "platform_billing",
+              }
+              switches = data["kill_switches"]
+              if set(switches) != expected_switches or any(bool(value) for value in switches.values()):
+                  raise SystemExit("PAY-22 Stage 0 authorization must keep every kill switch disabled")
+
+              parent = subprocess.check_output(
+                  ["git", "rev-parse", "HEAD^"], text=True
+              ).strip()
+              if parent != candidate:
+                  raise SystemExit(
+                      f"PAY-22 authorization must directly parent certified candidate: "
+                      f"parent={parent} candidate={candidate}"
+                  )
+              delta = {
+                  line.strip()
+                  for line in subprocess.check_output(
+                      ["git", "diff", "--name-only", f"{candidate}...HEAD"],
+                      text=True,
+                  ).splitlines()
+                  if line.strip()
+              }
+              if delta != {authorization_path}:
+                  raise SystemExit(
+                      f"PAY-22 authorization commit must be evidence-only: {sorted(delta)}"
+                  )
+
           print(f"PAY-22 exact allowlist paths: {len(changed)}")
           PY
           python -s scripts/verify_alembic_graph.py
@@ -80,6 +155,8 @@ jobs:
           python -m py_compile app/payment_activation/domain.py app/payment_activation/service.py tests/test_pay22_controlled_production_activation.py
           python -m pytest --noconftest -q --maxfail=1 tests/test_pay22_controlled_production_activation.py
           echo 'PAY22_PROGRESSIVE_STAGES=PASS'
+          echo 'PAY22_SEQUENTIAL_STAGE_ADVANCEMENT=PASS'
+          echo 'PAY22_EMERGENCY_STAGE_ROLLBACK=PASS'
           echo 'PAY22_INDEPENDENT_KILL_SWITCHES=PASS'
           echo 'PAY22_PROVIDER_EGRESS_FENCE=PASS'
           echo 'PAY22_EXACT_SHA_AUTHORITY=PASS'
@@ -114,12 +191,27 @@ jobs:
       - name: Bind readiness to exact candidate
         run: |
           set -euo pipefail
-          candidate="$(git rev-parse HEAD)"
-          test "$(git merge-base "$PAY22_BASE_SHA" "$candidate")" = "$PAY22_BASE_SHA"
-          echo "PAY22_CERTIFIED_CANDIDATE_SHA=$candidate"
-          echo 'PAY22_STAGE0_EGRESS_BLOCKED=PASS'
-          echo 'PAY22_PAYMENT_OUTAGE_PLATFORM_INDEPENDENCE=PASS'
-          echo 'PAY22_CONTROL_PLANE_CERTIFIED=PASS'
-          echo 'PAY22_LIVE_MONEY_MOVEMENT=0'
-          echo 'PAY22_PRODUCTION_CUSTOMER_DATA=0'
-          echo 'PAY22_PRODUCTION_ACTIVATION_AUTHORIZED=REQUIRES_EXTERNAL_HUMAN_AUTHORIZATION'
+          head="$(git rev-parse HEAD)"
+          test "$(git merge-base "$PAY22_BASE_SHA" "$head")" = "$PAY22_BASE_SHA"
+          auth_file='docs/architecture/pay22_production_activation_authorization.json'
+          if test -f "$auth_file"; then
+            candidate="$(python -c 'import json; print(json.load(open("docs/architecture/pay22_production_activation_authorization.json"))["authorized_candidate_sha"])')"
+            test "$(git rev-parse HEAD^)" = "$candidate"
+            echo "PAY22_CERTIFIED_CANDIDATE_SHA=$candidate"
+            echo "PAY22_AUTHORIZATION_EVIDENCE_SHA=$head"
+            echo 'PAY22_AUTHORIZED_STAGE=0'
+            echo 'PAY22_STAGE0_EGRESS_BLOCKED=PASS'
+            echo 'PAY22_PAYMENT_OUTAGE_PLATFORM_INDEPENDENCE=PASS'
+            echo 'PAY22_CONTROL_PLANE_CERTIFIED=PASS'
+            echo 'PAY22_LIVE_MONEY_MOVEMENT=0'
+            echo 'PAY22_PRODUCTION_CUSTOMER_DATA=0'
+            echo 'PAY22_PRODUCTION_ACTIVATION_AUTHORIZED'
+          else
+            echo "PAY22_CERTIFIED_CANDIDATE_SHA=$head"
+            echo 'PAY22_STAGE0_EGRESS_BLOCKED=PASS'
+            echo 'PAY22_PAYMENT_OUTAGE_PLATFORM_INDEPENDENCE=PASS'
+            echo 'PAY22_CONTROL_PLANE_CERTIFIED=PASS'
+            echo 'PAY22_LIVE_MONEY_MOVEMENT=0'
+            echo 'PAY22_PRODUCTION_CUSTOMER_DATA=0'
+            echo 'PAY22_PRODUCTION_ACTIVATION_AUTHORIZED=REQUIRES_EXTERNAL_HUMAN_AUTHORIZATION'
+          fi
