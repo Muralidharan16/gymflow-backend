@@ -132,6 +132,8 @@ def test_post_restore_replay_guards_require_zero_duplicate_money_effects() -> No
     assert "repeated payment application record" in source
     assert "repeated payment allocation" in source
     assert "repeated payment application ledger effect" in source
+    assert "_security_owner_fetchone" in source
+    assert "worker_test_runtime" in source
     assert "repeated refund execution command" in source
     assert 'official_invoice_number != "VS/2425/00002"' in source
     assert "PAY19_NO_DUPLICATE_PROVIDER_OPERATION=PASS" in source
