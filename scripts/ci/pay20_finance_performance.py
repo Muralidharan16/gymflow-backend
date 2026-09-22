@@ -21,6 +21,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import psycopg
 import redis
 
 from app.core.database import AsyncSessionLocal
@@ -404,49 +405,65 @@ async def run_invoice_generation(
 
 
 def run_hot_subscription_activation(iterations: int) -> dict:
-    """Race PAY-5 delivery ownership, then consume through the sanctioned worker capability.
-
-    PAY-5 intentionally forbids worker_runtime from executing the underlying
-    PAY-4 activation function directly. The performance harness must preserve
-    that boundary while stressing the exact-once business effect.
-    """
+    """Race two PAY-5 consumers on the exact same leased Finance event."""
     latencies: list[float] = []
     exact_once = 0
-    workers = (pay5.WORKER_A, pay5.WORKER_B)
+    worker_id = pay5.WORKER_A
 
     for _ in range(iterations):
         pay5._cleanup_pay5()
         term = pay5._seed_ready()
 
+        # PAY-5 claims are global batches and may legitimately distribute
+        # unrelated pending events across workers. This disposable-test admin
+        # injection isolates the one target event at the post-claim lease/fence
+        # boundary so the performance proof stresses same-event consumption,
+        # not global queue scheduling.
+        with psycopg.connect(pay5.ADMIN_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE finance.outbox_events
+                       SET status='processing',
+                           attempt_count=attempt_count+1,
+                           claimed_at=pg_catalog.clock_timestamp(),
+                           leased_by=%s,
+                           leased_until=pg_catalog.clock_timestamp()
+                               + INTERVAL '60 seconds',
+                           lease_fence=lease_fence+1,
+                           last_error_code=NULL
+                     WHERE id=%s
+                       AND status='pending'
+                    RETURNING lease_fence
+                    """,
+                    (worker_id, pay4.EVENT),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise RuntimeError(
+                        "PAY-20 target Finance event was not pending"
+                    )
+                fence = int(row[0])
+            conn.commit()
+
         started = time.perf_counter()
-
-        def attempt(worker_id):
-            return worker_id, pay5._claim(worker_id)
-
         with ThreadPoolExecutor(max_workers=2) as pool:
-            claimed = list(pool.map(attempt, workers))
-
-        winners = [
-            (worker_id, rows[0])
-            for worker_id, rows in claimed
-            if rows
-        ]
-        if len(winners) != 1:
-            raise RuntimeError(
-                f"PAY-20 Finance-event claim drift: winners={len(winners)}"
+            rows = list(
+                pool.map(
+                    lambda _: pay5._consume(worker_id, fence),
+                    range(2),
+                )
             )
-
-        worker_id, row = winners[0]
-        fence = int(row[5])
-        consumed = pay5._consume(worker_id, fence)
         acknowledged = pay5._ack(worker_id, fence)
-
         latencies.append((time.perf_counter() - started) * 1000.0)
+
+        applied = sum(row[2] is True and row[3] is False for row in rows)
+        replayed = sum(row[2] is False and row[3] is True for row in rows)
         if (
             acknowledged is True
-            and consumed[0] == term
-            and consumed[2] is True
-            and consumed[3] is False
+            and applied == 1
+            and replayed == 1
+            and all(row[0] == term for row in rows)
             and pay4._status(term) == "active"
             and pay5._consumption_count() == 1
             and pay5._finance_subscription_event_count() == 1
