@@ -214,10 +214,12 @@ def test_webhook_signature_failure_logging_contains_no_sensitive_provider_eviden
 
 def test_aggregate_snapshot_is_security_definer_read_only_and_reduced_role_only() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
-    function = source[
-        source.index("CREATE FUNCTION app_secure.pay18_financial_observability_snapshot()"):
-        source.index("$function$", source.index("CREATE FUNCTION app_secure.pay18_financial_observability_snapshot()") + 80) + len("$function$")
-    ]
+    start = source.index(
+        "CREATE FUNCTION app_secure.pay18_financial_observability_snapshot()"
+    )
+    opening = source.index("$function$", start)
+    closing = source.index("$function$", opening + len("$function$"))
+    function = source[start : closing + len("$function$")]
     assert "SECURITY DEFINER" in function
     assert "LANGUAGE sql" in function
     assert "STABLE" in function
