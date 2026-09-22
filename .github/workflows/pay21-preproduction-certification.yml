@@ -134,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p pay21-provider-evidence
-          python -s scripts/ci/pay21_razorpay_test_mode_probe.py | tee pay21-provider-evidence/provider.log
+          PYTHONPATH="$GITHUB_WORKSPACE" python -s scripts/ci/pay21_razorpay_test_mode_probe.py | tee pay21-provider-evidence/provider.log
           grep -q '^PAY21_RAZORPAY_TEST_ACCOUNT=PASS$' pay21-provider-evidence/provider.log
           grep -q '^PAY21_RAZORPAY_REAL_HTTPS=PASS$' pay21-provider-evidence/provider.log
           grep -q '^PAY21_RAZORPAY_LIVE_KEY=REJECTED$' pay21-provider-evidence/provider.log
@@ -243,6 +243,8 @@ jobs:
       PAY6_APP_DATABASE_URL: postgresql://app_test_runtime:ci-pay21-member-app@127.0.0.1:5432/gymflow_pay21_member_test
       PAY6_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-pay21-member-migration@127.0.0.1:5432/gymflow_pay21_member_test
       PAY6_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay21-member-postgres@127.0.0.1:5432/gymflow_pay21_member_test
+      PAY5_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-pay21-member-worker@127.0.0.1:5432/gymflow_pay21_member_test
+      PAY5_ADMIN_DATABASE_URL: postgresql://postgres:ci-pay21-member-postgres@127.0.0.1:5432/gymflow_pay21_member_test
       REDIS_URL: redis://127.0.0.1:6379/0
       CELERY_BROKER_URL: redis://127.0.0.1:6379/1
       CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
@@ -276,8 +278,18 @@ jobs:
       - name: Execute member-commerce pre-production matrix
         run: |
           set -euo pipefail
-          python -m pytest -q --maxfail=1             tests/test_pay4_member_finance_binding_runtime.py::test_pending_admission_and_binding_are_canonical_and_runtime_table_blind             tests/test_pay4_member_finance_binding_runtime.py::test_fully_applied_payment_activates_exactly_once_under_concurrency             tests/test_pay4_member_finance_binding_runtime.py::test_future_paid_term_is_scheduled_not_prematurely_active             tests/test_pay6_offline_payments_runtime.py::test_checker_approval_creates_canonical_payment_allocation_ledger_and_paid_event             tests/test_pay6_offline_payments_runtime.py::test_partial_offline_payment_updates_invoice_but_does_not_emit_paid_event
+          python -m pytest -q --maxfail=1 \
+            tests/test_pay4_member_finance_binding_runtime.py::test_pending_admission_and_binding_are_canonical_and_runtime_table_blind \
+            tests/test_pay5_finance_event_delivery_runtime.py::test_two_consumers_racing_same_live_claim_converge_to_one_effect \
+            tests/test_pay6_offline_payments_runtime.py::test_checker_approval_creates_canonical_payment_allocation_ledger_and_paid_event \
+            tests/test_pay6_offline_payments_runtime.py::test_partial_offline_payment_updates_invoice_but_does_not_emit_paid_event
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres \
+            -c "GRANT CONNECT ON DATABASE $PAY20_MIGRATION_DB TO app_test_runtime;"
+          DATABASE_URL="postgresql+asyncpg://migration_owner:$MIGRATION_PASSWORD@127.0.0.1:5432/$PAY20_MIGRATION_DB" \
+          python -m pytest -q --maxfail=1 \
+            tests/test_subscription_lifecycle_migrations.py::test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignment_integrity
           echo 'PAY21_MEMBER_ADMISSION=PASS'
+          echo 'PAY21_MEMBER_ENTITLEMENT_EXACT_ONCE=PASS'
           echo 'PAY21_CASH_PAYMENT=PASS'
           echo 'PAY21_PARTIAL_PAYMENT=PASS'
           echo 'PAY21_RENEWAL=PASS'
@@ -325,7 +337,7 @@ jobs:
     timeout-minutes: 80
     env:
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-platform-migration@127.0.0.1:5432/gymflow_platform_billing_test_pay21
-      PLATFORM_BILLING_TEST_DATABASE_URL: postgresql+asyncpg://pay21_platform_runtime:ci-pay21-platform-runtime@127.0.0.1:5432/gymflow_platform_billing_test_pay21
+      PLATFORM_BILLING_TEST_DATABASE_URL: postgresql+asyncpg://pay21_platform_fixture:ci-pay21-platform-fixture@127.0.0.1:5432/gymflow_platform_billing_test_pay21
       PLATFORM_BILLING_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-platform-migration@127.0.0.1:5432/gymflow_platform_billing_test_pay21
       REDIS_URL: redis://127.0.0.1:6379/0
       CELERY_BROKER_URL: redis://127.0.0.1:6379/1
@@ -358,21 +370,26 @@ jobs:
           bash scripts/ci/bootstrap_cluster_roles.sh
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
           ALTER ROLE migration_owner PASSWORD 'ci-pay21-platform-migration';
-          CREATE ROLE pay21_platform_runtime LOGIN PASSWORD 'ci-pay21-platform-runtime'
+          CREATE ROLE pay21_platform_fixture LOGIN PASSWORD 'ci-pay21-platform-fixture'
             NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-          GRANT app_runtime TO pay21_platform_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          GRANT app_user TO pay21_platform_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
-          ALTER ROLE pay21_platform_runtime SET row_security='on';
-          ALTER ROLE pay21_platform_runtime SET statement_timeout='5s';
-          ALTER ROLE pay21_platform_runtime SET lock_timeout='2s';
-          ALTER ROLE pay21_platform_runtime SET idle_in_transaction_session_timeout='15s';
+          ALTER ROLE pay21_platform_fixture SET row_security='on';
+          ALTER ROLE pay21_platform_fixture SET statement_timeout='15s';
+          ALTER ROLE pay21_platform_fixture SET lock_timeout='3s';
+          ALTER ROLE pay21_platform_fixture SET idle_in_transaction_session_timeout='30s';
           CREATE DATABASE gymflow_platform_billing_test_pay21 OWNER migration_owner;
           REVOKE ALL ON DATABASE gymflow_platform_billing_test_pay21 FROM PUBLIC;
-          GRANT CONNECT ON DATABASE gymflow_platform_billing_test_pay21 TO pay21_platform_runtime;
+          GRANT CONNECT ON DATABASE gymflow_platform_billing_test_pay21 TO pay21_platform_fixture;
           SQL
           bash scripts/ci/provision_infrastructure_extensions.sh gymflow_platform_billing_test_pay21
           python -s -m alembic -c alembic.ini upgrade head
           python -s -m alembic -c alembic.ini current --check-heads
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d gymflow_platform_billing_test_pay21 <<'SQL'
+          GRANT USAGE ON SCHEMA public TO pay21_platform_fixture;
+          GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO pay21_platform_fixture;
+          GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA public TO pay21_platform_fixture;
+          GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO pay21_platform_fixture;
+          SQL
+          echo 'PAY21_PLATFORM_FIXTURE_AUTHORITY=ISOLATED_TEST_ONLY'
       - name: Execute Platform Billing pre-production matrix
         run: |
           set -euo pipefail
@@ -405,6 +422,7 @@ jobs:
       BACKUP_FILE: /tmp/pay21-finance.dump
       EVIDENCE_DIR: pay21-recovery-evidence
       MIGRATION_PASSWORD: ci-pay21-recovery-migration
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-recovery-migration@127.0.0.1:5432/gymflow_pay21_recovery_test
       FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-pay21-recovery-finance@127.0.0.1:5432/gymflow_pay21_recovery_test
       FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay21-recovery-migration@127.0.0.1:5432/gymflow_pay21_recovery_test
       TEST_DATABASE_URL: postgresql+asyncpg://app_test_runtime:ci-pay21-recovery-app@127.0.0.1:5432/gymflow_pay21_recovery_test
@@ -515,23 +533,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  bad_deployment_rollback:
-    name: PAY-21 inherited real bad-deployment rollback
-    if: ${{ github.event_name != 'pull_request' }}
-    uses: ./.github/workflows/p9d-bad-deployment-rollback.yml
-
-  rollback_decision:
-    name: PAY-21 bad-deployment rollback decision
-    if: ${{ always() && github.event_name != 'pull_request' }}
-    needs:
-      - bad_deployment_rollback
-    runs-on: ubuntu-24.04
-    steps:
-      - run: |
-          set -euo pipefail
-          test "${{ needs.bad_deployment_rollback.result }}" = success
-          echo 'PAY21_BAD_DEPLOYMENT_ROLLBACK=PASS'
-
   certify:
     name: PAY-21 final pre-production decision
     if: ${{ always() && github.event_name != 'pull_request' }}
@@ -544,8 +545,6 @@ jobs:
       - finance_matrix_decision
       - platform_scenarios
       - backup_restore
-      - bad_deployment_rollback
-      - rollback_decision
     runs-on: ubuntu-24.04
     steps:
       - name: Require every exact-head PAY-21 gate

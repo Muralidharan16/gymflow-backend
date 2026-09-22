@@ -20,7 +20,7 @@ SOCAT_PID=""
 
 cleanup() {
   set +e
-  docker rm -f pay21-ingress pay21-api pay21-worker pay21-redis >/dev/null 2>&1 || true
+  docker rm -f pay21-ingress pay21-bad-api pay21-api pay21-worker pay21-redis >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   if [ -n "$SOCAT_PID" ]; then
     kill "$SOCAT_PID" >/dev/null 2>&1 || true
@@ -107,6 +107,7 @@ GRANT CONNECT ON DATABASE $DB TO
   pay21_maintenance_runtime,pay21_finance_config_runtime;
 SQL
 
+export MIGRATION_PASSWORD
 bash scripts/ci/verify_cluster_roles.sh
 bash scripts/ci/provision_infrastructure_extensions.sh "$DB"
 
@@ -206,7 +207,9 @@ docker run -d --name pay21-api --network "$NET"   --add-host=host.docker.interna
 
 docker run -d --name pay21-worker --network "$NET"   --add-host=host.docker.internal:host-gateway   -v "$TLS_DIR:/run/pay21-tls:ro"   -e ENVIRONMENT=production   -e DOERS_PROCESS_PROFILE=worker   -e CELERY_WORKER_PROFILE=worker   -e WORKER_DATABASE_URL="$WORKER_DB"   -e REDIS_URL="$REDIS_URL"   -e CELERY_BROKER_URL="$CELERY_BROKER_URL"   -e CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND"   -e SECRET_KEY="$APP_SECRET"   -e AWS_ACCESS_KEY_ID=pay21-preprod-synthetic   -e AWS_SECRET_ACCESS_KEY=pay21-preprod-synthetic   -e AWS_REGION_NAME=us-east-1   -e S3_BUCKET_NAME=pay21-preprod-synthetic   -e NOTIFICATION_EMAIL_PROVIDER_MODE=disabled   -e SEARCH_PROVIDER_MODE=disabled   -e PLATFORM_BILLING_PROVIDER_MODE=disabled   -e PLATFORM_BILLING_CHECKOUT=false   -e PLATFORM_BILLING_WEBHOOK_PROCESSING=false   -e PLATFORM_BILLING_DUNNING_TRANSITIONS=false   -e PLATFORM_BILLING_NOTIFICATIONS=false   -e LOG_LEVEL=warning   "$IMAGE"   python -m celery -A app.core.celery_app:celery_app worker     --pool=solo --concurrency=1 --queues=pay21-preprod     --hostname=pay21-preprod@%h --without-gossip --without-mingle --loglevel=WARNING   >/dev/null
 
-cat > "$NGINX_DIR/default.conf" <<'EOF'
+write_nginx_target() {
+  local target="$1"
+  cat > "$NGINX_DIR/default.conf" <<EOF
 server {
   listen 8443 ssl;
   server_name localhost;
@@ -214,15 +217,17 @@ server {
   ssl_certificate_key /tls/server.key;
   ssl_protocols TLSv1.2 TLSv1.3;
   location / {
-    proxy_set_header Host $host;
+    proxy_set_header Host \$host;
     proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_pass http://pay21-api:8000;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_pass http://${target}:8000;
   }
 }
 EOF
+}
 
-docker run -d --name pay21-ingress --network "$NET" -p 127.0.0.1:8443:8443   -v "$TLS_DIR:/tls:ro" -v "$NGINX_DIR/default.conf:/etc/nginx/conf.d/default.conf:ro"   nginx:1.27-alpine >/dev/null
+write_nginx_target pay21-api
+docker run -d --name pay21-ingress --network "$NET" -p 127.0.0.1:8443:8443   -v "$TLS_DIR:/tls:ro" -v "$NGINX_DIR:/etc/nginx/conf.d:ro"   nginx:1.27-alpine >/dev/null
 
 for attempt in $(seq 1 120); do
   code="$(curl --cacert "$TLS_DIR/ca.crt" -sS -o /tmp/pay21-ready.json -w '%{http_code}'     https://localhost:8443/_system/ready 2>/dev/null || true)"
@@ -251,6 +256,74 @@ for attempt in $(seq 1 60); do
   fi
   sleep 1
 done
+
+# Prove a bad deployment fails readiness and the TLS router can restore the
+# exact current-head last-known-good container without schema or image rollback.
+BAD_REDIS_URL="rediss://:$REDIS_PASSWORD@pay21-missing-redis:6379/0?$REDISS_QUERY"
+BAD_BROKER_URL="rediss://:$REDIS_PASSWORD@pay21-missing-redis:6379/1?$REDISS_QUERY"
+BAD_RESULT_URL="rediss://:$REDIS_PASSWORD@pay21-missing-redis:6379/2?$REDISS_QUERY"
+docker run -d --name pay21-bad-api --network "$NET" \
+  --add-host=host.docker.internal:host-gateway \
+  -v "$TLS_DIR:/run/pay21-tls:ro" \
+  -e ENVIRONMENT=production \
+  -e DOERS_PROCESS_PROFILE=api \
+  -e DATABASE_URL="$API_DB" \
+  -e AUTH_DATABASE_URL="$AUTH_DB" \
+  -e REDIS_URL="$BAD_REDIS_URL" \
+  -e CELERY_BROKER_URL="$BAD_BROKER_URL" \
+  -e CELERY_RESULT_BACKEND="$BAD_RESULT_URL" \
+  -e SECRET_KEY="$APP_SECRET" \
+  -e AWS_ACCESS_KEY_ID=pay21-preprod-synthetic \
+  -e AWS_SECRET_ACCESS_KEY=pay21-preprod-synthetic \
+  -e AWS_REGION_NAME=us-east-1 \
+  -e S3_BUCKET_NAME=pay21-preprod-synthetic \
+  -e NOTIFICATION_EMAIL_PROVIDER_MODE=disabled \
+  -e SEARCH_PROVIDER_MODE=disabled \
+  -e PLATFORM_BILLING_PROVIDER_MODE=disabled \
+  -e PLATFORM_BILLING_CHECKOUT=false \
+  -e PLATFORM_BILLING_WEBHOOK_PROCESSING=false \
+  -e PLATFORM_BILLING_DUNNING_TRANSITIONS=false \
+  -e PLATFORM_BILLING_NOTIFICATIONS=false \
+  -e DOERS_PRESTOP_CONTROL_TOKEN="$PRESTOP_TOKEN" \
+  -e LOG_LEVEL=warning \
+  "$IMAGE" >/dev/null
+
+sleep 2
+test "$(docker inspect pay21-bad-api -f '{{.Image}}')" = "$IMAGE_ID"
+write_nginx_target pay21-bad-api
+docker exec pay21-ingress nginx -t
+docker exec pay21-ingress nginx -s reload
+bad_code=""
+for attempt in $(seq 1 30); do
+  bad_code="$(curl --cacert "$TLS_DIR/ca.crt" -sS -o /tmp/pay21-bad-ready.json -w '%{http_code}' \
+    https://localhost:8443/_system/ready 2>/dev/null || true)"
+  if [ "$bad_code" != "200" ]; then
+    break
+  fi
+  sleep 1
+done
+if [ "$bad_code" = "200" ]; then
+  echo 'PAY-21 deliberately bad deployment unexpectedly became ready' >&2
+  exit 1
+fi
+printf '%s\n' "$bad_code" > /tmp/pay21-bad-ready-status.txt
+
+write_nginx_target pay21-api
+docker exec pay21-ingress nginx -t
+docker exec pay21-ingress nginx -s reload
+rollback_ok=0
+for attempt in $(seq 1 60); do
+  code="$(curl --cacert "$TLS_DIR/ca.crt" -sS -o /tmp/pay21-rollback-ready.json -w '%{http_code}' \
+    https://localhost:8443/_system/ready 2>/dev/null || true)"
+  if [ "$code" = "200" ] && grep -q '"ready"' /tmp/pay21-rollback-ready.json; then
+    rollback_ok=1
+    break
+  fi
+  sleep 1
+done
+test "$rollback_ok" = "1"
+docker rm -f pay21-bad-api >/dev/null
+echo 'PAY21_BAD_DEPLOYMENT_ROLLBACK=PASS'
 
 # Only the TLS ingress may publish a host port.
 test -z "$(docker port pay21-api)"
@@ -285,6 +358,7 @@ record={
   "private_service_network":True,
   "published_ports":["127.0.0.1:8443/tcp"],
   "production_customer_data":False,
+  "bad_deployment_rollback":True,
   "decision":"PASS"
 }
 Path(path).write_text(json.dumps(record,indent=2,sort_keys=True)+"\n",encoding="utf-8")

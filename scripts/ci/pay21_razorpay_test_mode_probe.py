@@ -24,6 +24,9 @@ from app.finance_core.services.razorpay_sandbox import (
 )
 
 
+APPROVED_RAZORPAY_API = "https://api.razorpay.com/v1"
+
+
 def _required(name: str) -> str:
     value = str(os.environ.get(name, "")).strip()
     if not value:
@@ -40,6 +43,8 @@ async def main() -> int:
         require_webhook_secret=True,
         merchant_reference="doers_pay21_preproduction",
     )
+    if config.api_base_url != APPROVED_RAZORPAY_API:
+        raise SystemExit("PAY-21 Razorpay API origin drift")
     if not config.key_id.startswith("rzp_test_"):
         raise SystemExit("PAY-21 provider key is not Razorpay test mode")
     if "rzp_live_" in config.key_id.lower():

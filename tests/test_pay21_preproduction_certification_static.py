@@ -104,6 +104,8 @@ def test_pay21_runtime_uses_private_network_tls_real_celery_and_same_image() -> 
         "WORKER_IMAGE",
         "PAY21_PRODUCTION_DB_ROLES=PASS",
         "PAY21_NETWORK_CONTROLS=PASS",
+        "pay21-bad-api",
+        "PAY21_BAD_DEPLOYMENT_ROLLBACK=PASS",
     ):
         assert token in source
 
@@ -120,8 +122,9 @@ def test_pay21_workflow_requires_secret_injection_recovery_and_all_scenarios() -
         "pay19_financial_fingerprint.sql",
         "pg_dump",
         "pg_restore",
-        "p9d-bad-deployment-rollback.yml",
-        "test_fully_applied_payment_activates_exactly_once_under_concurrency",
+        "PAY21_BAD_DEPLOYMENT_ROLLBACK=PASS",
+        "test_two_consumers_racing_same_live_claim_converge_to_one_effect",
+        "test_lifecycle_constraints_enforce_overlap_tenant_lineage_and_assignment_integrity",
         "test_checker_approval_creates_canonical_payment_allocation_ledger_and_paid_event",
         "test_partial_offline_payment_updates_invoice_but_does_not_emit_paid_event",
         "test_partial_and_full_explicit_settlement_update_invoice_status",
