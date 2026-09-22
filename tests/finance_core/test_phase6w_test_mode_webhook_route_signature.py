@@ -228,7 +228,7 @@ async def test_phase6w_unsafe_webhook_config_fails_safely_before_mutation(client
 
 
 @pytest.mark.asyncio
-async def test_phase6w_replay_is_idempotent_and_unknown_refs_fail_safely(client):
+async def test_phase6w_replay_is_idempotent_and_unknown_refs_queue_safely(client):
     checkout = await seed_checkout()
     raw = razorpay_payload(event_id="evt_phase6w_replay", event_type="payment.authorized", payment_id="pay_phase6w_replay", status="authorized")
     missing = razorpay_payload(event_id="evt_phase6w_missing", order_id="order_missing", payment_id="pay_missing")
@@ -254,7 +254,16 @@ async def test_phase6w_replay_is_idempotent_and_unknown_refs_fail_safely(client)
 
     assert first.status_code == 202
     assert replay.status_code == 202
-    assert unknown.status_code == 400
+    # PAY-17 hardened the early-webhook race: valid signed provider evidence
+    # can arrive before local provider-order binding. Preserve it as retryable
+    # durable evidence instead of permanently rejecting a potentially
+    # successful payment.
+    assert unknown.status_code == 202
+    assert unknown.json() == {"status": "queued"}
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.payment_events "
+        "WHERE provider_event_id = 'evt_phase6w_missing'"
+    ) == 0
     assert await fetch_scalar("SELECT count(*) FROM finance.payment_events WHERE provider_event_id = 'evt_phase6w_replay'") == 1
     assert await fetch_scalar("SELECT status FROM finance.payments WHERE id = :id", {"id": checkout.finance_checkout_intent_id}) == "authorized"
 
