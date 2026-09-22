@@ -207,8 +207,14 @@ class MemberRepository(BaseRepository[Member]):
         has_active_subscription: Optional[bool] = None,
         page: int = 1,
         size: int = 10
-    ) -> Tuple[List[Member], int]:
-        """Search members with pagination scoped to org."""
+    ) -> Tuple[List[Member], int, str | None]:
+        """Search members with pagination scoped to org.
+
+        The normal page path deliberately returns count + current org slug in
+        the same PostgreSQL round trip as the page rows. PAY-20 keeps the
+        existing RLS/capability boundaries while removing two avoidable
+        request/DB round trips from this hot list endpoint.
+        """
         offset = (page - 1) * size
 
         active_subscription_exists = exists(
@@ -223,16 +229,20 @@ class MemberRepository(BaseRepository[Member]):
             Member.org_id == org_id,
             Member.is_active == is_active
         ]
-        
+
         if home_branch_id:
             filters.append(Member.home_branch_id == home_branch_id)
-            
+
         if status:
             filters.append(Member.status == status)
 
         if has_active_subscription is not None:
-            filters.append(active_subscription_exists if has_active_subscription else ~active_subscription_exists)
-        
+            filters.append(
+                active_subscription_exists
+                if has_active_subscription
+                else ~active_subscription_exists
+            )
+
         if search_term:
             normalized = search_term.strip()
             search_pattern = f"%{normalized.lower()}%"
@@ -242,15 +252,15 @@ class MemberRepository(BaseRepository[Member]):
             ]
             if normalized.isdigit():
                 search_filters.append(Member.member_number == int(normalized))
-            filters.append(
-                or_(
-                    *search_filters
-                )
-            )
-        
-        count_query = select(func.count()).select_from(Member).where(*filters)
-        total_result = await self.session.execute(count_query)
-        total = total_result.scalar() or 0
+            filters.append(or_(*search_filters))
+
+        total_scalar = (
+            select(func.count())
+            .select_from(Member)
+            .where(*filters)
+            .scalar_subquery()
+        )
+        org_slug_scalar = func.public.current_organization_slug()
 
         active_subscription_subquery = (
             select(
@@ -269,23 +279,52 @@ class MemberRepository(BaseRepository[Member]):
                 Member,
                 OrgBranch.branch_name.label("home_branch_name"),
                 active_subscription_subquery.c.active_subscription_id,
+                total_scalar.label("total_count"),
+                org_slug_scalar.label("org_slug"),
             )
             .outerjoin(OrgBranch, OrgBranch.id == Member.home_branch_id)
-            .outerjoin(active_subscription_subquery, active_subscription_subquery.c.member_id == Member.id)
+            .outerjoin(
+                active_subscription_subquery,
+                active_subscription_subquery.c.member_id == Member.id,
+            )
             .where(*filters)
             .order_by(Member.member_number, Member.name)
             .offset(offset)
             .limit(size)
         )
         result = await self.session.execute(query)
+        rows = result.all()
+
+        if not rows:
+            # Preserve historical pagination semantics for an out-of-range page:
+            # total still reflects the filtered relation even though no row can
+            # carry the scalar result.
+            total = int(
+                (
+                    await self.session.execute(
+                        select(func.count()).select_from(Member).where(*filters)
+                    )
+                ).scalar()
+                or 0
+            )
+            return [], total, None
+
+        total = int(rows[0][3] or 0)
+        org_slug = str(rows[0][4]) if rows[0][4] is not None else None
         members: list[Member] = []
-        for member, home_branch_name, active_subscription_id in result.all():
+        for (
+            member,
+            home_branch_name,
+            active_subscription_id,
+            _total_count,
+            _org_slug,
+        ) in rows:
             member.home_branch_name = home_branch_name
             member.active_subscription_id = active_subscription_id
             member.has_active_subscription = active_subscription_id is not None
             members.append(member)
-        
-        return members, total
+
+        return members, total, org_slug
 
     async def get_all_for_gym(self, gym_id: UUID, is_active: bool = True) -> List[Member]:
         """Get all members for a gym."""
