@@ -53,6 +53,15 @@ def test_pay17_fault_matrix_covers_every_required_attack():
     for fault in matrix["faults"].values():
         assert fault["proof"]
         assert fault["required_outcome"]
+    assert matrix["terminal_marker"] == "PAY17_FAULT_TOLERANCE=PASS"
+    assert set(matrix["inherited_same_head_workflows"]) == {
+        ".github/workflows/p5w2-worker-crash-redelivery-pg16.yml",
+        ".github/workflows/p5e-provider-ack-ambiguity-pg16.yml",
+        ".github/workflows/p5d-dependency-loss-pg16.yml",
+        ".github/workflows/p5r-race-deadlock-pg16.yml",
+        ".github/workflows/p6b-broker-reconnect-pg16.yml",
+        ".github/workflows/p6w-worker-shutdown-redelivery-pg16.yml",
+    }
 
 
 def test_pay17_hard_gates_are_zero_tolerance():
@@ -98,8 +107,11 @@ def test_pay17_finance_runtime_attacks_money_boundaries():
     for test_name in (
         "test_100_concurrent_identical_callbacks_converge_to_one_financial_effect",
         "test_process_rollback_before_commit_is_reclaimable_without_duplicate_money",
+        "test_death_after_claim_before_provider_call_becomes_unknown_then_reconciles_not_found",
+        "test_provider_success_then_process_death_reconciles_without_second_provider_call",
         "test_webhook_before_checkout_response_is_deferred_then_recovers_payment",
         "test_settlement_and_refund_race_serializes_without_lost_obligation",
+        "test_provider_clock_skew_outside_window_is_rejected_before_durable_inbox_write",
     ):
         assert f"async def {test_name}" in source
 
@@ -140,6 +152,21 @@ def test_provider_timeout_and_invalid_response_are_reconciliation_safe():
     assert "RAZORPAY_REFUND_AMOUNT_MISMATCH" in source
     assert "RAZORPAY_REFUND_CURRENCY_MISMATCH" in source
     assert "RAZORPAY_REFUND_STATUS_INVALID" in source
+
+
+def test_payment_lifecycle_races_are_real_expected_version_concurrency_proofs():
+    source = _source(
+        "tests/platform_billing/test_pay17_payment_lifecycle_races.py"
+    )
+    for test_name in (
+        "test_payment_and_cancellation_race_has_one_commit_then_preserves_cancellation_intent",
+        "test_payment_and_renewal_race_converges_to_one_paid_renewed_period",
+        "test_payment_and_expiry_race_never_loses_confirmed_payment_or_grants_from_stale_expiry",
+    ):
+        assert f"async def {test_name}" in source
+    assert "asyncio.gather(" in source
+    assert source.count("AND version=:expected_version") >= 4
+    assert "version=version+1" in source
 
 
 def test_payment_races_cannot_directly_overwrite_entitlement_authority():
@@ -223,3 +250,15 @@ def test_inherited_destructive_workflows_are_reusable_same_head_gates():
     assert "deadlock" in p5r_runtime
     assert "lease" in p5r_runtime
     assert "finance" in p5r_runtime
+
+def test_pay17_workflow_requires_dedicated_finance_and_platform_runtime_lanes():
+    workflow = _source(
+        ".github/workflows/pay17-fault-injection-concurrency.yml"
+    )
+    assert "finance_fault_runtime:" in workflow
+    assert "platform:" in workflow
+    assert "PAY17_RECON_DATABASE_URL" in workflow
+    assert "pay17_recon_test" in workflow
+    assert "tests/finance_core/test_pay17_fault_injection_concurrency.py" in workflow
+    assert "tests/platform_billing/test_pay17_payment_lifecycle_races.py" in workflow
+    assert "PAY17_FAULT_TOLERANCE=PASS" in workflow
