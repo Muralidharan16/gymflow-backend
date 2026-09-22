@@ -98,7 +98,9 @@ def test_finance_harness_uses_certified_real_finance_paths_and_no_live_provider(
         "reconcile_payment(",
         "create_refund_intent(",
         "issued_invoice(",
-        "pay4._apply()",
+        "pay5._claim(",
+        "pay5._consume(",
+        "pay5._ack(",
         "Pay20RazorpayClient",
     ):
         assert token in source
@@ -193,7 +195,7 @@ def test_pay20_system_setup_is_current_head_no_migration_setup_not_risk_bypass()
         encoding="utf-8"
     )
     assert "scripts/ci/install_pg16_test_stack.sh" in source
-    assert "scripts/ci/bootstrap_cluster_roles.sh" not in source
+    assert "scripts/ci/bootstrap_cluster_roles.sh" in source
     assert "scripts/verify_alembic_graph.py" in source
     assert 'python -s -m alembic -c alembic.ini upgrade head' in source
     assert 'PAY20_SYSTEM_PG16_READY=PASS' in source
@@ -204,7 +206,7 @@ def test_pay20_system_setup_is_current_head_no_migration_setup_not_risk_bypass()
     # runtime databases for load.
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert '"scripts/ci/pay20_prepare_system_pg16.sh"' in workflow
-    assert "bash scripts/ci/bootstrap_cluster_roles.sh" in workflow
+    assert "bash scripts/ci/pay20_prepare_system_pg16.sh" in workflow
     assert "alembic/versions/" not in {
         line.strip()
         for line in workflow.splitlines()
