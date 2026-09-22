@@ -324,10 +324,18 @@ async def test_process_rollback_before_commit_is_reclaimable_without_duplicate_m
         "WHERE provider_event_id='evt_pay17_rollback_reclaim'"
     ) == 1
     assert await fetch_scalar(
+        "SELECT status FROM finance.payments WHERE id=:payment_id",
+        {"payment_id": checkout.finance_checkout_intent_id},
+    ) == "captured"
+    assert await fetch_scalar(
         "SELECT count(*) FROM finance.payment_allocations "
         "WHERE payment_id=:payment_id",
         {"payment_id": checkout.finance_checkout_intent_id},
-    ) == 1
+    ) == 0
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.ledger_entries "
+        "WHERE source_type='payment_allocation'"
+    ) == 0
     async with AsyncSessionLocal() as session:
         replay = await _webhook_service(session).record_verified_webhook(webhook)
         await session.commit()
@@ -448,14 +456,23 @@ async def test_webhook_before_checkout_response_is_deferred_then_recovers_paymen
         "WHERE provider_event_id='evt_pay17_early_webhook'"
     ) == 1
     assert await fetch_scalar(
+        "SELECT status FROM finance.payments WHERE id=:payment_id",
+        {"payment_id": prepared.finance_checkout_intent_id},
+    ) == "captured"
+    assert await fetch_scalar(
         "SELECT count(*) FROM finance.payment_allocations "
         "WHERE payment_id=:payment_id",
         {"payment_id": prepared.finance_checkout_intent_id},
-    ) == 1
+    ) == 0
     assert await fetch_scalar(
-        "SELECT status FROM finance.invoices WHERE id=:invoice_id",
+        "SELECT count(*) FROM finance.ledger_entries "
+        "WHERE source_type='payment_allocation'"
+    ) == 0
+    assert await fetch_scalar(
+        "SELECT count(*) FROM finance.invoices "
+        "WHERE id=:invoice_id AND status='paid'",
         {"invoice_id": prepared.finance_invoice_id},
-    ) == "paid"
+    ) == 0
 
 
 @pytest.mark.asyncio
