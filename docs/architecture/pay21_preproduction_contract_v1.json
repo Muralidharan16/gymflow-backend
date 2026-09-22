@@ -22,7 +22,10 @@
     "production_images": true,
     "production_db_roles": true,
     "private_service_network": true,
-    "only_tls_ingress_published": true
+    "only_tls_ingress_published": true,
+    "redis_topology": "self_managed_ha",
+    "redis_min_replicas": 1,
+    "redis_vm_overcommit_memory": 1
   },
   "scenarios": [
     "member_admission",

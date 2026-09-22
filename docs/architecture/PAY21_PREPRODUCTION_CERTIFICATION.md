@@ -17,7 +17,7 @@ PAY-21 is a certification phase. It adds no new financial authority and no migra
 Certification requires all of the following on one exact candidate:
 
 - PostgreSQL 16 with canonical cluster roles and distinct runtime logins.
-- Redis 7 with TLS, authentication, persistence, noeviction, and a private container network.
+- Redis 7 as a self-managed HA primary + replica pair with TLS, authentication, AOF-everysec + RDB persistence, `noeviction`, host `vm.overcommit_memory=1`, and a private container network.
 - A real Celery worker running the production image and the production worker process profile.
 - The production API image behind a TLS reverse proxy. The API, worker, Redis, and PostgreSQL bridge are not directly published as customer-facing ports.
 - Secret material injected through the CI secret boundary for the real Razorpay test account. Live-mode keys are rejected before network I/O.
