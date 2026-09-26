@@ -137,6 +137,9 @@ _PAY18_OBSERVABILITY_MIGRATION = (
 _PAY20_DELIVERY_CAPACITY_MIGRATION = (
     "zz47d8e9f0a64_pay20_finance_delivery_capacity.py"
 )
+_PAY24A_DURABLE_AUTHORITY_MIGRATION = (
+    "zz57d8e9f0a65_pay24a_durable_activation_authority.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -189,6 +192,7 @@ APP_SECURE_FILES.update(
         _PAY16_SECURITY_MIGRATION,
         _PAY18_OBSERVABILITY_MIGRATION,
         _PAY20_DELIVERY_CAPACITY_MIGRATION,
+        _PAY24A_DURABLE_AUTHORITY_MIGRATION,
     }
 )
 
@@ -411,6 +415,15 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # PAY-20 installs bounded Finance delivery-capacity helpers only; the
         # schema CREATE grant is installation-only and revoked before exit.
         _PAY20_DELIVERY_CAPACITY_MIGRATION: {
+            "grant_schema",
+            "revoke_schema",
+        },
+        # PAY-24-A installs five FORCE-RLS control-plane relations, bounded
+        # SECURITY DEFINER capabilities, and exact schema exposure for the two
+        # operational readers that lacked it at the immutable base.
+        _PAY24A_DURABLE_AUTHORITY_MIGRATION: {
+            "create_policy",
+            "drop_policy",
             "grant_schema",
             "revoke_schema",
         },

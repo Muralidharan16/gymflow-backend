@@ -1,4 +1,22 @@
-"""Controlled production payment activation authority."""
+"""Controlled payment activation policy and PAY-24A durable authority."""
+
+from app.payment_activation.authority import (
+    ActivationAuthoritySnapshot,
+    ActivationTransitionEvidence,
+    ActivationTransitionResult,
+    DurableActivationAuthority,
+    EmergencyRollbackFinalized,
+    EmergencyRollbackStarted,
+    HumanAuthorizationBinding,
+    MeasuredReleaseIdentity,
+    ProviderAdmission,
+    ProviderAdmissionDrainSnapshot,
+    ProviderAdmissionExpiryResult,
+    ProviderAdmissionFinished,
+    ReleaseIdentityBinding,
+    TrustedReleaseIdentityProvider,
+    TrustedReleaseIdentityUnavailable,
+)
 
 from app.payment_activation.domain import (
     ActivationAuthorization,
@@ -14,12 +32,27 @@ from app.payment_activation.domain import (
 
 __all__ = [
     "ActivationAuthorization",
+    "ActivationAuthoritySnapshot",
     "ActivationCapability",
     "ActivationDecision",
     "ActivationRuntime",
     "ActivationStage",
+    "ActivationTransitionEvidence",
+    "ActivationTransitionResult",
+    "DurableActivationAuthority",
+    "EmergencyRollbackFinalized",
+    "EmergencyRollbackStarted",
+    "HumanAuthorizationBinding",
     "KillSwitches",
+    "MeasuredReleaseIdentity",
     "ProductionActivationPolicy",
+    "ProviderAdmission",
+    "ProviderAdmissionDrainSnapshot",
+    "ProviderAdmissionExpiryResult",
+    "ProviderAdmissionFinished",
+    "ReleaseIdentityBinding",
     "StageTransitionDecision",
+    "TrustedReleaseIdentityProvider",
+    "TrustedReleaseIdentityUnavailable",
     "validate_stage_transition",
 ]

@@ -29,10 +29,11 @@ MERCHANT = uuid.UUID("22000000-0000-4000-8000-000000000003")
 OUTSIDER = uuid.UUID("22000000-0000-4000-8000-000000000004")
 
 
-def authorization() -> ActivationAuthorization:
+def authorization(stage: ActivationStage) -> ActivationAuthorization:
     return ActivationAuthorization(
         authorization_id="PAY22-AUTH-TEST",
         authorized_sha=CERTIFIED_SHA,
+        authorized_stage=stage,
         authorized_by="human-release-approver",
         authorized_at=datetime(2026, 9, 22, tzinfo=timezone.utc),
     )
@@ -52,7 +53,7 @@ def runtime(stage: ActivationStage, **overrides) -> ActivationRuntime:
         live_provider_configured=True,
         provider_egress_enabled=True,
         kill_switches=switches(),
-        authorization=authorization(),
+        authorization=authorization(stage),
         internal_organization_id=INTERNAL,
         selected_test_organization_id=SELECTED,
         merchant_cohort=(MERCHANT,),
@@ -98,6 +99,57 @@ def test_exact_sha_and_human_authorization_are_mandatory():
     assert decision.code == "activation.exact_sha.mismatch"
 
 
+def test_human_authorization_is_bound_to_the_exact_requested_stage():
+    stage1_with_stage0_authorization = runtime(
+        ActivationStage.INTERNAL_ORGANIZATION,
+        authorization=authorization(
+            ActivationStage.LIVE_CONFIG_EGRESS_BLOCKED,
+        ),
+    )
+
+    decision = ProductionActivationPolicy(
+        stage1_with_stage0_authorization
+    ).decide(
+        ActivationCapability.CHECKOUT,
+        organization_id=INTERNAL,
+    )
+
+    assert decision.allowed is False
+    assert decision.code == "activation.human_authorization.stage_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value"),
+    [
+        ("authorization_id", None),
+        ("authorized_sha", None),
+        ("authorized_stage", 1),
+        ("authorized_by", None),
+        ("authorized_at", "2026-09-22T00:00:00Z"),
+    ],
+)
+def test_malformed_human_authorization_fails_closed_without_raising(
+    field_name,
+    malformed_value,
+):
+    malformed = replace(
+        authorization(ActivationStage.INTERNAL_ORGANIZATION),
+        **{field_name: malformed_value},
+    )
+    posture = runtime(
+        ActivationStage.INTERNAL_ORGANIZATION,
+        authorization=malformed,
+    )
+
+    decision = ProductionActivationPolicy(posture).decide(
+        ActivationCapability.CHECKOUT,
+        organization_id=INTERNAL,
+    )
+
+    assert decision.allowed is False
+    assert decision.code == "activation.human_authorization.required"
+
+
 def test_stage0_requires_live_config_but_blocks_egress_and_every_capability():
     stage0 = runtime(ActivationStage.LIVE_CONFIG_EGRESS_BLOCKED)
     assert stage0.validate() == ()
@@ -117,6 +169,33 @@ def test_stage0_requires_live_config_but_blocks_egress_and_every_capability():
     assert "activation.stage0.capabilities_must_be_disabled" in runtime(
         ActivationStage.LIVE_CONFIG_EGRESS_BLOCKED,
         kill_switches=switches(),
+    ).validate()
+
+
+def test_stage0_rejects_any_admitted_organization_identity():
+    for field_name, organization_id in (
+        ("internal_organization_id", INTERNAL),
+        ("selected_test_organization_id", SELECTED),
+    ):
+        failures = runtime(
+            ActivationStage.LIVE_CONFIG_EGRESS_BLOCKED,
+            **{field_name: organization_id},
+        ).validate()
+        assert "activation.stage0.organizations_must_be_empty" in failures
+
+
+def test_malformed_boolean_authority_values_fail_closed():
+    assert "activation.live_provider.configuration_invalid" in runtime(
+        ActivationStage.INTERNAL_ORGANIZATION,
+        live_provider_configured=1,
+    ).validate()
+    assert "activation.provider_egress.configuration_invalid" in runtime(
+        ActivationStage.INTERNAL_ORGANIZATION,
+        provider_egress_enabled=1,
+    ).validate()
+    assert "activation.kill_switches.values_invalid" in runtime(
+        ActivationStage.INTERNAL_ORGANIZATION,
+        kill_switches=replace(switches(), checkout=1),
     ).validate()
 
 

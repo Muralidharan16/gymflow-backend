@@ -1,0 +1,347 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-24-A",
+  "title": "Durable Activation Authority",
+  "status": "implementation_pending",
+  "local_certification": "pending",
+  "alembic_revision": "zz57d8e9f0a65",
+  "provider_boundaries_wired": false,
+  "entitlement_boundary_wired": false,
+  "stage1_live_activation": "NOT_AUTHORIZED",
+  "real_money_movement": 0,
+  "pay23_enterprise_payment_system": "NOT_CERTIFIED",
+  "immutable_base": {
+    "sha": "e7fa726b946ef2444b62377b5ca3a3fe0a3128e8",
+    "tree": "f8c1c88f3e8d13c66ed5f3aa9c68a101ab3762c4",
+    "alembic_head": "zz47d8e9f0a64"
+  },
+  "migration": {
+    "revision": "zz57d8e9f0a65",
+    "down_revision": "zz47d8e9f0a64",
+    "upgrade_requires_migration_owner": true,
+    "unexpected_preexisting_objects": "fail_closed",
+    "initial_stage": 0,
+    "initial_generation": 0,
+    "initial_provider_egress": "blocked",
+    "initial_authorization": null,
+    "initial_internal_organization": null,
+    "upgrade_downgrade_upgrade_safe_when_pristine": true,
+    "downgrade_refuses_if_durable_evidence_or_admissions_exist": true,
+    "broad_cascade_cleanup": false,
+    "externally_managed_roles_are_not_created_or_dropped": true
+  },
+  "pay22_gap": {
+    "authority_location": "process_local_python_values",
+    "authorization_object_binds_stage": false,
+    "deployed_sha_is_independently_measured": false,
+    "durable_generation": false,
+    "cross_process_transition_serialization": false,
+    "durable_transition_evidence": false,
+    "durable_provider_admission": false
+  },
+  "roles": {
+    "migration_identity": "migration_owner",
+    "security_definer_owner": "app_security_owner",
+    "control_plane": "finance_config_runtime",
+    "provider_operations": "finance_payment_runtime",
+    "refund_provider_operations": "finance_refund_runtime",
+    "finance_read": "finance_read_runtime",
+    "finance_maintenance": "finance_maintenance_runtime",
+    "maintenance": "lifecycle_maintenance_runtime",
+    "ordinary_api": "app_runtime",
+    "ordinary_worker": "worker_runtime",
+    "all_runtime_roles": {
+      "login": false,
+      "bypass_rls": false,
+      "object_ownership": false,
+      "direct_activation_table_dml": false
+    },
+    "public_execute": false
+  },
+  "tables": [
+    {
+      "name": "finance.payment_activation_release_identities",
+      "purpose": "immutable certified SHA and independently measured deployed SHA bindings"
+    },
+    {
+      "name": "finance.payment_activation_authorizations",
+      "purpose": "immutable stage-specific human authorization metadata"
+    },
+    {
+      "name": "finance.payment_activation_authority",
+      "purpose": "deterministic singleton current posture and generation"
+    },
+    {
+      "name": "finance.payment_activation_transition_events",
+      "purpose": "append-only atomic transition evidence"
+    },
+    {
+      "name": "finance.provider_admission_leases",
+      "purpose": "durable generation-bound idempotent provider-operation admission"
+    }
+  ],
+  "singleton_authority": {
+    "deterministic_single_row": true,
+    "stage_values_in_this_slice": [
+      0,
+      1
+    ],
+    "concurrency_mechanism": "row_lock_plus_expected_generation",
+    "generation_monotonic": true,
+    "generation_advances_for": [
+      "stage",
+      "provider_egress",
+      "internal_organization",
+      "any_capability",
+      "human_authorization_binding",
+      "certified_or_measured_release_binding"
+    ],
+    "invalid_transition_mutates_state": false,
+    "invalid_transition_advances_generation": false,
+    "successful_transition_and_evidence_are_atomic": true
+  },
+  "release_identity": {
+    "certified_sha": "durable_release_binding",
+    "deployed_sha": "durable_attested_measurement",
+    "transition_caller_sha_is_authoritative": false,
+    "required_equality": "deployed_sha == certified_sha == authorized_sha",
+    "missing_measurement": "deny",
+    "future_attestor_responsibility": "measure the running immutable artifact from signed release metadata and bind it through the dedicated control-plane identity",
+    "environment_variable_alone_is_authority": false,
+    "test_fake_provider_allowed": true,
+    "production_direct_arbitrary_construction_allowed": false
+  },
+  "human_authorization": {
+    "required_fields": [
+      "authorization_id",
+      "authorized_sha",
+      "authorized_stage",
+      "authorized_by",
+      "authorized_at"
+    ],
+    "stage_specific": true,
+    "stage_0_can_authorize_stage_1": false,
+    "missing_or_malformed": "deny",
+    "stage_1_record_included": false,
+    "synthetic_test_fixture_allowed": true
+  },
+  "provider_egress_states": [
+    "blocked",
+    "open",
+    "closing"
+  ],
+  "capabilities": [
+    "checkout",
+    "webhooks",
+    "payment_application",
+    "subscription_activation",
+    "refund_execution",
+    "recurring_billing",
+    "dunning",
+    "platform_billing"
+  ],
+  "stage_invariants": {
+    "stage_0": {
+      "provider_egress": "blocked",
+      "internal_organization": null,
+      "all_capabilities": false,
+      "live_money_movement": false
+    },
+    "stage_1": {
+      "internal_organization_count": 1,
+      "identity_source": "durable_server_authority_uuid",
+      "exact_authorized_stage": 1,
+      "potentially_enabled": [
+        "checkout",
+        "webhooks",
+        "payment_application",
+        "subscription_activation"
+      ],
+      "remain_disabled": [
+        "refund_execution",
+        "recurring_billing",
+        "dunning",
+        "platform_billing"
+      ],
+      "live_authorization_present": false
+    }
+  },
+  "transitions": {
+    "forward_rule": "same_stage_or_next_stage_only",
+    "skipped_forward_stage": "deny",
+    "emergency_rollback_to_any_lower_stage": true,
+    "operation_id_unique": true,
+    "exact_duplicate": "return_committed_result_without_generation_increment",
+    "operation_id_payload_conflict": "deny",
+    "concurrent_generation_reuse": false
+  },
+  "admission": {
+    "provider_http_performed": false,
+    "commit_required_before_future_provider_io": true,
+    "bound_fields": [
+      "admission_id",
+      "activation_generation",
+      "organization_id",
+      "capability",
+      "logical_operation_id",
+      "lease_expiry",
+      "state"
+    ],
+    "checks": [
+      "current_generation",
+      "exact_sha_authority",
+      "authorized_stage",
+      "organization_cohort",
+      "specific_capability",
+      "provider_egress_open",
+      "bounded_admission_arguments"
+    ],
+    "logical_operation_id_unique": true,
+    "concurrent_duplicate_count": 1,
+    "organization_source": "verified transaction-local app.current_org_id",
+    "organization_is_request_argument": false,
+    "provider_roles_are_capability_checked": true,
+    "expired_or_terminal_lease_can_be_reused_as_authority": false,
+    "states": {
+      "admitted": "committed but not started; start requires current generation, open egress, and unexpired lease",
+      "active": "provider call may have begun",
+      "completed": "known terminal result recorded; cannot restart",
+      "expired": "unstarted lease expired; no future authority",
+      "revoked": "unstarted lease fenced by rollback or generation change; no future authority",
+      "unknown": "active call lost a trustworthy outcome; no retry authority and reconciliation required"
+    },
+    "admitted_transition_must_commit_before_start": true,
+    "active_transition_must_commit_before_provider_io": true
+  },
+  "rollback": {
+    "phase_1": "set egress closing, advance generation, deny new admissions, and commit",
+    "admitted_prior_generation": "revoke_or_expire_without_start",
+    "active_prior_generation": "complete_or_classify_unknown",
+    "process_crash_after_start": "classify_unknown_at_bounded_expiry",
+    "unknown_is_permission_to_retry": false,
+    "finalize_precondition": "zero admitted and zero active prior-generation leases",
+    "phase_2": "install complete stage-0 blocked posture and advance generation",
+    "stale_generation_can_start": false,
+    "closing_is_one_way": true,
+    "closing_allowed_mutations": [
+      "provider_admission_expiry_or_completion",
+      "rollback_finalization"
+    ]
+  },
+  "functions": {
+    "app_secure.pay24a_bind_release_identity": [
+      "finance_config_runtime"
+    ],
+    "app_secure.pay24a_bind_human_authorization": [
+      "finance_config_runtime"
+    ],
+    "app_secure.pay24a_transition_activation": [
+      "finance_config_runtime"
+    ],
+    "app_secure.pay24a_begin_emergency_rollback": [
+      "finance_config_runtime"
+    ],
+    "app_secure.pay24a_expire_provider_admissions": [
+      "finance_config_runtime",
+      "finance_maintenance_runtime",
+      "lifecycle_maintenance_runtime"
+    ],
+    "app_secure.pay24a_finalize_emergency_rollback": [
+      "finance_config_runtime"
+    ],
+    "app_secure.pay24a_activation_snapshot": [
+      "finance_config_runtime",
+      "finance_read_runtime",
+      "finance_maintenance_runtime",
+      "lifecycle_maintenance_runtime"
+    ],
+    "app_secure.pay24a_transition_evidence": [
+      "finance_config_runtime",
+      "finance_read_runtime",
+      "finance_maintenance_runtime",
+      "lifecycle_maintenance_runtime"
+    ],
+    "app_secure.pay24a_request_provider_admission": [
+      "finance_payment_runtime",
+      "finance_refund_runtime"
+    ],
+    "app_secure.pay24a_start_provider_admission": [
+      "finance_payment_runtime",
+      "finance_refund_runtime"
+    ],
+    "app_secure.pay24a_finish_provider_admission": [
+      "finance_payment_runtime",
+      "finance_refund_runtime"
+    ],
+    "app_secure.pay24a_admission_drain_snapshot": [
+      "finance_config_runtime",
+      "finance_read_runtime",
+      "finance_maintenance_runtime",
+      "lifecycle_maintenance_runtime"
+    ]
+  },
+  "function_security": {
+    "owner": "app_security_owner",
+    "table_owner": "migration_owner",
+    "security_definer_where_required": true,
+    "fixed_safe_search_path": true,
+    "row_security": "on",
+    "public_revoked": true,
+    "exact_execute_grants_only": true,
+    "caller_role_checked_in_function": true
+  },
+  "bounded_reads": {
+    "activation_snapshot": [
+      "current_stage",
+      "current_generation",
+      "provider_egress_state",
+      "enabled_capability_names",
+      "authorized_internal_organization_uuid",
+      "current_authorization_id",
+      "safe_certified_sha",
+      "safe_measured_deployed_sha"
+    ],
+    "transition_evidence_is_non_secret": true,
+    "admission_drain_is_aggregate_only": true,
+    "raw_authorization_document_exposed": false,
+    "cross_tenant_financial_data_exposed": false
+  },
+  "audit": {
+    "append_only": true,
+    "records": [
+      "prior_generation",
+      "new_generation",
+      "prior_stage",
+      "new_stage",
+      "authorization_id",
+      "authorized_stage",
+      "exact_sha_identity",
+      "actor_identity",
+      "operation_identity",
+      "transition_timestamp",
+      "resulting_posture_digest"
+    ],
+    "secrets_or_pii": false,
+    "failed_transition_creates_success_evidence": false,
+    "fixture_cleanup_may_disable_immutability": false
+  },
+  "explicit_non_wiring": {
+    "checkout_provider": false,
+    "member_provider": false,
+    "refund_provider": false,
+    "recurring_billing_provider": false,
+    "platform_billing_provider": false,
+    "entitlement_mutation": false,
+    "pay5_claim_or_consume_modified": false,
+    "live_provider_implementation": false,
+    "production_deployment": false
+  },
+  "terminal_posture": {
+    "PAY24_PROVIDER_BOUNDARIES_WIRED": "NO",
+    "PAY24_ENTITLEMENT_BOUNDARY_WIRED": "NO",
+    "PAY24_STAGE1_LIVE_ACTIVATION": "NOT_AUTHORIZED",
+    "PAY24_REAL_MONEY_MOVEMENT": 0,
+    "PAY23_ENTERPRISE_PAYMENT_SYSTEM": "NOT_CERTIFIED"
+  },
+  "pass_markers_asserted": []
+}

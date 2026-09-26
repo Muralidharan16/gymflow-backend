@@ -14,7 +14,12 @@ from app.payment_activation.domain import (
 
 
 class PaymentActivationService:
-    """Shared activation façade for member payments and Platform Billing."""
+    """Legacy PAY-22 pure-policy convenience service.
+
+    Instances contain process-local immutable values only.  They are retained
+    for compatibility and must not be treated as PAY-24A durable authority or
+    used as the provider-operation admission boundary.
+    """
 
     def __init__(self, runtime: ActivationRuntime):
         self._runtime = runtime

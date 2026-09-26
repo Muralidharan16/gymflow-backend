@@ -52,7 +52,7 @@ class KillSwitches:
     platform_billing: bool = False
 
     def enabled(self, capability: ActivationCapability) -> bool:
-        return bool(getattr(self, capability.value))
+        return getattr(self, capability.value) is True
 
     def enabled_capabilities(self) -> tuple[ActivationCapability, ...]:
         return tuple(
@@ -61,20 +61,38 @@ class KillSwitches:
             if self.enabled(capability)
         )
 
+    def invalid_value_names(self) -> tuple[str, ...]:
+        """Return switches whose values are not actual booleans.
+
+        ``bool`` is intentionally checked by exact type.  Values such as ``1``
+        must not silently become activation authority merely because Python
+        considers them truthy.
+        """
+
+        return tuple(
+            field.name
+            for field in fields(self)
+            if type(getattr(self, field.name)) is not bool
+        )
+
 
 @dataclass(frozen=True)
 class ActivationAuthorization:
     authorization_id: str
     authorized_sha: str
+    authorized_stage: ActivationStage
     authorized_by: str
     authorized_at: datetime
 
     def is_complete(self) -> bool:
         return bool(
-            self.authorization_id.strip()
-            and self.authorized_sha.strip()
+            type(self.authorization_id) is str
+            and self.authorization_id.strip()
+            and _is_sha(self.authorized_sha)
+            and type(self.authorized_stage) is ActivationStage
+            and type(self.authorized_by) is str
             and self.authorized_by.strip()
-            and self.authorized_at.tzinfo is not None
+            and _is_aware_datetime(self.authorized_at)
         )
 
 
@@ -96,6 +114,10 @@ class ActivationRuntime:
     def validate(self) -> tuple[str, ...]:
         failures: list[str] = []
 
+        stage = self.stage if type(self.stage) is ActivationStage else None
+        if stage is None:
+            failures.append("activation.stage.invalid")
+
         if not _is_sha(self.certified_sha):
             failures.append("activation.certified_sha.invalid")
         if not _is_sha(self.deployed_sha):
@@ -103,58 +125,118 @@ class ActivationRuntime:
         if self.deployed_sha != self.certified_sha:
             failures.append("activation.exact_sha.mismatch")
 
-        if not self.live_provider_configured:
+        if type(self.live_provider_configured) is not bool:
+            failures.append("activation.live_provider.configuration_invalid")
+        elif not self.live_provider_configured:
             failures.append("activation.live_provider.not_configured")
 
+        if type(self.provider_egress_enabled) is not bool:
+            failures.append("activation.provider_egress.configuration_invalid")
+
+        switches_valid = type(self.kill_switches) is KillSwitches
+        switches = self.kill_switches if switches_valid else KillSwitches()
+        if not switches_valid:
+            failures.append("activation.kill_switches.invalid")
+        elif switches.invalid_value_names():
+            failures.append("activation.kill_switches.values_invalid")
+
+        cohort_valid = type(self.merchant_cohort) is tuple and all(
+            _is_non_nil_uuid(organization_id)
+            for organization_id in self.merchant_cohort
+        )
+        cohort = self.merchant_cohort if cohort_valid else ()
+        if not cohort_valid:
+            failures.append("activation.merchant_cohort.invalid")
+
+        percentage_valid = type(self.percentage_basis_points) is int
+        if not percentage_valid:
+            failures.append("activation.percentage.invalid")
+        if type(self.rollout_seed) is not str:
+            failures.append("activation.rollout_seed.invalid")
+
+        if (
+            self.internal_organization_id is not None
+            and not _is_non_nil_uuid(self.internal_organization_id)
+        ):
+            failures.append("activation.internal_organization.invalid")
+        if (
+            self.selected_test_organization_id is not None
+            and not _is_non_nil_uuid(self.selected_test_organization_id)
+        ):
+            failures.append("activation.selected_test_organization.invalid")
+
         auth = self.authorization
-        if auth is None or not auth.is_complete():
+        if type(auth) is not ActivationAuthorization or not auth.is_complete():
             failures.append("activation.human_authorization.required")
         elif auth.authorized_sha != self.certified_sha:
             failures.append("activation.human_authorization.sha_mismatch")
         elif auth.authorized_at > datetime.now(timezone.utc):
             failures.append("activation.human_authorization.future_timestamp")
+        elif stage is not None and auth.authorized_stage != stage:
+            failures.append("activation.human_authorization.stage_mismatch")
 
-        if self.stage == ActivationStage.LIVE_CONFIG_EGRESS_BLOCKED:
-            if self.provider_egress_enabled:
+        if stage == ActivationStage.LIVE_CONFIG_EGRESS_BLOCKED:
+            if self.provider_egress_enabled is True:
                 failures.append("activation.stage0.egress_must_be_blocked")
-            if self.kill_switches.enabled_capabilities():
+            if switches.enabled_capabilities():
                 failures.append("activation.stage0.capabilities_must_be_disabled")
             if self.percentage_basis_points != 0:
                 failures.append("activation.stage0.percentage_must_be_zero")
-            if self.merchant_cohort:
+            if cohort:
                 failures.append("activation.stage0.cohort_must_be_empty")
+            if (
+                self.internal_organization_id is not None
+                or self.selected_test_organization_id is not None
+            ):
+                failures.append("activation.stage0.organizations_must_be_empty")
 
-        if self.stage >= ActivationStage.INTERNAL_ORGANIZATION:
-            if self.internal_organization_id is None:
+        if stage is not None and stage >= ActivationStage.INTERNAL_ORGANIZATION:
+            if not _is_non_nil_uuid(self.internal_organization_id):
                 failures.append("activation.internal_organization.required")
 
-        if self.stage >= ActivationStage.SELECTED_TEST_ORGANIZATION:
-            if self.selected_test_organization_id is None:
+        if stage is not None and stage >= ActivationStage.SELECTED_TEST_ORGANIZATION:
+            if not _is_non_nil_uuid(self.selected_test_organization_id):
                 failures.append("activation.selected_test_organization.required")
 
-        if self.stage == ActivationStage.SMALL_MERCHANT_COHORT:
-            if not self.merchant_cohort:
+        if stage == ActivationStage.SMALL_MERCHANT_COHORT:
+            if not cohort:
                 failures.append("activation.stage3.cohort_required")
-            if len(set(self.merchant_cohort)) != len(self.merchant_cohort):
+            if len(set(cohort)) != len(cohort):
                 failures.append("activation.stage3.cohort_duplicates")
-            if len(self.merchant_cohort) > MAX_STAGE3_MERCHANTS:
+            if len(cohort) > MAX_STAGE3_MERCHANTS:
                 failures.append("activation.stage3.cohort_too_large")
             if self.percentage_basis_points != 0:
                 failures.append("activation.stage3.percentage_must_be_zero")
 
-        if self.stage == ActivationStage.LIMITED_PERCENTAGE:
-            if not (1 <= self.percentage_basis_points <= MAX_STAGE4_BASIS_POINTS):
+        if stage == ActivationStage.LIMITED_PERCENTAGE:
+            if not percentage_valid or not (
+                1 <= self.percentage_basis_points <= MAX_STAGE4_BASIS_POINTS
+            ):
                 failures.append("activation.stage4.percentage_out_of_range")
-            if not self.rollout_seed.strip():
+            if (
+                type(self.rollout_seed) is not str
+                or not self.rollout_seed.strip()
+            ):
                 failures.append("activation.stage4.rollout_seed_required")
 
-        if self.stage == ActivationStage.GENERAL_AVAILABILITY:
-            if self.percentage_basis_points not in {0, 10_000}:
+        if stage == ActivationStage.GENERAL_AVAILABILITY:
+            if (
+                not percentage_valid
+                or self.percentage_basis_points not in {0, 10_000}
+            ):
                 failures.append("activation.stage5.percentage_invalid")
 
-        if self.stage < ActivationStage.SMALL_MERCHANT_COHORT and self.merchant_cohort:
+        if (
+            stage is not None
+            and stage < ActivationStage.SMALL_MERCHANT_COHORT
+            and cohort
+        ):
             failures.append("activation.cohort.not_allowed_before_stage3")
-        if self.stage < ActivationStage.LIMITED_PERCENTAGE and self.percentage_basis_points:
+        if (
+            stage is not None
+            and stage < ActivationStage.LIMITED_PERCENTAGE
+            and self.percentage_basis_points
+        ):
             failures.append("activation.percentage.not_allowed_before_stage4")
 
         return tuple(dict.fromkeys(failures))
@@ -193,6 +275,14 @@ def validate_stage_transition(
             to_stage=proposed.stage,
         )
 
+    if type(current.stage) is not ActivationStage:
+        return StageTransitionDecision(
+            allowed=False,
+            code="activation.stage.invalid",
+            from_stage=current.stage,
+            to_stage=proposed.stage,
+        )
+
     if proposed.stage > current.stage + 1:
         return StageTransitionDecision(
             allowed=False,
@@ -210,7 +300,13 @@ def validate_stage_transition(
 
 
 class ProductionActivationPolicy:
-    """Fail-closed production activation authority."""
+    """Legacy in-process PAY-22 policy evaluator.
+
+    This class remains for PAY-22 compatibility and pure policy tests.  It is
+    not a durable activation authority and must not gate provider I/O in a
+    multi-process deployment.  PAY-24A authority is exposed only through the
+    bounded PostgreSQL façade in :mod:`app.payment_activation.authority`.
+    """
 
     def __init__(self, runtime: ActivationRuntime):
         self.runtime = runtime
@@ -274,7 +370,7 @@ class ProductionActivationPolicy:
         return decision
 
     def _cohort_source(self, organization_id: uuid.UUID | None) -> str | None:
-        if organization_id is None:
+        if not _is_non_nil_uuid(organization_id):
             return None
 
         stage = self.runtime.stage
@@ -320,7 +416,12 @@ class ProductionActivationPolicy:
             stage=self.runtime.stage,
             organization_id=organization_id,
             cohort_source=None,
-            authorization_id=auth.authorization_id if auth else None,
+            authorization_id=(
+                auth.authorization_id
+                if type(auth) is ActivationAuthorization
+                and type(auth.authorization_id) is str
+                else None
+            ),
             certified_sha=self.runtime.certified_sha,
         )
 
@@ -338,9 +439,25 @@ def _bucket(organization_id: uuid.UUID, rollout_seed: str) -> int:
     return int.from_bytes(digest[:8], "big") % 10_000
 
 
-def _is_sha(value: str) -> bool:
-    stripped = value.strip().lower()
-    return len(stripped) == 40 and all(ch in "0123456789abcdef" for ch in stripped)
+def _is_sha(value: object) -> bool:
+    return bool(
+        type(value) is str
+        and len(value) == 40
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
+
+
+def _is_aware_datetime(value: object) -> bool:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        return False
+    try:
+        return value.utcoffset() is not None
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _is_non_nil_uuid(value: object) -> bool:
+    return type(value) is uuid.UUID and value.int != 0
 
 
 def kill_switch_names() -> tuple[str, ...]:

@@ -112,6 +112,18 @@ FINANCE_TABLES = {
     "security_audit_events",
 }
 
+# PAY-24-A deliberately adds database-owned activation/control-plane tables that
+# are reachable only through bounded app_secure capabilities. They are not ORM
+# models: giving application code direct model access would widen the authority
+# surface that PAY-24-A is specifically designed to constrain.
+PAY24A_CONTROL_PLANE_TABLES = {
+    "payment_activation_release_identities",
+    "payment_activation_authorizations",
+    "payment_activation_authority",
+    "payment_activation_transition_events",
+    "provider_admission_leases",
+}
+
 MODEL_TABLES = {
     model.__table__.name
     for model in {
@@ -229,8 +241,10 @@ async def test_finance_schema_and_required_tables_exist():
         ORDER BY table_name
         """
     )
-    assert {row[0] for row in rows} == FINANCE_TABLES
+    actual_tables = {row[0] for row in rows}
+    assert actual_tables == FINANCE_TABLES | PAY24A_CONTROL_PLANE_TABLES
     assert MODEL_TABLES == FINANCE_TABLES
+    assert MODEL_TABLES.isdisjoint(PAY24A_CONTROL_PLANE_TABLES)
 
 
 @pytest.mark.asyncio
