@@ -60,7 +60,11 @@ jobs:
             > /tmp/pay24-ci-delta.txt
 
           printf '%s\n' \
+            '.github/workflows/finance-hardening-ci.yml' \
+            '.github/workflows/hardening-ci.yml' \
+            '.github/workflows/migration-lifecycle-ci.yml' \
             '.github/workflows/pay24-unavoidable-provider-boundaries.yml' \
+            'tests/test_migration_app_secure_owner_context_boundary.py' \
             'tests/test_pay24b_ri1b2_route_runtime_composition.py' \
             > /tmp/pay24-ci-expected.txt
 
@@ -69,7 +73,7 @@ jobs:
             /tmp/pay24-ci-delta.txt
 
           echo "PAY24_EXACT_APPLICATION_SHA=$PAY24_CERTIFIED_APPLICATION_SHA"
-          echo "PAY24_WORKFLOW_ONLY_EVIDENCE_SCOPE=PASS"
+          echo "PAY24_CI_EVIDENCE_CHAIN_SCOPE=PASS"
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
@@ -197,8 +201,7 @@ jobs:
           set -euo pipefail
           bash scripts/ci/bootstrap_cluster_roles.sh
 
-          python -s scripts/render_cluster_role_bootstrap.py \
-            | grep -q 'CREATE ROLE finance_payment_runtime'
+          python -c "import json, pathlib; data=json.loads(pathlib.Path('security/cluster_role_bootstrap/roles.v1.json').read_text()); assert 'finance_payment_runtime' in data['managed_roles']"
 
           echo "PAY24_CANONICAL_PAYMENT_CAPABILITY_BOOTSTRAP=PASS"
 

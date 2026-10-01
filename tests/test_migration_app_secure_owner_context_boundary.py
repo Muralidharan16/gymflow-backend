@@ -140,6 +140,12 @@ _PAY20_DELIVERY_CAPACITY_MIGRATION = (
 _PAY24A_DURABLE_AUTHORITY_MIGRATION = (
     "zz57d8e9f0a65_pay24a_durable_activation_authority.py"
 )
+_PAY24B_ADMISSION_BRIDGE_MIGRATION = (
+    "zz67d8e9f0a66_pay24b_checkout_admission_bridge.py"
+)
+_PAY24B_RI1B1_EXPAND_MIGRATION = (
+    "zz77d8e9f0a67_pay24b_ri1b1_claim_finish_expand.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -193,6 +199,8 @@ APP_SECURE_FILES.update(
         _PAY18_OBSERVABILITY_MIGRATION,
         _PAY20_DELIVERY_CAPACITY_MIGRATION,
         _PAY24A_DURABLE_AUTHORITY_MIGRATION,
+        _PAY24B_ADMISSION_BRIDGE_MIGRATION,
+        _PAY24B_RI1B1_EXPAND_MIGRATION,
     }
 )
 
@@ -427,6 +435,16 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
             "grant_schema",
             "revoke_schema",
         },
+        # PAY-24-B zz67 installs the payment-only admission bridge function.
+        # Function body, ownership and EXECUTE partition are covered by the
+        # dedicated PAY24-B contracts; this historical detector classifies
+        # only schema/view/policy DDL.
+        _PAY24B_ADMISSION_BRIDGE_MIGRATION: set(),
+        # PAY-24-B zz77 replaces PAY8 claim/finish function bodies while
+        # preserving the established schema/view/policy surface. Its owner,
+        # SECURITY DEFINER and exact dual-authority ACLs are independently
+        # certified by the RI1B1 migration contracts.
+        _PAY24B_RI1B1_EXPAND_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {
