@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PAY24_CERTIFIED_APPLICATION_SHA: c64a9e3a4bac2282fc2fbdc3807ceebc45183430
-  PAY24_CERTIFIED_APPLICATION_TREE: 35c97e6df89a48f3aecc9392564b710e22338678
+  PAY24_CERTIFIED_APPLICATION_SHA: 2ff924da83f4a9b246abc733ec4299ac669b5df1
+  PAY24_CERTIFIED_APPLICATION_TREE: cf692fb89221f58fdcc2abd44b466a28d54f81a3
   PAY24_ALEMBIC_HEAD: zz87d8e9f0a68
   PYTHONDONTWRITEBYTECODE: '1'
 
@@ -61,9 +61,6 @@ jobs:
 
           printf '%s\n' \
             '.github/workflows/pay24-unavoidable-provider-boundaries.yml' \
-            'tests/finance_core/payment_database.py' \
-            'tests/finance_core/test_pay17_fault_injection_concurrency.py' \
-            'tests/finance_core/test_phase6c_checkout_orchestration.py' \
             > /tmp/pay24-ci-expected.txt
 
           diff -u \
@@ -100,11 +97,18 @@ jobs:
             app/core/runtime_principal_attestation.py \
             app/finance_core/api/payment_boundary.py \
             app/finance_core/services/checkout_orchestration.py \
+            app/finance_core/services/member_subscription_checkout.py \
             app/payment_activation/authority.py \
+            app/routers/member_subscriptions_v2.py \
             tests/finance_core/payment_database.py \
             tests/finance_core/test_pay17_fault_injection_concurrency.py \
             tests/finance_core/test_phase6c_checkout_orchestration.py \
             tests/test_migration_app_secure_owner_context_boundary.py \
+            tests/test_p4d_refund_authority_static_contracts.py \
+            tests/test_pay24b_b1b_member_checkout_payment_identity_static.py \
+            tests/test_pay24b_b1b_member_checkout_runtime_composition.py \
+            tests/test_pay24b_checkout_admission_static.py \
+            tests/test_pay24b_payment_runtime_identity_static.py \
             tests/test_pay24b_ri1b2_route_runtime_composition.py \
             tests/test_pay24b_ri1b3_claim_finish_contract_static.py
 
@@ -113,6 +117,8 @@ jobs:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
         run: |
           python -m pytest --noconftest -q \
+            tests/test_pay24b_b1b_member_checkout_payment_identity_static.py \
+            tests/test_pay24b_b1b_member_checkout_runtime_composition.py \
             tests/test_pay24b_ri1b3_claim_finish_contract_static.py \
             tests/test_pay24b_ri1b2_route_runtime_composition.py \
             tests/test_pay24b_ri1b2_http_payment_identity_wiring_static.py \
@@ -120,6 +126,7 @@ jobs:
             tests/test_pay24b_checkout_admission_static.py \
             tests/test_pay24b_payment_runtime_identity_static.py \
             tests/test_pay8_durable_checkout_webhooks_static.py \
+            tests/test_p4d_refund_authority_static_contracts.py \
             tests/test_migration_app_secure_owner_context_boundary.py \
             tests/test_auth_database_boundary.py \
             tests/test_lifecycle_maintenance_runtime_boundary.py \
@@ -1251,6 +1258,15 @@ jobs:
 
           echo "PAY24_CERTIFIED_APPLICATION_SHA=$PAY24_CERTIFIED_APPLICATION_SHA"
           echo "PAY24_RI1B3_REMOTE_EXACT_SHA_CI=PASS"
+          echo "PAY24B_B1B_REMOTE_EXACT_SHA_CI=PASS"
+          echo "PAY24B_B1B_MEMBER_LOCAL_PREPARATION_APP_IDENTITY=PASS"
+          echo "PAY24B_B1B_PROVIDER_EFFECTS_PAYMENT_IDENTITY=PASS"
+          echo "PAY24B_B1B_CLAIM_ADMISSION_SAME_TX=PASS"
+          echo "PAY24B_B1B_START_COMMITTED_BEFORE_PROVIDER_IO=PASS"
+          echo "PAY24B_B1B_TERMINAL_OUTCOME_ATOMIC_WITH_ADMISSION_FINISH=PASS"
+          echo "PAY24B_B1B_UNKNOWN_NON_REPLAY=PASS"
+          echo "PAY24B_REFUND_PROVIDER_BOUNDARY=NOT_STARTED"
           echo "PAY24_REAL_PROVIDER_CALLS=0"
           echo "PAY24_REAL_MONEY_MOVEMENT=0"
           echo "PAY24_STAGE1_LIVE_ACTIVATION=NOT_AUTHORIZED"
+          echo "PAY23_ENTERPRISE_PAYMENT_SYSTEM=NOT_CERTIFIED"
