@@ -3,12 +3,15 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.finance_core.api.guards import FinanceCheckoutRoutePosture, get_finance_checkout_route_posture
+import app.finance_core.api.payment_boundary as payment_boundary
 from app.finance_core.api.payment_boundary import (
     get_checkout_plan_resolver,
     get_razorpay_test_mode_config,
@@ -22,6 +25,64 @@ from tests.finance_core.test_phase6b_razorpay_sandbox_adapter import sandbox_con
 from tests.finance_core.test_phase6c_checkout_orchestration import FakePlanResolver
 from tests.finance_core.test_phase6h_disabled_payment_api_routes import assert_disabled, finance_counts
 from tests.finance_core.test_phase6n_sandbox_checkout_route_enablement import auth_headers, checkout_payload, seed_route_organization
+
+
+
+class SyntheticPay24AdmissionAuthority:
+    """Activation-only stub for the historical Phase-6V integration suite.
+
+    Phase-6V continues through the real isolated finance payment database
+    identity and real PAY8 provider-operation claim/finish functions.
+
+    PAY24 activation generation, Stage-0 fail-closed behavior, admission
+    durability and rollback semantics are certified independently by the
+    dedicated PAY24 test suite.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.admission_id = uuid.uuid4()
+
+    async def request_current_provider_admission(
+        self,
+        *,
+        capability,
+        logical_operation_id,
+        operation_sha,
+        lease_seconds,
+    ):
+        return SimpleNamespace(
+            admission_id=self.admission_id,
+            state="admitted",
+        )
+
+    async def start_provider_admission(
+        self,
+        *,
+        admission_id,
+        execution_id,
+    ):
+        assert admission_id == self.admission_id
+        return SimpleNamespace(state="active")
+
+    async def finish_provider_admission(
+        self,
+        *,
+        admission_id,
+        execution_id,
+        outcome,
+    ):
+        assert admission_id == self.admission_id
+        return SimpleNamespace(state=outcome)
+
+
+@pytest.fixture(autouse=True)
+def synthetic_pay24_activation(monkeypatch):
+    monkeypatch.setattr(
+        payment_boundary,
+        "DurableActivationAuthority",
+        SyntheticPay24AdmissionAuthority,
+    )
 
 
 class FakeRazorpayTestModeTransport:
