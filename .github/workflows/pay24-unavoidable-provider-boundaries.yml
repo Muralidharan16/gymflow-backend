@@ -64,6 +64,7 @@ jobs:
             '.github/workflows/hardening-ci.yml' \
             '.github/workflows/migration-lifecycle-ci.yml' \
             '.github/workflows/pay24-unavoidable-provider-boundaries.yml' \
+            'tests/finance_core/test_phase6n_sandbox_checkout_route_enablement.py' \
             'tests/test_migration_app_secure_owner_context_boundary.py' \
             'tests/test_pay24b_ri1b2_route_runtime_composition.py' \
             > /tmp/pay24-ci-expected.txt

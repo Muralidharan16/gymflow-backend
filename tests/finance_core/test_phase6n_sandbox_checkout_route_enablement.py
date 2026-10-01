@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from fastapi import Depends
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import create_access_token
 from app.finance_core.api.guards import FinanceCheckoutRoutePosture, get_finance_checkout_route_posture
+import app.finance_core.api.payment_boundary as payment_boundary
 from app.finance_core.api.payment_boundary import get_checkout_orchestration_service
 from app.finance_core.api.schemas import FinanceCheckoutCreateRequest
 from app.finance_core.services.checkout_orchestration import FinanceCheckoutOrchestrationService
@@ -22,6 +24,61 @@ from tests.finance_core.test_phase5c_invoice_engine import BILLING_PARTY_ID, ORG
 from tests.finance_core.test_phase6b_razorpay_sandbox_adapter import sandbox_config
 from tests.finance_core.test_phase6c_checkout_orchestration import FakePlanResolver, FakeRazorpayClient
 from tests.finance_core.test_phase6h_disabled_payment_api_routes import assert_disabled, finance_counts
+
+
+
+class SyntheticPay24AdmissionAuthority:
+    """Test-only activation stub for historical sandbox checkout regressions.
+
+    The route still uses the real isolated finance payment database identity,
+    PAY8 claim/finish functions, transaction boundaries, and fake Razorpay
+    client. PAY24 activation semantics are certified by dedicated PAY24 tests.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.admission_id = uuid.uuid4()
+
+    async def request_current_provider_admission(
+        self,
+        *,
+        capability,
+        logical_operation_id,
+        operation_sha,
+        lease_seconds,
+    ):
+        return SimpleNamespace(
+            admission_id=self.admission_id,
+            state="admitted",
+        )
+
+    async def start_provider_admission(
+        self,
+        *,
+        admission_id,
+        execution_id,
+    ):
+        assert admission_id == self.admission_id
+        return SimpleNamespace(state="active")
+
+    async def finish_provider_admission(
+        self,
+        *,
+        admission_id,
+        execution_id,
+        outcome,
+    ):
+        assert admission_id == self.admission_id
+        return SimpleNamespace(state=outcome)
+
+
+@pytest.fixture(autouse=True)
+def synthetic_pay24_activation(monkeypatch):
+    monkeypatch.setattr(
+        payment_boundary,
+        "DurableActivationAuthority",
+        SyntheticPay24AdmissionAuthority,
+    )
 
 
 async def seed_route_organization() -> None:

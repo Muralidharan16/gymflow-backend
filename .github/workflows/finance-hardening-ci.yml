@@ -35,6 +35,7 @@ jobs:
     env:
       MIGRATION_PASSWORD: ci-migration-owner
       FINANCE_RUNTIME_PASSWORD: ci-finance-runtime
+      FINANCE_PAYMENT_PASSWORD: ci-finance-payment-runtime
       FINANCE_CORE_SUBJECT_PASSWORD: ci-finance-core-subject
       FINANCE_CONFIG_RUNTIME_PASSWORD: ci-finance-config-runtime
       SYNTHETIC_RUNTIME_PASSWORD: ci-synthetic-runtime
@@ -43,6 +44,7 @@ jobs:
       TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_finance_test_ci
       FINANCE_CORE_TEST_DATABASE_URL: postgresql+asyncpg://finance_core_test_subject:ci-finance-core-subject@127.0.0.1:5432/gymflow_finance_test_ci
       FINANCE_CORE_TEST_ADMIN_DATABASE_URL: postgresql+asyncpg://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_finance_test_ci
+      FINANCE_PAYMENT_DATABASE_URL: postgresql+asyncpg://finance_payment_deployment:ci-finance-payment-runtime@127.0.0.1:5432/gymflow_finance_test_ci
       FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-finance-config-runtime@127.0.0.1:5432/gymflow_finance_test_ci
       SYNTHETIC_ORG_TEST_DATABASE_URL: postgresql+asyncpg://synthetic_test_runtime:ci-synthetic-runtime@127.0.0.1:5432/gymflow_finance_test_ci
       REDIS_URL: redis://127.0.0.1:6379/0
@@ -85,6 +87,7 @@ jobs:
           CREATE ROLE test_runner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE finance_test_runtime LOGIN PASSWORD 'ci-finance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE finance_core_test_subject LOGIN PASSWORD 'ci-finance-core-subject' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE finance_payment_deployment LOGIN PASSWORD 'ci-finance-payment-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE synthetic_test_runtime LOGIN PASSWORD 'ci-synthetic-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-finance-config-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           ALTER ROLE finance_test_runtime SET row_security = 'on';
@@ -95,6 +98,10 @@ jobs:
           ALTER ROLE finance_core_test_subject SET statement_timeout = '10s';
           ALTER ROLE finance_core_test_subject SET lock_timeout = '3s';
           ALTER ROLE finance_core_test_subject SET idle_in_transaction_session_timeout = '15s';
+          ALTER ROLE finance_payment_deployment SET row_security = 'on';
+          ALTER ROLE finance_payment_deployment SET statement_timeout = '15s';
+          ALTER ROLE finance_payment_deployment SET lock_timeout = '2s';
+          ALTER ROLE finance_payment_deployment SET idle_in_transaction_session_timeout = '30s';
           ALTER ROLE finance_config_deployment SET row_security = 'on';
           ALTER ROLE finance_config_deployment SET statement_timeout = '15s';
           ALTER ROLE finance_config_deployment SET lock_timeout = '2s';
@@ -108,11 +115,13 @@ jobs:
           GRANT test_runner TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_runtime TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO finance_core_test_subject WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT finance_payment_runtime TO finance_payment_deployment WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT finance_config_runtime TO finance_config_deployment WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT test_runner TO synthetic_test_runtime WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
           CREATE DATABASE gymflow_finance_test_ci OWNER migration_owner;
           GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO finance_test_runtime;
           GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO finance_core_test_subject;
+          GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO finance_payment_deployment;
           GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO finance_config_deployment;
           GRANT CONNECT ON DATABASE gymflow_finance_test_ci TO synthetic_test_runtime;
           SQL
