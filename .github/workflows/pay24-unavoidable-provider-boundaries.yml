@@ -61,6 +61,9 @@ jobs:
 
           printf '%s\n' \
             '.github/workflows/pay24-unavoidable-provider-boundaries.yml' \
+            'tests/finance_core/payment_database.py' \
+            'tests/finance_core/test_pay17_fault_injection_concurrency.py' \
+            'tests/finance_core/test_phase6c_checkout_orchestration.py' \
             > /tmp/pay24-ci-expected.txt
 
           diff -u \
@@ -98,6 +101,9 @@ jobs:
             app/finance_core/api/payment_boundary.py \
             app/finance_core/services/checkout_orchestration.py \
             app/payment_activation/authority.py \
+            tests/finance_core/payment_database.py \
+            tests/finance_core/test_pay17_fault_injection_concurrency.py \
+            tests/finance_core/test_phase6c_checkout_orchestration.py \
             tests/test_migration_app_secure_owner_context_boundary.py \
             tests/test_pay24b_ri1b2_route_runtime_composition.py \
             tests/test_pay24b_ri1b3_claim_finish_contract_static.py

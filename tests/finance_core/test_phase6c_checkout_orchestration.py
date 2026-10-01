@@ -22,6 +22,7 @@ from app.finance_core.domain.razorpay_sandbox import RazorpayOrderCreateRequest,
 from app.finance_core.services.checkout_orchestration import FinanceCheckoutOrchestrationService
 from app.finance_core.services.operational_guards import FinanceOperationalGuardService
 from app.finance_core.services.razorpay_sandbox import RazorpaySandboxAdapter
+from tests.finance_core.payment_database import finance_payment_session
 from tests.finance_core.test_phase5c_invoice_engine import (
     BILLING_PARTY_ID,
     BRAND_ID,
@@ -122,22 +123,40 @@ async def orchestrate(command_: CreateCheckoutSessionCommand, *, client: FakeRaz
 
         assert prepared.provider_operation is not None
         lease_owner = uuid.uuid4()
-        claim = await service.claim_provider_operation(
-            prepared,
-            lease_owner=lease_owner,
-        )
-        # Fence the external attempt before provider I/O.
-        await session.commit()
+
+        async with finance_payment_session(
+            organization_id=ORG_ID,
+        ) as payment_session:
+            provider_effects = service.bind_provider_effects(
+                payment_session
+            )
+            claim = await provider_effects.claim_provider_operation(
+                prepared,
+                lease_owner=lease_owner,
+            )
+            # Fence the provider attempt under the isolated payment identity
+            # before any provider I/O.
+            await payment_session.commit()
+
         assert claim.claimed is True
 
         response = await service.call_provider(prepared)
-        provider_order_id = await service.finish_provider_success(
-            prepared,
-            claim,
-            lease_owner=lease_owner,
-            response=response,
-        )
-        await session.commit()
+
+        async with finance_payment_session(
+            organization_id=ORG_ID,
+        ) as payment_session:
+            provider_effects = service.bind_provider_effects(
+                payment_session
+            )
+            provider_order_id = (
+                await provider_effects.finish_provider_success(
+                    prepared,
+                    claim,
+                    lease_owner=lease_owner,
+                    response=response,
+                )
+            )
+            await payment_session.commit()
         return (
             service.build_result(
                 prepared,

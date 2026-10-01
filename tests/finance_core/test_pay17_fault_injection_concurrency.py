@@ -49,6 +49,7 @@ from tests.finance_core.test_phase5j_refund_credit_note_reversal import (
     paid_invoice_with_payment,
 )
 from tests.finance_core.test_phase6b_razorpay_sandbox_adapter import sandbox_config
+from tests.finance_core.payment_database import finance_payment_session
 from tests.finance_core.test_phase6c_checkout_orchestration import (
     FakePlanResolver,
     FakeRazorpayClient,
@@ -369,11 +370,19 @@ async def test_webhook_before_checkout_response_is_deferred_then_recovers_paymen
         await checkout_session.commit()
 
         assert prepared.provider_operation is not None
-        claim = await checkout_service.claim_provider_operation(
-            prepared,
-            lease_owner=lease_owner,
-        )
-        await checkout_session.commit()
+
+        async with finance_payment_session(
+            organization_id=ORG_ID,
+        ) as payment_session:
+            provider_effects = checkout_service.bind_provider_effects(
+                payment_session
+            )
+            claim = await provider_effects.claim_provider_operation(
+                prepared,
+                lease_owner=lease_owner,
+            )
+            await payment_session.commit()
+
         provider_response = await checkout_service.call_provider(prepared)
         assert provider_response.provider_order_ref == "order_test_1"
 
@@ -419,13 +428,22 @@ async def test_webhook_before_checkout_response_is_deferred_then_recovers_paymen
             await webhook_session.commit()
             assert retry_status == "retry"
 
-        provider_order_id = await checkout_service.finish_provider_success(
-            prepared,
-            claim,
-            lease_owner=lease_owner,
-            response=provider_response,
-        )
-        await checkout_session.commit()
+        async with finance_payment_session(
+            organization_id=ORG_ID,
+        ) as payment_session:
+            provider_effects = checkout_service.bind_provider_effects(
+                payment_session
+            )
+            provider_order_id = (
+                await provider_effects.finish_provider_success(
+                    prepared,
+                    claim,
+                    lease_owner=lease_owner,
+                    response=provider_response,
+                )
+            )
+            await payment_session.commit()
+
         assert provider_order_id == provider_response.provider_order_ref
 
     second_webhook_owner = uuid.uuid4()
@@ -583,11 +601,19 @@ async def test_death_after_claim_before_provider_call_becomes_unknown_then_recon
         await session.commit()
         assert prepared.provider_operation is not None
         first_owner = uuid.uuid4()
-        first_claim = await service.claim_provider_operation(
-            prepared,
-            lease_owner=first_owner,
-        )
-        await session.commit()
+
+        async with finance_payment_session(
+            organization_id=ORG_ID,
+        ) as payment_session:
+            provider_effects = service.bind_provider_effects(
+                payment_session
+            )
+            first_claim = await provider_effects.claim_provider_operation(
+                prepared,
+                lease_owner=first_owner,
+            )
+            await payment_session.commit()
+
         assert first_claim.claimed is True
 
     # Process dies here: the provider was never called, but the database cannot
@@ -595,14 +621,17 @@ async def test_death_after_claim_before_provider_call_becomes_unknown_then_recon
     assert provider_client.requests == []
     await _expire_provider_operation(prepared.provider_operation.operation_id)
 
-    async with AsyncSessionLocal() as session:
-        await update_session_context(session, org_id=str(ORG_ID))
-        operation_service = FinanceProviderOperationService(session)
+    async with finance_payment_session(
+        organization_id=ORG_ID,
+    ) as payment_session:
+        operation_service = FinanceProviderOperationService(
+            payment_session
+        )
         second_claim = await operation_service.claim(
             operation_id=prepared.provider_operation.operation_id,
             lease_owner=uuid.uuid4(),
         )
-        await session.commit()
+        await payment_session.commit()
 
     assert second_claim.claimed is False
     assert second_claim.status == "unknown"
@@ -663,11 +692,19 @@ async def test_provider_success_then_process_death_reconciles_without_second_pro
         await session.commit()
         assert prepared.provider_operation is not None
         first_owner = uuid.uuid4()
-        first_claim = await service.claim_provider_operation(
-            prepared,
-            lease_owner=first_owner,
-        )
-        await session.commit()
+
+        async with finance_payment_session(
+            organization_id=ORG_ID,
+        ) as payment_session:
+            provider_effects = service.bind_provider_effects(
+                payment_session
+            )
+            first_claim = await provider_effects.claim_provider_operation(
+                prepared,
+                lease_owner=first_owner,
+            )
+            await payment_session.commit()
+
         assert first_claim.claimed is True
         response = await service.call_provider(prepared)
 
@@ -679,13 +716,16 @@ async def test_provider_success_then_process_death_reconciles_without_second_pro
     ) != response.provider_order_ref
 
     await _expire_provider_operation(prepared.provider_operation.operation_id)
-    async with AsyncSessionLocal() as session:
-        await update_session_context(session, org_id=str(ORG_ID))
-        second_claim = await FinanceProviderOperationService(session).claim(
+    async with finance_payment_session(
+        organization_id=ORG_ID,
+    ) as payment_session:
+        second_claim = await FinanceProviderOperationService(
+            payment_session
+        ).claim(
             operation_id=prepared.provider_operation.operation_id,
             lease_owner=uuid.uuid4(),
         )
-        await session.commit()
+        await payment_session.commit()
 
     assert second_claim.claimed is False
     assert second_claim.status == "unknown"
@@ -825,19 +865,37 @@ async def _seed_finished_checkout(*, idempotency_key: str):
         await session.commit()
         assert prepared.provider_operation is not None
         lease_owner = uuid.uuid4()
-        claim = await service.claim_provider_operation(
-            prepared,
-            lease_owner=lease_owner,
-        )
-        await session.commit()
+
+        async with finance_payment_session(
+            organization_id=ORG_ID,
+        ) as payment_session:
+            provider_effects = service.bind_provider_effects(
+                payment_session
+            )
+            claim = await provider_effects.claim_provider_operation(
+                prepared,
+                lease_owner=lease_owner,
+            )
+            await payment_session.commit()
+
         response = await service.call_provider(prepared)
-        provider_order_id = await service.finish_provider_success(
-            prepared,
-            claim,
-            lease_owner=lease_owner,
-            response=response,
-        )
-        await session.commit()
+
+        async with finance_payment_session(
+            organization_id=ORG_ID,
+        ) as payment_session:
+            provider_effects = service.bind_provider_effects(
+                payment_session
+            )
+            provider_order_id = (
+                await provider_effects.finish_provider_success(
+                    prepared,
+                    claim,
+                    lease_owner=lease_owner,
+                    response=response,
+                )
+            )
+            await payment_session.commit()
+
         return service.build_result(
             prepared,
             provider_order_id=provider_order_id,
