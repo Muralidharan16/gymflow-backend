@@ -1,0 +1,638 @@
+name: PAY-24 Unavoidable Provider Boundaries
+
+on:
+  push:
+    branches:
+      - hardening/pay24-unavoidable-provider-boundaries
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pay24-provider-boundaries-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PAY24_CERTIFIED_APPLICATION_SHA: ac8aa5163e5b527956102f00f80ce2d9f62cdcdf
+  PAY24_CERTIFIED_APPLICATION_TREE: cb993bf9183347945531e5debac5a35dad68f00f
+  PAY24_ALEMBIC_HEAD: zz77d8e9f0a67
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  pay24-scope-static:
+    name: PAY24 exact application freeze and checkout contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+asyncpg://pay24_app:unused@127.0.0.1:1/pay24_static
+      AUTH_DATABASE_URL: postgresql+asyncpg://pay24_auth:unused@127.0.0.1:1/pay24_static
+      FINANCE_PAYMENT_DATABASE_URL: postgresql+asyncpg://pay24_payment:unused@127.0.0.1:1/pay24_static
+      REDIS_URL: redis://127.0.0.1:1/0
+      CELERY_BROKER_URL: redis://127.0.0.1:1/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:1/2
+      SECRET_KEY: pay24-ci-static-not-production
+      AWS_ACCESS_KEY_ID: pay24-ci
+      AWS_SECRET_ACCESS_KEY: pay24-ci
+
+    steps:
+      - name: Checkout exact evidence head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Bind workflow-only evidence commit to certified application
+        run: |
+          set -euo pipefail
+
+          test "$(git rev-parse HEAD^)" = "$PAY24_CERTIFIED_APPLICATION_SHA"
+
+          test "$(git rev-parse "$PAY24_CERTIFIED_APPLICATION_SHA^{tree}")" \
+            = "$PAY24_CERTIFIED_APPLICATION_TREE"
+
+          git diff --name-only \
+            "$PAY24_CERTIFIED_APPLICATION_SHA...HEAD" \
+            | LC_ALL=C sort \
+            > /tmp/pay24-ci-delta.txt
+
+          cat > /tmp/pay24-ci-expected.txt <<'EOF'
+.github/workflows/pay24-unavoidable-provider-boundaries.yml
+tests/test_pay24b_ri1b2_route_runtime_composition.py
+EOF
+
+          diff -u \
+            /tmp/pay24-ci-expected.txt \
+            /tmp/pay24-ci-delta.txt
+
+          echo "PAY24_EXACT_APPLICATION_SHA=$PAY24_CERTIFIED_APPLICATION_SHA"
+          echo "PAY24_WORKFLOW_ONLY_EVIDENCE_SCOPE=PASS"
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install locked test environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+
+      - name: Compile PAY24 surface
+        run: |
+          python -m py_compile \
+            alembic/versions/zz57d8e9f0a65_pay24a_durable_activation_authority.py \
+            alembic/versions/zz67d8e9f0a66_pay24b_checkout_admission_bridge.py \
+            alembic/versions/zz77d8e9f0a67_pay24b_ri1b1_claim_finish_expand.py \
+            app/core/config.py \
+            app/core/database.py \
+            app/core/payment_database.py \
+            app/core/runtime_principal_attestation.py \
+            app/finance_core/api/payment_boundary.py \
+            app/finance_core/services/checkout_orchestration.py \
+            app/payment_activation/authority.py \
+            tests/test_pay24b_ri1b2_route_runtime_composition.py
+
+      - name: Prove exact PAY24 static and ASGI route contracts
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          python -m pytest --noconftest -q \
+            tests/test_pay24b_ri1b2_route_runtime_composition.py \
+            tests/test_pay24b_ri1b2_http_payment_identity_wiring_static.py \
+            tests/test_pay24b_ri1b1_claim_finish_expand_static.py \
+            tests/test_pay24b_checkout_admission_static.py \
+            tests/test_pay24b_payment_runtime_identity_static.py \
+            tests/test_pay8_durable_checkout_webhooks_static.py \
+            tests/test_auth_database_boundary.py \
+            tests/test_lifecycle_maintenance_runtime_boundary.py \
+            tests/test_pay2_financial_authority_static_contracts.py \
+            tests/test_process_database_profile_boundary.py \
+            tests/test_process_profile_deployment_contract.py \
+            tests/test_runtime_binding_alignment.py \
+            tests/test_runtime_principal_attestation.py
+
+          echo "PAY24_RI1B2_STATIC_AND_ROUTE_COMPOSITION=PASS"
+          echo "PAY24_REAL_PROVIDER_CALLS=0"
+          echo "PAY24_REAL_MONEY_MOVEMENT=0"
+
+  pay24-pg16:
+    name: PAY24 fresh PG16 identity migration and authority matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    env:
+      MIGRATION_PASSWORD: ci-pay24-migration
+      PAYMENT_PASSWORD: ci-pay24-payment
+      APP_PASSWORD: ci-pay24-app
+      AUTH_PASSWORD: ci-pay24-auth
+
+      DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay24-migration@127.0.0.1:5432/gymflow_pay24_ci
+      AUTH_DATABASE_URL: postgresql+asyncpg://pay24_auth_deployment:ci-pay24-auth@127.0.0.1:5432/gymflow_pay24_ci
+      FINANCE_PAYMENT_DATABASE_URL: postgresql+asyncpg://finance_payment_deployment:ci-pay24-payment@127.0.0.1:5432/gymflow_pay24_ci
+
+      DOERS_CLUSTER_VERIFY_DATABASE_URL: postgresql+psycopg://migration_owner:ci-pay24-migration@127.0.0.1:5432/postgres
+
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      SECRET_KEY: pay24-ci-runtime-not-production
+      AWS_ACCESS_KEY_ID: pay24-ci
+      AWS_SECRET_ACCESS_KEY: pay24-ci
+      ENVIRONMENT: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - name: Bind to certified application parent
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$PAY24_CERTIFIED_APPLICATION_SHA"
+          test "$(git rev-parse "$PAY24_CERTIFIED_APPLICATION_SHA^{tree}")" \
+            = "$PAY24_CERTIFIED_APPLICATION_TREE"
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.lock
+
+      - name: Install locked environment
+        run: |
+          set -euo pipefail
+          python -m pip install 'pip==26.2.1'
+          python -m pip install -r requirements-test.lock
+          python -m pip check
+
+      - name: Install PostgreSQL 16
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-client-16 \
+            postgresql-contrib \
+            postgresql-16-partman \
+            postgresql-16-postgis-3
+          sudo systemctl start postgresql
+          pg_config --version
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
+            -d postgres -c 'SELECT version();'
+
+      - name: Bootstrap canonical capability roles
+        run: |
+          set -euo pipefail
+          bash scripts/ci/bootstrap_cluster_roles.sh
+
+          python -s scripts/render_cluster_role_bootstrap.py \
+            | grep -q 'CREATE ROLE finance_payment_runtime'
+
+          echo "PAY24_CANONICAL_PAYMENT_CAPABILITY_BOOTSTRAP=PASS"
+
+      - name: Provision isolated PAY24 deployment logins
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          ALTER ROLE migration_owner PASSWORD 'ci-pay24-migration';
+
+          CREATE ROLE finance_payment_deployment
+            LOGIN PASSWORD 'ci-pay24-payment'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE finance_payment_deployment SET row_security = 'on';
+          ALTER ROLE finance_payment_deployment SET statement_timeout = '15s';
+          ALTER ROLE finance_payment_deployment SET lock_timeout = '2s';
+          ALTER ROLE finance_payment_deployment
+            SET idle_in_transaction_session_timeout = '30s';
+
+          GRANT finance_payment_runtime
+            TO finance_payment_deployment
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE ROLE pay24_app_deployment
+            LOGIN PASSWORD 'ci-pay24-app'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE pay24_app_deployment SET row_security = 'on';
+          ALTER ROLE pay24_app_deployment SET statement_timeout = '5s';
+          ALTER ROLE pay24_app_deployment SET lock_timeout = '2s';
+          ALTER ROLE pay24_app_deployment
+            SET idle_in_transaction_session_timeout = '15s';
+
+          GRANT app_runtime
+            TO pay24_app_deployment
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          GRANT app_user
+            TO pay24_app_deployment
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE ROLE pay24_auth_deployment
+            LOGIN PASSWORD 'ci-pay24-auth'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          GRANT auth_runtime
+            TO pay24_auth_deployment
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE DATABASE gymflow_pay24_ci OWNER migration_owner;
+
+          GRANT CONNECT ON DATABASE gymflow_pay24_ci
+            TO finance_payment_deployment,
+               pay24_app_deployment,
+               pay24_auth_deployment;
+          SQL
+
+      - name: Provision infrastructure-owned extensions
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
+            -d gymflow_pay24_ci <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE
+            ON ALL TABLES IN SCHEMA partman
+            TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE
+            ON ALL SEQUENCES IN SCHEMA partman
+            TO migration_owner;
+          GRANT EXECUTE
+            ON ALL FUNCTIONS IN SCHEMA partman
+            TO migration_owner;
+          GRANT EXECUTE
+            ON ALL PROCEDURES IN SCHEMA partman
+            TO migration_owner;
+          SQL
+
+      - name: Verify canonical role contract
+        run: |
+          bash scripts/ci/verify_cluster_roles.sh
+
+      - name: Fresh migration to exact PAY24 head
+        run: |
+          set -euo pipefail
+
+          python -s -m alembic -c alembic.ini upgrade head
+
+          HEAD_REV="$(
+            python -s -m alembic -c alembic.ini heads \
+              | awk '{print $1}'
+          )"
+
+          test "$HEAD_REV" = "$PAY24_ALEMBIC_HEAD"
+
+          echo "PAY24_FRESH_PG16_MIGRATION=PASS"
+          echo "PAY24_ALEMBIC_HEAD=$HEAD_REV"
+
+      - name: Prove PAY8 and PAY24 authority matrix
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" \
+          psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 \
+            -U migration_owner \
+            -d gymflow_pay24_ci <<'SQL'
+          DO $$
+          DECLARE
+            fn oid;
+            n integer;
+          BEGIN
+            SELECT count(*)
+              INTO n
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace ns
+                ON ns.oid = p.pronamespace
+             WHERE ns.nspname = 'app_secure'
+               AND p.proname = 'reserve_finance_provider_operation';
+
+            IF n <> 1 THEN
+              RAISE EXCEPTION 'reserve function cardinality drift';
+            END IF;
+
+            SELECT p.oid
+              INTO fn
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace ns
+                ON ns.oid = p.pronamespace
+             WHERE ns.nspname = 'app_secure'
+               AND p.proname = 'reserve_finance_provider_operation';
+
+            IF NOT pg_catalog.has_function_privilege(
+                'app_runtime', fn, 'EXECUTE'
+            ) OR pg_catalog.has_function_privilege(
+                'finance_payment_runtime', fn, 'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'reserve authority broadened';
+            END IF;
+
+            SELECT count(*)
+              INTO n
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace ns
+                ON ns.oid = p.pronamespace
+             WHERE ns.nspname = 'app_secure'
+               AND p.proname = 'claim_finance_provider_operation';
+
+            IF n <> 1 THEN
+              RAISE EXCEPTION 'claim function cardinality drift';
+            END IF;
+
+            SELECT p.oid
+              INTO fn
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace ns
+                ON ns.oid = p.pronamespace
+             WHERE ns.nspname = 'app_secure'
+               AND p.proname = 'claim_finance_provider_operation';
+
+            IF NOT pg_catalog.has_function_privilege(
+                'app_runtime', fn, 'EXECUTE'
+            ) OR NOT pg_catalog.has_function_privilege(
+                'finance_payment_runtime', fn, 'EXECUTE'
+            ) OR pg_catalog.has_function_privilege(
+                'auth_runtime', fn, 'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'claim dual-authority matrix drift';
+            END IF;
+
+            SELECT count(*)
+              INTO n
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace ns
+                ON ns.oid = p.pronamespace
+             WHERE ns.nspname = 'app_secure'
+               AND p.proname = 'finish_finance_provider_operation';
+
+            IF n <> 1 THEN
+              RAISE EXCEPTION 'finish function cardinality drift';
+            END IF;
+
+            SELECT p.oid
+              INTO fn
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace ns
+                ON ns.oid = p.pronamespace
+             WHERE ns.nspname = 'app_secure'
+               AND p.proname = 'finish_finance_provider_operation';
+
+            IF NOT pg_catalog.has_function_privilege(
+                'app_runtime', fn, 'EXECUTE'
+            ) OR NOT pg_catalog.has_function_privilege(
+                'finance_payment_runtime', fn, 'EXECUTE'
+            ) OR pg_catalog.has_function_privilege(
+                'auth_runtime', fn, 'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'finish dual-authority matrix drift';
+            END IF;
+
+            SELECT count(*)
+              INTO n
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace ns
+                ON ns.oid = p.pronamespace
+             WHERE ns.nspname = 'app_secure'
+               AND p.proname = 'reconcile_finance_provider_operation';
+
+            IF n <> 1 THEN
+              RAISE EXCEPTION 'reconcile function cardinality drift';
+            END IF;
+
+            SELECT p.oid
+              INTO fn
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace ns
+                ON ns.oid = p.pronamespace
+             WHERE ns.nspname = 'app_secure'
+               AND p.proname = 'reconcile_finance_provider_operation';
+
+            IF pg_catalog.has_function_privilege(
+                'app_runtime', fn, 'EXECUTE'
+            ) OR pg_catalog.has_function_privilege(
+                'finance_payment_runtime', fn, 'EXECUTE'
+            ) OR NOT pg_catalog.has_function_privilege(
+                'finance_reconciliation_runtime', fn, 'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'reconcile authority drift';
+            END IF;
+
+            SELECT count(*)
+              INTO n
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace ns
+                ON ns.oid = p.pronamespace
+             WHERE ns.nspname = 'app_secure'
+               AND p.proname =
+                   'pay24b_request_current_provider_admission';
+
+            IF n <> 1 THEN
+              RAISE EXCEPTION 'PAY24 bridge cardinality drift';
+            END IF;
+
+            SELECT p.oid
+              INTO fn
+              FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_namespace ns
+                ON ns.oid = p.pronamespace
+             WHERE ns.nspname = 'app_secure'
+               AND p.proname =
+                   'pay24b_request_current_provider_admission';
+
+            IF pg_catalog.has_function_privilege(
+                'app_runtime', fn, 'EXECUTE'
+            ) OR NOT pg_catalog.has_function_privilege(
+                'finance_payment_runtime', fn, 'EXECUTE'
+            ) THEN
+              RAISE EXCEPTION 'PAY24 bridge identity drift';
+            END IF;
+
+            IF pg_catalog.pg_has_role(
+                'app_runtime',
+                'finance_payment_runtime',
+                'MEMBER'
+            ) OR pg_catalog.pg_has_role(
+                'app_runtime',
+                'finance_payment_runtime',
+                'SET'
+            ) THEN
+              RAISE EXCEPTION
+                'app_runtime can reach finance_payment_runtime';
+            END IF;
+          END
+          $$;
+          SQL
+
+          echo "PAY24_PROVIDER_OPERATION_AUTHORITY_MATRIX=PASS"
+          echo "PAY24_APP_RUNTIME_PAYMENT_REACHABILITY=0"
+
+      - name: Prove isolated payment deployment session
+        run: |
+          set -euo pipefail
+
+          PAYMENT_VECTOR="$(
+            PGPASSWORD="$PAYMENT_PASSWORD" \
+            psql -X -AtF '|' \
+              -h 127.0.0.1 \
+              -U finance_payment_deployment \
+              -d gymflow_pay24_ci \
+              -c "
+                SELECT
+                  session_user,
+                  current_user,
+                  current_setting('row_security'),
+                  current_setting('statement_timeout'),
+                  current_setting('lock_timeout'),
+                  current_setting(
+                    'idle_in_transaction_session_timeout'
+                  );
+              "
+          )"
+
+          echo "PAYMENT_SESSION_VECTOR=$PAYMENT_VECTOR"
+
+          test "$PAYMENT_VECTOR" \
+            = "finance_payment_deployment|finance_payment_deployment|on|15s|2s|30s"
+
+          MEMBERSHIP="$(
+            sudo -u postgres psql -X -AtF '|' \
+              -d postgres \
+              -c "
+                SELECT
+                  am.admin_option,
+                  am.inherit_option,
+                  am.set_option
+                FROM pg_catalog.pg_auth_members am
+                JOIN pg_catalog.pg_roles granted
+                  ON granted.oid = am.roleid
+                JOIN pg_catalog.pg_roles member
+                  ON member.oid = am.member
+                WHERE granted.rolname =
+                        'finance_payment_runtime'
+                  AND member.rolname =
+                        'finance_payment_deployment';
+              "
+          )"
+
+          echo "PAYMENT_MEMBERSHIP_VECTOR=$MEMBERSHIP"
+          test "$MEMBERSHIP" = "f|t|f"
+
+          echo "PAY24_REAL_PAYMENT_SESSION=PASS"
+
+      - name: Prove pristine Stage-0 posture
+        run: |
+          PGPASSWORD="$MIGRATION_PASSWORD" \
+          psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 \
+            -U migration_owner \
+            -d gymflow_pay24_ci <<'SQL'
+          BEGIN;
+          SET LOCAL ROLE app_security_owner;
+
+          DO $$
+          DECLARE
+            r record;
+          BEGIN
+            SELECT *
+              INTO r
+              FROM finance.payment_activation_authority;
+
+            IF r.generation <> 0
+               OR r.stage <> 0
+               OR r.provider_egress_state <> 'blocked'
+               OR r.internal_organization_id IS NOT NULL
+               OR r.checkout
+               OR r.webhooks
+               OR r.payment_application
+               OR r.subscription_activation
+               OR r.refund_execution
+               OR r.recurring_billing
+               OR r.dunning
+               OR r.platform_billing
+            THEN
+              RAISE EXCEPTION 'PAY24 Stage0 posture drift';
+            END IF;
+
+            IF EXISTS (
+              SELECT 1
+              FROM finance.provider_admission_leases
+            ) THEN
+              RAISE EXCEPTION
+                'unexpected provider admission during CI';
+            END IF;
+          END
+          $$;
+
+          ROLLBACK;
+          SQL
+
+          echo "PAY24_STAGE0_FAIL_CLOSED_POSTURE=PASS"
+          echo "PAY24_PROVIDER_ADMISSIONS_CREATED=0"
+          echo "PAY24_REAL_PROVIDER_CALLS=0"
+          echo "PAY24_REAL_MONEY_MOVEMENT=0"
+
+  inherited-architecture:
+    name: Inherited architecture contracts
+    uses: ./.github/workflows/architecture-hardening-contracts.yml
+
+  inherited-finance:
+    name: Inherited Finance Core hardening
+    uses: ./.github/workflows/finance-hardening-ci.yml
+
+  inherited-migration-hardening:
+    name: Inherited migration hardening
+    uses: ./.github/workflows/hardening-ci.yml
+
+  inherited-migration-lifecycle:
+    name: Inherited fresh PG16 migration lifecycle
+    uses: ./.github/workflows/migration-lifecycle-ci.yml
+
+  pay24-readiness:
+    name: PAY24 exact application SHA readiness
+    if: ${{ always() }}
+    needs:
+      - pay24-scope-static
+      - pay24-pg16
+      - inherited-architecture
+      - inherited-finance
+      - inherited-migration-hardening
+      - inherited-migration-lifecycle
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Require every PAY24 and inherited gate
+        env:
+          SCOPE_STATIC: ${{ needs.pay24-scope-static.result }}
+          PAY24_PG16: ${{ needs.pay24-pg16.result }}
+          ARCHITECTURE: ${{ needs.inherited-architecture.result }}
+          FINANCE: ${{ needs.inherited-finance.result }}
+          MIGRATION_HARDENING: ${{ needs.inherited-migration-hardening.result }}
+          MIGRATION_LIFECYCLE: ${{ needs.inherited-migration-lifecycle.result }}
+        run: |
+          set -euo pipefail
+
+          test "$SCOPE_STATIC" = success
+          test "$PAY24_PG16" = success
+          test "$ARCHITECTURE" = success
+          test "$FINANCE" = success
+          test "$MIGRATION_HARDENING" = success
+          test "$MIGRATION_LIFECYCLE" = success
+
+          echo "PAY24_CERTIFIED_APPLICATION_SHA=$PAY24_CERTIFIED_APPLICATION_SHA"
+          echo "PAY24_RI1B2_REMOTE_EXACT_SHA_CI=PASS"
+          echo "PAY24_REAL_PROVIDER_CALLS=0"
+          echo "PAY24_REAL_MONEY_MOVEMENT=0"
+          echo "PAY24_STAGE1_LIVE_ACTIVATION=NOT_AUTHORIZED"
