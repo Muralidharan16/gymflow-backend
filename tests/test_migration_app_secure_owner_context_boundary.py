@@ -146,6 +146,9 @@ _PAY24B_ADMISSION_BRIDGE_MIGRATION = (
 _PAY24B_RI1B1_EXPAND_MIGRATION = (
     "zz77d8e9f0a67_pay24b_ri1b1_claim_finish_expand.py"
 )
+_PAY24B_RI1B3_CONTRACT_MIGRATION = (
+    "zz87d8e9f0a68_pay24b_ri1b3_claim_finish_contract.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -201,6 +204,7 @@ APP_SECURE_FILES.update(
         _PAY24A_DURABLE_AUTHORITY_MIGRATION,
         _PAY24B_ADMISSION_BRIDGE_MIGRATION,
         _PAY24B_RI1B1_EXPAND_MIGRATION,
+        _PAY24B_RI1B3_CONTRACT_MIGRATION,
     }
 )
 
@@ -445,6 +449,10 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # SECURITY DEFINER and exact dual-authority ACLs are independently
         # certified by the RI1B1 migration contracts.
         _PAY24B_RI1B1_EXPAND_MIGRATION: set(),
+        # PAY-24-B RI1B3 contracts PAY8 claim/finish to the isolated
+        # finance_payment_runtime identity. It changes function bodies and
+        # EXECUTE ACLs only, with no schema/view/policy DDL.
+        _PAY24B_RI1B3_CONTRACT_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {
