@@ -23,6 +23,7 @@ _AUTH = "postgresql+asyncpg://auth_login@localhost/doers"
 _WORKER = "postgresql+asyncpg://worker_login@localhost/doers"
 _MAINTENANCE = "postgresql+asyncpg://maintenance_login@localhost/doers"
 _FINANCE_CONFIG = "postgresql+psycopg://finance_config_deployment@localhost/doers"
+_PAYMENT = "postgresql+asyncpg://finance_payment_deployment@localhost/doers"
 _P4E_METRICS = "https://otel.example.test/v1/metrics"
 
 
@@ -45,11 +46,53 @@ def test_api_profile_exposes_only_api_and_auth_database_components() -> None:
     assert settings.WORKER_DATABASE_URL == ""
     assert settings.MAINTENANCE_DATABASE_URL == ""
     assert settings.FINANCE_CONFIG_DATABASE_URL == ""
+    assert settings.FINANCE_PAYMENT_DATABASE_URL == ""
     assert settings.database_component_enabled("api")
     assert settings.database_component_enabled("auth")
+    assert not settings.database_component_enabled("finance_payment")
     assert not settings.database_component_enabled("worker")
     assert not settings.database_component_enabled("maintenance")
     assert not settings.database_component_enabled("finance_config")
+
+
+def test_api_payment_profile_exposes_api_auth_and_payment_only() -> None:
+    settings = _settings(
+        DOERS_PROCESS_PROFILE="api_payment",
+        DATABASE_URL=_API,
+        AUTH_DATABASE_URL=_AUTH,
+        FINANCE_PAYMENT_DATABASE_URL=_PAYMENT,
+    )
+    assert settings.DATABASE_URL == _API
+    assert settings.AUTH_DATABASE_URL == _AUTH
+    assert settings.FINANCE_PAYMENT_DATABASE_URL == _PAYMENT
+    assert settings.WORKER_DATABASE_URL == ""
+    assert settings.MAINTENANCE_DATABASE_URL == ""
+    assert settings.FINANCE_CONFIG_DATABASE_URL == ""
+    assert settings.database_component_enabled("api")
+    assert settings.database_component_enabled("auth")
+    assert settings.database_component_enabled("finance_payment")
+    assert not settings.database_component_enabled("worker")
+    assert not settings.database_component_enabled("maintenance")
+    assert not settings.database_component_enabled("finance_config")
+
+
+def test_api_profile_rejects_payment_database_credential_exposure() -> None:
+    with pytest.raises(ValidationError, match="forbidden database variables"):
+        _settings(
+            DOERS_PROCESS_PROFILE="api",
+            DATABASE_URL=_API,
+            AUTH_DATABASE_URL=_AUTH,
+            FINANCE_PAYMENT_DATABASE_URL=_PAYMENT,
+        )
+
+
+def test_api_payment_profile_requires_payment_database_identity() -> None:
+    with pytest.raises(ValidationError, match="missing required database variables"):
+        _settings(
+            DOERS_PROCESS_PROFILE="api_payment",
+            DATABASE_URL=_API,
+            AUTH_DATABASE_URL=_AUTH,
+        )
 
 
 def test_api_profile_rejects_worker_database_credential_exposure() -> None:
@@ -73,9 +116,11 @@ def test_worker_profile_has_only_worker_database_identity() -> None:
     assert settings.AUTH_DATABASE_URL == ""
     assert settings.MAINTENANCE_DATABASE_URL == ""
     assert settings.FINANCE_CONFIG_DATABASE_URL == ""
+    assert settings.FINANCE_PAYMENT_DATABASE_URL == ""
     assert "invalid.invalid" in settings.DATABASE_URL
     assert settings.database_component_enabled("worker")
     assert not settings.database_component_enabled("api")
+    assert not settings.database_component_enabled("finance_payment")
     assert not settings.database_component_enabled("maintenance")
     assert not settings.database_component_enabled("finance_config")
 
@@ -102,8 +147,10 @@ def test_maintenance_profile_has_only_maintenance_database_identity() -> None:
     assert settings.WORKER_DATABASE_URL == ""
     assert settings.AUTH_DATABASE_URL == ""
     assert settings.FINANCE_CONFIG_DATABASE_URL == ""
+    assert settings.FINANCE_PAYMENT_DATABASE_URL == ""
     assert "invalid.invalid" in settings.DATABASE_URL
     assert settings.database_component_enabled("maintenance")
+    assert not settings.database_component_enabled("finance_payment")
     assert not settings.database_component_enabled("worker")
     assert not settings.database_component_enabled("finance_config")
 
@@ -117,9 +164,11 @@ def test_finance_config_profile_has_only_finance_config_database_identity() -> N
     assert settings.AUTH_DATABASE_URL == ""
     assert settings.WORKER_DATABASE_URL == ""
     assert settings.MAINTENANCE_DATABASE_URL == ""
+    assert settings.FINANCE_PAYMENT_DATABASE_URL == ""
     assert "invalid.invalid" in settings.DATABASE_URL
     assert settings.database_component_enabled("finance_config")
     assert not settings.database_component_enabled("api")
+    assert not settings.database_component_enabled("finance_payment")
     assert not settings.database_component_enabled("worker")
     assert not settings.database_component_enabled("maintenance")
 
@@ -140,9 +189,12 @@ def test_beat_profile_has_no_database_identity() -> None:
     assert settings.WORKER_DATABASE_URL == ""
     assert settings.MAINTENANCE_DATABASE_URL == ""
     assert settings.FINANCE_CONFIG_DATABASE_URL == ""
+    assert settings.FINANCE_PAYMENT_DATABASE_URL == ""
     assert not any(
         settings.database_component_enabled(component)
-        for component in ("api", "auth", "worker", "maintenance", "finance_config")
+        for component in (
+            "api", "auth", "finance_payment", "worker", "maintenance", "finance_config"
+        )
     )
 
 

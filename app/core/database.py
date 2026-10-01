@@ -58,6 +58,13 @@ _BACKGROUND_LOCK_TIMEOUT_MS = 2000
 _BACKGROUND_STMT_TIMEOUT_MS = 15000
 _BACKGROUND_IDLE_TIMEOUT_MS = 30000
 
+_TIMEOUT_PROFILE_API = "api"
+_TIMEOUT_PROFILE_RUNTIME_DEFAULT = "runtime_default"
+_ALLOWED_TIMEOUT_PROFILES = frozenset({
+    _TIMEOUT_PROFILE_API,
+    _TIMEOUT_PROFILE_RUNTIME_DEFAULT,
+})
+
 
 async_engine = create_async_engine(
     settings.DATABASE_URL,
@@ -123,11 +130,21 @@ def _validate_principal_type(principal_type: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def _validate_timeout_profile(timeout_profile: str) -> str:
+    normalized = str(timeout_profile).strip().lower()
+    if normalized not in _ALLOWED_TIMEOUT_PROFILES:
+        raise ValueError(f"Unsupported database timeout profile: {timeout_profile!r}")
+    return normalized
+
+
 def _context_settings(context: dict[str, Optional[str]]):
     org_id = context.get("org_id")
     trace_id = context.get("trace_id") or "unknown"
     org_label = org_id or "anon"
     is_background = bool(context.get("internal_maintenance"))
+    timeout_profile = _validate_timeout_profile(
+        context.get("timeout_profile") or _TIMEOUT_PROFILE_API
+    )
 
     yield "application_name", f"doers:org:{org_label}:trace:{trace_id}"
 
@@ -152,7 +169,7 @@ def _context_settings(context: dict[str, Optional[str]]):
         yield "statement_timeout", f"{_BACKGROUND_STMT_TIMEOUT_MS}ms"
         yield "lock_timeout", f"{_BACKGROUND_LOCK_TIMEOUT_MS}ms"
         yield "idle_in_transaction_session_timeout", f"{_BACKGROUND_IDLE_TIMEOUT_MS}ms"
-    else:
+    elif timeout_profile == _TIMEOUT_PROFILE_API:
         yield "statement_timeout", f"{_API_STMT_TIMEOUT_MS}ms"
         yield "lock_timeout", f"{_API_LOCK_TIMEOUT_MS}ms"
         yield "idle_in_transaction_session_timeout", f"{_API_IDLE_TIMEOUT_MS}ms"
@@ -222,8 +239,10 @@ class SessionContextInitializer:
         trace_id: str = "unknown",
         role: str = "unknown",
         principal_type: Optional[str] = None,
+        timeout_profile: str = _TIMEOUT_PROFILE_API,
     ) -> None:
         normalized_principal_type = _validate_principal_type(principal_type)
+        normalized_timeout_profile = _validate_timeout_profile(timeout_profile)
         if user_id != _ZERO_UUID and normalized_principal_type is None:
             normalized_principal_type = "owner"
 
@@ -234,10 +253,16 @@ class SessionContextInitializer:
             "gym_id": str(gym_id) if gym_id else None,
             "trace_id": str(trace_id),
             "role": str(role),
+            "timeout_profile": normalized_timeout_profile,
         }
 
 
-async def initialize_request_session(session: AsyncSession, request=None) -> None:
+async def initialize_request_session(
+    session: AsyncSession,
+    request=None,
+    *,
+    timeout_profile: str = _TIMEOUT_PROFILE_API,
+) -> None:
     """Attach verified request state to any application database identity."""
     principal_id = _ZERO_UUID
     principal_type = None
@@ -267,6 +292,7 @@ async def initialize_request_session(session: AsyncSession, request=None) -> Non
         gym_id=str(gym_id) if gym_id else None,
         trace_id=str(trace_id),
         role=str(role),
+        timeout_profile=timeout_profile,
     )
 
 

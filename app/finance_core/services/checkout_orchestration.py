@@ -35,6 +35,12 @@ from app.finance_core.services.provider_operations import (
 
 
 @dataclass(frozen=True)
+class CheckoutProviderAdmissionBinding:
+    logical_operation_id: str
+    operation_sha: str
+
+
+@dataclass(frozen=True)
 class PreparedCheckoutSession:
     finance_invoice_id: uuid.UUID
     finance_checkout_intent_id: uuid.UUID
@@ -44,6 +50,91 @@ class PreparedCheckoutSession:
     provider_operation: ProviderOperationReservation | None
     provider_order_id: str | None
     replayed: bool
+
+
+class FinanceCheckoutProviderEffectService:
+    """Payment-authority operations isolated from local checkout preparation."""
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        provider_adapter: CheckoutIntentProvider,
+    ) -> None:
+        self._provider_adapter = provider_adapter
+        self._provider_operations = FinanceProviderOperationService(session)
+
+    async def claim_provider_operation(
+        self,
+        prepared: PreparedCheckoutSession,
+        *,
+        lease_owner: uuid.UUID,
+    ) -> ProviderOperationClaim:
+        if prepared.provider_operation is None:
+            raise FinanceProviderConfigError(
+                "Checkout provider operation is already complete."
+            )
+        return await self._provider_operations.claim(
+            operation_id=prepared.provider_operation.operation_id,
+            lease_owner=lease_owner,
+        )
+
+    async def finish_provider_success(
+        self,
+        prepared: PreparedCheckoutSession,
+        claim: ProviderOperationClaim,
+        *,
+        lease_owner: uuid.UUID,
+        response: ProviderCheckoutIntentResponse,
+    ) -> str:
+        if response.provider_code != self._provider_adapter.provider_code:
+            raise FinanceProviderOperationError(
+                provider_code=self._provider_adapter.provider_code,
+                operation="create_checkout",
+                code="PROVIDER_CODE_MISMATCH",
+                failure_class="unknown",
+                message="Provider response identity is inconsistent.",
+            )
+        if not response.provider_order_ref:
+            raise FinanceProviderOperationError(
+                provider_code=self._provider_adapter.provider_code,
+                operation="create_checkout",
+                code="PROVIDER_ORDER_REQUIRED",
+                failure_class="unknown",
+                message="Provider response did not contain an order reference.",
+            )
+        await self._provider_operations.finish(
+            operation_id=claim.operation_id,
+            lease_owner=lease_owner,
+            lease_fence=claim.lease_fence,
+            outcome="succeeded",
+            provider_object_id=response.provider_order_ref,
+            error_code=None,
+            evidence_sha256=provider_checkout_success_hash(response),
+        )
+        return response.provider_order_ref
+
+    async def finish_provider_error(
+        self,
+        claim: ProviderOperationClaim,
+        *,
+        lease_owner: uuid.UUID,
+        error: FinanceProviderOperationError,
+    ) -> None:
+        outcome = {
+            "retryable": "failed_retryable",
+            "final": "failed_final",
+            "unknown": "unknown",
+        }[error.failure_class]
+        await self._provider_operations.finish(
+            operation_id=claim.operation_id,
+            lease_owner=lease_owner,
+            lease_fence=claim.lease_fence,
+            outcome=outcome,
+            provider_object_id=None,
+            error_code=safe_provider_error_code(error),
+            evidence_sha256=None,
+        )
 
 
 class FinanceCheckoutOrchestrationService:
@@ -74,6 +165,21 @@ class FinanceCheckoutOrchestrationService:
         self._invoice_engine = FinanceInvoiceEngine(session)
         self._checkout_intents = FinanceCheckoutIntentService(session)
         self._provider_operations = FinanceProviderOperationService(session)
+        self._provider_effects = FinanceCheckoutProviderEffectService(
+            session,
+            provider_adapter=adapter,
+        )
+
+    def bind_provider_effects(
+        self,
+        session: AsyncSession,
+    ) -> FinanceCheckoutProviderEffectService:
+        """Bind only claim/finish authority to a dedicated database session."""
+
+        return FinanceCheckoutProviderEffectService(
+            session,
+            provider_adapter=self._provider_adapter,
+        )
 
     async def prepare_checkout_session(
         self,
@@ -168,13 +274,34 @@ class FinanceCheckoutOrchestrationService:
         *,
         lease_owner: uuid.UUID,
     ) -> ProviderOperationClaim:
+        return await self._provider_effects.claim_provider_operation(
+            prepared,
+            lease_owner=lease_owner,
+        )
+
+    def provider_admission_binding(
+        self,
+        prepared: PreparedCheckoutSession,
+        claim: ProviderOperationClaim,
+    ) -> CheckoutProviderAdmissionBinding:
         if prepared.provider_operation is None:
             raise FinanceProviderConfigError(
-                "Checkout provider operation is already complete."
+                "Checkout provider admission requires a reserved provider operation."
             )
-        return await self._provider_operations.claim(
-            operation_id=prepared.provider_operation.operation_id,
-            lease_owner=lease_owner,
+        if claim.operation_id != prepared.provider_operation.operation_id:
+            raise FinanceProviderConfigError(
+                "Checkout provider admission operation identity mismatch."
+            )
+        return CheckoutProviderAdmissionBinding(
+            logical_operation_id=(
+                f"checkout:{claim.operation_id}:{claim.lease_fence}"
+            ),
+            operation_sha=provider_checkout_request_hash(
+                payment_id=prepared.finance_checkout_intent_id,
+                provider_code=self._provider_adapter.provider_code,
+                environment=self._provider_adapter.environment,
+                request=prepared.provider_request,
+            ),
         )
 
     async def call_provider(
@@ -193,32 +320,12 @@ class FinanceCheckoutOrchestrationService:
         lease_owner: uuid.UUID,
         response: ProviderCheckoutIntentResponse,
     ) -> str:
-        if response.provider_code != self._provider_adapter.provider_code:
-            raise FinanceProviderOperationError(
-                provider_code=self._provider_adapter.provider_code,
-                operation="create_checkout",
-                code="PROVIDER_CODE_MISMATCH",
-                failure_class="unknown",
-                message="Provider response identity is inconsistent.",
-            )
-        if not response.provider_order_ref:
-            raise FinanceProviderOperationError(
-                provider_code=self._provider_adapter.provider_code,
-                operation="create_checkout",
-                code="PROVIDER_ORDER_REQUIRED",
-                failure_class="unknown",
-                message="Provider response did not contain an order reference.",
-            )
-        await self._provider_operations.finish(
-            operation_id=claim.operation_id,
+        return await self._provider_effects.finish_provider_success(
+            prepared,
+            claim,
             lease_owner=lease_owner,
-            lease_fence=claim.lease_fence,
-            outcome="succeeded",
-            provider_object_id=response.provider_order_ref,
-            error_code=None,
-            evidence_sha256=provider_checkout_success_hash(response),
+            response=response,
         )
-        return response.provider_order_ref
 
     async def finish_provider_error(
         self,
@@ -227,19 +334,10 @@ class FinanceCheckoutOrchestrationService:
         lease_owner: uuid.UUID,
         error: FinanceProviderOperationError,
     ) -> None:
-        outcome = {
-            "retryable": "failed_retryable",
-            "final": "failed_final",
-            "unknown": "unknown",
-        }[error.failure_class]
-        await self._provider_operations.finish(
-            operation_id=claim.operation_id,
+        await self._provider_effects.finish_provider_error(
+            claim,
             lease_owner=lease_owner,
-            lease_fence=claim.lease_fence,
-            outcome=outcome,
-            provider_object_id=None,
-            error_code=safe_provider_error_code(error),
-            evidence_sha256=None,
+            error=error,
         )
 
     def operation_state_error(

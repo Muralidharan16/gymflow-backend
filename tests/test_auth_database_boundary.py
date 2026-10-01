@@ -32,6 +32,7 @@ def test_production_requires_distinct_auth_database_identity() -> None:
         runtime.bindings["auth"].environment_variable,
     }
     assert set(api_profile["forbidden_database_variables"]) == {
+        runtime.bindings["finance_payment"].environment_variable,
         runtime.bindings["worker"].environment_variable,
         runtime.bindings["maintenance"].environment_variable,
         runtime.bindings["finance_config"].environment_variable,

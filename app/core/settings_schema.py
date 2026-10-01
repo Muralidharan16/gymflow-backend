@@ -10,6 +10,7 @@ class DoersSettingsSchema(BaseSettings):
     WORKER_DATABASE_INPUT: str = Field("", alias="WORKER_DATABASE_URL")
     MAINTENANCE_DATABASE_INPUT: str = Field("", alias="MAINTENANCE_DATABASE_URL")
     FINANCE_CONFIG_DATABASE_INPUT: str = Field("", alias="FINANCE_CONFIG_DATABASE_URL")
+    FINANCE_PAYMENT_DATABASE_INPUT: str = Field("", alias="FINANCE_PAYMENT_DATABASE_URL")
     TEST_DATABASE_URL: str = ""
     REDIS_URL: str
     CELERY_BROKER_URL: str

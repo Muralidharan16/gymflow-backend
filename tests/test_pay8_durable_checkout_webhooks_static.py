@@ -93,12 +93,14 @@ def test_checkout_http_route_commits_local_authority_before_provider_io():
     prepare = route.index("prepare_checkout_session")
     first_commit = route.index("await db.commit()", prepare)
     claim = route.index("claim_provider_operation", first_commit)
-    second_commit = route.index("await db.commit()", claim)
+    second_commit = route.index("await payment_db.commit()", claim)
     provider_call = route.index("call_provider", second_commit)
     finish = route.index("finish_provider_success", provider_call)
-    final_commit = route.index("await db.commit()", finish)
+    final_commit = route.index("await payment_db.commit()", finish)
 
     assert prepare < first_commit < claim < second_commit < provider_call < finish < final_commit
+    assert "payment_effects = checkout_service.bind_provider_effects(payment_db)" in route
+    assert route.count("await db.commit()") == 1
     assert "provider_operation.status not in" in route
     assert '"reserved"' in route
     assert '"failed_retryable"' in route

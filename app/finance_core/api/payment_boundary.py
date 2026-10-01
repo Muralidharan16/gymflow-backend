@@ -7,6 +7,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.payment_database import get_finance_payment_db
 
 from app.finance_core.api.auth import (
     FinancePaymentActor,
@@ -78,6 +79,10 @@ from app.finance_core.services.razorpay_sandbox import (
 )
 from app.finance_core.services.razorpay_webhooks import RazorpayWebhookConfirmationService
 from app.finance_core.services.security_audit import FinanceSecurityAuditService
+from app.payment_activation import ActivationCapability, DurableActivationAuthority
+
+
+PAY24B_CHECKOUT_ADMISSION_LEASE_SECONDS = 300
 
 
 router = APIRouter(
@@ -269,6 +274,16 @@ def _provider_operation_http_error(
     )
 
 
+def _pay24b_checkout_admission_http_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "code": "FINANCE_PROVIDER_EGRESS_NOT_AUTHORIZED",
+            "message": "Provider checkout egress is not currently authorized.",
+        },
+    )
+
+
 @router.post("/checkout-sessions", response_model=FinanceCheckoutCreateResponse)
 async def create_checkout_session(
     request: FinanceCheckoutCreateRequest,
@@ -279,6 +294,7 @@ async def create_checkout_session(
         finance_high_risk_actor_dependency
     ),
     db: AsyncSession = Depends(get_db),
+    payment_db: AsyncSession = Depends(get_finance_payment_db),
     checkout_service: FinanceCheckoutOrchestrationService = Depends(
         get_checkout_orchestration_service
     ),
@@ -333,13 +349,29 @@ async def create_checkout_session(
             )
         )
 
+    payment_effects = checkout_service.bind_provider_effects(payment_db)
     lease_owner = uuid.uuid4()
-    claim = await checkout_service.claim_provider_operation(
-        prepared,
-        lease_owner=lease_owner,
-    )
-    # Commit the in-flight lease/fence before submitting the external POST.
-    await db.commit()
+    authority = DurableActivationAuthority(payment_db)
+    admission = None
+    try:
+        claim = await payment_effects.claim_provider_operation(
+            prepared,
+            lease_owner=lease_owner,
+        )
+        if claim.claimed:
+            binding = checkout_service.provider_admission_binding(prepared, claim)
+            admission = await authority.request_current_provider_admission(
+                capability=ActivationCapability.CHECKOUT,
+                logical_operation_id=binding.logical_operation_id,
+                operation_sha=binding.operation_sha,
+                lease_seconds=PAY24B_CHECKOUT_ADMISSION_LEASE_SECONDS,
+            )
+        # Claim + PAY-24-B admission become durable together. No provider I/O
+        # is possible before this transaction commits.
+        await payment_db.commit()
+    except DBAPIError as exc:
+        await payment_db.rollback()
+        raise _pay24b_checkout_admission_http_error() from exc
 
     if not claim.claimed:
         if claim.status == "succeeded" and claim.provider_object_id:
@@ -353,28 +385,82 @@ async def create_checkout_session(
             checkout_service.operation_state_error(claim.status)
         )
 
+    if admission is None:
+        raise _pay24b_checkout_admission_http_error()
+
+    try:
+        started_admission = await authority.start_provider_admission(
+            admission_id=admission.admission_id,
+            execution_id=lease_owner,
+        )
+        # PAY-24-A requires the active execution fence to commit before the
+        # external provider side effect.
+        await payment_db.commit()
+    except DBAPIError as exc:
+        await payment_db.rollback()
+        no_effect = FinanceProviderOperationError(
+            provider_code="activation",
+            operation="create_checkout",
+            code="PAY24_ADMISSION_START_DENIED",
+            failure_class="retryable",
+            message="Provider admission was denied before provider I/O.",
+        )
+        await payment_effects.finish_provider_error(
+            claim,
+            lease_owner=lease_owner,
+            error=no_effect,
+        )
+        await payment_db.commit()
+        raise _pay24b_checkout_admission_http_error() from exc
+
+    if started_admission.state != "active":
+        no_effect = FinanceProviderOperationError(
+            provider_code="activation",
+            operation="create_checkout",
+            code="PAY24_ADMISSION_NOT_ACTIVE",
+            failure_class="retryable",
+            message="Provider admission was not active before provider I/O.",
+        )
+        await payment_effects.finish_provider_error(
+            claim,
+            lease_owner=lease_owner,
+            error=no_effect,
+        )
+        await payment_db.commit()
+        raise _pay24b_checkout_admission_http_error()
+
     try:
         response = await checkout_service.call_provider(prepared)
+        provider_order_id = await payment_effects.finish_provider_success(
+            prepared,
+            claim,
+            lease_owner=lease_owner,
+            response=response,
+        )
     except FinanceProviderOperationError as exc:
-        await checkout_service.finish_provider_error(
+        await payment_effects.finish_provider_error(
             claim,
             lease_owner=lease_owner,
             error=exc,
         )
-        # Persist retryable/final/unknown before returning the HTTP result.
-        await db.commit()
+        await authority.finish_provider_admission(
+            admission_id=admission.admission_id,
+            execution_id=lease_owner,
+            outcome=("unknown" if exc.requires_reconciliation else "completed"),
+        )
+        # Finance outcome + PAY-24 admission terminal state commit atomically.
+        await payment_db.commit()
         raise _provider_operation_http_error(exc) from exc
 
-    # If this DB acknowledgement fails after provider success, the already
-    # committed in-flight lease later expires to UNKNOWN. A retry cannot submit
+    # If either terminal DB acknowledgement fails after provider success, the
+    # already committed in-flight fence remains unresolved. A retry cannot submit
     # a second create until reconciliation resolves the ambiguity.
-    provider_order_id = await checkout_service.finish_provider_success(
-        prepared,
-        claim,
-        lease_owner=lease_owner,
-        response=response,
+    await authority.finish_provider_admission(
+        admission_id=admission.admission_id,
+        execution_id=lease_owner,
+        outcome="completed",
     )
-    await db.commit()
+    await payment_db.commit()
 
     return map_checkout_session_response(
         checkout_service.build_result(

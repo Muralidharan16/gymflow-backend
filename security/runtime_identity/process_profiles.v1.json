@@ -6,6 +6,7 @@
     "AUTH_DATABASE_URL",
     "WORKER_DATABASE_URL",
     "MAINTENANCE_DATABASE_URL",
+    "FINANCE_PAYMENT_DATABASE_URL",
     "FINANCE_CONFIG_DATABASE_URL"
   ],
   "profiles": {
@@ -17,11 +18,30 @@
       "forbidden_database_variables": [
         "FINANCE_CONFIG_DATABASE_URL",
         "MAINTENANCE_DATABASE_URL",
-        "WORKER_DATABASE_URL"
+        "WORKER_DATABASE_URL",
+        "FINANCE_PAYMENT_DATABASE_URL"
       ],
       "runtime_components": [
         "api",
         "auth"
+      ],
+      "celery_worker_profile": null
+    },
+    "api_payment": {
+      "required_database_variables": [
+        "DATABASE_URL",
+        "AUTH_DATABASE_URL",
+        "FINANCE_PAYMENT_DATABASE_URL"
+      ],
+      "forbidden_database_variables": [
+        "FINANCE_CONFIG_DATABASE_URL",
+        "MAINTENANCE_DATABASE_URL",
+        "WORKER_DATABASE_URL"
+      ],
+      "runtime_components": [
+        "api",
+        "auth",
+        "finance_payment"
       ],
       "celery_worker_profile": null
     },
@@ -33,7 +53,8 @@
         "AUTH_DATABASE_URL",
         "DATABASE_URL",
         "FINANCE_CONFIG_DATABASE_URL",
-        "MAINTENANCE_DATABASE_URL"
+        "MAINTENANCE_DATABASE_URL",
+        "FINANCE_PAYMENT_DATABASE_URL"
       ],
       "runtime_components": [
         "worker"
@@ -48,7 +69,8 @@
         "AUTH_DATABASE_URL",
         "DATABASE_URL",
         "FINANCE_CONFIG_DATABASE_URL",
-        "WORKER_DATABASE_URL"
+        "WORKER_DATABASE_URL",
+        "FINANCE_PAYMENT_DATABASE_URL"
       ],
       "runtime_components": [
         "maintenance"
@@ -62,7 +84,8 @@
         "DATABASE_URL",
         "FINANCE_CONFIG_DATABASE_URL",
         "MAINTENANCE_DATABASE_URL",
-        "WORKER_DATABASE_URL"
+        "WORKER_DATABASE_URL",
+        "FINANCE_PAYMENT_DATABASE_URL"
       ],
       "runtime_components": [],
       "celery_worker_profile": null
@@ -75,7 +98,8 @@
         "AUTH_DATABASE_URL",
         "DATABASE_URL",
         "MAINTENANCE_DATABASE_URL",
-        "WORKER_DATABASE_URL"
+        "WORKER_DATABASE_URL",
+        "FINANCE_PAYMENT_DATABASE_URL"
       ],
       "runtime_components": [
         "finance_config"

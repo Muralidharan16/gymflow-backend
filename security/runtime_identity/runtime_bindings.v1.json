@@ -38,6 +38,19 @@
         "idle_in_transaction_session_timeout": "15s"
       }
     },
+    "finance_payment": {
+      "environment_variable": "FINANCE_PAYMENT_DATABASE_URL",
+      "runtime_capability": "finance_payment_runtime",
+      "direct_capabilities": [
+        "finance_payment_runtime"
+      ],
+      "session_settings": {
+        "row_security": "on",
+        "statement_timeout": "15s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "30s"
+      }
+    },
     "worker": {
       "environment_variable": "WORKER_DATABASE_URL",
       "runtime_capability": "worker_runtime",
@@ -90,7 +103,6 @@
   },
   "reserved_unbound_capabilities": [
     "finance_runtime",
-    "finance_payment_runtime",
     "finance_refund_runtime",
     "finance_reconciliation_runtime",
     "finance_read_runtime",

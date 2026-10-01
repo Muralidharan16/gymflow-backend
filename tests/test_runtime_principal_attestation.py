@@ -73,10 +73,9 @@ def _codes(observation: RuntimePrincipalObservation) -> set[str]:
 def test_runtime_binding_contract_matches_p2b_p2c_role_model() -> None:
     contract = load_runtime_binding_contract()
     assert validate_runtime_binding_contract(contract) == ()
-    assert set(contract.bindings) == {"api", "auth", "worker", "maintenance", "finance_config"}
+    assert set(contract.bindings) == {"api", "auth", "finance_payment", "worker", "maintenance", "finance_config"}
     assert set(contract.reserved_unbound_capabilities) == {
         "finance_runtime",
-        "finance_payment_runtime",
         "finance_refund_runtime",
         "finance_reconciliation_runtime",
         "finance_read_runtime",
@@ -89,6 +88,12 @@ def test_runtime_binding_contract_matches_p2b_p2c_role_model() -> None:
         "auth_runtime", "app_user"
     }
     assert "app_runtime" not in contract.bindings["auth"].direct_capabilities
+    assert contract.bindings["finance_payment"].direct_capabilities == (
+        "finance_payment_runtime",
+    )
+    assert contract.bindings["finance_payment"].environment_variable == (
+        "FINANCE_PAYMENT_DATABASE_URL"
+    )
     assert contract.bindings["worker"].direct_capabilities == ("worker_runtime",)
     assert contract.bindings["maintenance"].direct_capabilities == (
         "lifecycle_maintenance_runtime",
@@ -103,6 +108,12 @@ def test_runtime_binding_contract_matches_p2b_p2c_role_model() -> None:
         "idle_in_transaction_session_timeout": "15s",
     }
     assert contract.bindings["worker"].session_settings == {
+        "row_security": "on",
+        "statement_timeout": "15s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "30s",
+    }
+    assert contract.bindings["finance_payment"].session_settings == {
         "row_security": "on",
         "statement_timeout": "15s",
         "lock_timeout": "2s",
@@ -129,6 +140,7 @@ def test_all_canonical_runtime_login_overlays_pass() -> None:
     observations = (
         _canonical_observation("api", "api_login"),
         _canonical_observation("auth", "auth_login"),
+        _canonical_observation("finance_payment", "finance_payment_login"),
         _canonical_observation("worker", "worker_login"),
         _canonical_observation("maintenance", "maintenance_login"),
         _canonical_observation("finance_config", "finance_config_deployment"),
@@ -142,6 +154,7 @@ def test_same_login_behind_different_urls_is_rejected_before_connect() -> None:
     urls = {
         "api": "postgresql+asyncpg://shared:a@db/prod?application_name=api",
         "auth": "postgresql+asyncpg://shared:b@db/prod?application_name=auth",
+        "finance_payment": "postgresql+asyncpg://payment:p@db/prod",
         "worker": "postgresql+asyncpg://worker:c@db/prod",
         "maintenance": "postgresql+asyncpg://maintenance:d@db/prod",
         "finance_config": "postgresql+psycopg://finance_config_deployment:e@db/prod",
@@ -155,6 +168,7 @@ def test_runtime_urls_must_target_same_database() -> None:
     urls = {
         "api": "postgresql+asyncpg://api:a@db/prod",
         "auth": "postgresql+asyncpg://auth:b@db/prod",
+        "finance_payment": "postgresql+asyncpg://payment:p@db/prod",
         "worker": "postgresql+asyncpg://worker:c@db/prod",
         "maintenance": "postgresql+asyncpg://maintenance:d@db/other",
         "finance_config": "postgresql+psycopg://finance_config_deployment:e@db/prod",
@@ -286,6 +300,7 @@ def test_runtime_binding_set_rejects_login_reuse() -> None:
     observations = (
         _canonical_observation("api", "shared_login"),
         _canonical_observation("auth", "shared_login"),
+        _canonical_observation("finance_payment", "finance_payment_login"),
         _canonical_observation("worker", "worker_login"),
         _canonical_observation("maintenance", "maintenance_login"),
         _canonical_observation("finance_config", "finance_config_deployment"),

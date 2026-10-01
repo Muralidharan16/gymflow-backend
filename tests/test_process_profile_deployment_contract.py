@@ -19,7 +19,7 @@ def test_process_profile_manifest_is_closed_against_p2d_runtime_bindings() -> No
     assert governed == {
         binding.environment_variable for binding in runtime.bindings.values()
     }
-    assert set(data["profiles"]) == {"api", "worker", "maintenance", "finance_config", "beat"}
+    assert set(data["profiles"]) == {"api", "api_payment", "worker", "maintenance", "finance_config", "beat"}
 
     for profile_name, profile in data["profiles"].items():
         components = tuple(profile["runtime_components"])

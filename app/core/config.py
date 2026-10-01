@@ -102,13 +102,13 @@ class Settings(DoersSettingsSchema):
         manifest = _process_manifest()
         profiles = manifest["profiles"]
         profile_name = self.process_profile
-        if set(profiles) != {"api", "worker", "maintenance", "finance_config", "beat"}:
+        if set(profiles) != {"api", "api_payment", "worker", "maintenance", "finance_config", "beat"}:
             raise ValueError("P2E process manifest has invalid profile coverage")
         profile = profiles.get(profile_name)
         if profile is None:
             raise ValueError(
                 "DOERS_PROCESS_PROFILE is required in production and must be "
-                "api, worker, maintenance, finance_config, or beat"
+                "api, api_payment, worker, maintenance, finance_config, or beat"
             )
 
         governed_variables = set(manifest.get("database_environment_variables", ()))
@@ -209,7 +209,7 @@ class Settings(DoersSettingsSchema):
                     self.NOTIFICATION_METRICS_EXPORT_INTERVAL_SECONDS,
                     self.NOTIFICATION_METRICS_EXPORT_TIMEOUT_SECONDS,
                 )
-        elif profile_name == "api":
+        elif profile_name in {"api", "api_payment"}:
             if notification_mode != "disabled" or notification_key or notification_metrics_endpoint:
                 raise ValueError(
                     "P4C Resend sending and notification-metrics authority is restricted away from the API profile"
@@ -307,7 +307,7 @@ class Settings(DoersSettingsSchema):
         return self.DOERS_PROCESS_PROFILE.strip().lower()
 
     def database_component_enabled(self, component: str) -> bool:
-        if component not in {"api", "auth", "worker", "maintenance", "finance_config"}:
+        if component not in {"api", "auth", "finance_payment", "worker", "maintenance", "finance_config"}:
             raise ValueError(f"unknown database component: {component!r}")
         if not self.is_production:
             return True
@@ -343,6 +343,10 @@ class Settings(DoersSettingsSchema):
     @property
     def FINANCE_CONFIG_DATABASE_URL(self) -> str:
         return self._exposed_runtime_value("finance_config", allow_empty=True)
+
+    @property
+    def FINANCE_PAYMENT_DATABASE_URL(self) -> str:
+        return self._exposed_runtime_value("finance_payment", allow_empty=True)
 
     @property
     def worker_database_url(self) -> str:

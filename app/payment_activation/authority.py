@@ -289,6 +289,18 @@ _REQUEST_PROVIDER_ADMISSION_SQL = text(
     """
 )
 
+_REQUEST_CURRENT_PROVIDER_ADMISSION_SQL = text(
+    """
+    SELECT *
+    FROM app_secure.pay24b_request_current_provider_admission(
+        CAST(:capability AS text),
+        CAST(:logical_operation_id AS text),
+        CAST(:operation_sha AS text),
+        CAST(:lease_seconds AS integer)
+    )
+    """
+)
+
 _START_PROVIDER_ADMISSION_SQL = text(
     """
     SELECT *
@@ -625,6 +637,35 @@ class DurableActivationAuthority:
             _REQUEST_PROVIDER_ADMISSION_SQL,
             {
                 "expected_generation": expected_generation,
+                "capability": capability.value,
+                "logical_operation_id": logical_operation_id,
+                "operation_sha": operation_sha,
+                "lease_seconds": lease_seconds,
+            },
+        )
+        return _provider_admission_from_row(result.mappings().one())
+
+    async def request_current_provider_admission(
+        self,
+        *,
+        capability: ActivationCapability,
+        logical_operation_id: str,
+        operation_sha: str,
+        lease_seconds: int,
+    ) -> ProviderAdmission:
+        """Request a PAY-24-B admission against the current durable generation.
+
+        PostgreSQL resolves and fences the current generation inside the bounded
+        PAY-24-B checkout bridge.  The bridge remains fail-closed and delegates
+        all Stage/egress/tenant/release/capability checks to PAY-24-A.
+        """
+
+        if type(capability) is not ActivationCapability:
+            raise ValueError("capability is invalid")
+
+        result = await self._session.execute(
+            _REQUEST_CURRENT_PROVIDER_ADMISSION_SQL,
+            {
                 "capability": capability.value,
                 "logical_operation_id": logical_operation_id,
                 "operation_sha": operation_sha,

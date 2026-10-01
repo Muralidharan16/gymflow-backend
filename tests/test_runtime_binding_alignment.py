@@ -40,3 +40,14 @@ def test_finance_config_settings_follow_dedicated_runtime_defaults() -> None:
     assert finance_config.session_settings["statement_timeout"] == "15s"
     assert finance_config.session_settings["lock_timeout"] == "2s"
     assert finance_config.session_settings["row_security"] == "on"
+
+
+def test_finance_payment_settings_follow_dedicated_runtime_defaults() -> None:
+    contract = load_runtime_binding_contract()
+    payment = contract.bindings["finance_payment"]
+    assert payment.runtime_capability == "finance_payment_runtime"
+    assert payment.direct_capabilities == ("finance_payment_runtime",)
+    assert payment.environment_variable == "FINANCE_PAYMENT_DATABASE_URL"
+    assert payment.session_settings["statement_timeout"] == "15s"
+    assert payment.session_settings["lock_timeout"] == "2s"
+    assert payment.session_settings["row_security"] == "on"

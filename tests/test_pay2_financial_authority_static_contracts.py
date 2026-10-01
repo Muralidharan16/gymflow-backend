@@ -105,15 +105,15 @@ def test_pay2_release_expansion_is_outside_alembic_and_fail_closed():
     assert "alembic" not in source.lower()
 
 
-def test_pay2_finance_capabilities_are_reserved_and_unbound():
+def test_pay2_finance_capabilities_remain_closed_except_reviewed_payment_binding():
     runtime = json.loads(
         (ROOT / "security/runtime_identity/runtime_bindings.v1.json").read_text(
             encoding="utf-8"
         )
     )
-    assert set(runtime["reserved_unbound_capabilities"]) == set(
-        PAY2_FINANCE_CAPABILITY_ROLES
-    )
+    reviewed = {"finance_payment_runtime"}
+    expected_reserved = set(PAY2_FINANCE_CAPABILITY_ROLES) - reviewed
+    assert set(runtime["reserved_unbound_capabilities"]) == expected_reserved
     bound = {
         item["runtime_capability"]
         for item in runtime["bindings"].values()
@@ -123,8 +123,11 @@ def test_pay2_finance_capabilities_are_reserved_and_unbound():
         for item in runtime["bindings"].values()
         for role in item["direct_capabilities"]
     }
-    assert set(PAY2_FINANCE_CAPABILITY_ROLES).isdisjoint(bound)
-    assert set(PAY2_FINANCE_CAPABILITY_ROLES).isdisjoint(direct)
+    assert bound & set(PAY2_FINANCE_CAPABILITY_ROLES) == reviewed
+    assert direct & set(PAY2_FINANCE_CAPABILITY_ROLES) == reviewed
+    payment = runtime["bindings"]["finance_payment"]
+    assert payment["runtime_capability"] == "finance_payment_runtime"
+    assert payment["direct_capabilities"] == ["finance_payment_runtime"]
     assert runtime["rules"]["reserved_capabilities_remain_unbound"] is True
 
 
