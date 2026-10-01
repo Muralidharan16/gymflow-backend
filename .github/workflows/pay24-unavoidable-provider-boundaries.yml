@@ -43,11 +43,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Bind workflow-only evidence commit to certified application
+      - name: Bind evidence-only chain to certified application
         run: |
           set -euo pipefail
 
-          test "$(git rev-parse HEAD^)" = "$PAY24_CERTIFIED_APPLICATION_SHA"
+          git merge-base --is-ancestor \
+            "$PAY24_CERTIFIED_APPLICATION_SHA" \
+            HEAD
 
           test "$(git rev-parse "$PAY24_CERTIFIED_APPLICATION_SHA^{tree}")" \
             = "$PAY24_CERTIFIED_APPLICATION_TREE"
@@ -57,10 +59,10 @@ jobs:
             | LC_ALL=C sort \
             > /tmp/pay24-ci-delta.txt
 
-          cat > /tmp/pay24-ci-expected.txt <<'EOF'
-.github/workflows/pay24-unavoidable-provider-boundaries.yml
-tests/test_pay24b_ri1b2_route_runtime_composition.py
-EOF
+          printf '%s\n' \
+            '.github/workflows/pay24-unavoidable-provider-boundaries.yml' \
+            'tests/test_pay24b_ri1b2_route_runtime_composition.py' \
+            > /tmp/pay24-ci-expected.txt
 
           diff -u \
             /tmp/pay24-ci-expected.txt \
@@ -152,10 +154,12 @@ EOF
         with:
           fetch-depth: 0
 
-      - name: Bind to certified application parent
+      - name: Bind to certified application ancestor
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "$PAY24_CERTIFIED_APPLICATION_SHA"
+          git merge-base --is-ancestor \
+            "$PAY24_CERTIFIED_APPLICATION_SHA" \
+            HEAD
           test "$(git rev-parse "$PAY24_CERTIFIED_APPLICATION_SHA^{tree}")" \
             = "$PAY24_CERTIFIED_APPLICATION_TREE"
 
