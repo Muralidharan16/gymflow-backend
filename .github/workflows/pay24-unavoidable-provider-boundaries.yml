@@ -14,9 +14,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PAY24_CERTIFIED_APPLICATION_SHA: ac8aa5163e5b527956102f00f80ce2d9f62cdcdf
-  PAY24_CERTIFIED_APPLICATION_TREE: cb993bf9183347945531e5debac5a35dad68f00f
-  PAY24_ALEMBIC_HEAD: zz77d8e9f0a67
+  PAY24_CERTIFIED_APPLICATION_SHA: c64a9e3a4bac2282fc2fbdc3807ceebc45183430
+  PAY24_CERTIFIED_APPLICATION_TREE: 35c97e6df89a48f3aecc9392564b710e22338678
+  PAY24_ALEMBIC_HEAD: zz87d8e9f0a68
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
@@ -60,14 +60,7 @@ jobs:
             > /tmp/pay24-ci-delta.txt
 
           printf '%s\n' \
-            '.github/workflows/finance-hardening-ci.yml' \
-            '.github/workflows/hardening-ci.yml' \
-            '.github/workflows/migration-lifecycle-ci.yml' \
             '.github/workflows/pay24-unavoidable-provider-boundaries.yml' \
-            'tests/finance_core/test_phase6n_sandbox_checkout_route_enablement.py' \
-            'tests/finance_core/test_phase6v_test_mode_checkout_route_integration.py' \
-            'tests/test_migration_app_secure_owner_context_boundary.py' \
-            'tests/test_pay24b_ri1b2_route_runtime_composition.py' \
             > /tmp/pay24-ci-expected.txt
 
           diff -u \
@@ -97,6 +90,7 @@ jobs:
             alembic/versions/zz57d8e9f0a65_pay24a_durable_activation_authority.py \
             alembic/versions/zz67d8e9f0a66_pay24b_checkout_admission_bridge.py \
             alembic/versions/zz77d8e9f0a67_pay24b_ri1b1_claim_finish_expand.py \
+            alembic/versions/zz87d8e9f0a68_pay24b_ri1b3_claim_finish_contract.py \
             app/core/config.py \
             app/core/database.py \
             app/core/payment_database.py \
@@ -104,19 +98,23 @@ jobs:
             app/finance_core/api/payment_boundary.py \
             app/finance_core/services/checkout_orchestration.py \
             app/payment_activation/authority.py \
-            tests/test_pay24b_ri1b2_route_runtime_composition.py
+            tests/test_migration_app_secure_owner_context_boundary.py \
+            tests/test_pay24b_ri1b2_route_runtime_composition.py \
+            tests/test_pay24b_ri1b3_claim_finish_contract_static.py
 
       - name: Prove exact PAY24 static and ASGI route contracts
         env:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
         run: |
           python -m pytest --noconftest -q \
+            tests/test_pay24b_ri1b3_claim_finish_contract_static.py \
             tests/test_pay24b_ri1b2_route_runtime_composition.py \
             tests/test_pay24b_ri1b2_http_payment_identity_wiring_static.py \
             tests/test_pay24b_ri1b1_claim_finish_expand_static.py \
             tests/test_pay24b_checkout_admission_static.py \
             tests/test_pay24b_payment_runtime_identity_static.py \
             tests/test_pay8_durable_checkout_webhooks_static.py \
+            tests/test_migration_app_secure_owner_context_boundary.py \
             tests/test_auth_database_boundary.py \
             tests/test_lifecycle_maintenance_runtime_boundary.py \
             tests/test_pay2_financial_authority_static_contracts.py \
@@ -125,7 +123,7 @@ jobs:
             tests/test_runtime_binding_alignment.py \
             tests/test_runtime_principal_attestation.py
 
-          echo "PAY24_RI1B2_STATIC_AND_ROUTE_COMPOSITION=PASS"
+          echo "PAY24_RI1B3_STATIC_AND_ROUTE_COMPOSITION=PASS"
           echo "PAY24_REAL_PROVIDER_CALLS=0"
           echo "PAY24_REAL_MONEY_MOVEMENT=0"
 
@@ -293,21 +291,25 @@ jobs:
         run: |
           bash scripts/ci/verify_cluster_roles.sh
 
-      - name: Fresh migration to exact PAY24 head
+      - name: Fresh migration to RI1B1 dual-authority baseline
         run: |
           set -euo pipefail
 
-          python -s -m alembic -c alembic.ini upgrade head
+          python -s -m alembic -c alembic.ini \
+            upgrade zz77d8e9f0a67
 
-          HEAD_REV="$(
-            python -s -m alembic -c alembic.ini heads \
-              | awk '{print $1}'
+          DB_REV="$(
+            PGPASSWORD="$MIGRATION_PASSWORD" \
+            psql -X -At \
+              -h 127.0.0.1 \
+              -U migration_owner \
+              -d gymflow_pay24_ci \
+              -c 'SELECT version_num FROM alembic_version'
           )"
 
-          test "$HEAD_REV" = "$PAY24_ALEMBIC_HEAD"
+          test "$DB_REV" = "zz77d8e9f0a67"
 
-          echo "PAY24_FRESH_PG16_MIGRATION=PASS"
-          echo "PAY24_ALEMBIC_HEAD=$HEAD_REV"
+          echo "PAY24_RI1B1_FRESH_PG16_BASELINE=PASS"
 
       - name: Prove PAY8 and PAY24 authority matrix
         run: |
@@ -485,8 +487,609 @@ jobs:
           $$;
           SQL
 
-          echo "PAY24_PROVIDER_OPERATION_AUTHORITY_MATRIX=PASS"
+          echo "PAY24_RI1B1_DUAL_AUTHORITY_MATRIX=PASS"
           echo "PAY24_APP_RUNTIME_PAYMENT_REACHABILITY=0"
+
+
+      - name: Prove RI1B3 contraction downgrade and re-upgrade
+        run: |
+          set -euo pipefail
+
+          ORG="b1300000-0000-4000-8000-000000000001"
+          ENTITY="b1300000-0000-4000-8000-000000000011"
+          PAYMENT="b1300000-0000-4000-8000-000000000021"
+
+          LEASE1="b1300000-0000-4000-8000-000000000031"
+          LEASE2="b1300000-0000-4000-8000-000000000032"
+          LEASE3="b1300000-0000-4000-8000-000000000033"
+
+          REQUEST_HASH="$(printf 'a%.0s' {1..64})"
+
+          RESERVE_SIG="app_secure.reserve_finance_provider_operation(uuid,text,text,text,text,text)"
+          CLAIM_SIG="app_secure.claim_finance_provider_operation(uuid,uuid)"
+          FINISH_SIG="app_secure.finish_finance_provider_operation(uuid,uuid,bigint,text,text,text,text)"
+          RECON_SIG="app_secure.reconcile_finance_provider_operation(uuid,text,text,text,text)"
+
+          sql_admin() {
+            sudo -u postgres \
+              psql -X -v ON_ERROR_STOP=1 \
+                -d gymflow_pay24_ci "$@"
+          }
+
+          authority_vector() {
+            sql_admin -AtF '|' -c "
+              SELECT
+                pg_catalog.has_function_privilege(
+                  'app_runtime','$RESERVE_SIG','EXECUTE'
+                ),
+                pg_catalog.has_function_privilege(
+                  'finance_payment_runtime','$RESERVE_SIG','EXECUTE'
+                ),
+                pg_catalog.has_function_privilege(
+                  'app_runtime','$CLAIM_SIG','EXECUTE'
+                ),
+                pg_catalog.has_function_privilege(
+                  'finance_payment_runtime','$CLAIM_SIG','EXECUTE'
+                ),
+                pg_catalog.has_function_privilege(
+                  'app_runtime','$FINISH_SIG','EXECUTE'
+                ),
+                pg_catalog.has_function_privilege(
+                  'finance_payment_runtime','$FINISH_SIG','EXECUTE'
+                ),
+                pg_catalog.has_function_privilege(
+                  'app_runtime','$RECON_SIG','EXECUTE'
+                ),
+                pg_catalog.has_function_privilege(
+                  'finance_payment_runtime','$RECON_SIG','EXECUTE'
+                ),
+                pg_catalog.has_function_privilege(
+                  'finance_reconciliation_runtime','$RECON_SIG','EXECUTE'
+                );
+            "
+          }
+
+          BASELINE_VECTOR="$(authority_vector)"
+          test "$BASELINE_VECTOR" = "t|f|t|t|t|t|f|f|t"
+
+          BASE_CLAIM_MD5="$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$CLAIM_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )"
+
+          BASE_FINISH_MD5="$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$FINISH_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )"
+
+          BASE_RESERVE_MD5="$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$RESERVE_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )"
+
+          BASE_RECON_MD5="$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$RECON_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )"
+
+          sql_admin <<SQL
+          INSERT INTO public.organizations(
+              id,
+              name,
+              slug,
+              tier,
+              is_active,
+              max_branches,
+              default_currency_code
+          )
+          VALUES (
+              '$ORG',
+              'PAY24 RI1B3 CI Org',
+              'pay24-ri1b3-ci-org',
+              'basic',
+              true,
+              10,
+              'INR'
+          );
+
+          INSERT INTO finance.legal_entities(
+              id,
+              code,
+              legal_name,
+              status
+          )
+          VALUES (
+              '$ENTITY',
+              'PAY24_RI1B3',
+              'PAY24 RI1B3 CI Entity',
+              'active'
+          );
+
+          INSERT INTO finance.payments(
+              id,
+              organization_id,
+              legal_entity_id,
+              provider_code,
+              amount,
+              currency_code,
+              status
+          )
+          VALUES (
+              '$PAYMENT',
+              '$ORG',
+              '$ENTITY',
+              'runtime_provider',
+              100.00,
+              'INR',
+              'created'
+          );
+          SQL
+
+          RESERVE_OUT="$(
+            PGPASSWORD="$APP_PASSWORD" \
+            psql -X -AtF '|' -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 \
+              -U pay24_app_deployment \
+              -d gymflow_pay24_ci \
+              -c "
+                SELECT pg_catalog.set_config(
+                  'app.current_org_id',
+                  '$ORG',
+                  false
+                );
+
+                SELECT
+                  operation_id,
+                  status,
+                  COALESCE(provider_object_id,''),
+                  attempt_count,
+                  replayed
+                FROM app_secure.reserve_finance_provider_operation(
+                  '$PAYMENT'::uuid,
+                  'runtime_provider',
+                  'sandbox',
+                  'create_checkout',
+                  'ri1b3-ci-runtime',
+                  '$REQUEST_HASH'
+                );
+              " \
+            | tail -n 1
+          )"
+
+          OP_ID="$(printf '%s' "$RESERVE_OUT" | cut -d '|' -f1)"
+
+          test "$(printf '%s' "$RESERVE_OUT" | cut -d '|' -f2)" = reserved
+          test "$(printf '%s' "$RESERVE_OUT" | cut -d '|' -f4)" = 0
+          test "$(printf '%s' "$RESERVE_OUT" | cut -d '|' -f5)" = f
+
+          python -s -m alembic -c alembic.ini \
+            upgrade "$PAY24_ALEMBIC_HEAD"
+
+          test "$(
+            sql_admin -At \
+              -c 'SELECT version_num FROM alembic_version'
+          )" = "$PAY24_ALEMBIC_HEAD"
+
+          CONTRACT_VECTOR="$(authority_vector)"
+
+          echo "RI1B3_CONTRACT_VECTOR=$CONTRACT_VECTOR"
+
+          test "$CONTRACT_VECTOR" = "t|f|f|t|f|t|f|f|t"
+
+          CONTRACT_CLAIM_MD5="$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$CLAIM_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )"
+
+          CONTRACT_FINISH_MD5="$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$FINISH_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )"
+
+          test "$CONTRACT_CLAIM_MD5" != "$BASE_CLAIM_MD5"
+          test "$CONTRACT_FINISH_MD5" != "$BASE_FINISH_MD5"
+
+          test "$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$RESERVE_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )" = "$BASE_RESERVE_MD5"
+
+          test "$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$RECON_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )" = "$BASE_RECON_MD5"
+
+          expect_denied() {
+            LOGIN="$1"
+            PASSWORD="$2"
+            LABEL="$3"
+            SQL_BODY="$4"
+
+            set +e
+
+            PGPASSWORD="$PASSWORD" \
+            psql -X -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 \
+              -U "$LOGIN" \
+              -d gymflow_pay24_ci \
+              -c "
+                SELECT pg_catalog.set_config(
+                  'app.current_org_id',
+                  '$ORG',
+                  false
+                );
+
+                $SQL_BODY
+              " \
+              >"/tmp/$LABEL.out" \
+              2>"/tmp/$LABEL.err"
+
+            RC=$?
+
+            set -e
+
+            test "$RC" -ne 0
+
+            grep -Eqi \
+              'permission denied for function|permission denied' \
+              "/tmp/$LABEL.err"
+          }
+
+          expect_denied \
+            pay24_app_deployment \
+            "$APP_PASSWORD" \
+            ri1b3-app-claim \
+            "SELECT * FROM app_secure.claim_finance_provider_operation(
+               '$OP_ID'::uuid,
+               '$LEASE1'::uuid
+             );"
+
+          expect_denied \
+            pay24_app_deployment \
+            "$APP_PASSWORD" \
+            ri1b3-app-finish \
+            "SELECT * FROM app_secure.finish_finance_provider_operation(
+               '$OP_ID'::uuid,
+               '$LEASE1'::uuid,
+               1,
+               'failed_retryable',
+               NULL,
+               'ri1b3_ci',
+               NULL
+             );"
+
+          expect_denied \
+            finance_payment_deployment \
+            "$PAYMENT_PASSWORD" \
+            ri1b3-payment-reserve \
+            "SELECT * FROM app_secure.reserve_finance_provider_operation(
+               '$PAYMENT'::uuid,
+               'runtime_provider',
+               'sandbox',
+               'create_checkout',
+               'ri1b3-payment-reserve-denied',
+               '$REQUEST_HASH'
+             );"
+
+          CLAIM1="$(
+            PGPASSWORD="$PAYMENT_PASSWORD" \
+            psql -X -AtF '|' -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 \
+              -U finance_payment_deployment \
+              -d gymflow_pay24_ci \
+              -c "
+                SELECT pg_catalog.set_config(
+                  'app.current_org_id',
+                  '$ORG',
+                  false
+                );
+
+                SELECT
+                  operation_id,
+                  status,
+                  lease_fence,
+                  COALESCE(provider_object_id,''),
+                  attempt_count,
+                  claimed
+                FROM app_secure.claim_finance_provider_operation(
+                  '$OP_ID'::uuid,
+                  '$LEASE1'::uuid
+                );
+              " \
+            | tail -n 1
+          )"
+
+          test "$(printf '%s' "$CLAIM1" | cut -d '|' -f2)" = in_flight
+          test "$(printf '%s' "$CLAIM1" | cut -d '|' -f5)" = 1
+          test "$(printf '%s' "$CLAIM1" | cut -d '|' -f6)" = t
+
+          FENCE1="$(printf '%s' "$CLAIM1" | cut -d '|' -f3)"
+
+          FINISH1="$(
+            PGPASSWORD="$PAYMENT_PASSWORD" \
+            psql -X -AtF '|' -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 \
+              -U finance_payment_deployment \
+              -d gymflow_pay24_ci \
+              -c "
+                SELECT pg_catalog.set_config(
+                  'app.current_org_id',
+                  '$ORG',
+                  false
+                );
+
+                SELECT
+                  operation_id,
+                  status,
+                  COALESCE(provider_object_id,''),
+                  attempt_count
+                FROM app_secure.finish_finance_provider_operation(
+                  '$OP_ID'::uuid,
+                  '$LEASE1'::uuid,
+                  $FENCE1,
+                  'failed_retryable',
+                  NULL,
+                  'ri1b3_ci',
+                  NULL
+                );
+              " \
+            | tail -n 1
+          )"
+
+          test "$(printf '%s' "$FINISH1" | cut -d '|' -f2)" = failed_retryable
+
+          python -s -m alembic -c alembic.ini \
+            downgrade zz77d8e9f0a67
+
+          test "$(
+            sql_admin -At \
+              -c 'SELECT version_num FROM alembic_version'
+          )" = zz77d8e9f0a67
+
+          DOWNGRADE_VECTOR="$(authority_vector)"
+
+          test "$DOWNGRADE_VECTOR" = "$BASELINE_VECTOR"
+
+          test "$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$CLAIM_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )" = "$BASE_CLAIM_MD5"
+
+          test "$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$FINISH_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )" = "$BASE_FINISH_MD5"
+
+          APP_CLAIM="$(
+            PGPASSWORD="$APP_PASSWORD" \
+            psql -X -AtF '|' -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 \
+              -U pay24_app_deployment \
+              -d gymflow_pay24_ci \
+              -c "
+                SELECT pg_catalog.set_config(
+                  'app.current_org_id',
+                  '$ORG',
+                  false
+                );
+
+                SELECT
+                  operation_id,
+                  status,
+                  lease_fence,
+                  COALESCE(provider_object_id,''),
+                  attempt_count,
+                  claimed
+                FROM app_secure.claim_finance_provider_operation(
+                  '$OP_ID'::uuid,
+                  '$LEASE2'::uuid
+                );
+              " \
+            | tail -n 1
+          )"
+
+          test "$(printf '%s' "$APP_CLAIM" | cut -d '|' -f2)" = in_flight
+          test "$(printf '%s' "$APP_CLAIM" | cut -d '|' -f6)" = t
+
+          APP_FENCE="$(printf '%s' "$APP_CLAIM" | cut -d '|' -f3)"
+
+          PGPASSWORD="$APP_PASSWORD" \
+          psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 \
+            -U pay24_app_deployment \
+            -d gymflow_pay24_ci \
+            -c "
+              SELECT pg_catalog.set_config(
+                'app.current_org_id',
+                '$ORG',
+                false
+              );
+
+              SELECT *
+              FROM app_secure.finish_finance_provider_operation(
+                '$OP_ID'::uuid,
+                '$LEASE2'::uuid,
+                $APP_FENCE,
+                'failed_retryable',
+                NULL,
+                'ri1b3_ci',
+                NULL
+              );
+            "
+
+          python -s -m alembic -c alembic.ini \
+            upgrade "$PAY24_ALEMBIC_HEAD"
+
+          test "$(
+            sql_admin -At \
+              -c 'SELECT version_num FROM alembic_version'
+          )" = "$PAY24_ALEMBIC_HEAD"
+
+          REUPGRADE_VECTOR="$(authority_vector)"
+
+          test "$REUPGRADE_VECTOR" = "$CONTRACT_VECTOR"
+
+          test "$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$CLAIM_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )" = "$CONTRACT_CLAIM_MD5"
+
+          test "$(
+            sql_admin -At -c "
+              SELECT pg_catalog.md5(
+                pg_catalog.pg_get_functiondef(
+                  '$FINISH_SIG'::pg_catalog.regprocedure
+                )
+              );
+            "
+          )" = "$CONTRACT_FINISH_MD5"
+
+          expect_denied \
+            pay24_app_deployment \
+            "$APP_PASSWORD" \
+            ri1b3-app-reupgrade \
+            "SELECT * FROM app_secure.claim_finance_provider_operation(
+               '$OP_ID'::uuid,
+               '$LEASE3'::uuid
+             );"
+
+          CLAIM3="$(
+            PGPASSWORD="$PAYMENT_PASSWORD" \
+            psql -X -AtF '|' -v ON_ERROR_STOP=1 \
+              -h 127.0.0.1 \
+              -U finance_payment_deployment \
+              -d gymflow_pay24_ci \
+              -c "
+                SELECT pg_catalog.set_config(
+                  'app.current_org_id',
+                  '$ORG',
+                  false
+                );
+
+                SELECT
+                  operation_id,
+                  status,
+                  lease_fence,
+                  COALESCE(provider_object_id,''),
+                  attempt_count,
+                  claimed
+                FROM app_secure.claim_finance_provider_operation(
+                  '$OP_ID'::uuid,
+                  '$LEASE3'::uuid
+                );
+              " \
+            | tail -n 1
+          )"
+
+          test "$(printf '%s' "$CLAIM3" | cut -d '|' -f2)" = in_flight
+          test "$(printf '%s' "$CLAIM3" | cut -d '|' -f6)" = t
+
+          FENCE3="$(printf '%s' "$CLAIM3" | cut -d '|' -f3)"
+
+          PGPASSWORD="$PAYMENT_PASSWORD" \
+          psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 \
+            -U finance_payment_deployment \
+            -d gymflow_pay24_ci \
+            -c "
+              SELECT pg_catalog.set_config(
+                'app.current_org_id',
+                '$ORG',
+                false
+              );
+
+              SELECT *
+              FROM app_secure.finish_finance_provider_operation(
+                '$OP_ID'::uuid,
+                '$LEASE3'::uuid,
+                $FENCE3,
+                'failed_retryable',
+                NULL,
+                'ri1b3_ci',
+                NULL
+              );
+            "
+
+          FINAL_VECTOR="$(
+            sql_admin -AtF '|' -c "
+              SELECT
+                status,
+                attempt_count,
+                COALESCE(provider_object_id,''),
+                COALESCE(provider_evidence_sha256::text,'')
+              FROM finance.provider_operations
+              WHERE id='$OP_ID'::uuid;
+            "
+          )"
+
+          test "$FINAL_VECTOR" = "failed_retryable|3||"
+
+          echo "PAY24_RI1B3_ZZ77_TO_ZZ87=PASS"
+          echo "PAY24_RI1B3_APP_RUNTIME_CLAIM_DENIED=PASS"
+          echo "PAY24_RI1B3_APP_RUNTIME_FINISH_DENIED=PASS"
+          echo "PAY24_RI1B3_PAYMENT_RUNTIME_CLAIM_FINISH=PASS"
+          echo "PAY24_RI1B3_RESERVE_APP_ONLY=PASS"
+          echo "PAY24_RI1B3_RECONCILIATION_ISOLATED=PASS"
+          echo "PAY24_RI1B3_ZZ87_TO_ZZ77_EXACT_RESTORE=PASS"
+          echo "PAY24_RI1B3_ZZ77_TO_ZZ87_REUPGRADE=PASS"
+          echo "PAY24_RI1B3_REUPGRADE_EQUIVALENCE=PASS"
+          echo "PAY24_REAL_PROVIDER_CALLS=0"
+          echo "PAY24_REAL_MONEY_MOVEMENT=0"
 
       - name: Prove isolated payment deployment session
         run: |
@@ -641,7 +1244,7 @@ jobs:
           test "$MIGRATION_LIFECYCLE" = success
 
           echo "PAY24_CERTIFIED_APPLICATION_SHA=$PAY24_CERTIFIED_APPLICATION_SHA"
-          echo "PAY24_RI1B2_REMOTE_EXACT_SHA_CI=PASS"
+          echo "PAY24_RI1B3_REMOTE_EXACT_SHA_CI=PASS"
           echo "PAY24_REAL_PROVIDER_CALLS=0"
           echo "PAY24_REAL_MONEY_MOVEMENT=0"
           echo "PAY24_STAGE1_LIVE_ACTIVATION=NOT_AUTHORIZED"
