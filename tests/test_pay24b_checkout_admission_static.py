@@ -102,12 +102,13 @@ def test_payment_route_commits_admission_start_before_provider_io_and_finishes_a
     assert 'outcome="completed"' in route
 
 
-def test_b1a_does_not_wire_member_checkout_refund_or_platform_billing_by_accident() -> None:
+def test_b1b_intentionally_wires_member_checkout_but_not_refund_worker() -> None:
     member = _source(MEMBER_ROUTE)
     refund = _source(REFUND_WORKER)
-    assert "request_current_provider_admission(" not in member
-    assert "start_provider_admission(" not in member
-    assert "finish_provider_admission(" not in member
+    assert "request_current_provider_admission(" in member
+    assert "start_provider_admission(" in member
+    assert "finish_provider_admission(" in member
+    assert "ActivationCapability.CHECKOUT" in member
     assert "request_current_provider_admission(" not in refund
     assert "start_provider_admission(" not in refund
     assert "finish_provider_admission(" not in refund

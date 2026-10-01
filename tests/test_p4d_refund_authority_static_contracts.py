@@ -1130,9 +1130,14 @@ def test_p4d2_provider_order_is_after_local_commit_and_bounded_sql_attach() -> N
     pre_provider = provider_route[:provider_call]
     post_provider = provider_route[provider_call:]
     assert "await service.prepare_local_checkout(" in pre_provider
-    assert "await service.claim_provider_operation(" in pre_provider
-    assert pre_provider.count("await db.commit()") >= 2
-    assert "await service.finish_provider_success(" in post_provider
+    assert "await db.commit()" in pre_provider
+    assert "service.bind_provider_effects(payment_db)" in pre_provider
+    assert "await payment_effects.claim_provider_operation(" in pre_provider
+    assert pre_provider.count("await db.commit()") == 1
+    assert "await payment_db.commit()" in pre_provider
+    assert "await payment_effects.finish_provider_success(" in post_provider
+    assert "await db.commit()" not in post_provider
+    assert "await payment_db.commit()" in post_provider
     assert "adapter.create_checkout_intent" not in provider_route
     assert "RazorpayTestModeOrdersClient" in provider_route
     assert "require_finance_checkout_sandbox_enabled" in provider_route

@@ -86,12 +86,19 @@ def test_payment_database_isolated_same_database_request_scoped_and_no_role_swit
     assert "PG_HAS_ROLE" not in PAYMENT_DB.upper()
 
 
-def test_ri1b2_rewires_only_general_checkout_without_production_secret() -> None:
+def test_b1a_and_b1b_checkout_routes_use_payment_identity_without_production_secret() -> None:
     route = PAYMENT_API.split("async def create_checkout_session(", 1)[1].split(
         "@router.get", 1
     )[0]
+    member_route = MEMBER_API.split(
+        "async def create_subscription_checkout_session(", 1
+    )[1]
     assert "payment_db: AsyncSession = Depends(get_finance_payment_db)" in route
-    assert "get_finance_payment_db" not in MEMBER_API
+    assert (
+        "payment_db: AsyncSession = Depends(get_finance_payment_db)"
+        in member_route
+    )
+    assert "db: AsyncSession = Depends(get_db)" in member_route
     assert "FINANCE_PAYMENT_DATABASE_URL" not in PROD_IDENTITIES
 
 
