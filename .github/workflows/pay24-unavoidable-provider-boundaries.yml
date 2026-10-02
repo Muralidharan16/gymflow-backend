@@ -1248,9 +1248,9 @@ jobs:
 
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
             -d postgres <<'SQL'
-          CREATE DATABASE gymflow_pay24_refund_ci OWNER migration_owner;
+          CREATE DATABASE gymflow_pay24_refund_test_ci OWNER migration_owner;
 
-          GRANT CONNECT ON DATABASE gymflow_pay24_refund_ci
+          GRANT CONNECT ON DATABASE gymflow_pay24_refund_test_ci
             TO finance_refund_deployment,
                finance_payment_deployment,
                pay24_app_deployment,
@@ -1264,7 +1264,7 @@ jobs:
           psql -X -v ON_ERROR_STOP=1 \
             -h 127.0.0.1 \
             -U postgres \
-            -d gymflow_pay24_refund_ci <<'SQL'
+            -d gymflow_pay24_refund_test_ci <<'SQL'
           CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
           CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
           CREATE EXTENSION IF NOT EXISTS btree_gist;
@@ -1287,7 +1287,7 @@ jobs:
             TO migration_owner;
           SQL
 
-          DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci" \
+          DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci" \
           python -s -m alembic -c alembic.ini \
             upgrade zz87d8e9f0a68
 
@@ -1296,25 +1296,25 @@ jobs:
             psql -X -At \
               -h 127.0.0.1 \
               -U migration_owner \
-              -d gymflow_pay24_refund_ci \
+              -d gymflow_pay24_refund_test_ci \
               -c 'SELECT version_num FROM alembic_version'
           )" = zz87d8e9f0a68
 
-          export DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
-          export TEST_DATABASE_URL="postgresql+asyncpg://pay24_app_deployment:${APP_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
-          export TEST_ADMIN_DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
+          export TEST_DATABASE_URL="postgresql+asyncpg://pay24_app_deployment:${APP_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
+          export TEST_ADMIN_DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
 
-          export AUTH_DATABASE_URL="postgresql+asyncpg://pay24_auth_deployment:${AUTH_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
-          export MAINTENANCE_DATABASE_URL="postgresql+asyncpg://pay24_maintenance_deployment:${MAINTENANCE_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
-          export FINANCE_PAYMENT_DATABASE_URL="postgresql+asyncpg://finance_payment_deployment:${PAYMENT_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export AUTH_DATABASE_URL="postgresql+asyncpg://pay24_auth_deployment:${AUTH_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
+          export MAINTENANCE_DATABASE_URL="postgresql+asyncpg://pay24_maintenance_deployment:${MAINTENANCE_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
+          export FINANCE_PAYMENT_DATABASE_URL="postgresql+asyncpg://finance_payment_deployment:${PAYMENT_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
 
           export PAY24B_REFUND_MIGRATION_DATABASE_URL="$DATABASE_URL"
-          export PAY24B_REFUND_ADMIN_DATABASE_URL="postgresql://postgres:${ADMIN_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
-          export PAY24B_REFUND_RUNTIME_DATABASE_URL="postgresql://finance_refund_deployment:${REFUND_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
-          export PAY24B_REFUND_PAYMENT_DATABASE_URL="postgresql://finance_payment_deployment:${PAYMENT_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
-          export PAY24B_REFUND_APP_DATABASE_URL="postgresql://pay24_app_deployment:${APP_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
-          export PAY24B_REFUND_WORKER_DATABASE_URL="postgresql://pay24_worker_deployment:${WORKER_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
-          export PAY24B_REFUND_RECONCILIATION_DATABASE_URL="postgresql://finance_reconciliation_deployment:${RECON_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export PAY24B_REFUND_ADMIN_DATABASE_URL="postgresql://postgres:${ADMIN_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
+          export PAY24B_REFUND_RUNTIME_DATABASE_URL="postgresql://finance_refund_deployment:${REFUND_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
+          export PAY24B_REFUND_PAYMENT_DATABASE_URL="postgresql://finance_payment_deployment:${PAYMENT_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
+          export PAY24B_REFUND_APP_DATABASE_URL="postgresql://pay24_app_deployment:${APP_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
+          export PAY24B_REFUND_WORKER_DATABASE_URL="postgresql://pay24_worker_deployment:${WORKER_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
+          export PAY24B_REFUND_RECONCILIATION_DATABASE_URL="postgresql://finance_reconciliation_deployment:${RECON_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_test_ci"
 
           python -m pytest \
             -q \
@@ -1352,7 +1352,7 @@ jobs:
             psql -X -At \
               -h 127.0.0.1 \
               -U migration_owner \
-              -d gymflow_pay24_refund_ci \
+              -d gymflow_pay24_refund_test_ci \
               -c 'SELECT version_num FROM alembic_version'
           )" = "$PAY24_ALEMBIC_HEAD"
 
@@ -1361,7 +1361,7 @@ jobs:
             psql -X -AtF '|' \
               -h 127.0.0.1 \
               -U postgres \
-              -d gymflow_pay24_refund_ci \
+              -d gymflow_pay24_refund_test_ci \
               -c "
                 SELECT
                   generation,
