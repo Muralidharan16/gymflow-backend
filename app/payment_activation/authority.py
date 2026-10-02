@@ -301,6 +301,17 @@ _REQUEST_CURRENT_PROVIDER_ADMISSION_SQL = text(
     """
 )
 
+_REQUEST_CURRENT_REFUND_ADMISSION_SQL = text(
+    """
+    SELECT *
+    FROM app_secure.pay24b_request_current_refund_admission(
+        CAST(:logical_operation_id AS text),
+        CAST(:operation_sha AS text),
+        CAST(:lease_seconds AS integer)
+    )
+    """
+)
+
 _START_PROVIDER_ADMISSION_SQL = text(
     """
     SELECT *
@@ -667,6 +678,35 @@ class DurableActivationAuthority:
             _REQUEST_CURRENT_PROVIDER_ADMISSION_SQL,
             {
                 "capability": capability.value,
+                "logical_operation_id": logical_operation_id,
+                "operation_sha": operation_sha,
+                "lease_seconds": lease_seconds,
+            },
+        )
+        return _provider_admission_from_row(result.mappings().one())
+
+    async def request_current_refund_admission(
+        self,
+        *,
+        capability: ActivationCapability,
+        logical_operation_id: str,
+        operation_sha: str,
+        lease_seconds: int,
+    ) -> ProviderAdmission:
+        """Request current-generation refund-execution admission.
+
+        The separate PAY-24-B refund bridge accepts no caller-controlled
+        capability and is executable only by ``finance_refund_runtime``.
+        Requiring the matching enum here keeps application composition explicit
+        while PostgreSQL remains the authoritative capability/identity fence.
+        """
+
+        if capability is not ActivationCapability.REFUND_EXECUTION:
+            raise ValueError("capability must be refund_execution")
+
+        result = await self._session.execute(
+            _REQUEST_CURRENT_REFUND_ADMISSION_SQL,
+            {
                 "logical_operation_id": logical_operation_id,
                 "operation_sha": operation_sha,
                 "lease_seconds": lease_seconds,

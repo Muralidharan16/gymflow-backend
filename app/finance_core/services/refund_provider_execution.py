@@ -6,7 +6,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from typing import Literal
 
 from sqlalchemy import text
@@ -67,6 +67,12 @@ class RefundProviderRequestBinding:
     currency_code: str
     request_sha256: str
     status: str
+
+
+@dataclass(frozen=True)
+class RefundProviderAdmissionBinding:
+    logical_operation_id: str
+    operation_sha: str
 
 
 @dataclass(frozen=True)
@@ -167,6 +173,110 @@ class FinanceRefundProviderExecutionService:
     def __init__(self, session: AsyncSession):
         self._session = session
 
+    @staticmethod
+    def provider_admission_binding(
+        *,
+        claim: RefundProviderExecutionClaim,
+        binding: RefundProviderRequestBinding,
+    ) -> RefundProviderAdmissionBinding:
+        """Bind PAY-24 admission to one durable PAY-10 provider attempt.
+
+        PAY-10 preserves ``attempt_count`` when reclaiming an expired
+        processing lease, but increments it for a new explicitly permitted
+        retry after known non-acceptance.  It is therefore the durable attempt
+        identity: using ``lease_fence`` here would create a fresh admission on
+        crash recovery and could permit a blind provider resubmission.
+        """
+
+        if (
+            binding.command_id != claim.command_id
+            or binding.refund_id != claim.refund_id
+            or binding.payment_id != claim.payment_id
+            or binding.organization_id != claim.organization_id
+            or binding.provider_code != claim.provider_code
+            or binding.provider_payment_ref != claim.provider_payment_ref
+            or binding.amount != claim.amount
+            or binding.currency_code.upper() != claim.currency_code.upper()
+            or binding.status != "processing"
+            or not re.fullmatch(r"[0-9a-f]{64}", binding.request_sha256)
+            or claim.attempt_count < 1
+        ):
+            raise FinanceProviderConfigError(
+                "PAY-10 refund admission binding differs from durable authority."
+            )
+
+        return RefundProviderAdmissionBinding(
+            logical_operation_id=(
+                f"refund:{claim.command_id}:{claim.attempt_count}"
+            ),
+            operation_sha=binding.request_sha256,
+        )
+
+    @staticmethod
+    def validate_provider_response(
+        *,
+        claim: RefundProviderExecutionClaim,
+        response: object,
+    ) -> ProviderRefundResponse:
+        """Validate untrusted post-I/O data before normalization or hashing.
+
+        ``ProviderRefundResponse`` is a Python dataclass rather than a runtime
+        schema.  An adapter can therefore construct it with values that do not
+        match its annotations.  Keep this check total over those malformed
+        values so every untrustworthy post-I/O result follows the PAY-10/PAY-24
+        unknown path instead of escaping as ``AttributeError``/``TypeError``.
+        """
+
+        request = claim.provider_request()
+        if type(response) is not ProviderRefundResponse:
+            raise _authority_mismatch(claim)
+
+        if (
+            type(response.provider_code) is not str
+            or not response.provider_code
+            or type(response.provider_refund_ref) is not str
+            or type(response.provider_payment_ref) is not str
+            or not response.provider_payment_ref
+            or type(response.amount) is not Decimal
+            or type(response.currency_code) is not str
+            or type(response.receipt) is not str
+            or not (1 <= len(response.receipt) <= 200)
+            or type(response.status) is not str
+        ):
+            raise _authority_mismatch(claim)
+
+        if (
+            re.fullmatch(
+                r"[A-Za-z0-9_-]{1,200}",
+                response.provider_refund_ref,
+            )
+            is None
+            or response.status not in {"pending", "processed", "failed"}
+            or response.provider_code != claim.provider_code
+            or response.provider_payment_ref != request.provider_payment_ref
+            or not response.amount.is_finite()
+        ):
+            raise _authority_mismatch(claim)
+
+        # Prove the exact operation used by evidence hashing is safe before
+        # the response can reach that function. DecimalException covers values
+        # whose shape exceeds the active decimal context even when finite.
+        try:
+            quantized_amount = response.amount.quantize(Decimal("0.01"))
+        except DecimalException as exc:
+            raise _authority_mismatch(claim) from exc
+
+        if (
+            quantized_amount != response.amount
+            or response.amount != request.amount
+            or not re.fullmatch(r"[A-Za-z]{3}", response.currency_code)
+            or response.currency_code.upper()
+            != request.currency_code.upper()
+        ):
+            raise _authority_mismatch(claim)
+
+        return response
+
     async def claim(
         self,
         *,
@@ -237,17 +347,21 @@ class FinanceRefundProviderExecutionService:
         claim: RefundProviderExecutionClaim,
         worker_id: uuid.UUID,
         response: ProviderRefundResponse,
-        evidence_sha256: str,
         occurred_at: datetime | None = None,
     ) -> RefundProviderEvidenceReceipt:
-        request = claim.provider_request()
-        if (
-            response.provider_code != claim.provider_code
-            or response.provider_payment_ref != request.provider_payment_ref
-            or response.amount != request.amount
-            or response.currency_code.upper() != request.currency_code.upper()
-        ):
-            raise _authority_mismatch(claim)
+        response = self.validate_provider_response(
+            claim=claim,
+            response=response,
+        )
+
+        # Validate the provider response before hashing or executing SQL.  Any
+        # malformed success is a post-I/O ambiguity and must be handled by the
+        # worker's atomic PAY-10/PAY-24 unknown terminal transaction.
+        evidence_sha256 = refund_provider_evidence_hash(
+            response,
+            source="submission",
+            occurred_at=occurred_at,
+        )
 
         result = await self._session.execute(
             text(
@@ -373,4 +487,3 @@ class FinanceRefundProviderExecutionService:
             },
         )
         return RefundProviderEvidenceReceipt(**dict(result.mappings().one()))
-

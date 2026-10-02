@@ -15,16 +15,30 @@ def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_pay10e_processor_commits_before_and_after_provider_io():
+def test_pay10e_processor_commits_every_pay24_fence_around_provider_io():
     source = _text(WORKER)
     normalized = source.lower()
     assert "await session.commit()" in source
     assert "response = await provider.submit_refund" in source
     assert "after_bind_commit" in source
+    assert "after_admission_start_commit" in source
     assert "after_provider_effect" in source
     assert "after_outcome_commit" in source
     assert "keeping provider calls outside database transactions" not in source
     assert "provider i/o runs with no open" in normalized
+
+
+def test_pay10e_redelivery_never_blindly_replays_an_active_admission():
+    source = _text(WORKER)
+    run_once = source.split("async def run_once", 1)[1]
+    active_guard = run_once.index(
+        'if admission.state in {"active", "unknown"}'
+    )
+    provider_call = run_once.index("await provider.submit_refund")
+    assert active_guard < provider_call
+    assert "PAY24_REFUND_ADMISSION_ALREADY_STARTED" in run_once
+    assert "failure_class=\"unknown\"" in run_once[active_guard:provider_call]
+    assert "provider.fetch_refund" not in source
 
 
 def test_pay10e_provider_success_never_becomes_financial_success_in_worker():

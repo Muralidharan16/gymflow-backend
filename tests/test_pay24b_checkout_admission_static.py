@@ -8,6 +8,12 @@ CHECKOUT = ROOT / "app" / "finance_core" / "services" / "checkout_orchestration.
 PAYMENT_API = ROOT / "app" / "finance_core" / "api" / "payment_boundary.py"
 MEMBER_ROUTE = ROOT / "app" / "routers" / "member_subscriptions_v2.py"
 REFUND_WORKER = ROOT / "app" / "finance_core" / "services" / "refund_provider_worker.py"
+REFUND_MIGRATION = (
+    ROOT
+    / "alembic"
+    / "versions"
+    / "zz97d8e9f0a69_pay24b_refund_admission_bridge.py"
+)
 
 
 def _source(path: Path) -> str:
@@ -102,13 +108,24 @@ def test_payment_route_commits_admission_start_before_provider_io_and_finishes_a
     assert 'outcome="completed"' in route
 
 
-def test_b1b_intentionally_wires_member_checkout_but_not_refund_worker() -> None:
+def test_checkout_bridge_stays_payment_only_and_refund_uses_separate_bridge() -> None:
     member = _source(MEMBER_ROUTE)
     refund = _source(REFUND_WORKER)
+    checkout_migration = _source(MIGRATION)
+    refund_migration = _source(REFUND_MIGRATION)
     assert "request_current_provider_admission(" in member
     assert "start_provider_admission(" in member
     assert "finish_provider_admission(" in member
     assert "ActivationCapability.CHECKOUT" in member
-    assert "request_current_provider_admission(" not in refund
-    assert "start_provider_admission(" not in refund
-    assert "finish_provider_admission(" not in refund
+    assert "pay24b_request_current_refund_admission" not in checkout_migration
+    assert "TO finance_refund_runtime" not in checkout_migration
+    assert "request_current_refund_admission(" in refund
+    assert "start_provider_admission(" in refund
+    assert "finish_provider_admission(" in refund
+    assert "ActivationCapability.REFUND_EXECUTION" in refund
+    assert (
+        "CREATE FUNCTION app_secure.pay24b_request_current_provider_admission"
+        not in refund_migration
+    )
+    assert "GRANT EXECUTE ON FUNCTION {_CHECKOUT_BRIDGE}" not in refund_migration
+    assert "TO finance_payment_runtime" not in refund_migration

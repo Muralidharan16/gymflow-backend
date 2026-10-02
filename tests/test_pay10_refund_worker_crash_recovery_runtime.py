@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import sqlite3
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -27,10 +28,16 @@ from app.finance_core.domain.provider_boundary import (
 from app.finance_core.services.refund_provider_worker import (
     RefundProviderExecutionProcessor,
 )
+from app.payment_activation.authority import (
+    ProviderAdmission,
+    ProviderAdmissionFinished,
+)
+from app.payment_activation.domain import ActivationCapability
 from tests.test_pay10_refund_financial_finalization_runtime import (
     ADMIN_URL,
     COMMAND_ID,
     EVIDENCE_HASH,
+    ORG_ID,
     PAYMENT_ID,
     PROVIDER_CODE,
     PROVIDER_PAYMENT_REF,
@@ -186,6 +193,184 @@ class ErrorRefundProvider(DurableFakeRefundProvider):
         )
 
 
+class DurableFakeRefundActivationAuthority:
+    """Process-durable PAY-24 authority double for the PG crash harness.
+
+    PAY-24 admission state is intentionally stored beside the durable fake
+    provider receipt, rather than in process memory, so a forked worker death
+    and later PAY-10 reclaim observe the same admission.  Atomic P1/P3 ordering
+    is covered by the dedicated composition suite; this harness concentrates
+    on cross-process redelivery and the no-blind-replay invariant.
+    """
+
+    def __init__(self, path: Path):
+        self._path = path
+        with sqlite3.connect(self._path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS refund_admissions(
+                    admission_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    logical_operation_id TEXT NOT NULL UNIQUE,
+                    operation_sha TEXT NOT NULL,
+                    lease_expires_at TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    execution_id TEXT
+                );
+                """
+            )
+
+    @staticmethod
+    def _admission_id(logical_operation_id: str) -> uuid.UUID:
+        return uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"pay24b-refund-crash-test:{logical_operation_id}",
+        )
+
+    @staticmethod
+    def _from_row(row) -> ProviderAdmission:
+        return ProviderAdmission(
+            admission_id=uuid.UUID(row[0]),
+            activation_generation=1,
+            organization_id=uuid.UUID(row[1]),
+            capability=ActivationCapability.REFUND_EXECUTION,
+            logical_operation_id=row[2],
+            lease_expires_at=datetime.fromisoformat(row[4]),
+            state=row[5],
+            execution_id=(uuid.UUID(row[6]) if row[6] else None),
+        )
+
+    async def request_current_refund_admission(
+        self,
+        *,
+        capability: ActivationCapability,
+        logical_operation_id: str,
+        operation_sha: str,
+        lease_seconds: int,
+    ) -> ProviderAdmission:
+        assert capability is ActivationCapability.REFUND_EXECUTION
+        assert lease_seconds > 0
+        admission_id = self._admission_id(logical_operation_id)
+        lease_expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=lease_seconds
+        )
+        with sqlite3.connect(self._path) as conn:
+            row = conn.execute(
+                """
+                SELECT admission_id,organization_id,logical_operation_id,
+                       operation_sha,lease_expires_at,state,execution_id
+                FROM refund_admissions
+                WHERE logical_operation_id=?
+                """,
+                (logical_operation_id,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO refund_admissions(
+                        admission_id,organization_id,logical_operation_id,
+                        operation_sha,lease_expires_at,state,execution_id
+                    ) VALUES(?,?,?,?,?,'admitted',NULL)
+                    """,
+                    (
+                        str(admission_id),
+                        str(ORG_ID),
+                        logical_operation_id,
+                        operation_sha,
+                        lease_expires_at.isoformat(),
+                    ),
+                )
+                row = conn.execute(
+                    """
+                    SELECT admission_id,organization_id,logical_operation_id,
+                           operation_sha,lease_expires_at,state,execution_id
+                    FROM refund_admissions
+                    WHERE logical_operation_id=?
+                    """,
+                    (logical_operation_id,),
+                ).fetchone()
+            assert row is not None
+            assert row[3] == operation_sha
+        return self._from_row(row)
+
+    async def start_provider_admission(
+        self,
+        *,
+        admission_id: uuid.UUID,
+        execution_id: uuid.UUID,
+    ) -> ProviderAdmission:
+        with sqlite3.connect(self._path) as conn:
+            row = conn.execute(
+                """
+                SELECT admission_id,organization_id,logical_operation_id,
+                       operation_sha,lease_expires_at,state,execution_id
+                FROM refund_admissions
+                WHERE admission_id=?
+                """,
+                (str(admission_id),),
+            ).fetchone()
+            assert row is not None
+            if row[5] == "admitted":
+                conn.execute(
+                    """
+                    UPDATE refund_admissions
+                    SET state='active',execution_id=?
+                    WHERE admission_id=?
+                    """,
+                    (str(execution_id), str(admission_id)),
+                )
+                row = conn.execute(
+                    """
+                    SELECT admission_id,organization_id,logical_operation_id,
+                           operation_sha,lease_expires_at,state,execution_id
+                    FROM refund_admissions
+                    WHERE admission_id=?
+                    """,
+                    (str(admission_id),),
+                ).fetchone()
+            assert row is not None
+            assert row[5] == "active"
+            assert row[6] == str(execution_id)
+        return self._from_row(row)
+
+    async def finish_provider_admission(
+        self,
+        *,
+        admission_id: uuid.UUID,
+        execution_id: uuid.UUID,
+        outcome: str,
+    ) -> ProviderAdmissionFinished:
+        assert outcome in {"completed", "unknown"}
+        finished_at = datetime.now(timezone.utc)
+        with sqlite3.connect(self._path) as conn:
+            row = conn.execute(
+                """
+                SELECT state,execution_id
+                FROM refund_admissions
+                WHERE admission_id=?
+                """,
+                (str(admission_id),),
+            ).fetchone()
+            assert row is not None
+            if row[0] == "active":
+                assert row[1] == str(execution_id)
+                conn.execute(
+                    """
+                    UPDATE refund_admissions
+                    SET state=?
+                    WHERE admission_id=?
+                    """,
+                    (outcome, str(admission_id)),
+                )
+            else:
+                assert row[0] == outcome
+        return ProviderAdmissionFinished(
+            admission_id=admission_id,
+            state=outcome,
+            finished_at=finished_at,
+        )
+
+
 def _reset_state(
     refund_amount: Decimal = Decimal("25.00"),
     *,
@@ -253,6 +438,27 @@ def _provider_counts(path: Path) -> tuple[int, int]:
     return int(calls), int(effects)
 
 
+def _admission_states(path: Path) -> tuple[str, ...]:
+    with sqlite3.connect(path) as conn:
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type='table' AND name='refund_admissions'
+            """
+        ).fetchone()
+        if exists is None:
+            return ()
+        rows = conn.execute(
+            """
+            SELECT state
+            FROM refund_admissions
+            ORDER BY logical_operation_id
+            """
+        ).fetchall()
+    return tuple(str(row[0]) for row in rows)
+
+
 def _db_row(sql: str, params=()):
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as conn:
@@ -302,6 +508,9 @@ async def _run_once(
             session_factory=sessions,
             provider_resolver=resolver,
             fault_hook=fault if fault_point else None,
+            activation_authority_factory=(
+                lambda session: DurableFakeRefundActivationAuthority(store)
+            ),
         )
         return await processor.run_once(worker_id=worker_id)
     finally:
@@ -351,6 +560,7 @@ def test_pay10e_worker_death_after_claim_reclaims_same_attempt(tmp_path: Path):
         fault_point="after_claim_commit",
     ) == 91
     assert _provider_counts(store) == (0, 0)
+    assert _admission_states(store) == ()
 
     before = _db_row(
         """
@@ -376,6 +586,7 @@ def test_pay10e_worker_death_after_claim_reclaims_same_attempt(tmp_path: Path):
     assert result.state == "reconciliation_pending"
     assert result.reclaimed_existing_attempt is True
     assert _provider_counts(store) == (1, 1)
+    assert _admission_states(store) == ("completed",)
 
     after = _db_row(
         """
@@ -393,6 +604,81 @@ def test_pay10e_worker_death_after_claim_reclaims_same_attempt(tmp_path: Path):
     assert after[4] is not None
 
 
+def test_pay10e_worker_death_after_p1_reuses_admitted_attempt(tmp_path: Path):
+    _reset_state()
+    store = tmp_path / "provider.sqlite3"
+    first_worker = uuid.uuid4()
+    second_worker = uuid.uuid4()
+
+    assert _crash_once(
+        store,
+        worker_id=first_worker,
+        fault_point="after_bind_commit",
+    ) == 91
+    assert _provider_counts(store) == (0, 0)
+    assert _admission_states(store) == ("admitted",)
+
+    bound = _db_row(
+        """
+        SELECT status,attempt_count,request_sha256
+        FROM finance.refund_execution_commands
+        WHERE command_id=%s
+        """,
+        (COMMAND_ID,),
+    )
+    assert bound[0] == "processing"
+    assert bound[1] == 1
+    assert bound[2] is not None
+
+    _expire_lease()
+    result = asyncio.run(_run_once(store, second_worker))
+    assert result.state == "reconciliation_pending"
+    assert result.reclaimed_existing_attempt is True
+    assert result.provider_called is True
+    assert _provider_counts(store) == (1, 1)
+    assert _admission_states(store) == ("completed",)
+
+
+def test_pay10e_worker_death_after_p2_never_blindly_submits(
+    tmp_path: Path,
+):
+    _reset_state()
+    store = tmp_path / "provider.sqlite3"
+    first_worker = uuid.uuid4()
+    second_worker = uuid.uuid4()
+
+    assert _crash_once(
+        store,
+        worker_id=first_worker,
+        fault_point="after_admission_start_commit",
+    ) == 91
+    assert _provider_counts(store) == (0, 0)
+    assert _admission_states(store) == ("active",)
+
+    _expire_lease()
+    result = asyncio.run(_run_once(store, second_worker))
+    assert result.state == "reconciliation_pending"
+    assert result.reclaimed_existing_attempt is True
+    assert result.provider_called is False
+    assert _provider_counts(store) == (0, 0)
+    assert _admission_states(store) == ("unknown",)
+
+    row = _db_row(
+        """
+        SELECT status,attempt_count,provider_refund_ref,
+               provider_evidence_sha256,last_error_code
+        FROM finance.refund_execution_commands
+        WHERE command_id=%s
+        """,
+        (COMMAND_ID,),
+    )
+    assert row[0] == "reconciliation_pending"
+    assert row[1] == 1
+    assert row[2] is None
+    assert row[3] is None
+    assert row[4] == "pay24_refund_admission_already_started"
+
+
 def test_pay10e_provider_success_db_ack_loss_replays_one_effect(
     tmp_path: Path,
 ):
@@ -407,6 +693,7 @@ def test_pay10e_provider_success_db_ack_loss_replays_one_effect(
         fault_point="after_provider_effect",
     ) == 91
     assert _provider_counts(store) == (1, 1)
+    assert _admission_states(store) == ("active",)
 
     ambiguous = _db_row(
         """
@@ -428,7 +715,9 @@ def test_pay10e_provider_success_db_ack_loss_replays_one_effect(
     result = asyncio.run(_run_once(store, second_worker))
     assert result.state == "reconciliation_pending"
     assert result.reclaimed_existing_attempt is True
-    assert _provider_counts(store) == (2, 1)
+    assert result.provider_called is False
+    assert _provider_counts(store) == (1, 1)
+    assert _admission_states(store) == ("unknown",)
 
     recovered = _db_row(
         """
@@ -449,9 +738,9 @@ def test_pay10e_provider_success_db_ack_loss_replays_one_effect(
     )
     assert recovered[0] == "reconciliation_pending"
     assert recovered[1] == 1
-    assert recovered[2] is not None
-    assert recovered[3] is not None
-    assert recovered[4] == 1
+    assert recovered[2] is None
+    assert recovered[3] is None
+    assert recovered[4] == 0
 
 
 def test_pay10e_db_commit_broker_ack_loss_redelivery_is_noop(
@@ -468,6 +757,7 @@ def test_pay10e_db_commit_broker_ack_loss_redelivery_is_noop(
         fault_point="after_outcome_commit",
     ) == 91
     assert _provider_counts(store) == (1, 1)
+    assert _admission_states(store) == ("completed",)
 
     durable = _db_row(
         """
@@ -494,6 +784,7 @@ def test_pay10e_db_commit_broker_ack_loss_redelivery_is_noop(
     assert result.state == "idle"
     assert result.provider_called is False
     assert _provider_counts(store) == (1, 1)
+    assert _admission_states(store) == ("completed",)
 
 
 @pytest.mark.parametrize(
@@ -526,6 +817,9 @@ def test_pay10e_provider_failure_classification_is_durable(
     )
     assert result.state == expected_state
     assert _provider_counts(store) == (1, 0)
+    assert _admission_states(store) == (
+        "unknown" if failure_class == "unknown" else "completed",
+    )
 
     row = _db_row(
         """
@@ -548,6 +842,7 @@ def test_pay10e_never_finalizes_finance_from_worker_provider_success(
     store = tmp_path / "provider.sqlite3"
     result = asyncio.run(_run_once(store, uuid.uuid4()))
     assert result.state == "reconciliation_pending"
+    assert _admission_states(store) == ("completed",)
 
     row = _db_row(
         """

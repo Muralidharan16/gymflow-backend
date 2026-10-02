@@ -149,6 +149,9 @@ _PAY24B_RI1B1_EXPAND_MIGRATION = (
 _PAY24B_RI1B3_CONTRACT_MIGRATION = (
     "zz87d8e9f0a68_pay24b_ri1b3_claim_finish_contract.py"
 )
+_PAY24B_REFUND_ADMISSION_BRIDGE_MIGRATION = (
+    "zz97d8e9f0a69_pay24b_refund_admission_bridge.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -205,6 +208,7 @@ APP_SECURE_FILES.update(
         _PAY24B_ADMISSION_BRIDGE_MIGRATION,
         _PAY24B_RI1B1_EXPAND_MIGRATION,
         _PAY24B_RI1B3_CONTRACT_MIGRATION,
+        _PAY24B_REFUND_ADMISSION_BRIDGE_MIGRATION,
     }
 )
 
@@ -453,6 +457,10 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # finance_payment_runtime identity. It changes function bodies and
         # EXECUTE ACLs only, with no schema/view/policy DDL.
         _PAY24B_RI1B3_CONTRACT_MIGRATION: set(),
+        # PAY-24-B zz97 adds the refund-runtime-only current-generation
+        # admission bridge. It changes function/ACL authority only and does
+        # not expand the schema/view/policy DDL surface classified here.
+        _PAY24B_REFUND_ADMISSION_BRIDGE_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {
