@@ -14,14 +14,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PAY24_CERTIFIED_APPLICATION_SHA: 2ff924da83f4a9b246abc733ec4299ac669b5df1
-  PAY24_CERTIFIED_APPLICATION_TREE: cf692fb89221f58fdcc2abd44b466a28d54f81a3
-  PAY24_ALEMBIC_HEAD: zz87d8e9f0a68
+  PAY24_CERTIFIED_APPLICATION_SHA: d2e7150e8e5e3df4582ed4ea8a75cd06a8f5ce9b
+  PAY24_CERTIFIED_APPLICATION_TREE: da5a2413aa6645d6de2b8d550aee4850145e4622
+  PAY24_ALEMBIC_HEAD: zz97d8e9f0a69
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
   pay24-scope-static:
-    name: PAY24 exact application freeze and checkout contracts
+    name: PAY24 exact application freeze and provider-boundary contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -91,6 +91,7 @@ jobs:
             alembic/versions/zz67d8e9f0a66_pay24b_checkout_admission_bridge.py \
             alembic/versions/zz77d8e9f0a67_pay24b_ri1b1_claim_finish_expand.py \
             alembic/versions/zz87d8e9f0a68_pay24b_ri1b3_claim_finish_contract.py \
+            alembic/versions/zz97d8e9f0a69_pay24b_refund_admission_bridge.py \
             app/core/config.py \
             app/core/database.py \
             app/core/payment_database.py \
@@ -98,9 +99,12 @@ jobs:
             app/finance_core/api/payment_boundary.py \
             app/finance_core/services/checkout_orchestration.py \
             app/finance_core/services/member_subscription_checkout.py \
+            app/finance_core/services/refund_provider_execution.py \
+            app/finance_core/services/refund_provider_worker.py \
             app/payment_activation/authority.py \
             app/routers/member_subscriptions_v2.py \
             tests/finance_core/payment_database.py \
+            tests/finance_core/test_pay10_refund_execution_service.py \
             tests/finance_core/test_pay17_fault_injection_concurrency.py \
             tests/finance_core/test_phase6c_checkout_orchestration.py \
             tests/test_migration_app_secure_owner_context_boundary.py \
@@ -108,6 +112,11 @@ jobs:
             tests/test_pay24b_b1b_member_checkout_payment_identity_static.py \
             tests/test_pay24b_b1b_member_checkout_runtime_composition.py \
             tests/test_pay24b_checkout_admission_static.py \
+            tests/test_pay24b_refund_provider_boundary_pg16.py \
+            tests/test_pay24b_refund_provider_boundary_runtime_composition.py \
+            tests/test_pay24b_refund_provider_boundary_static.py \
+            tests/test_pay10_refund_worker_crash_recovery_runtime.py \
+            tests/test_pay10_refund_worker_crash_recovery_static.py \
             tests/test_pay24b_payment_runtime_identity_static.py \
             tests/test_pay24b_ri1b2_route_runtime_composition.py \
             tests/test_pay24b_ri1b3_claim_finish_contract_static.py
@@ -119,6 +128,9 @@ jobs:
           python -m pytest --noconftest -q \
             tests/test_pay24b_b1b_member_checkout_payment_identity_static.py \
             tests/test_pay24b_b1b_member_checkout_runtime_composition.py \
+            tests/test_pay24b_refund_provider_boundary_static.py \
+            tests/test_pay24b_refund_provider_boundary_runtime_composition.py \
+            tests/test_pay10_refund_worker_crash_recovery_static.py \
             tests/test_pay24b_ri1b3_claim_finish_contract_static.py \
             tests/test_pay24b_ri1b2_route_runtime_composition.py \
             tests/test_pay24b_ri1b2_http_payment_identity_wiring_static.py \
@@ -136,7 +148,8 @@ jobs:
             tests/test_runtime_binding_alignment.py \
             tests/test_runtime_principal_attestation.py
 
-          echo "PAY24_RI1B3_STATIC_AND_ROUTE_COMPOSITION=PASS"
+          echo "PAY24_PROVIDER_BOUNDARY_STATIC_AND_COMPOSITION=PASS"
+          echo "PAY24B_REFUND_STATIC_AND_COMPOSITION=PASS"
           echo "PAY24_REAL_PROVIDER_CALLS=0"
           echo "PAY24_REAL_MONEY_MOVEMENT=0"
 
@@ -150,6 +163,11 @@ jobs:
       PAYMENT_PASSWORD: ci-pay24-payment
       APP_PASSWORD: ci-pay24-app
       AUTH_PASSWORD: ci-pay24-auth
+      REFUND_PASSWORD: ci-pay24-refund
+      WORKER_PASSWORD: ci-pay24-worker
+      RECON_PASSWORD: ci-pay24-recon
+      MAINTENANCE_PASSWORD: ci-pay24-maintenance
+      ADMIN_PASSWORD: ci-pay24-admin
 
       DATABASE_URL: postgresql+asyncpg://migration_owner:ci-pay24-migration@127.0.0.1:5432/gymflow_pay24_ci
       AUTH_DATABASE_URL: postgresql+asyncpg://pay24_auth_deployment:ci-pay24-auth@127.0.0.1:5432/gymflow_pay24_ci
@@ -214,14 +232,29 @@ jobs:
           set -euo pipefail
           bash scripts/ci/bootstrap_cluster_roles.sh
 
-          python -c "import json, pathlib; data=json.loads(pathlib.Path('security/cluster_role_bootstrap/roles.v1.json').read_text()); assert 'finance_payment_runtime' in data['managed_roles']"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(
+              Path(
+                  'security/cluster_role_bootstrap/roles.v1.json'
+              ).read_text()
+          )
+          roles = set(data['managed_roles'])
+          assert 'finance_payment_runtime' in roles
+          assert 'finance_refund_runtime' in roles
+          assert 'finance_reconciliation_runtime' in roles
+          PY
 
           echo "PAY24_CANONICAL_PAYMENT_CAPABILITY_BOOTSTRAP=PASS"
+          echo "PAY24_CANONICAL_REFUND_CAPABILITY_BOOTSTRAP=PASS"
 
       - name: Provision isolated PAY24 deployment logins
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
           ALTER ROLE migration_owner PASSWORD 'ci-pay24-migration';
+          ALTER ROLE postgres PASSWORD 'ci-pay24-admin';
 
           CREATE ROLE finance_payment_deployment
             LOGIN PASSWORD 'ci-pay24-payment'
@@ -264,6 +297,55 @@ jobs:
 
           GRANT auth_runtime
             TO pay24_auth_deployment
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+
+          CREATE ROLE finance_refund_deployment
+            LOGIN PASSWORD 'ci-pay24-refund'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE finance_refund_deployment SET row_security = 'on';
+          ALTER ROLE finance_refund_deployment SET statement_timeout = '15s';
+          ALTER ROLE finance_refund_deployment SET lock_timeout = '2s';
+          ALTER ROLE finance_refund_deployment
+            SET idle_in_transaction_session_timeout = '30s';
+
+          GRANT finance_refund_runtime
+            TO finance_refund_deployment
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE ROLE pay24_worker_deployment
+            LOGIN PASSWORD 'ci-pay24-worker'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE pay24_worker_deployment SET row_security = 'on';
+
+          GRANT worker_runtime
+            TO pay24_worker_deployment
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE ROLE finance_reconciliation_deployment
+            LOGIN PASSWORD 'ci-pay24-recon'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE finance_reconciliation_deployment SET row_security = 'on';
+
+          GRANT finance_reconciliation_runtime
+            TO finance_reconciliation_deployment
+            WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+
+          CREATE ROLE pay24_maintenance_deployment
+            LOGIN PASSWORD 'ci-pay24-maintenance'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+            NOREPLICATION NOBYPASSRLS;
+
+          ALTER ROLE pay24_maintenance_deployment SET row_security = 'on';
+
+          GRANT lifecycle_maintenance_runtime
+            TO pay24_maintenance_deployment
             WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 
           CREATE DATABASE gymflow_pay24_ci OWNER migration_owner;
@@ -1157,6 +1239,155 @@ jobs:
 
           echo "PAY24_REAL_PAYMENT_SESSION=PASS"
 
+
+      - name: Prove refund boundary on isolated PG16 lifecycle
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: |
+          set -euo pipefail
+
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
+            -d postgres <<'SQL'
+          CREATE DATABASE gymflow_pay24_refund_ci OWNER migration_owner;
+
+          GRANT CONNECT ON DATABASE gymflow_pay24_refund_ci
+            TO finance_refund_deployment,
+               finance_payment_deployment,
+               pay24_app_deployment,
+               pay24_worker_deployment,
+               finance_reconciliation_deployment,
+               pay24_auth_deployment,
+               pay24_maintenance_deployment;
+          SQL
+
+          PGPASSWORD="$ADMIN_PASSWORD" \
+          psql -X -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 \
+            -U postgres \
+            -d gymflow_pay24_refund_ci <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS partman AUTHORIZATION postgres;
+          CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA partman;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS citext;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS postgis;
+
+          GRANT USAGE ON SCHEMA partman TO migration_owner;
+          GRANT SELECT, INSERT, UPDATE, DELETE
+            ON ALL TABLES IN SCHEMA partman
+            TO migration_owner;
+          GRANT USAGE, SELECT, UPDATE
+            ON ALL SEQUENCES IN SCHEMA partman
+            TO migration_owner;
+          GRANT EXECUTE
+            ON ALL FUNCTIONS IN SCHEMA partman
+            TO migration_owner;
+          GRANT EXECUTE
+            ON ALL PROCEDURES IN SCHEMA partman
+            TO migration_owner;
+          SQL
+
+          DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci" \
+          python -s -m alembic -c alembic.ini \
+            upgrade zz87d8e9f0a68
+
+          test "$(
+            PGPASSWORD="$MIGRATION_PASSWORD" \
+            psql -X -At \
+              -h 127.0.0.1 \
+              -U migration_owner \
+              -d gymflow_pay24_refund_ci \
+              -c 'SELECT version_num FROM alembic_version'
+          )" = zz87d8e9f0a68
+
+          export DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export TEST_DATABASE_URL="postgresql+asyncpg://pay24_app_deployment:${APP_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export TEST_ADMIN_DATABASE_URL="postgresql+asyncpg://migration_owner:${MIGRATION_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+
+          export AUTH_DATABASE_URL="postgresql+asyncpg://pay24_auth_deployment:${AUTH_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export MAINTENANCE_DATABASE_URL="postgresql+asyncpg://pay24_maintenance_deployment:${MAINTENANCE_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export FINANCE_PAYMENT_DATABASE_URL="postgresql+asyncpg://finance_payment_deployment:${PAYMENT_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+
+          export PAY24B_REFUND_MIGRATION_DATABASE_URL="$DATABASE_URL"
+          export PAY24B_REFUND_ADMIN_DATABASE_URL="postgresql://postgres:${ADMIN_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export PAY24B_REFUND_RUNTIME_DATABASE_URL="postgresql://finance_refund_deployment:${REFUND_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export PAY24B_REFUND_PAYMENT_DATABASE_URL="postgresql://finance_payment_deployment:${PAYMENT_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export PAY24B_REFUND_APP_DATABASE_URL="postgresql://pay24_app_deployment:${APP_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export PAY24B_REFUND_WORKER_DATABASE_URL="postgresql://pay24_worker_deployment:${WORKER_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+          export PAY24B_REFUND_RECONCILIATION_DATABASE_URL="postgresql://finance_reconciliation_deployment:${RECON_PASSWORD}@127.0.0.1:5432/gymflow_pay24_refund_ci"
+
+          python -m pytest \
+            -q \
+            -ra \
+            --junitxml=/tmp/pay24-refund-pg16.xml \
+            tests/test_pay24b_refund_provider_boundary_pg16.py
+
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse('/tmp/pay24-refund-pg16.xml').getroot()
+          cases = root.findall('.//testcase')
+
+          skipped = sum(
+              case.find('skipped') is not None
+              for case in cases
+          )
+          failures = sum(
+              case.find('failure') is not None
+              for case in cases
+          )
+          errors = sum(
+              case.find('error') is not None
+              for case in cases
+          )
+
+          assert len(cases) == 1, len(cases)
+          assert skipped == 0, skipped
+          assert failures == 0, failures
+          assert errors == 0, errors
+          PY
+
+          test "$(
+            PGPASSWORD="$MIGRATION_PASSWORD" \
+            psql -X -At \
+              -h 127.0.0.1 \
+              -U migration_owner \
+              -d gymflow_pay24_refund_ci \
+              -c 'SELECT version_num FROM alembic_version'
+          )" = "$PAY24_ALEMBIC_HEAD"
+
+          FINAL_REFUND_STAGE0="$(
+            PGPASSWORD="$ADMIN_PASSWORD" \
+            psql -X -AtF '|' \
+              -h 127.0.0.1 \
+              -U postgres \
+              -d gymflow_pay24_refund_ci \
+              -c "
+                SELECT
+                  generation,
+                  stage,
+                  provider_egress_state,
+                  refund_execution,
+                  (
+                    SELECT count(*)
+                    FROM finance.provider_admission_leases
+                  )
+                FROM finance.payment_activation_authority
+                WHERE singleton;
+              "
+          )"
+
+          echo "PAY24_REFUND_STAGE0_VECTOR=$FINAL_REFUND_STAGE0"
+          test "$FINAL_REFUND_STAGE0" = "0|0|blocked|f|0"
+
+          echo "PAY24B_REFUND_PG16_ZERO_SKIP=PASS"
+          echo "PAY24B_REFUND_ZZ87_ZZ97_ZZ87_ZZ97=PASS"
+          echo "PAY24B_REFUND_RUNTIME_IDENTITY=FINANCE_REFUND_RUNTIME"
+          echo "PAY24B_REFUND_BRIDGE_LEAST_PRIVILEGE=PASS"
+          echo "PAY24B_REFUND_STAGE0_FAIL_CLOSED=PASS"
+          echo "PAY24_REAL_PROVIDER_CALLS=0"
+          echo "PAY24_REAL_MONEY_MOVEMENT=0"
+
       - name: Prove pristine Stage-0 posture
         run: |
           PGPASSWORD="$MIGRATION_PASSWORD" \
@@ -1265,7 +1496,16 @@ jobs:
           echo "PAY24B_B1B_START_COMMITTED_BEFORE_PROVIDER_IO=PASS"
           echo "PAY24B_B1B_TERMINAL_OUTCOME_ATOMIC_WITH_ADMISSION_FINISH=PASS"
           echo "PAY24B_B1B_UNKNOWN_NON_REPLAY=PASS"
-          echo "PAY24B_REFUND_PROVIDER_BOUNDARY=NOT_STARTED"
+          echo "PAY24B_REFUND_REMOTE_EXACT_SHA_CI=PASS"
+          echo "PAY24B_REFUND_APPLICATION_IMMUTABLE=YES"
+          echo "PAY24B_REFUND_RUNTIME_IDENTITY=FINANCE_REFUND_RUNTIME"
+          echo "PAY24B_REFUND_REQUEST_ADMISSION_SAME_TX=PASS"
+          echo "PAY24B_REFUND_START_COMMITTED_BEFORE_PROVIDER_IO=PASS"
+          echo "PAY24B_REFUND_OUTCOME_ADMISSION_ATOMIC=PASS"
+          echo "PAY24B_REFUND_UNKNOWN_NON_REPLAY=PASS"
+          echo "PAY24B_REFUND_MALFORMED_RESPONSE_UNKNOWN=PASS"
+          echo "PAY24B_REFUND_STAGE0_FAIL_CLOSED=PASS"
+          echo "PAY24B_REFUND_FINANCIAL_FINALIZATION_SEPARATE=PASS"
           echo "PAY24_REAL_PROVIDER_CALLS=0"
           echo "PAY24_REAL_MONEY_MOVEMENT=0"
           echo "PAY24_STAGE1_LIVE_ACTIVATION=NOT_AUTHORIZED"
