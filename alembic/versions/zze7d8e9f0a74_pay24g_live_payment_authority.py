@@ -261,21 +261,21 @@ def upgrade() -> None:
     try:
         op.execute(confirm)
         op.execute(apply)
+        op.execute(
+            "GRANT USAGE ON SCHEMA app_secure "
+            "TO finance_reconciliation_runtime"
+        )
+        op.execute(
+            """
+            GRANT EXECUTE ON FUNCTION
+                app_secure.confirm_finance_provider_evidence(
+                    text,text,text,text,text,bigint,text,text,text,text
+                )
+            TO finance_reconciliation_runtime
+            """
+        )
     finally:
         op.execute("RESET ROLE")
-
-    op.execute(
-        "GRANT USAGE ON SCHEMA app_secure TO finance_reconciliation_runtime"
-    )
-    op.execute(
-        """
-        GRANT EXECUTE ON FUNCTION
-            app_secure.confirm_finance_provider_evidence(
-                text,text,text,text,text,bigint,text,text,text,text
-            )
-        TO finance_reconciliation_runtime
-        """
-    )
 
     current_confirm = _definition(bind, _CONFIRM_NAME, 10)
     current_apply = _definition(bind, _APPLY_NAME, 6)
@@ -335,21 +335,21 @@ def downgrade() -> None:
         "live payment application fence downgrade",
     )
 
-    op.execute(
-        """
-        REVOKE EXECUTE ON FUNCTION
-            app_secure.confirm_finance_provider_evidence(
-                text,text,text,text,text,bigint,text,text,text,text
-            )
-        FROM finance_reconciliation_runtime
-        """
-    )
-    op.execute(
-        "REVOKE USAGE ON SCHEMA app_secure FROM finance_reconciliation_runtime"
-    )
-
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
+        op.execute(
+            """
+            REVOKE EXECUTE ON FUNCTION
+                app_secure.confirm_finance_provider_evidence(
+                    text,text,text,text,text,bigint,text,text,text,text
+                )
+            FROM finance_reconciliation_runtime
+            """
+        )
+        op.execute(
+            "REVOKE USAGE ON SCHEMA app_secure "
+            "FROM finance_reconciliation_runtime"
+        )
         op.execute(confirm)
         op.execute(apply)
     finally:
