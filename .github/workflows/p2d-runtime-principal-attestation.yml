@@ -32,8 +32,11 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
 
     steps:
-      - name: Checkout
+      - name: Checkout exact PAY-24-C application candidate
         uses: actions/checkout@v4
+        with:
+          ref: a740d3387fceca463b86708970e01488a1a45175
+          fetch-depth: 1
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
