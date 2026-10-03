@@ -51,12 +51,16 @@ def _validate_entitlement_database_transport(url: str) -> None:
             "production entitlement worker requires a postgresql+asyncpg database URL"
         )
     query = parse_qs(parsed.query, keep_blank_values=True)
-    tls_values = query.get("ssl") or query.get("sslmode") or ()
+    tls_values = query.get("ssl") or ()
     tls_mode = str(tls_values[-1] if tls_values else "").strip().lower()
-    if tls_mode != "verify-full":
+    if (
+        len(tls_values) != 1
+        or tls_mode != "verify-full"
+        or "sslmode" in query
+    ):
         raise ValueError(
-            "production entitlement database transport requires ssl=verify-full "
-            "or sslmode=verify-full"
+            "production entitlement asyncpg transport requires exactly "
+            "ssl=verify-full; sslmode is a libpq option and is not accepted"
         )
 
 
