@@ -231,7 +231,7 @@ def test_live_evidence_is_role_and_stage_fenced_then_rollback_blocks_apply():
                     SELECT * FROM app_secure.confirm_finance_provider_evidence(
                         'razorpay','pay24g_pg16_app','payment.captured',
                         %s,%s,100,'INR','captured',
-                        'pay24g:pg16:app','%s'
+                        'pay24g:pg16:app',%s
                     )
                     """,
                     (ORDER,PROVIDER_PAYMENT,"b"*64),
