@@ -74,6 +74,12 @@
       "lock_timeout": "2s",
       "row_security": "on",
       "statement_timeout": "15s"
+    },
+    "entitlement_runtime": {
+      "idle_in_transaction_session_timeout": "30s",
+      "lock_timeout": "2s",
+      "row_security": "on",
+      "statement_timeout": "15s"
     }
   },
   "source_evidence": {
@@ -116,6 +122,12 @@
       "finance_reconciliation_runtime",
       "finance_read_runtime",
       "finance_maintenance_runtime"
+    ]
+  },
+  "pay24c_extension": {
+    "phase": "PAY-24-C",
+    "roles": [
+      "entitlement_runtime"
     ]
   }
 }

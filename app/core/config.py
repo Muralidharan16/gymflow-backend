@@ -102,13 +102,13 @@ class Settings(DoersSettingsSchema):
         manifest = _process_manifest()
         profiles = manifest["profiles"]
         profile_name = self.process_profile
-        if set(profiles) != {"api", "api_payment", "worker", "maintenance", "finance_config", "beat"}:
+        if set(profiles) != {"api", "api_payment", "worker", "maintenance", "finance_config", "entitlement_worker", "beat"}:
             raise ValueError("P2E process manifest has invalid profile coverage")
         profile = profiles.get(profile_name)
         if profile is None:
             raise ValueError(
                 "DOERS_PROCESS_PROFILE is required in production and must be "
-                "api, api_payment, worker, maintenance, finance_config, or beat"
+                "api, api_payment, worker, maintenance, finance_config, entitlement_worker, or beat"
             )
 
         governed_variables = set(manifest.get("database_environment_variables", ()))
@@ -307,7 +307,7 @@ class Settings(DoersSettingsSchema):
         return self.DOERS_PROCESS_PROFILE.strip().lower()
 
     def database_component_enabled(self, component: str) -> bool:
-        if component not in {"api", "auth", "finance_payment", "worker", "maintenance", "finance_config"}:
+        if component not in {"api", "auth", "finance_payment", "worker", "maintenance", "finance_config", "entitlement"}:
             raise ValueError(f"unknown database component: {component!r}")
         if not self.is_production:
             return True
@@ -349,6 +349,10 @@ class Settings(DoersSettingsSchema):
         return self._exposed_runtime_value("finance_payment", allow_empty=True)
 
     @property
+    def ENTITLEMENT_DATABASE_URL(self) -> str:
+        return self._exposed_runtime_value("entitlement", allow_empty=True)
+
+    @property
     def worker_database_url(self) -> str:
         raw = self._raw_runtime_value("worker")
         if self.is_production:
@@ -361,6 +365,13 @@ class Settings(DoersSettingsSchema):
         if self.is_production:
             return raw if self.database_component_enabled("maintenance") else _DISABLED_ASYNC_URL
         return raw or self._raw_runtime_value("api")
+
+    @property
+    def entitlement_database_url(self) -> str:
+        raw = self._raw_runtime_value("entitlement")
+        if self.is_production:
+            return raw if self.database_component_enabled("entitlement") else _DISABLED_ASYNC_URL
+        return raw or self._raw_runtime_value("worker") or self._raw_runtime_value("api")
 
     @property
     def celery_worker_profile(self) -> str:

@@ -120,6 +120,25 @@ MaintenanceAsyncSessionLocal = async_sessionmaker(
 )
 maintenance_async_session_maker = MaintenanceAsyncSessionLocal
 
+entitlement_async_engine = create_async_engine(
+    settings.entitlement_database_url,
+    poolclass=NullPool,
+    pool_pre_ping=True,
+    echo=settings.ENVIRONMENT == "development",
+)
+if settings.is_production:
+    install_connection_identity_guard(
+        entitlement_async_engine.sync_engine,
+        "entitlement",
+        settings.entitlement_database_url,
+    )
+EntitlementAsyncSessionLocal = async_sessionmaker(
+    entitlement_async_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+entitlement_async_session_maker = EntitlementAsyncSessionLocal
+
 
 def _validate_principal_type(principal_type: Optional[str]) -> Optional[str]:
     if principal_type is None:

@@ -19,7 +19,7 @@ def test_process_profile_manifest_is_closed_against_p2d_runtime_bindings() -> No
     assert governed == {
         binding.environment_variable for binding in runtime.bindings.values()
     }
-    assert set(data["profiles"]) == {"api", "api_payment", "worker", "maintenance", "finance_config", "beat"}
+    assert set(data["profiles"]) == {"api", "api_payment", "worker", "maintenance", "finance_config", "entitlement_worker", "beat"}
 
     for profile_name, profile in data["profiles"].items():
         components = tuple(profile["runtime_components"])
@@ -32,7 +32,9 @@ def test_process_profile_manifest_is_closed_against_p2d_runtime_bindings() -> No
         assert not required & forbidden
         assert required | forbidden == governed
         expected_worker_profile = (
-            profile_name if profile_name in {"worker", "maintenance"} else None
+            "entitlement" if profile_name == "entitlement_worker"
+            else profile_name if profile_name in {"worker", "maintenance"}
+            else None
         )
         assert profile["celery_worker_profile"] == expected_worker_profile
 
@@ -57,16 +59,19 @@ def test_production_compose_overlay_compartmentalizes_database_inputs() -> None:
     assert "DOERS_PROCESS_PROFILE: beat" in flower
 
     assert 'WORKER_DATABASE_URL: ""' in api
+    assert 'ENTITLEMENT_DATABASE_URL: ""' in api
     assert 'MAINTENANCE_DATABASE_URL: ""' in api
     assert 'FINANCE_CONFIG_DATABASE_URL: ""' in api
     assert 'DATABASE_URL: ""' in worker
     assert 'AUTH_DATABASE_URL: ""' in worker
     assert 'MAINTENANCE_DATABASE_URL: ""' in worker
     assert 'FINANCE_CONFIG_DATABASE_URL: ""' in worker
+    assert 'ENTITLEMENT_DATABASE_URL: ""' in worker
     assert 'DATABASE_URL: ""' in maintenance
     assert 'AUTH_DATABASE_URL: ""' in maintenance
     assert 'WORKER_DATABASE_URL: ""' in maintenance
     assert 'FINANCE_CONFIG_DATABASE_URL: ""' in maintenance
+    assert 'ENTITLEMENT_DATABASE_URL: ""' in maintenance
     for control_process in (beat, flower):
         for variable in (
             "DATABASE_URL",
@@ -74,5 +79,6 @@ def test_production_compose_overlay_compartmentalizes_database_inputs() -> None:
             "WORKER_DATABASE_URL",
             "MAINTENANCE_DATABASE_URL",
             "FINANCE_CONFIG_DATABASE_URL",
+            "ENTITLEMENT_DATABASE_URL",
         ):
             assert f'{variable}: ""' in control_process

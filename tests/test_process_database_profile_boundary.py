@@ -24,6 +24,7 @@ _WORKER = "postgresql+asyncpg://worker_login@localhost/doers"
 _MAINTENANCE = "postgresql+asyncpg://maintenance_login@localhost/doers"
 _FINANCE_CONFIG = "postgresql+psycopg://finance_config_deployment@localhost/doers"
 _PAYMENT = "postgresql+asyncpg://finance_payment_deployment@localhost/doers"
+_ENTITLEMENT = "postgresql+asyncpg://entitlement_deployment@localhost/doers"
 _P4E_METRICS = "https://otel.example.test/v1/metrics"
 
 
@@ -47,12 +48,14 @@ def test_api_profile_exposes_only_api_and_auth_database_components() -> None:
     assert settings.MAINTENANCE_DATABASE_URL == ""
     assert settings.FINANCE_CONFIG_DATABASE_URL == ""
     assert settings.FINANCE_PAYMENT_DATABASE_URL == ""
+    assert settings.ENTITLEMENT_DATABASE_URL == ""
     assert settings.database_component_enabled("api")
     assert settings.database_component_enabled("auth")
     assert not settings.database_component_enabled("finance_payment")
     assert not settings.database_component_enabled("worker")
     assert not settings.database_component_enabled("maintenance")
     assert not settings.database_component_enabled("finance_config")
+    assert not settings.database_component_enabled("entitlement")
 
 
 def test_api_payment_profile_exposes_api_auth_and_payment_only() -> None:
@@ -74,6 +77,7 @@ def test_api_payment_profile_exposes_api_auth_and_payment_only() -> None:
     assert not settings.database_component_enabled("worker")
     assert not settings.database_component_enabled("maintenance")
     assert not settings.database_component_enabled("finance_config")
+    assert not settings.database_component_enabled("entitlement")
 
 
 def test_api_profile_rejects_payment_database_credential_exposure() -> None:
@@ -117,12 +121,14 @@ def test_worker_profile_has_only_worker_database_identity() -> None:
     assert settings.MAINTENANCE_DATABASE_URL == ""
     assert settings.FINANCE_CONFIG_DATABASE_URL == ""
     assert settings.FINANCE_PAYMENT_DATABASE_URL == ""
+    assert settings.ENTITLEMENT_DATABASE_URL == ""
     assert "invalid.invalid" in settings.DATABASE_URL
     assert settings.database_component_enabled("worker")
     assert not settings.database_component_enabled("api")
     assert not settings.database_component_enabled("finance_payment")
     assert not settings.database_component_enabled("maintenance")
     assert not settings.database_component_enabled("finance_config")
+    assert not settings.database_component_enabled("entitlement")
 
 
 def test_worker_profile_rejects_api_database_credential_exposure() -> None:
@@ -148,11 +154,13 @@ def test_maintenance_profile_has_only_maintenance_database_identity() -> None:
     assert settings.AUTH_DATABASE_URL == ""
     assert settings.FINANCE_CONFIG_DATABASE_URL == ""
     assert settings.FINANCE_PAYMENT_DATABASE_URL == ""
+    assert settings.ENTITLEMENT_DATABASE_URL == ""
     assert "invalid.invalid" in settings.DATABASE_URL
     assert settings.database_component_enabled("maintenance")
     assert not settings.database_component_enabled("finance_payment")
     assert not settings.database_component_enabled("worker")
     assert not settings.database_component_enabled("finance_config")
+    assert not settings.database_component_enabled("entitlement")
 
 
 def test_finance_config_profile_has_only_finance_config_database_identity() -> None:
@@ -165,12 +173,42 @@ def test_finance_config_profile_has_only_finance_config_database_identity() -> N
     assert settings.WORKER_DATABASE_URL == ""
     assert settings.MAINTENANCE_DATABASE_URL == ""
     assert settings.FINANCE_PAYMENT_DATABASE_URL == ""
+    assert settings.ENTITLEMENT_DATABASE_URL == ""
     assert "invalid.invalid" in settings.DATABASE_URL
     assert settings.database_component_enabled("finance_config")
     assert not settings.database_component_enabled("api")
     assert not settings.database_component_enabled("finance_payment")
     assert not settings.database_component_enabled("worker")
     assert not settings.database_component_enabled("maintenance")
+
+
+def test_entitlement_worker_profile_has_only_entitlement_database_identity() -> None:
+    settings = _settings(
+        DOERS_PROCESS_PROFILE="entitlement_worker",
+        CELERY_WORKER_PROFILE="entitlement",
+        ENTITLEMENT_DATABASE_URL=_ENTITLEMENT,
+    )
+    assert settings.ENTITLEMENT_DATABASE_URL == _ENTITLEMENT
+    assert settings.AUTH_DATABASE_URL == ""
+    assert settings.WORKER_DATABASE_URL == ""
+    assert settings.MAINTENANCE_DATABASE_URL == ""
+    assert settings.FINANCE_CONFIG_DATABASE_URL == ""
+    assert settings.FINANCE_PAYMENT_DATABASE_URL == ""
+    assert "invalid.invalid" in settings.DATABASE_URL
+    assert settings.database_component_enabled("entitlement")
+    assert not settings.database_component_enabled("api")
+    assert not settings.database_component_enabled("worker")
+    assert not settings.database_component_enabled("maintenance")
+
+
+def test_entitlement_worker_rejects_other_database_credentials() -> None:
+    with pytest.raises(ValidationError, match="forbidden database variables"):
+        _settings(
+            DOERS_PROCESS_PROFILE="entitlement_worker",
+            CELERY_WORKER_PROFILE="entitlement",
+            ENTITLEMENT_DATABASE_URL=_ENTITLEMENT,
+            WORKER_DATABASE_URL=_WORKER,
+        )
 
 
 def test_finance_config_profile_rejects_ordinary_database_credentials() -> None:
@@ -190,10 +228,11 @@ def test_beat_profile_has_no_database_identity() -> None:
     assert settings.MAINTENANCE_DATABASE_URL == ""
     assert settings.FINANCE_CONFIG_DATABASE_URL == ""
     assert settings.FINANCE_PAYMENT_DATABASE_URL == ""
+    assert settings.ENTITLEMENT_DATABASE_URL == ""
     assert not any(
         settings.database_component_enabled(component)
         for component in (
-            "api", "auth", "finance_payment", "worker", "maintenance", "finance_config"
+            "api", "auth", "finance_payment", "worker", "maintenance", "finance_config", "entitlement"
         )
     )
 

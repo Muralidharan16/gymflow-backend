@@ -16,6 +16,7 @@
     "auth_runtime",
     "branch_admin",
     "branch_viewer",
+    "entitlement_runtime",
     "finance_config_runtime",
     "finance_maintenance_runtime",
     "finance_payment_runtime",
