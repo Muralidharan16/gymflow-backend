@@ -592,6 +592,22 @@ async def cmd_execute_live_order(args) -> int:
                 )
                 await payment.commit()
                 if started.state != "active":
+                    await _set_org(payment, organization_id)
+                    no_effect = FinanceProviderOperationError(
+                        provider_code="activation",
+                        operation="create_checkout",
+                        code="PAY24_ADMISSION_NOT_ACTIVE",
+                        failure_class="retryable",
+                        message=(
+                            "Provider admission was not active before provider I/O."
+                        ),
+                    )
+                    await effects.finish_provider_error(
+                        claim=claim,
+                        lease_owner=lease_owner,
+                        error=no_effect,
+                    )
+                    await payment.commit()
                     raise SystemExit(
                         "PAY-24 provider admission did not become active"
                     )

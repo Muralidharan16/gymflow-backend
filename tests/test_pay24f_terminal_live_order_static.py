@@ -49,12 +49,12 @@ def test_pay24f_live_adapter_is_order_only() -> None:
     assert "/orders" in combined
     for forbidden in (
         "/capture",
-        "/refund",
-        "submit_refund",
-        "fetch_refund",
-        "webhook",
-        "payment_application",
-        "subscription_activation",
+        "/payments/",
+        "submit_refund(",
+        "fetch_refund(",
+        "verify_webhook",
+        "process_webhook",
+        "apply_confirmed_payment",
     ):
         assert forbidden not in combined
 

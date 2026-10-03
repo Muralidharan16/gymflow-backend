@@ -22,7 +22,6 @@ depends_on = None
 
 _MIGRATION_OWNER = "migration_owner"
 _SECURITY_OWNER = "app_security_owner"
-_SNAPSHOT = "app_private.pay24f_predecessor_functions"
 _RESERVE = "app_secure.reserve_finance_provider_operation(uuid,text,text,text,text,text)"
 
 
@@ -40,15 +39,6 @@ def _preflight(bind) -> None:
         raise RuntimeError(
             f"PAY-24-F predecessor drift: expected {down_revision}, found {head}"
         )
-
-    if bind.execute(
-        sa.text(
-            "SELECT pg_catalog.to_regclass(:name) IS NOT NULL"
-        ),
-        {"name": _SNAPSHOT},
-    ).scalar_one():
-        raise RuntimeError("PAY-24-F predecessor snapshot already exists")
-
     live_rows = bind.execute(
         sa.text(
             "SELECT count(*) FROM finance.provider_operations "
@@ -82,14 +72,6 @@ def upgrade() -> None:
     op.execute("SET LOCAL statement_timeout='30s'")
     _preflight(bind)
 
-    op.execute(
-        """
-        CREATE TABLE app_private.pay24f_predecessor_functions(
-            signature text PRIMARY KEY,
-            definition text NOT NULL
-        )
-        """
-    )
     definition = str(
         bind.execute(
             sa.text(
@@ -101,16 +83,6 @@ def upgrade() -> None:
             ),
             {"signature": _RESERVE},
         ).scalar_one()
-    )
-    bind.execute(
-        sa.text(
-            """
-            INSERT INTO app_private.pay24f_predecessor_functions(
-                signature,definition
-            ) VALUES(:signature,:definition)
-            """
-        ),
-        {"signature": _RESERVE, "definition": definition},
     )
 
     op.execute(
@@ -181,20 +153,30 @@ def downgrade() -> None:
             "PAY-24-F downgrade refused while live provider operations exist"
         )
 
-    predecessor = bind.execute(
-        sa.text(
-            """
-            SELECT definition
-            FROM app_private.pay24f_predecessor_functions
-            WHERE signature=:signature
-            """
-        ),
-        {"signature": _RESERVE},
-    ).scalar_one()
+    current = str(
+        bind.execute(
+            sa.text(
+                """
+                SELECT pg_catalog.pg_get_functiondef(
+                    pg_catalog.to_regprocedure(:signature)
+                )
+                """
+            ),
+            {"signature": _RESERVE},
+        ).scalar_one()
+    )
+    if current.count(
+        "p_environment NOT IN ('sandbox','test','live')"
+    ) != 1:
+        raise RuntimeError("PAY-24-F live reserve function drift")
 
+    predecessor = current.replace(
+        "p_environment NOT IN ('sandbox','test','live')",
+        "p_environment NOT IN ('sandbox','test')",
+    )
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
-        op.execute(str(predecessor))
+        op.execute(predecessor)
     finally:
         op.execute("RESET ROLE")
 
@@ -213,4 +195,3 @@ def downgrade() -> None:
         "ALTER TABLE finance.provider_operations "
         "VALIDATE CONSTRAINT chk_pay8_provider_environment"
     )
-    op.execute("DROP TABLE app_private.pay24f_predecessor_functions")
