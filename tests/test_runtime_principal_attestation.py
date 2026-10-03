@@ -403,6 +403,7 @@ def test_pay24d_stage1_readiness_contracts_pass_under_p2d_certification() -> Non
     process_boundary.test_entitlement_worker_profile_has_only_entitlement_database_identity()
     process_boundary.test_entitlement_worker_rejects_other_database_credentials()
     process_boundary.test_entitlement_worker_requires_verify_full_database_tls()
+    process_boundary.test_entitlement_worker_rejects_libpq_sslmode_for_asyncpg_transport()
     process_boundary.test_entitlement_worker_rejects_unrelated_cloud_and_provider_secrets()
 
 def test_pay24e_stage1_canary_contracts_pass_under_p2d_certification() -> None:
