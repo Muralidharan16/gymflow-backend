@@ -528,6 +528,10 @@ def test_complete_app_private_ddl_category_allowlist_is_exact() -> None:
             "create_private_table",
             "drop_private_table",
         },
+        "zza7d8e9f0a70_pay24c_entitlement_authority.py": {
+            "create_private_table",
+            "drop_private_table",
+        },
     }
     actual = {
         name: _app_private_ddl_categories(VERSIONS / name)
