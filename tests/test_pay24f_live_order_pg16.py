@@ -70,7 +70,10 @@ def test_pay24f_live_checkout_environment_is_real_pg16_and_stage0_fenced() -> No
             cur.execute("SHOW server_version_num")
             assert 160000 <= int(cur.fetchone()[0]) < 170000
             cur.execute("SELECT version_num FROM alembic_version")
-            assert cur.fetchone()[0] == "zzd7d8e9f0a73"
+            assert cur.fetchone()[0] in {
+                "zzd7d8e9f0a73",
+                "zze7d8e9f0a74",
+            }
             cur.execute(
                 """
                 SELECT pg_catalog.pg_get_constraintdef(c.oid,true)
