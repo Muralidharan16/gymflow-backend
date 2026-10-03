@@ -1,0 +1,76 @@
+services:
+  celery-entitlement-worker:
+    profiles:
+      - pay24-stage1-canary
+    build: .
+    command: >-
+      celery -A app.core.celery_app:celery_app worker
+      --loglevel=info --concurrency=1 --prefetch-multiplier=1 -Q entitlement
+    deploy:
+      replicas: 0
+    environment:
+      ENVIRONMENT: production
+      DOERS_PROCESS_PROFILE: entitlement_worker
+      CELERY_WORKER_PROFILE: entitlement
+      DATABASE_URL: ""
+      AUTH_DATABASE_URL: ""
+      WORKER_DATABASE_URL: ""
+      MAINTENANCE_DATABASE_URL: ""
+      FINANCE_PAYMENT_DATABASE_URL: ""
+      FINANCE_CONFIG_DATABASE_URL: ""
+      ENTITLEMENT_DATABASE_URL: ${PAY24_ENTITLEMENT_DATABASE_URL:?required}
+      REDIS_URL: ${REDIS_URL:?required}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:?required}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?required}
+      REDIS_PRODUCTION_TOPOLOGY: ${REDIS_PRODUCTION_TOPOLOGY:?required}
+      REDIS_PERSISTENCE_MODE: ${REDIS_PERSISTENCE_MODE:?required}
+      REDIS_MAXMEMORY_POLICY: ${REDIS_MAXMEMORY_POLICY:?required}
+      REDIS_HA_MIN_REPLICAS: ${REDIS_HA_MIN_REPLICAS:?required}
+      REDIS_VM_OVERCOMMIT_MEMORY: ${REDIS_VM_OVERCOMMIT_MEMORY:?required}
+      REDIS_MANAGED_PROVIDER_ATTESTED: ${REDIS_MANAGED_PROVIDER_ATTESTED:?required}
+      P8_METRICS_OTLP_ENDPOINT: ${PAY24_ENTITLEMENT_METRICS_OTLP_ENDPOINT:?required}
+      SECRET_KEY: ${SECRET_KEY:?required}
+      AWS_ACCESS_KEY_ID: ""
+      AWS_SECRET_ACCESS_KEY: ""
+      RAZORPAY_KEY_ID: ""
+      RAZORPAY_KEY_SECRET: ""
+      RAZORPAY_WEBHOOK_SECRET: ""
+      NOTIFICATION_EMAIL_PROVIDER_MODE: disabled
+      P4C_RESEND_API_KEY: ""
+      RESEND_WEBHOOK_SECRET: ""
+      SEARCH_PROVIDER_MODE: disabled
+      OPENSEARCH_USERNAME: ""
+      OPENSEARCH_PASSWORD: ""
+
+  pay24e-entitlement-scheduler:
+    profiles:
+      - pay24-stage1-canary
+    build: .
+    command: >-
+      celery -A app.pay24e_stage1_scheduler:celery_app beat
+      --loglevel=info --pidfile=/tmp/pay24e-entitlement-beat.pid
+    deploy:
+      replicas: 0
+    environment:
+      ENVIRONMENT: production
+      PAY24E_STAGE1_SCHEDULER: prepared
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:?required}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?required}
+      DATABASE_URL: ""
+      AUTH_DATABASE_URL: ""
+      WORKER_DATABASE_URL: ""
+      MAINTENANCE_DATABASE_URL: ""
+      FINANCE_PAYMENT_DATABASE_URL: ""
+      FINANCE_CONFIG_DATABASE_URL: ""
+      ENTITLEMENT_DATABASE_URL: ""
+      AWS_ACCESS_KEY_ID: ""
+      AWS_SECRET_ACCESS_KEY: ""
+      RAZORPAY_KEY_ID: ""
+      RAZORPAY_KEY_SECRET: ""
+      RAZORPAY_WEBHOOK_SECRET: ""
+      P4C_RESEND_API_KEY: ""
+      RESEND_WEBHOOK_SECRET: ""
+      WA_ACCESS_TOKEN: ""
+      GOOGLE_MAPS_SERVER_API_KEY: ""
+      OPENSEARCH_USERNAME: ""
+      OPENSEARCH_PASSWORD: ""
