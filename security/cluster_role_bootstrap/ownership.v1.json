@@ -656,6 +656,14 @@
     },
     {
       "dynamic": false,
+      "object": "app_secure.pay24d_entitlement_readiness_snapshot()",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-24-D aggregate Stage-1 entitlement readiness snapshot executes under app_security_owner; runtime callers retain no direct journal SELECT.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
       "object": "app_secure.pay4_guard_subscription_activation()",
       "object_type": "FUNCTION",
       "parent_relation": null,
