@@ -124,6 +124,9 @@
   "pay24c_extension": {
     "phase": "PAY-24-C",
     "stage0_current_production_binding": "UNPROVISIONED",
-    "stage1_live_activation": "NOT_AUTHORIZED"
+    "stage1_live_activation": "NOT_AUTHORIZED",
+    "stage0_unprovisioned_components": [
+      "entitlement"
+    ]
   }
 }

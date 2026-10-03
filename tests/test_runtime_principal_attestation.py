@@ -73,7 +73,16 @@ def _codes(observation: RuntimePrincipalObservation) -> set[str]:
 def test_runtime_binding_contract_matches_p2b_p2c_role_model() -> None:
     contract = load_runtime_binding_contract()
     assert validate_runtime_binding_contract(contract) == ()
-    assert set(contract.bindings) == {"api", "auth", "finance_payment", "worker", "maintenance", "finance_config"}
+    assert set(contract.bindings) == {
+        "api",
+        "auth",
+        "finance_payment",
+        "worker",
+        "maintenance",
+        "finance_config",
+        "entitlement",
+    }
+    assert contract.optional_unprovisioned_components == ("entitlement",)
     assert set(contract.reserved_unbound_capabilities) == {
         "finance_runtime",
         "finance_refund_runtime",
@@ -100,6 +109,9 @@ def test_runtime_binding_contract_matches_p2b_p2c_role_model() -> None:
     )
     assert contract.bindings["finance_config"].direct_capabilities == (
         "finance_config_runtime",
+    )
+    assert contract.bindings["entitlement"].direct_capabilities == (
+        "entitlement_runtime",
     )
     assert contract.bindings["api"].session_settings == {
         "row_security": "on",
@@ -147,6 +159,19 @@ def test_all_canonical_runtime_login_overlays_pass() -> None:
     )
     for observation in observations:
         assert evaluate_runtime_principal_observation(observation) == ()
+    assert evaluate_runtime_binding_set(observations) == ()
+
+
+def test_full_stage1_runtime_login_set_is_also_accepted_when_provisioned() -> None:
+    observations = (
+        _canonical_observation("api", "api_login"),
+        _canonical_observation("auth", "auth_login"),
+        _canonical_observation("finance_payment", "finance_payment_login"),
+        _canonical_observation("worker", "worker_login"),
+        _canonical_observation("maintenance", "maintenance_login"),
+        _canonical_observation("finance_config", "finance_config_deployment"),
+        _canonical_observation("entitlement", "entitlement_login"),
+    )
     assert evaluate_runtime_binding_set(observations) == ()
 
 

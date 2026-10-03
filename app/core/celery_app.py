@@ -112,8 +112,10 @@ class RuntimeDatabaseIdentityBootstep(bootsteps.StartStopStep):
 
         from app.core.runtime_principal_attestation import attest_configured_runtime_bindings
 
-        component = "entitlement" if profile == "entitlement" else profile
-        attest_configured_runtime_bindings((component,))
+        if profile == "entitlement":
+            attest_configured_runtime_bindings(("entitlement",))
+        else:
+            attest_configured_runtime_bindings((profile,))
 
 
 celery_app.steps["worker"].add(RuntimeDatabaseIdentityBootstep)
