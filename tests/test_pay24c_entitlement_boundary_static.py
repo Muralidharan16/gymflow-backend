@@ -68,6 +68,11 @@ def test_only_entitlement_runtime_receives_apply_command_execute() -> None:
     assert "PAY24-C protected term mutation requires entitlement_runtime" in source
     assert "PAY24-C protected V2 mutation requires entitlement_runtime" in source
     assert "PAY24-C freeze mutation requires entitlement_runtime" in source
+    assert "GRANT TRIGGER ON TABLE" in source
+    assert "TO app_security_owner" in source
+    assert "REVOKE TRIGGER ON TABLE" in source
+    assert "FROM app_security_owner" in source
+    assert "PAY24-C temporary app_security_owner TRIGGER grant leaked" in source
 
 
 def test_refund_is_durable_command_not_direct_subscription_write() -> None:
