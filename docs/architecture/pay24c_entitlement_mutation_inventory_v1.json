@@ -1,0 +1,113 @@
+{
+  "phase": "PAY-24-C1",
+  "title": "Entitlement / Subscription Mutation Inventory and Authority Analysis",
+  "baseline": {
+    "application_sha": "d2e7150e8e5e3df4582ed4ea8a75cd06a8f5ce9b",
+    "application_tree": "da5a2413aa6645d6de2b8d550aee4850145e4622",
+    "alembic_head": "zz97d8e9f0a69",
+    "pay24b_final_run_id": 37091380026
+  },
+  "safety": {
+    "stage1_live_activation": "NOT_AUTHORIZED",
+    "real_provider_calls": 0,
+    "real_money_movement": 0,
+    "deployment_authorized": false
+  },
+  "invariant": "financial/provider result is evidence, never direct member-entitlement mutation authority",
+  "paths": [
+    {
+      "id": "modern_admission",
+      "source": "app/services/member_subscription_v2_service.py",
+      "classification": "CANONICAL_PENDING_ONLY"
+    },
+    {
+      "id": "pay9_payment_application",
+      "source": "app/finance_core/services/payment_settlement.py",
+      "classification": "FINANCIAL_ONLY"
+    },
+    {
+      "id": "pay5_dispatcher",
+      "source": "app/tasks/finance_event_dispatcher.py",
+      "classification": "CANONICAL_DURABLE_DELIVERY"
+    },
+    {
+      "id": "pay4_activation",
+      "source": "alembic/versions/zo07d8e9f0a49_pay4_member_finance_binding.py",
+      "classification": "CANONICAL_ACTIVATION_AUTHORITY"
+    },
+    {
+      "id": "canonical_lifecycle_reads",
+      "source": "app/repositories/subscription_lifecycle_repo.py",
+      "classification": "READ_ONLY"
+    },
+    {
+      "id": "derived_time_state",
+      "source": "app/domain/subscription_lifecycle.py",
+      "classification": "DERIVED_READ_STATE"
+    },
+    {
+      "id": "legacy_freeze_unfreeze_cancel",
+      "source": "app/services/subscription_service.py",
+      "classification": "LEGACY_DIRECT_MUTATION_CODE_PRESENT",
+      "effective_db_authority": "REQUIRES_FRESH_PG16_PROOF"
+    },
+    {
+      "id": "legacy_router",
+      "source": "app/routers/subscriptions.py",
+      "classification": "MOUNTED_LEGACY_MUTATION_SURFACE"
+    },
+    {
+      "id": "legacy_expiry_source",
+      "source": "app/tasks/expire_subs.py",
+      "classification": "LEGACY_DEAD_TASK_SOURCE_PRESENT"
+    },
+    {
+      "id": "bounded_legacy_expiry",
+      "source": "app/tasks/platform_maintenance.py",
+      "classification": "DB_FENCED_MAINTENANCE"
+    },
+    {
+      "id": "refund_finalization",
+      "source": "app/finance_core/services/refund_financial_finalization.py",
+      "classification": "FINANCIAL_ONLY"
+    },
+    {
+      "id": "pay14_reconciliation",
+      "source": "app/platform_billing/services/accounting_reconciliation.py",
+      "classification": "RECONCILIATION_ONLY"
+    },
+    {
+      "id": "platform_access",
+      "source": "app/platform_billing/domain/access_resolver.py",
+      "classification": "SEPARATE_DOMAIN"
+    }
+  ],
+  "current_strengths": [
+    "canonical admission starts pending",
+    "PAY4 activation revalidates immutable Finance binding and payment allocation truth",
+    "PAY5 durable consumption is lease/fence checked and replay safe",
+    "app_runtime is read-only on canonical lifecycle tables",
+    "app_runtime cannot UPDATE member_subscriptions_v2",
+    "legacy expiry production path is a bounded maintenance capability"
+  ],
+  "gaps": [
+    "no single authority covers every member-entitlement transition",
+    "mounted legacy freeze/unfreeze/cancel code remains",
+    "stale direct legacy expiry task source remains",
+    "refund-to-entitlement reversal binding is not certified",
+    "reconciliation-to-entitlement correction command is not certified",
+    "effective legacy-table API write privilege needs fresh PG16 proof"
+  ],
+  "c1_gate": {
+    "PAY24C1_CURRENT_STATE_INVENTORY": "PASS",
+    "PAY24C1_CANONICAL_PAID_ACTIVATION_TRACED": "PASS",
+    "PAY24C1_LEGACY_MUTATION_SURFACES_IDENTIFIED": "PASS",
+    "PAY24C1_REFUND_AND_RECONCILIATION_BOUNDARIES_IDENTIFIED": "PASS",
+    "PAY24C_ENTITLEMENT_RUNTIME_ISOLATED": "NOT_YET_IMPLEMENTED",
+    "PAY24C_ENTITLEMENT_DB_FENCE": "NOT_YET_IMPLEMENTED",
+    "PAY24C_IDEMPOTENT_ALL_TRANSITIONS": "NOT_YET_CERTIFIED",
+    "PAY24C_LEGACY_BYPASS_WRITES": "NOT_YET_ZERO",
+    "PAY24C_REFUND_REVERSAL_BINDING": "NOT_YET_CERTIFIED",
+    "PAY24C_REMOTE_EXACT_SHA_CI": "NOT_RUN"
+  }
+}
