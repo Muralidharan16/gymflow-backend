@@ -41,6 +41,7 @@ APP_PRIVATE_FILES = {
     "zq07d8e9f0a51_pay6_offline_payments.py",
     "zv07d8e9f0a56_pay10_refund_financial_finalization.py",
     "zz37d8e9f0a63_pay18_financial_observability.py",
+    "zza7d8e9f0a70_pay24c_entitlement_authority.py",
 }
 
 APP_RLS_EXECUTOR_FILES = {

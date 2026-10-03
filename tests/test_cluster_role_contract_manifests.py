@@ -20,8 +20,8 @@ OWNERSHIP_MANIFEST = (
     / "ownership.v1.json"
 )
 EXPECTED_OWNERSHIP_SHA256 = (
-    "1beb0342a4245ec5c415807f18647338"
-    "64fb0628474a8740979b868597b10351"
+    "a2c6561cd03c301841ee6b99d0dc629b"
+    "d6241e05633fbeb4b544e6dd19858fc7"
 )
 
 
@@ -128,6 +128,7 @@ def test_exact_managed_role_contract() -> None:
         "finance_reconciliation_runtime",
         "finance_read_runtime",
         "finance_maintenance_runtime",
+        "entitlement_runtime",
     }
 
     migration_attributes = roles["migration_owner"]["attributes"]
@@ -165,6 +166,7 @@ def test_exact_managed_role_contract() -> None:
         "finance_reconciliation_runtime",
         "finance_read_runtime",
         "finance_maintenance_runtime",
+        "entitlement_runtime",
     ):
         attributes = roles[role]["attributes"]
         assert attributes == {
@@ -189,6 +191,8 @@ def test_exact_managed_role_contract() -> None:
     assert "configuration control-plane" in roles["finance_config_runtime"]["decision"]
     assert "NOLOGIN/NOBYPASSRLS" in roles["finance_config_runtime"]["decision"]
     assert "must never be granted to migration_owner" in roles["finance_config_runtime"]["decision"]
+    assert "member entitlement" in roles["entitlement_runtime"]["purpose"].lower()
+    assert "NOLOGIN/NOBYPASSRLS" in roles["entitlement_runtime"]["decision"]
 
 
 def test_role_settings_are_exact() -> None:
@@ -213,6 +217,7 @@ def test_role_settings_are_exact() -> None:
     assert settings["finance_refund_runtime"] == bounded_background_settings
     assert settings["finance_reconciliation_runtime"] == bounded_background_settings
     assert settings["finance_maintenance_runtime"] == bounded_background_settings
+    assert settings["entitlement_runtime"] == bounded_background_settings
     assert settings["finance_runtime"] == {
         **bounded_background_settings,
         "statement_timeout": "10s",
@@ -235,6 +240,7 @@ def test_role_settings_are_exact() -> None:
             "finance_reconciliation_runtime",
             "finance_read_runtime",
             "finance_maintenance_runtime",
+            "entitlement_runtime",
         }:
             assert values == {}
 
@@ -293,6 +299,7 @@ def test_runtime_capabilities_are_not_migration_owner_memberships() -> None:
         "finance_reconciliation_runtime",
         "finance_read_runtime",
         "finance_maintenance_runtime",
+        "entitlement_runtime",
     }
     assert not any(
         row["granted_role"] in runtime_roles
@@ -316,6 +323,7 @@ def test_ownership_manifest_uses_only_allowed_owners() -> None:
     assert "auth_runtime" not in ownership["allowed_target_owners"]
     assert "worker_runtime" not in ownership["allowed_target_owners"]
     assert "lifecycle_maintenance_runtime" not in ownership["allowed_target_owners"]
+    assert "entitlement_runtime" not in ownership["allowed_target_owners"]
     assert ownership["objects"]
 
     for record in ownership["objects"]:
@@ -328,7 +336,7 @@ def test_ownership_manifest_matches_reviewed_projection() -> None:
 
     ownership = json.loads(payload.decode("utf-8"))
     objects = ownership["objects"]
-    assert len(objects) == 228
+    assert len(objects) == 244
     assert not any(record["object"] == "IF" for record in objects)
     assert {
         "dynamic": False,
@@ -349,6 +357,39 @@ def test_ownership_manifest_matches_reviewed_projection() -> None:
     ]
     assert len(identities) == len(set(identities))
 
+
+
+def test_pay24c_entitlement_ownership_projection_is_exact() -> None:
+    bundle = load_contract_bundle()
+    by_name = {record["object"]: record for record in bundle.ownership["objects"]}
+
+    for name in (
+        "app_private.pay24c_predecessor_functions",
+        "app_private.pay24c_acl_snapshot",
+        "public.member_entitlement_commands",
+    ):
+        assert by_name[name]["target_owner"] == "migration_owner"
+
+    for name in (
+        "app_secure.pay24c_guard_term_mutation()",
+        "app_secure.pay24c_guard_v2_mutation()",
+        "app_secure.pay24c_guard_freeze_mutation()",
+        "app_secure.pay24c_enqueue_paid_activation(uuid,text)",
+        "app_secure.pay24c_claim_refund_events(uuid,integer,integer)",
+        "app_secure.pay24c_consume_refund_event(uuid,uuid,bigint)",
+        "app_secure.pay24c_ack_refund_event(uuid,uuid,bigint)",
+        "app_secure.pay24c_release_refund_event(uuid,uuid,bigint,text,boolean)",
+        "app_secure.pay24c_claim_entitlement_commands(uuid,integer,integer)",
+        "app_secure.pay24c_request_admin_entitlement(uuid,text,text,text,date)",
+        "app_secure.pay24c_apply_entitlement_command(uuid,uuid,bigint)",
+        "app_secure.pay24c_release_entitlement_command(uuid,uuid,bigint,text,boolean)",
+        "app_secure.member_entitlement_access_active(uuid,uuid)",
+    ):
+        assert by_name[name]["target_owner"] == "app_security_owner"
+
+    assert "entitlement_runtime" in set(
+        bundle.ownership["forbidden_object_owners"]
+    )
 
 def test_cluster_roles_and_memberships_survive_downgrade() -> None:
     bundle = load_contract_bundle()
