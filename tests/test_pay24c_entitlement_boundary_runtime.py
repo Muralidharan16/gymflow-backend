@@ -185,6 +185,10 @@ def _cleanup() -> None:
     if ADMIN_URL:
         with psycopg.connect(ADMIN_URL) as conn:
             with conn.cursor() as cur:
+                # Infrastructure-superuser fixture cleanup only. PAY-24-E
+                # production triggers intentionally reject direct cleanup DML
+                # without an entitlement tenant/stage authority context.
+                cur.execute("SET LOCAL session_replication_role=replica")
                 cur.execute(
                     "DELETE FROM public.member_entitlement_commands "
                     "WHERE organization_id=%s",
