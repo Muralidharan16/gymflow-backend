@@ -6,7 +6,6 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings
 
 
 _BASE = {
@@ -28,12 +27,22 @@ _ENTITLEMENT = "postgresql+asyncpg://entitlement_deployment@db.internal/doers?ss
 _P4E_METRICS = "https://otel.example.test/v1/metrics"
 
 
-def _settings(**values) -> Settings:
+def _settings(**values):
     # BaseSettings deliberately reads ambient process variables. These tests prove
     # the profile contract in isolation, so CI/runtime database variables must not
-    # bleed into a synthetic process profile.
-    with patch.dict(os.environ, {}, clear=True):
-        return Settings(_env_file=None, **(_BASE | values))
+    # bleed into a synthetic process profile. Import Settings only after the
+    # synthetic environment is installed because app.core.config also constructs
+    # its process-global settings object at import time.
+    merged = _BASE | values
+    synthetic_env = {
+        key: str(value)
+        for key, value in merged.items()
+        if value is not None
+    }
+    with patch.dict(os.environ, synthetic_env, clear=True):
+        from app.core.config import Settings
+
+        return Settings(_env_file=None, **merged)
 
 
 def test_api_profile_exposes_only_api_and_auth_database_components() -> None:
