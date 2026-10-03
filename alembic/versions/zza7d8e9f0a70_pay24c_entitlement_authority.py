@@ -559,34 +559,61 @@ def _install_guards() -> None:
     finally:
         op.execute("RESET ROLE")
 
-    op.execute(
-        """
-        CREATE TRIGGER trg_pay24c_term_mutation_guard
-        BEFORE UPDATE OF
-            effective_ends_on,status,activated_at,expired_at,
-            cancelled_at,cancelled_by,cancellation_reason,
-            terminated_at,terminated_by,termination_reason,
-            voided_at,voided_by,void_reason
-        ON public.subscription_terms
-        FOR EACH ROW EXECUTE FUNCTION app_secure.pay24c_guard_term_mutation()
-        """
-    )
-    op.execute(
-        """
-        CREATE TRIGGER trg_pay24c_v2_mutation_guard
-        BEFORE UPDATE OF end_date,status,cancelled_at
-        ON public.member_subscriptions_v2
-        FOR EACH ROW EXECUTE FUNCTION app_secure.pay24c_guard_v2_mutation()
-        """
-    )
-    op.execute(
-        """
-        CREATE TRIGGER trg_pay24c_freeze_mutation_guard
-        BEFORE INSERT OR UPDATE OR DELETE
-        ON public.subscription_freezes
-        FOR EACH ROW EXECUTE FUNCTION app_secure.pay24c_guard_freeze_mutation()
-        """
-    )
+    # migration_owner deliberately has no app_secure USAGE.  Create the
+    # trigger bindings through the reduced function owner instead of widening
+    # migration_owner's schema reachability.  The table-owner grants are
+    # transaction-local in effect because this revision is atomic and are
+    # explicitly revoked before the migration can succeed.
+    for relation in (
+        "public.subscription_terms",
+        "public.member_subscriptions_v2",
+        "public.subscription_freezes",
+    ):
+        op.execute(
+            f"GRANT TRIGGER ON TABLE {relation} TO app_security_owner"
+        )
+
+    op.execute("SET LOCAL ROLE app_security_owner")
+    try:
+        op.execute(
+            """
+            CREATE TRIGGER trg_pay24c_term_mutation_guard
+            BEFORE UPDATE OF
+                effective_ends_on,status,activated_at,expired_at,
+                cancelled_at,cancelled_by,cancellation_reason,
+                terminated_at,terminated_by,termination_reason,
+                voided_at,voided_by,void_reason
+            ON public.subscription_terms
+            FOR EACH ROW EXECUTE FUNCTION app_secure.pay24c_guard_term_mutation()
+            """
+        )
+        op.execute(
+            """
+            CREATE TRIGGER trg_pay24c_v2_mutation_guard
+            BEFORE UPDATE OF end_date,status,cancelled_at
+            ON public.member_subscriptions_v2
+            FOR EACH ROW EXECUTE FUNCTION app_secure.pay24c_guard_v2_mutation()
+            """
+        )
+        op.execute(
+            """
+            CREATE TRIGGER trg_pay24c_freeze_mutation_guard
+            BEFORE INSERT OR UPDATE OR DELETE
+            ON public.subscription_freezes
+            FOR EACH ROW EXECUTE FUNCTION app_secure.pay24c_guard_freeze_mutation()
+            """
+        )
+    finally:
+        op.execute("RESET ROLE")
+
+    for relation in (
+        "public.subscription_terms",
+        "public.member_subscriptions_v2",
+        "public.subscription_freezes",
+    ):
+        op.execute(
+            f"REVOKE TRIGGER ON TABLE {relation} FROM app_security_owner"
+        )
 
 
 def _install_enqueue_and_pay5_successor() -> None:
@@ -2178,6 +2205,26 @@ def _post_install_proof(bind) -> None:
                 raise RuntimeError(
                     f"PAY24-C leaked direct entitlement DML: {role}->{relation}"
                 )
+
+    if any(
+        bool(
+            bind.execute(
+                sa.text(
+                    "SELECT pg_catalog.has_table_privilege("
+                    "'app_security_owner',:relation,'TRIGGER')"
+                ),
+                {"relation": relation},
+            ).scalar_one()
+        )
+        for relation in (
+            "public.subscription_terms",
+            "public.member_subscriptions_v2",
+            "public.subscription_freezes",
+        )
+    ):
+        raise RuntimeError(
+            "PAY24-C temporary app_security_owner TRIGGER grant leaked"
+        )
 
     if bool(
         bind.execute(
