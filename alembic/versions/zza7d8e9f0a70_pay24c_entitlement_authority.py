@@ -1077,12 +1077,25 @@ def _install_refund_enqueue() -> None:
                   AND e.leased_by=p_worker_id
                   AND e.lease_fence=p_lease_fence
                   AND e.leased_until>pg_catalog.clock_timestamp()
-                  AND EXISTS(
-                    SELECT 1
-                    FROM public.member_entitlement_commands c
-                    WHERE c.organization_id=v_org
-                      AND c.source_event_id=p_finance_event_id
-                      AND c.command_type='recompute_refund'
+                  AND (
+                    EXISTS(
+                        SELECT 1
+                        FROM public.member_entitlement_commands c
+                        WHERE c.organization_id=v_org
+                          AND c.source_event_id=p_finance_event_id
+                          AND c.command_type='recompute_refund'
+                    )
+                    OR NOT EXISTS(
+                        SELECT 1
+                        FROM finance.refunds r
+                        JOIN finance.payment_allocations a
+                          ON a.payment_id=r.payment_id
+                        JOIN finance.member_subscription_finance_bindings b
+                          ON b.finance_invoice_id=a.invoice_id
+                         AND b.organization_id=v_org
+                        WHERE r.id=e.aggregate_id
+                          AND r.organization_id=v_org
+                    )
                   );
                 IF NOT FOUND THEN
                     RAISE EXCEPTION
@@ -1527,6 +1540,37 @@ def _install_entitlement_runtime() -> None:
                             USING ERRCODE='23514';
                     END IF;
 
+                    IF EXISTS(
+                        SELECT 1
+                        FROM finance.payment_allocations target_allocation
+                        JOIN finance.refunds refunded
+                          ON refunded.payment_id=target_allocation.payment_id
+                         AND refunded.organization_id=v_org
+                         AND refunded.status='succeeded'
+                        WHERE target_allocation.invoice_id=v_invoice.id
+                          AND EXISTS(
+                              SELECT 1
+                              FROM finance.payment_allocations other_allocation
+                              WHERE other_allocation.payment_id=
+                                    target_allocation.payment_id
+                                AND other_allocation.invoice_id<>v_invoice.id
+                          )
+                    ) THEN
+                        UPDATE public.member_entitlement_commands
+                        SET status='review_required',
+                            result_status=v_term.status::text,
+                            completed_at=pg_catalog.clock_timestamp(),
+                            leased_by=NULL,leased_until=NULL,
+                            last_error_code='ambiguous_refund_allocation',
+                            updated_at=pg_catalog.clock_timestamp()
+                        WHERE command_id=v_command.command_id
+                          AND organization_id=v_org;
+                        RETURN QUERY SELECT
+                            v_command.command_id,v_term.id,
+                            v_term.status::text,false,false;
+                        RETURN;
+                    END IF;
+
                     SELECT count(DISTINCT a.payment_id),
                            COALESCE(sum(
                                LEAST(
@@ -1774,6 +1818,27 @@ def _install_entitlement_runtime() -> None:
                             'PAY-24-C restore requires paid invoice'
                             USING ERRCODE='23514';
                     END IF;
+                    IF EXISTS(
+                        SELECT 1
+                        FROM finance.payment_allocations target_allocation
+                        JOIN finance.refunds refunded
+                          ON refunded.payment_id=target_allocation.payment_id
+                         AND refunded.organization_id=v_org
+                         AND refunded.status='succeeded'
+                        WHERE target_allocation.invoice_id=v_invoice.id
+                          AND EXISTS(
+                              SELECT 1
+                              FROM finance.payment_allocations other_allocation
+                              WHERE other_allocation.payment_id=
+                                    target_allocation.payment_id
+                                AND other_allocation.invoice_id<>v_invoice.id
+                          )
+                    ) THEN
+                        RAISE EXCEPTION
+                            'PAY-24-C restore refund allocation is ambiguous'
+                            USING ERRCODE='23514';
+                    END IF;
+
                     SELECT count(DISTINCT a.payment_id),
                            COALESCE(sum(
                                LEAST(

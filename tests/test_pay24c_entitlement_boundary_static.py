@@ -111,3 +111,20 @@ def test_no_pay24c_runtime_function_contains_provider_io() -> None:
         "rzp_live_",
     ):
         assert forbidden not in combined
+
+
+def test_ambiguous_cross_invoice_refund_fails_to_review_instead_of_guessing() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    assert "ambiguous_refund_allocation" in source
+    assert "status='review_required'" in source
+    assert "restore refund allocation is ambiguous" in source
+    assert "other_allocation.invoice_id<>v_invoice.id" in source
+
+
+def test_non_subscription_refund_can_ack_without_fabricating_entitlement_command() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+    ack = source.split(
+        "CREATE FUNCTION app_secure.pay24c_ack_refund_event", 1
+    )[1].split("$function$", 2)[1]
+    assert "OR NOT EXISTS(" in ack
+    assert "member_subscription_finance_bindings" in ack
