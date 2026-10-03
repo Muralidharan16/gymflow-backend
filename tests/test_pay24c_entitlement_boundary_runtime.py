@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 import os
 import uuid
 
@@ -34,6 +34,141 @@ ENTITLEMENT_B = uuid.UUID("24c00000-0000-4000-8000-000000000012")
 ACTOR = uuid.UUID("24c00000-0000-4000-8000-000000000021")
 REFUND = uuid.UUID("24c00000-0000-4000-8000-000000000031")
 REFUND_EVENT = uuid.UUID("24c00000-0000-4000-8000-000000000032")
+PAY24E_CANARY_SHA = "e" * 40
+PAY24E_ACTOR = "pay24e-pg16-certifier"
+PAY24E_AUTHORIZER = "pay24e-human-approver"
+
+
+def _finance_config_psycopg_url() -> str | None:
+    raw = os.environ.get("FINANCE_CONFIG_DATABASE_URL")
+    if not raw:
+        return None
+    return raw.replace("postgresql+psycopg://", "postgresql://", 1)
+
+
+CONFIG_URL = _finance_config_psycopg_url()
+
+
+def _activation_snapshot():
+    if not CONFIG_URL:
+        pytest.skip("PAY-24-E finance-config runtime is not configured")
+    with psycopg.connect(CONFIG_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM app_secure.pay24a_activation_snapshot()")
+            return cur.fetchone()
+
+
+def _config_call(sql: str, params):
+    if not CONFIG_URL:
+        pytest.skip("PAY-24-E finance-config runtime is not configured")
+    with psycopg.connect(CONFIG_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+        conn.commit()
+        return row
+
+
+def _reset_activation_stage0() -> None:
+    if not CONFIG_URL:
+        return
+    snapshot = _activation_snapshot()
+    if snapshot[0] == 0:
+        return
+
+    generation = int(snapshot[1])
+    if snapshot[2] != "closing":
+        begun = _config_call(
+            """
+            SELECT * FROM app_secure.pay24a_begin_emergency_rollback(
+                CAST(%s AS uuid),CAST(%s AS bigint),CAST(%s AS text)
+            )
+            """,
+            (uuid.uuid4(), generation, PAY24E_ACTOR),
+        )
+        generation = int(begun[0])
+
+    finalized = _config_call(
+        """
+        SELECT * FROM app_secure.pay24a_finalize_emergency_rollback(
+            CAST(%s AS uuid),CAST(%s AS bigint),CAST(%s AS text)
+        )
+        """,
+        (uuid.uuid4(), generation, PAY24E_ACTOR),
+    )
+    assert finalized[1] == 0
+    assert finalized[2] == "blocked"
+
+
+def _ensure_stage1_canary() -> None:
+    snapshot = _activation_snapshot()
+    if (
+        snapshot[0] == 1
+        and snapshot[2] == "open"
+        and snapshot[4] == pay4.ORG
+        and snapshot[3] == [
+            "checkout",
+            "webhooks",
+            "payment_application",
+            "subscription_activation",
+        ]
+        and snapshot[5] is not None
+        and snapshot[6] == 1
+        and snapshot[7] == PAY24E_CANARY_SHA
+        and snapshot[8] == PAY24E_CANARY_SHA
+    ):
+        return
+
+    assert snapshot[0] == 0
+    generation = int(snapshot[1])
+    measured_at = datetime.now(UTC) - timedelta(seconds=2)
+
+    release = _config_call(
+        """
+        SELECT * FROM app_secure.pay24a_bind_release_identity(
+            CAST(%s AS uuid),CAST(%s AS bigint),
+            CAST(%s AS text),CAST(%s AS text),
+            CAST(%s AS text),CAST(%s AS timestamptz),CAST(%s AS text)
+        )
+        """,
+        (
+            uuid.uuid4(), generation,
+            PAY24E_CANARY_SHA, PAY24E_CANARY_SHA,
+            "pay24e-pg16-trusted-measurement", measured_at, PAY24E_ACTOR,
+        ),
+    )
+    generation = int(release[0])
+
+    authorization = _config_call(
+        """
+        SELECT * FROM app_secure.pay24a_bind_human_authorization(
+            CAST(%s AS uuid),CAST(%s AS bigint),
+            CAST(%s AS text),CAST(%s AS text),CAST(1 AS smallint),
+            CAST(%s AS text),CAST(%s AS timestamptz),CAST(%s AS text)
+        )
+        """,
+        (
+            uuid.uuid4(), generation,
+            "pay24e-pg16-stage1", PAY24E_CANARY_SHA,
+            PAY24E_AUTHORIZER, measured_at, PAY24E_ACTOR,
+        ),
+    )
+    generation = int(authorization[0])
+
+    transitioned = _config_call(
+        """
+        SELECT * FROM app_secure.pay24a_transition_activation(
+            CAST(%s AS uuid),CAST(%s AS bigint),CAST(1 AS smallint),
+            CAST('open' AS text),CAST(%s AS uuid),
+            true,true,true,true,false,false,false,false,
+            CAST(%s AS text)
+        )
+        """,
+        (uuid.uuid4(), generation, pay4.ORG, PAY24E_ACTOR),
+    )
+    assert transitioned[1] == 1
+    assert transitioned[2] == "open"
+
 
 
 def _set_org(cur, org=pay4.ORG) -> None:
@@ -45,6 +180,7 @@ def _set_org(cur, org=pay4.ORG) -> None:
 
 
 def _cleanup() -> None:
+    _reset_activation_stage0()
     if ADMIN_URL:
         with psycopg.connect(ADMIN_URL) as conn:
             with conn.cursor() as cur:
@@ -133,12 +269,13 @@ def _finance_consume_and_ack(claim, worker_id: uuid.UUID = WORKER_A):
 
 
 def _entitlement_claim(worker_id: uuid.UUID = ENTITLEMENT_A):
+    _ensure_stage1_canary()
     with psycopg.connect(ENTITLEMENT_URL) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT *
-                FROM app_secure.pay24c_claim_entitlement_commands(%s,1,600)
+                FROM app_secure.pay24e_claim_entitlement_commands(%s,1,600)
                 """,
                 (worker_id,),
             )
@@ -476,6 +613,62 @@ def test_succeeded_refund_is_enqueued_then_revokes_entitlement_exactly_once():
     assert _access() is False
     assert _command_count("recompute_refund") == 1
 
+
+def test_pay24e_stage0_commands_remain_durable_but_unclaimable():
+    term = _seed_finance_ready()
+    _finance_consume_and_ack(_finance_claim())
+    assert pay4._status(term) == "pending_payment"
+    assert _command_count("activate_paid") == 1
+
+    with psycopg.connect(ENTITLEMENT_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM app_secure.pay24e_claim_entitlement_commands(%s,1,600)",
+                (ENTITLEMENT_A,),
+            )
+            assert cur.fetchone() is None
+        conn.commit()
+
+    with psycopg.connect(ENTITLEMENT_URL) as conn:
+        with conn.cursor() as cur:
+            with pytest.raises(InsufficientPrivilege):
+                cur.execute(
+                    "SELECT * FROM app_secure.pay24c_claim_entitlement_commands(%s,1,600)",
+                    (ENTITLEMENT_A,),
+                )
+        conn.rollback()
+
+    assert pay4._status(term) == "pending_payment"
+    assert _command_count("activate_paid") == 1
+
+
+def test_pay24e_closing_rollback_blocks_claim_before_finalization():
+    term = _seed_finance_ready()
+    _finance_consume_and_ack(_finance_claim())
+    _ensure_stage1_canary()
+
+    snapshot = _activation_snapshot()
+    begun = _config_call(
+        """
+        SELECT * FROM app_secure.pay24a_begin_emergency_rollback(
+            CAST(%s AS uuid),CAST(%s AS bigint),CAST(%s AS text)
+        )
+        """,
+        (uuid.uuid4(), int(snapshot[1]), PAY24E_ACTOR),
+    )
+    assert begun[0] == int(snapshot[1]) + 1
+
+    with psycopg.connect(ENTITLEMENT_URL) as conn:
+        with conn.cursor() as cur:
+            with pytest.raises(InsufficientPrivilege):
+                cur.execute(
+                    "SELECT * FROM app_secure.pay24e_claim_entitlement_commands(%s,1,600)",
+                    (ENTITLEMENT_A,),
+                )
+        conn.rollback()
+
+    assert pay4._status(term) == "pending_payment"
+
 def test_pay24d_readiness_snapshot_is_aggregate_read_only_and_role_fenced():
     term = _seed_finance_ready()
     _finance_consume_and_ack(_finance_claim())
@@ -506,20 +699,11 @@ def test_pay24d_readiness_snapshot_is_aggregate_read_only_and_role_fenced():
                     "SELECT * FROM app_secure.pay24d_entitlement_readiness_snapshot()"
                 )
         conn.rollback()
-
-def _finance_config_psycopg_url() -> str | None:
-    raw = os.environ.get("FINANCE_CONFIG_DATABASE_URL")
-    if not raw:
-        return None
-    return raw.replace("postgresql+psycopg://", "postgresql://", 1)
-
-
 def test_pay24d_stage0_authority_remains_blocked_and_entitlement_cannot_transition_it():
-    finance_config_url = _finance_config_psycopg_url()
-    if not finance_config_url:
+    if not CONFIG_URL:
         pytest.skip("PAY-24-D finance-config runtime is not configured")
 
-    with psycopg.connect(finance_config_url) as conn:
+    with psycopg.connect(CONFIG_URL) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM app_secure.pay24a_activation_snapshot()")
             snapshot = cur.fetchone()
