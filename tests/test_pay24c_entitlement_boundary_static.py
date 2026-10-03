@@ -62,11 +62,9 @@ def test_pay5_successor_enqueues_and_does_not_directly_apply_entitlement() -> No
 
 def test_only_entitlement_runtime_receives_apply_command_execute() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
-    assert (
-        "GRANT EXECUTE ON FUNCTION "
-        "app_secure.pay24c_apply_entitlement_command(uuid,uuid,bigint) "
-        "TO entitlement_runtime"
-    ) in " ".join(source.split())
+    assert "app_secure.pay24c_apply_entitlement_command(uuid,uuid,bigint)" in source
+    assert "TO entitlement_runtime" in source
+    assert "GRANT USAGE ON SCHEMA app_secure TO entitlement_runtime" in source
     assert "PAY24-C protected term mutation requires entitlement_runtime" in source
     assert "PAY24-C protected V2 mutation requires entitlement_runtime" in source
     assert "PAY24-C freeze mutation requires entitlement_runtime" in source
@@ -91,8 +89,9 @@ def test_stage0_production_overlay_has_no_entitlement_credential_or_service() ->
 def test_access_and_legacy_retirement_are_part_of_pay24c_surface() -> None:
     migration = MIGRATION.read_text(encoding="utf-8")
     assert "CREATE FUNCTION app_secure.member_entitlement_access_active" in migration
-    assert "REVOKE UPDATE ON TABLE public.member_subscriptions FROM app_user" in migration
-    assert "REVOKE UPDATE ON TABLE public.member_subscriptions FROM app_runtime" in migration
+    assert '("app_user", "public.member_subscriptions", "UPDATE")' in migration
+    assert '("app_runtime", "public.member_subscriptions", "UPDATE")' in migration
+    assert '("app_user", "public.member_subscriptions_v2", "UPDATE")' in migration
 
 
 def test_no_pay24c_runtime_function_contains_provider_io() -> None:

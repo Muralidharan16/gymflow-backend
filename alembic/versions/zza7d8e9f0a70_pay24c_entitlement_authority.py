@@ -1179,6 +1179,7 @@ def _install_refund_enqueue() -> None:
 
 
 def _install_entitlement_runtime() -> None:
+    op.execute("GRANT USAGE ON SCHEMA app_secure TO entitlement_runtime")
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
         op.execute(
@@ -1959,7 +1960,7 @@ def _install_entitlement_runtime() -> None:
             )
             RETURNS boolean
             LANGUAGE plpgsql
-            STABLE
+            VOLATILE
             SECURITY DEFINER
             SET search_path=pg_catalog,public
             SET row_security=on
@@ -2265,6 +2266,7 @@ def downgrade() -> None:
         "ON public.member_entitlement_commands"
     )
     op.execute("DROP TABLE public.member_entitlement_commands RESTRICT")
+    op.execute("REVOKE USAGE ON SCHEMA app_secure FROM entitlement_runtime")
 
     rows = bind.execute(
         sa.text(

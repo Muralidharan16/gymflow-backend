@@ -1,0 +1,37 @@
+{
+  "phase": "PAY-24-C",
+  "title": "Entitlement / Subscription Activation Boundary",
+  "predecessor": {
+    "application_sha": "d2e7150e8e5e3df4582ed4ea8a75cd06a8f5ce9b",
+    "pay24c1_sha": "d64e2050387986f78fe37a1225b9c5b4d0058220"
+  },
+  "alembic": {
+    "predecessor": "zz97d8e9f0a69",
+    "head": "zza7d8e9f0a70"
+  },
+  "authority": {
+    "finance_facts_are_entitlement_authority": false,
+    "ordinary_worker_can_mutate_entitlement": false,
+    "entitlement_runtime": "entitlement_runtime",
+    "durable_command_table": "public.member_entitlement_commands",
+    "canonical_access_function": "app_secure.member_entitlement_access_active(uuid,uuid)"
+  },
+  "supported_commands": [
+    "activate_paid",
+    "recompute_refund",
+    "cancel",
+    "freeze",
+    "resume",
+    "restore",
+    "extend"
+  ],
+  "stage0": {
+    "production_entitlement_worker_provisioned": false,
+    "production_entitlement_database_url": false,
+    "beat_scheduling_enabled": false,
+    "live_activation_authorized": false,
+    "real_provider_calls": 0,
+    "real_money_movement": 0
+  },
+  "terminal_gate": "PAY24C_ENTITLEMENT_BOUNDARY=PASS"
+}
