@@ -9,6 +9,7 @@ This document is the deployment contract for production runtime processes. Devel
 | FastAPI API | `api` | API + auth only | none |
 | Ordinary Celery worker | `worker` | worker only | queue `worker`, profile `worker` |
 | Lifecycle maintenance worker | `maintenance` | maintenance only | queue `lifecycle-maintenance`, profile `maintenance` |
+| PAY24 entitlement worker (Stage-1 only) | `entitlement_worker` | entitlement only | queue `entitlement`, profile `entitlement` |
 | Celery beat | `beat` | none | scheduler only |
 | Flower/control plane | `beat` | none | observation/control only |
 | Alembic migration job | not an application process | migration owner only | none |
@@ -19,7 +20,9 @@ Production startup is fail-closed. A process that receives a database environmen
 
 The deployment LOGIN roles are distinct from capability roles. Application capability roles remain NOLOGIN. Deployment logins inherit only their approved capability set and must not receive `SET ROLE`, ADMIN, superuser, create-role, create-database, replication, or BYPASSRLS capabilities.
 
-API and auth are separate database identities even though they live in the same FastAPI process. Ordinary queue work and lifecycle maintenance are separate operating-system/process boundaries and must not receive each other's database secret. Beat and Flower do not need a database credential.
+API and auth are separate database identities even though they live in the same FastAPI process. Ordinary queue work, lifecycle maintenance and the PAY24 entitlement worker are separate operating-system/process boundaries and must not receive each other's database secret. The entitlement worker may receive only the entitlement database credential; production validation requires PostgreSQL TLS verification and rejects unrelated provider/cloud credentials. Beat and Flower do not need a database credential.
+
+The entitlement worker is **not a Stage-0 production process**. PAY-24-D supplies only the disabled `deploy/docker-compose.pay24-stage1-readiness.yml` template behind the `pay24-stage1-readiness` profile with zero replicas. The current production identity overlay intentionally contains no entitlement service and Beat intentionally contains no entitlement/refund-entitlement schedule. Provisioning or scheduling it requires a separate Stage-1 activation change and human authorization.
 
 ## P4B search-provider boundary
 
@@ -80,7 +83,7 @@ Do not place all database URLs or external-provider credentials in one shared pr
 1. Infrastructure provisions PostgreSQL capability roles using the canonical cluster-role bootstrap.
 2. Deployment logins are provisioned with the exact runtime binding contract.
 3. Alembic runs separately as `migration_owner` and reaches the single repository HEAD.
-4. API/worker/maintenance startup attestation verifies the live PostgreSQL principal before work begins.
+4. API/worker/maintenance startup attestation verifies the live PostgreSQL principal before work begins; a future Stage-1 entitlement worker must pass the same live-principal attestation for `entitlement_runtime` before consuming its queue.
 5. The ordinary worker receives the P4B OpenSearch/search-telemetry configuration and, when P4C email is enabled, the P4C Resend send credential plus notification telemetry configuration.
 6. The API receives only the P4C Resend webhook verification secret; maintenance receives only notification operational telemetry; beat and Flower receive neither notification credential.
 7. RLS remains enabled and forced on governed tenant tables; no production process disables it.

@@ -507,3 +507,43 @@ def test_pay24d_readiness_snapshot_is_aggregate_read_only_and_role_fenced():
                 )
         conn.rollback()
 
+def _finance_config_psycopg_url() -> str | None:
+    raw = os.environ.get("FINANCE_CONFIG_DATABASE_URL")
+    if not raw:
+        return None
+    return raw.replace("postgresql+psycopg://", "postgresql://", 1)
+
+
+def test_pay24d_stage0_authority_remains_blocked_and_entitlement_cannot_transition_it():
+    finance_config_url = _finance_config_psycopg_url()
+    if not finance_config_url:
+        pytest.skip("PAY-24-D finance-config runtime is not configured")
+
+    with psycopg.connect(finance_config_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM app_secure.pay24a_activation_snapshot()")
+            snapshot = cur.fetchone()
+
+    assert snapshot[0] == 0
+    assert snapshot[2] == "blocked"
+    assert snapshot[3] == []
+    assert snapshot[4] is None
+
+    with psycopg.connect(ENTITLEMENT_URL) as conn:
+        with conn.cursor() as cur:
+            with pytest.raises(InsufficientPrivilege):
+                cur.execute(
+                    """
+                    SELECT * FROM app_secure.pay24a_transition_activation(
+                        %s,0,1,'blocked',%s,
+                        false,false,false,true,false,false,false,false,
+                        'pay24d-forbidden-entitlement-runtime'
+                    )
+                    """,
+                    (
+                        uuid.UUID("24d00000-0000-4000-8000-000000000099"),
+                        pay4.ORG,
+                    ),
+                )
+        conn.rollback()
+

@@ -195,8 +195,21 @@ def _prove(bind) -> None:
 
     if bind.execute(
         sa.text(
-            "SELECT pg_catalog.has_function_privilege("
-            "'public',pg_catalog.to_regprocedure(:signature),'EXECUTE')"
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM pg_catalog.pg_proc AS p
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                    COALESCE(
+                        p.proacl,
+                        pg_catalog.acldefault('f',p.proowner)
+                    )
+                ) AS acl
+                WHERE p.oid=pg_catalog.to_regprocedure(:signature)
+                  AND acl.grantee=0
+                  AND acl.privilege_type='EXECUTE'
+            )
+            """
         ),
         {"signature": _FUNCTION},
     ).scalar_one():

@@ -2,6 +2,17 @@ from __future__ import annotations
 
 import ast
 import json
+from datetime import datetime, timezone
+import uuid
+
+from app.payment_activation.domain import (
+    ActivationAuthorization,
+    ActivationCapability,
+    ActivationRuntime,
+    ActivationStage,
+    KillSwitches,
+    ProductionActivationPolicy,
+)
 from pathlib import Path
 
 
@@ -81,7 +92,7 @@ def test_entitlement_runtime_requires_tls_and_observability() -> None:
 
 def test_stage1_tasks_are_explicitly_routed_but_not_scheduled() -> None:
     source=_text(CELERY)
-    route_block=source.split("task_routes=",1)[1].split(")",1)[0]
+    route_block=source.split("task_routes=",1)[1].split("class RuntimeDatabaseIdentityBootstep",1)[0]
     assert '"app.tasks.entitlement_dispatcher.run": {"queue": ENTITLEMENT_QUEUE}' in route_block
     assert '"app.tasks.refund_entitlement_dispatcher.run": {"queue": WORKER_QUEUE}' in route_block
     schedule=source.split("celery_app.conf.beat_schedule = {",1)[1]
@@ -121,6 +132,61 @@ def test_stage1_rollback_runbook_is_fail_closed() -> None:
     ):
         assert phrase in runbook
     assert "unknown provider outcome as if it failed" in runbook
+
+
+
+def test_stage1_internal_canary_is_exact_sha_authorized_and_kill_switched() -> None:
+    certified_sha = "d" * 40
+    internal = uuid.UUID("24d00000-0000-4000-8000-000000000001")
+    outsider = uuid.UUID("24d00000-0000-4000-8000-000000000002")
+    authorization = ActivationAuthorization(
+        authorization_id="PAY24D-STATIC-STAGE1",
+        authorized_sha=certified_sha,
+        authorized_stage=ActivationStage.INTERNAL_ORGANIZATION,
+        authorized_by="human-release-approver",
+        authorized_at=datetime(2026, 10, 3, tzinfo=timezone.utc),
+    )
+
+    blocked = ActivationRuntime(
+        certified_sha=certified_sha,
+        deployed_sha=certified_sha,
+        stage=ActivationStage.INTERNAL_ORGANIZATION,
+        live_provider_configured=True,
+        provider_egress_enabled=False,
+        kill_switches=KillSwitches(),
+        authorization=authorization,
+        internal_organization_id=internal,
+    )
+    blocked_decision = ProductionActivationPolicy(blocked).decide(
+        ActivationCapability.SUBSCRIPTION_ACTIVATION,
+        organization_id=internal,
+    )
+    assert blocked_decision.allowed is False
+    assert blocked_decision.code == (
+        "activation.kill_switch.subscription_activation.disabled"
+    )
+
+    enabled = ActivationRuntime(
+        certified_sha=certified_sha,
+        deployed_sha=certified_sha,
+        stage=ActivationStage.INTERNAL_ORGANIZATION,
+        live_provider_configured=True,
+        provider_egress_enabled=False,
+        kill_switches=KillSwitches(subscription_activation=True),
+        authorization=authorization,
+        internal_organization_id=internal,
+    )
+    policy = ProductionActivationPolicy(enabled)
+    assert policy.decide(
+        ActivationCapability.SUBSCRIPTION_ACTIVATION,
+        organization_id=internal,
+    ).allowed is True
+    outsider_decision = policy.decide(
+        ActivationCapability.SUBSCRIPTION_ACTIVATION,
+        organization_id=outsider,
+    )
+    assert outsider_decision.allowed is False
+    assert outsider_decision.code == "activation.organization.not_in_rollout"
 
 
 def test_zero_money_canary_checklist_preserves_stage0() -> None:
