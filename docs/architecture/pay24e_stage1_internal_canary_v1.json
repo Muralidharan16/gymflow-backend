@@ -29,14 +29,24 @@
     "closing_blocks_mutation": true
   },
   "scheduler": {
-    "entitlement_apply": "NOT_YET_PROVISIONED",
-    "refund_entitlement": "UNSCHEDULED"
+    "entitlement_apply": "PREPARED_ZERO_REPLICA",
+    "profile": "pay24-stage1-canary",
+    "scheduler_module": "app.pay24e_stage1_scheduler",
+    "refund_entitlement": "UNSCHEDULED",
+    "database_credentials": false,
+    "provider_credentials": false
   },
-  "status": "implementation_candidate",
+  "status": "certification_candidate",
   "gates": {
     "stage1_live_activation": "NOT_AUTHORIZED",
     "real_provider_calls": 0,
     "real_money_movement": 0,
     "pay23_enterprise_payment_system": "NOT_CERTIFIED"
+  },
+  "preflight": {
+    "script": "scripts/pay24e_stage1_canary_preflight.py",
+    "read_only": true,
+    "exact_sha_required": true,
+    "stage0_and_stage1_modes": true
   }
 }

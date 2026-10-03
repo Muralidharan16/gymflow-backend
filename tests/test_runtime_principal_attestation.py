@@ -395,3 +395,12 @@ def test_pay24e_stage1_canary_contracts_pass_under_p2d_certification() -> None:
     pay24e.test_stage1_scope_is_exact_internal_org_and_minimal_four_switches()
     pay24e.test_protected_mutations_recheck_stage1_authority()
 
+def test_pay24e_stage1_activation_package_contracts_pass_under_p2d_certification() -> None:
+    from tests import test_pay24e_stage1_activation_package_static as package
+
+    package.test_scheduler_publishes_only_entitlement_apply()
+    package.test_scheduler_has_no_database_or_provider_credentials()
+    package.test_canary_overlay_is_profile_gated_and_zero_replica()
+    package.test_preflight_is_read_only_and_exact_sha_stage_aware()
+    package.test_runbook_requires_stage0_preprovision_and_durable_authority()
+

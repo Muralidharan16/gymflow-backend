@@ -33,3 +33,20 @@ PAY24_REAL_PROVIDER_CALLS=0
 PAY24_REAL_MONEY_MOVEMENT=0
 PAY23_ENTERPRISE_PAYMENT_SYSTEM=NOT_CERTIFIED
 ```
+
+## Prepared activation package
+
+The certified candidate includes an isolated one-purpose scheduler and
+entitlement worker overlay under the `pay24-stage1-canary` profile. Both
+services declare zero replicas, so repository/compose presence alone cannot
+start the canary.
+
+The scheduler has no database or provider credential and publishes only
+`app.tasks.entitlement_dispatcher.run` once per minute. Refund entitlement
+remains unscheduled.
+
+`scripts/pay24e_stage1_canary_preflight.py` is read-only. It verifies either
+the Stage-0 locked posture or the exact Stage-1 SHA/internal-organization/four-
+switch posture and reports aggregate entitlement backlog without exposing
+secrets or changing activation state.
+
