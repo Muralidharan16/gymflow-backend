@@ -42,11 +42,22 @@
     "real_provider_credentials": false,
     "real_money_movement": 0
   },
-  "status": "certification_candidate",
+  "status": "certified",
   "gates": {
     "stage1_live_activation": "NOT_AUTHORIZED",
     "real_provider_calls": 0,
     "real_money_movement": 0,
     "pay23_enterprise_payment_system": "NOT_CERTIFIED"
+  },
+  "certification": {
+    "frozen_application_sha": "e72fd20f36098b2452cf4fef12dff114e3b9faaa",
+    "frozen_application_tree": "9766feea11ba3d7ec37524c688be85ee0fecfcf7",
+    "certification_run_head_sha": "e722b8dce99287c899c92e5e0d923f8e7e4a19d7",
+    "p2d_workflow_run_id": 37105299915,
+    "p2d_conclusion": "success",
+    "fresh_postgresql_16": true,
+    "live_runtime_principal_attestation": true,
+    "pay24d_runtime_state0_and_readiness": true,
+    "adversarial_role_reverification": true
   }
 }

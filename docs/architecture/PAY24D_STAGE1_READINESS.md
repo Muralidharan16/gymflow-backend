@@ -76,3 +76,22 @@ PAY24_REAL_PROVIDER_CALLS=0
 PAY24_REAL_MONEY_MOVEMENT=0
 PAY23_ENTERPRISE_PAYMENT_SYSTEM=NOT_CERTIFIED
 ```
+
+## Certification evidence
+
+PAY-24-D application code is frozen at
+`e72fd20f36098b2452cf4fef12dff114e3b9faaa`
+(tree `9766feea11ba3d7ec37524c688be85ee0fecfcf7`).
+
+P2D Runtime Principal Attestation run `37105299915` completed successfully on
+head `e722b8dce99287c899c92e5e0d923f8e7e4a19d7`, whose only delta after the
+frozen application SHA was a runtime-test type-cast correction. The run proved
+the PAY-24-D static readiness contracts, canonical external role bootstrap,
+fresh PostgreSQL 16 migration through `zzb7d8e9f0a71`, exact live runtime
+principal bindings, the zero-money entitlement/readiness state-machine tests,
+negative principal drift rejection, and final P2B/P2C role re-verification.
+
+This certification does not authorize Stage 1. The deployment template remains
+zero-replica/profile-gated, entitlement work remains unscheduled, provider calls
+remain zero, and real money movement remains zero.
+
