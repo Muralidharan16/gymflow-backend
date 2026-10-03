@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-24-E",
+  "predecessor_evidence_sha": "79868320b72d4fba66aee9a48598060401fbbaf4",
+  "alembic": {
+    "predecessor": "zzb7d8e9f0a71",
+    "head": "zzc7d8e9f0a72"
+  },
+  "stage1": {
+    "tenant_scope": "internal_organization_only",
+    "provider_egress": "open",
+    "enabled": [
+      "checkout",
+      "webhooks",
+      "payment_application",
+      "subscription_activation"
+    ],
+    "disabled": [
+      "refund_execution",
+      "recurring_billing",
+      "dunning",
+      "platform_billing"
+    ],
+    "exact_release_sha_required": true,
+    "human_stage1_authorization_required": true
+  },
+  "rollback": {
+    "closing_blocks_claim": true,
+    "closing_blocks_mutation": true
+  },
+  "scheduler": {
+    "entitlement_apply": "NOT_YET_PROVISIONED",
+    "refund_entitlement": "UNSCHEDULED"
+  },
+  "status": "implementation_candidate",
+  "gates": {
+    "stage1_live_activation": "NOT_AUTHORIZED",
+    "real_provider_calls": 0,
+    "real_money_movement": 0,
+    "pay23_enterprise_payment_system": "NOT_CERTIFIED"
+  }
+}

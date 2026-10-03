@@ -48,7 +48,7 @@ async def _claim(worker_id: uuid.UUID) -> list[dict[str, Any]]:
             text(
                 """
                 SELECT *
-                FROM app_secure.pay24c_claim_entitlement_commands(
+                FROM app_secure.pay24e_claim_entitlement_commands(
                     CAST(:worker_id AS uuid), :batch_size, :lease_seconds
                 )
                 """
