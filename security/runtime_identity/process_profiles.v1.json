@@ -7,7 +7,8 @@
     "WORKER_DATABASE_URL",
     "MAINTENANCE_DATABASE_URL",
     "FINANCE_PAYMENT_DATABASE_URL",
-    "FINANCE_CONFIG_DATABASE_URL"
+    "FINANCE_CONFIG_DATABASE_URL",
+    "ENTITLEMENT_DATABASE_URL"
   ],
   "profiles": {
     "api": {
@@ -19,7 +20,8 @@
         "FINANCE_CONFIG_DATABASE_URL",
         "MAINTENANCE_DATABASE_URL",
         "WORKER_DATABASE_URL",
-        "FINANCE_PAYMENT_DATABASE_URL"
+        "FINANCE_PAYMENT_DATABASE_URL",
+        "ENTITLEMENT_DATABASE_URL"
       ],
       "runtime_components": [
         "api",
@@ -36,7 +38,8 @@
       "forbidden_database_variables": [
         "FINANCE_CONFIG_DATABASE_URL",
         "MAINTENANCE_DATABASE_URL",
-        "WORKER_DATABASE_URL"
+        "WORKER_DATABASE_URL",
+        "ENTITLEMENT_DATABASE_URL"
       ],
       "runtime_components": [
         "api",
@@ -54,7 +57,8 @@
         "DATABASE_URL",
         "FINANCE_CONFIG_DATABASE_URL",
         "MAINTENANCE_DATABASE_URL",
-        "FINANCE_PAYMENT_DATABASE_URL"
+        "FINANCE_PAYMENT_DATABASE_URL",
+        "ENTITLEMENT_DATABASE_URL"
       ],
       "runtime_components": [
         "worker"
@@ -70,7 +74,8 @@
         "DATABASE_URL",
         "FINANCE_CONFIG_DATABASE_URL",
         "WORKER_DATABASE_URL",
-        "FINANCE_PAYMENT_DATABASE_URL"
+        "FINANCE_PAYMENT_DATABASE_URL",
+        "ENTITLEMENT_DATABASE_URL"
       ],
       "runtime_components": [
         "maintenance"
@@ -85,7 +90,8 @@
         "FINANCE_CONFIG_DATABASE_URL",
         "MAINTENANCE_DATABASE_URL",
         "WORKER_DATABASE_URL",
-        "FINANCE_PAYMENT_DATABASE_URL"
+        "FINANCE_PAYMENT_DATABASE_URL",
+        "ENTITLEMENT_DATABASE_URL"
       ],
       "runtime_components": [],
       "celery_worker_profile": null
@@ -99,12 +105,35 @@
         "DATABASE_URL",
         "MAINTENANCE_DATABASE_URL",
         "WORKER_DATABASE_URL",
-        "FINANCE_PAYMENT_DATABASE_URL"
+        "FINANCE_PAYMENT_DATABASE_URL",
+        "ENTITLEMENT_DATABASE_URL"
       ],
       "runtime_components": [
         "finance_config"
       ],
       "celery_worker_profile": null
+    },
+    "entitlement_worker": {
+      "required_database_variables": [
+        "ENTITLEMENT_DATABASE_URL"
+      ],
+      "forbidden_database_variables": [
+        "DATABASE_URL",
+        "AUTH_DATABASE_URL",
+        "WORKER_DATABASE_URL",
+        "MAINTENANCE_DATABASE_URL",
+        "FINANCE_PAYMENT_DATABASE_URL",
+        "FINANCE_CONFIG_DATABASE_URL"
+      ],
+      "runtime_components": [
+        "entitlement"
+      ],
+      "celery_worker_profile": "entitlement"
     }
+  },
+  "pay24c_extension": {
+    "phase": "PAY-24-C",
+    "production_overlay_service_present": false,
+    "stage1_live_activation": "NOT_AUTHORIZED"
   }
 }

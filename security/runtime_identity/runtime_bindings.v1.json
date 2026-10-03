@@ -89,6 +89,19 @@
         "lock_timeout": "2s",
         "idle_in_transaction_session_timeout": "30s"
       }
+    },
+    "entitlement": {
+      "environment_variable": "ENTITLEMENT_DATABASE_URL",
+      "runtime_capability": "entitlement_runtime",
+      "direct_capabilities": [
+        "entitlement_runtime"
+      ],
+      "session_settings": {
+        "row_security": "on",
+        "statement_timeout": "15s",
+        "lock_timeout": "2s",
+        "idle_in_transaction_session_timeout": "30s"
+      }
     }
   },
   "rules": {
@@ -107,5 +120,13 @@
     "finance_reconciliation_runtime",
     "finance_read_runtime",
     "finance_maintenance_runtime"
-  ]
+  ],
+  "pay24c_extension": {
+    "phase": "PAY-24-C",
+    "stage0_current_production_binding": "UNPROVISIONED",
+    "stage1_live_activation": "NOT_AUTHORIZED",
+    "stage0_unprovisioned_components": [
+      "entitlement"
+    ]
+  }
 }

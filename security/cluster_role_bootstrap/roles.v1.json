@@ -278,6 +278,20 @@
       "purpose": "Bounded Finance maintenance and stuck-work discovery capability.",
       "decision": "NOLOGIN/NOBYPASSRLS maintenance capability. No direct Finance table DML, no provider money-movement authority, no object ownership, and no migration-owner edge.",
       "role": "finance_maintenance_runtime"
+    },
+    "entitlement_runtime": {
+      "attributes": {
+        "superuser": false,
+        "inherit": false,
+        "create_role": false,
+        "create_db": false,
+        "can_login": false,
+        "replication": false,
+        "bypass_rls": false
+      },
+      "purpose": "Exclusive member entitlement/subscription mutation capability for PAY-24-C.",
+      "decision": "NOLOGIN/NOBYPASSRLS peer-isolated capability. It owns no objects, receives no direct entitlement or Finance table DML, has no migration-owner edge, and may mutate entitlement only through exact app_secure PAY-24-C command functions.",
+      "role": "entitlement_runtime"
     }
   },
   "retired_roles": {
@@ -331,5 +345,12 @@
       "finance_maintenance_runtime"
     ],
     "rule": "Provisioned outside Alembic; database migrations only verify and consume these roles."
+  },
+  "pay24c_extension": {
+    "phase": "PAY-24-C",
+    "roles": [
+      "entitlement_runtime"
+    ],
+    "rule": "Entitlement mutation authority is isolated from API, ordinary worker, payment, refund, reconciliation and maintenance runtimes."
   }
 }

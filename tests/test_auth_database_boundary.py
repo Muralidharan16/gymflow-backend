@@ -36,6 +36,7 @@ def test_production_requires_distinct_auth_database_identity() -> None:
         runtime.bindings["worker"].environment_variable,
         runtime.bindings["maintenance"].environment_variable,
         runtime.bindings["finance_config"].environment_variable,
+        runtime.bindings["entitlement"].environment_variable,
     }
     assert runtime.bindings["api"].environment_variable != runtime.bindings["auth"].environment_variable
 

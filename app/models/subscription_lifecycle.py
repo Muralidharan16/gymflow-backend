@@ -5,6 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Date,
     ForeignKey,
@@ -235,6 +236,103 @@ class MemberSubscriptionFinanceEventConsumption(Base):
         UniqueConstraint("finance_event_id", name="uq_pay5_consumption_finance_event"),
         UniqueConstraint("idempotency_key", name="uq_pay5_consumption_idempotency"),
         Index("ix_pay5_consumption_org_term", "org_id", "subscription_term_id"),
+    )
+
+
+class MemberEntitlementCommand(Base):
+    """PAY-24-C durable entitlement command journal.
+
+    Runtime code intentionally uses bounded app_secure capabilities rather than
+    ORM DML; the model keeps SQLAlchemy metadata aligned with the migration.
+    """
+
+    __tablename__ = "member_entitlement_commands"
+
+    command_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=new_uuid
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    target_term_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    command_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    source_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    source_event_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    payload_json: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        Text, server_default=text("'pending'"), nullable=False
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, server_default=text("0"), nullable=False
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, server_default=text("15"), nullable=False
+    )
+    leased_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    leased_until: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    lease_fence: Mapped[int] = mapped_column(
+        BigInteger, server_default=text("0"), nullable=False
+    )
+    result_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=text("clock_timestamp()"),
+        nullable=False,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=text("clock_timestamp()"),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["target_term_id", "organization_id"],
+            ["subscription_terms.id", "subscription_terms.org_id"],
+            name="fk_pay24c_command_term_org",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "idempotency_key",
+            name="uq_pay24c_command_idempotency",
+        ),
+        Index(
+            "ix_pay24c_command_claim",
+            "status",
+            "leased_until",
+            "created_at",
+            "command_id",
+        ),
     )
 
 

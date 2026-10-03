@@ -104,9 +104,10 @@ def test_production_requires_six_distinct_database_identities() -> None:
         runtime.bindings["finance_payment"].environment_variable,
         runtime.bindings["worker"].environment_variable,
         runtime.bindings["finance_config"].environment_variable,
+        runtime.bindings["entitlement"].environment_variable,
     }
     assert maintenance["celery_worker_profile"] == "maintenance"
-    assert len({binding.environment_variable for binding in runtime.bindings.values()}) == 6
+    assert len({binding.environment_variable for binding in runtime.bindings.values()}) == 7
 
 
 def test_maintenance_pool_is_nullpooled_and_separate_from_api_worker_pools() -> None:

@@ -242,91 +242,48 @@ async def get_active_subscription(
         )
 
 
-# ========== Subscription Actions ==========
+# ========== Legacy Subscription Actions ==========
 
-@router.post("/subscriptions/{sub_id}/freeze", response_model=Response[SubscriptionResponse])
+def _legacy_entitlement_retired() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "message": (
+                "Legacy subscription entitlement mutation is retired. "
+                "Use the canonical member subscription lifecycle."
+            ),
+            "error_code": "LEGACY_ENTITLEMENT_MUTATION_RETIRED",
+        },
+    )
+
+
+@router.post("/subscriptions/{sub_id}/freeze")
 async def freeze_subscription(
     sub_id: UUID,
     gym_id: UUID,
     current_staff: Staff = Depends(require_gym_access),
-    db: AsyncSession = Depends(get_db)
 ):
-    """
-    Freeze an active subscription (existing endpoint - keep).
-    """
-    service = SubscriptionService(db)
-    try:
-        subscription = await service.freeze_subscription(gym_id, sub_id, current_staff.id)
-        await db.commit()
-        return Response(data=SubscriptionResponse.model_validate(subscription))
-    except NotFoundError as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"message": str(e), "error_code": "NOT_FOUND"}
-        )
-    except ValidationError as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"message": str(e), "error_code": e.error_code}
-        )
+    del sub_id, gym_id, current_staff
+    _legacy_entitlement_retired()
 
 
-@router.post("/subscriptions/{sub_id}/unfreeze", response_model=Response[SubscriptionResponse])
+@router.post("/subscriptions/{sub_id}/unfreeze")
 async def unfreeze_subscription(
     sub_id: UUID,
     gym_id: UUID,
     current_staff: Staff = Depends(require_gym_access),
-    db: AsyncSession = Depends(get_db)
 ):
-    """
-    Unfreeze a frozen subscription.
-    """
-    service = SubscriptionService(db)
-    try:
-        subscription = await service.unfreeze_subscription(gym_id, sub_id, current_staff.id)
-        await db.commit()
-        return Response(data=SubscriptionResponse.model_validate(subscription))
-    except NotFoundError as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"message": str(e), "error_code": "NOT_FOUND"}
-        )
-    except ValidationError as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"message": str(e), "error_code": e.error_code}
-        )
+    del sub_id, gym_id, current_staff
+    _legacy_entitlement_retired()
 
 
-@router.post("/subscriptions/{sub_id}/cancel", response_model=Response[SubscriptionResponse])
+@router.post("/subscriptions/{sub_id}/cancel")
 async def cancel_subscription(
     sub_id: UUID,
     gym_id: UUID,
     data: CancelRequest,
     current_staff: Staff = Depends(require_gym_access),
-    db: AsyncSession = Depends(get_db)
 ):
-    """
-    Cancel an active or frozen subscription with a reason.
-    """
-    service = SubscriptionService(db)
-    try:
-        subscription = await service.cancel_subscription(gym_id, sub_id, data.reason, current_staff.id)
-        await db.commit()
-        return Response(data=SubscriptionResponse.model_validate(subscription))
-    except NotFoundError as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"message": str(e), "error_code": "NOT_FOUND"}
-        )
-    except ValidationError as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"message": str(e), "error_code": e.error_code}
-        )
+    del sub_id, gym_id, data, current_staff
+    _legacy_entitlement_retired()
+

@@ -46,8 +46,8 @@ FORBIDDEN_METRIC_ATTRIBUTE_KEYS = frozenset(
 
 _HTTP_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 _STATUS_CLASSES = frozenset({"1xx", "2xx", "3xx", "4xx", "5xx", "unknown"})
-_PROCESS_PROFILES = frozenset({"api", "worker", "maintenance", "beat", "finance_config", "unknown"})
-_DATABASE_POOLS = frozenset({"api", "worker", "maintenance", "finance", "unknown"})
+_PROCESS_PROFILES = frozenset({"api", "api_payment", "worker", "maintenance", "entitlement_worker", "beat", "finance_config", "unknown"})
+_DATABASE_POOLS = frozenset({"api", "worker", "maintenance", "finance", "entitlement", "unknown"})
 _QUEUES = frozenset(
     {
         "worker",
@@ -55,6 +55,7 @@ _QUEUES = frozenset(
         "search",
         "notification",
         "refund",
+        "entitlement",
         "branch-outbox",
         "outbox",
         "unknown",

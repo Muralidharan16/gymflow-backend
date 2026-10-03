@@ -7,11 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError, ValidationError, SubscriptionNotActive
 from app.models.attendance import AttendanceLog, CheckInMethod
-from app.models.enums import SubscriptionStatus
 from app.repositories.attendance_repo import AttendanceRepository
 from app.repositories.member_repo import MemberRepository
-from app.repositories.subscription_repo import SubscriptionRepository
 from app.services.member_service import MemberService
+from app.services.member_entitlement_access import MemberEntitlementAccessService
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +22,7 @@ class AttendanceService:
         self.session = session
         self.attendance_repo = AttendanceRepository(session)
         self.member_repo = MemberRepository(session)
-        self.subscription_repo = SubscriptionRepository(session)
+        self.entitlement_access = MemberEntitlementAccessService(session)
 
     async def check_access(self, member_uid: str) -> AttendanceLog:
         """
@@ -45,8 +44,7 @@ class AttendanceService:
             raise NotFoundError(f"Member with UID {member_uid} not found", error_code="NOT_FOUND")
         
         # Check active subscription
-        active_sub = await self.subscription_repo.get_active_for_member(member.id, member.gym_id)
-        if not active_sub:
+        if not await self.entitlement_access.is_active(organization_id=member.org_id, member_id=member.id):
             raise SubscriptionNotActive(f"Member {member.name} has no active subscription", error_code="SUBSCRIPTION_NOT_ACTIVE")
         
         # Create attendance log
@@ -98,8 +96,7 @@ class AttendanceService:
             raise NotFoundError(f"Member {member_id} not found in gym {gym_id}", error_code="NOT_FOUND")
         
         # Check active subscription
-        active_sub = await self.subscription_repo.get_active_for_member(member_id, gym_id)
-        if not active_sub:
+        if not await self.entitlement_access.is_active(organization_id=member.org_id, member_id=member.id):
             raise SubscriptionNotActive(f"Member {member.name} has no active subscription", error_code="SUBSCRIPTION_NOT_ACTIVE")
         
         # Check if already checked in (no checkout)

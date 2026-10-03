@@ -14,7 +14,8 @@
     "finance_refund_runtime",
     "finance_reconciliation_runtime",
     "finance_read_runtime",
-    "finance_maintenance_runtime"
+    "finance_maintenance_runtime",
+    "entitlement_runtime"
   ],
   "migration_helpers": [
     "app_rls_executor",
@@ -45,5 +46,10 @@
       "finance_read_runtime",
       "finance_maintenance_runtime"
     ]
+  },
+  "pay24c_extension": {
+    "phase": "PAY-24-C",
+    "role": "entitlement_runtime",
+    "rule": "entitlement_runtime is a peer-isolated runtime principal."
   }
 }

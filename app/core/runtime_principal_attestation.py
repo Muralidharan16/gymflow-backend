@@ -67,6 +67,7 @@ class RuntimeBindingContract:
     membership_options: Mapping[str, bool]
     bindings: Mapping[str, RuntimeBinding]
     reserved_unbound_capabilities: tuple[str, ...]
+    optional_unprovisioned_components: tuple[str, ...]
     rules: Mapping[str, Any]
 
 
@@ -220,6 +221,32 @@ def load_runtime_binding_contract(
         "reserved_unbound_capabilities",
     )
 
+    extension = raw.get("pay24c_extension", {})
+    if extension is None:
+        extension = {}
+    if not isinstance(extension, Mapping):
+        raise ValueError("pay24c_extension must be an object")
+    optional_unprovisioned_raw = extension.get(
+        "stage0_unprovisioned_components", []
+    )
+    if not isinstance(optional_unprovisioned_raw, list) or any(
+        not isinstance(item, str) or not item
+        for item in optional_unprovisioned_raw
+    ):
+        raise ValueError(
+            "pay24c_extension.stage0_unprovisioned_components "
+            "must be a list of component names"
+        )
+    optional_unprovisioned_components = tuple(optional_unprovisioned_raw)
+    unknown_optional = sorted(
+        set(optional_unprovisioned_components) - set(bindings)
+    )
+    if unknown_optional:
+        raise ValueError(
+            "stage0 unprovisioned components are not runtime bindings: "
+            f"{unknown_optional!r}"
+        )
+
     rules = raw.get("rules")
     if not isinstance(rules, Mapping):
         raise ValueError("rules must be an object")
@@ -229,6 +256,7 @@ def load_runtime_binding_contract(
         membership_options=dict(membership_options),
         bindings=bindings,
         reserved_unbound_capabilities=reserved_unbound_capabilities,
+        optional_unprovisioned_components=optional_unprovisioned_components,
         rules=dict(rules),
     )
 
@@ -243,12 +271,12 @@ def validate_runtime_binding_contract(
     peer_runtimes = set(p2c.peer_isolation_principals) - {p2c.migration_principal}
     violations: list[ContractViolation] = []
 
-    required_components = {"api", "auth", "finance_payment", "worker", "maintenance", "finance_config"}
+    required_components = {"api", "auth", "finance_payment", "worker", "maintenance", "finance_config", "entitlement"}
     if set(contract.bindings) != required_components:
         violations.append(_violation(
             "runtime.contract.component_coverage",
             "bindings",
-            "P2D must define exactly api/auth/finance_payment/worker/maintenance/finance_config bindings.",
+            "P2D must define exactly api/auth/finance_payment/worker/maintenance/finance_config/entitlement bindings.",
         ))
 
     runtime_capabilities = {
@@ -540,14 +568,21 @@ def evaluate_runtime_binding_set(
     violations: list[ContractViolation] = []
 
     by_component = {item.component: item for item in observations}
+    observed = set(by_component)
+    all_components = set(runtime_contract.bindings)
+    optional = set(runtime_contract.optional_unprovisioned_components)
+    required = all_components - optional
     if (
-        set(by_component) != set(runtime_contract.bindings)
+        not required.issubset(observed)
+        or not observed.issubset(all_components)
         or len(by_component) != len(observations)
     ):
         violations.append(_violation(
             "runtime.binding_set.component_coverage",
             "observations",
-            "Live P2D certification requires exactly one observation for each runtime component.",
+            "Live P2D certification requires exactly one observation for every "
+            "provisioned runtime component; explicitly Stage-0-unprovisioned "
+            "components may be absent.",
         ))
 
     users = [item.session_user for item in observations]
@@ -742,7 +777,16 @@ def configured_runtime_urls(
     components: Sequence[str] | None = None,
 ) -> dict[str, str]:
     contract = load_runtime_binding_contract()
-    selected = tuple(components or contract.bindings)
+    if components is None:
+        optional = set(contract.optional_unprovisioned_components)
+        selected = tuple(
+            component
+            for component, binding in contract.bindings.items()
+            if component not in optional
+            or bool(os.environ.get(binding.environment_variable, "").strip())
+        )
+    else:
+        selected = tuple(components)
     urls: dict[str, str] = {}
     for component in selected:
         binding = contract.bindings.get(component)

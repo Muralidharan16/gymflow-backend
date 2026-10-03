@@ -57,22 +57,22 @@ def test_pay24c1_pay5_consumption_is_durable_and_replay_fenced() -> None:
     assert "app_secure.consume_member_subscription_finance_event" in dispatcher
 
 
-def test_pay24c1_mounted_legacy_interactive_mutations_are_inventory_findings() -> None:
-    main = _source("app/main.py")
+def test_pay24c1_mounted_legacy_findings_are_now_retired_by_successor() -> None:
+    inventory = _source("docs/architecture/PAY24C1_ENTITLEMENT_AUTHORITY_INVENTORY.md")
     router = _source("app/routers/subscriptions.py")
     service = _source("app/services/subscription_service.py")
 
-    assert "app.include_router(subscriptions.router)" in main
-    for operation in ("freeze_subscription", "unfreeze_subscription", "cancel_subscription"):
-        assert operation in router
-        assert operation in service
-
-    assert "sub.status = SubscriptionStatus.frozen" in service
-    assert "sub.end_date = sub.end_date + timedelta" in service
-    assert "sub.status = SubscriptionStatus.active" in service
-    assert "sub.status = SubscriptionStatus.cancelled" in service
-    assert "member.status = MemberStatus.inactive" in service
-
+    assert "LEGACY_DIRECT_MUTATION_CODE_PRESENT" in inventory
+    assert "LEGACY_ENTITLEMENT_MUTATION_RETIRED" in router
+    assert "PAY-24-C legacy entitlement mutation is retired" in service
+    for forbidden in (
+        "sub.status = SubscriptionStatus.frozen",
+        "sub.end_date = sub.end_date + timedelta",
+        "sub.status = SubscriptionStatus.active",
+        "sub.status = SubscriptionStatus.cancelled",
+        "member.status = MemberStatus.inactive",
+    ):
+        assert forbidden not in service
 
 def test_pay24c1_legacy_admission_is_retired() -> None:
     service = _source("app/services/subscription_service.py")
@@ -86,7 +86,7 @@ def test_pay24c1_legacy_expiry_has_bounded_maintenance_replacement() -> None:
     maintenance = _source("app/tasks/platform_maintenance.py")
     celery = _source("app/core/celery_app.py")
 
-    assert "subscription_service.expire_subscription" in old_task
+    assert "PAY-24-C legacy entitlement mutation is retired" in old_task
     assert "app_secure.expire_legacy_member_subscriptions(500)" in maintenance
     assert '"app.tasks.platform_maintenance.expire_legacy_member_subscriptions"' in celery
     assert '"app.tasks.expire_subs"' not in celery
