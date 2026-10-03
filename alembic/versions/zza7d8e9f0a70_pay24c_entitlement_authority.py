@@ -431,6 +431,41 @@ def _install_command_table() -> None:
     )
 
 
+def _widen_pay5_consumption_result() -> None:
+    # PAY-5 recorded the final activation result directly.  PAY-24-C splits
+    # durable Finance consumption from entitlement application, so the same
+    # journal needs one additional non-terminal successor state.
+    op.execute(
+        "ALTER TABLE public.member_subscription_finance_event_consumptions "
+        "DROP CONSTRAINT chk_pay5_consumption_result"
+    )
+    op.execute(
+        """
+        ALTER TABLE public.member_subscription_finance_event_consumptions
+        ADD CONSTRAINT chk_pay5_consumption_result
+        CHECK (
+            business_result_status IN (
+                'active','scheduled','entitlement_pending'
+            )
+        )
+        """
+    )
+
+
+def _restore_pay5_consumption_result() -> None:
+    op.execute(
+        "ALTER TABLE public.member_subscription_finance_event_consumptions "
+        "DROP CONSTRAINT chk_pay5_consumption_result"
+    )
+    op.execute(
+        """
+        ALTER TABLE public.member_subscription_finance_event_consumptions
+        ADD CONSTRAINT chk_pay5_consumption_result
+        CHECK (business_result_status IN ('active','scheduled'))
+        """
+    )
+
+
 def _replace_predecessor_authority(bind) -> None:
     definitions = {
         str(row[0]): str(row[1])
@@ -2326,6 +2361,7 @@ def upgrade() -> None:
     _create_snapshots(bind)
     _revoke_legacy_direct_writes()
     _install_command_table()
+    _widen_pay5_consumption_result()
     _replace_predecessor_authority(bind)
     _install_guards()
     _install_enqueue_and_pay5_successor()
@@ -2408,6 +2444,7 @@ def downgrade() -> None:
         "ON public.member_entitlement_commands"
     )
     op.execute("DROP TABLE public.member_entitlement_commands RESTRICT")
+    _restore_pay5_consumption_result()
 
     rows = bind.execute(
         sa.text(

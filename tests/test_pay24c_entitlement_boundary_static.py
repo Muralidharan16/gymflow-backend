@@ -57,6 +57,9 @@ def test_pay5_successor_enqueues_and_does_not_directly_apply_entitlement() -> No
     assert "pay24c_enqueue_paid_activation" in successor
     assert "apply_member_subscription_finance_event" not in successor
     assert "'entitlement_pending'" in successor
+    assert "_widen_pay5_consumption_result()" in source
+    assert "'active','scheduled','entitlement_pending'" in source
+    assert "_restore_pay5_consumption_result()" in source
     assert "effect_applied" in successor
 
 
