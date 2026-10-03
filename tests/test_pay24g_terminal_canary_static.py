@@ -65,3 +65,15 @@ def test_pay24g_internal_application_uses_existing_finance_gate() -> None:
     assert "ApplyConfirmedPaymentCommand" in source
     assert 'internal_actor="ops_admin"' in source
     assert "PAY-24-G internal live payment canary" in source
+
+def test_pay24g_callback_is_bound_to_exact_prepared_order() -> None:
+    source=_text()
+    assert 'callback.payload["razorpay_order_id"]' in source
+    assert "!= prepared.provider_order_ref" in source
+    assert "callback order does not match the prepared canary order" in source
+
+
+def test_pay24g_cli_accepts_only_run_live_payment() -> None:
+    source=_text()
+    assert 'choices=("run-live-payment",)' in source
+

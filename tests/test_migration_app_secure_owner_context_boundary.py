@@ -161,6 +161,9 @@ _PAY24D_STAGE1_READINESS_MIGRATION = (
 _PAY24E_STAGE1_CANARY_MIGRATION = (
     "zzc7d8e9f0a72_pay24e_stage1_internal_canary.py"
 )
+_PAY24G_LIVE_PAYMENT_AUTHORITY_MIGRATION = (
+    "zze7d8e9f0a74_pay24g_live_payment_authority.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -221,6 +224,7 @@ APP_SECURE_FILES.update(
         _PAY24C_ENTITLEMENT_AUTHORITY_MIGRATION,
         _PAY24D_STAGE1_READINESS_MIGRATION,
         _PAY24E_STAGE1_CANARY_MIGRATION,
+        _PAY24G_LIVE_PAYMENT_AUTHORITY_MIGRATION,
     }
 )
 
@@ -487,6 +491,12 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # are certified by PAY-24-D-specific tests and the migration itself.
         _PAY24D_STAGE1_READINESS_MIGRATION: set(),
         _PAY24E_STAGE1_CANARY_MIGRATION: set(),
+        # PAY-24-G widens app_secure USAGE only for the isolated
+        # finance_reconciliation_runtime and revokes it on downgrade.
+        _PAY24G_LIVE_PAYMENT_AUTHORITY_MIGRATION: {
+            "grant_schema",
+            "revoke_schema",
+        },
         A1.name: view_contract,
     }
     actual = {

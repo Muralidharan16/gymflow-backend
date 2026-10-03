@@ -609,6 +609,22 @@ async def run_live_payment(args) -> int:
                     "do not retry until provider reconciliation"
                 )
 
+            if (
+                callback.payload["razorpay_order_id"]
+                != prepared.provider_order_ref
+            ):
+                await _finish_admission(
+                    payment_session=payment_session,
+                    authority=authority,
+                    organization_id=organization_id,
+                    admission_id=admission.admission_id,
+                    execution_id=execution_id,
+                    outcome="unknown",
+                )
+                raise SystemExit(
+                    "PAY-24-G callback order does not match the prepared canary order"
+                )
+
             reconciliation_engine = _engine_from_env(
                 "PAY24G_RECONCILIATION_DATABASE_URL"
             )
@@ -723,7 +739,7 @@ async def run_live_payment(args) -> int:
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("run-live-payment", nargs="?")
+    p.add_argument("command", choices=("run-live-payment",))
     p.add_argument("--certified-sha", required=True)
     p.add_argument("--internal-org", required=True)
     p.add_argument("--pay24f-evidence", required=True)
