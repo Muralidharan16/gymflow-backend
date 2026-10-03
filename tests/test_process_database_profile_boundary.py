@@ -238,6 +238,20 @@ def test_entitlement_worker_requires_verify_full_database_tls() -> None:
         )
 
 
+def test_entitlement_worker_rejects_libpq_sslmode_for_asyncpg_transport() -> None:
+    with pytest.raises(ValidationError, match="ssl=verify-full"):
+        _settings(
+            DOERS_PROCESS_PROFILE="entitlement_worker",
+            CELERY_WORKER_PROFILE="entitlement",
+            ENTITLEMENT_DATABASE_URL=(
+                "postgresql+asyncpg://entitlement_deployment@db.internal/doers"
+                "?sslmode=verify-full"
+            ),
+            AWS_ACCESS_KEY_ID="",
+            AWS_SECRET_ACCESS_KEY="",
+        )
+
+
 def test_entitlement_worker_rejects_unrelated_cloud_and_provider_secrets() -> None:
     with pytest.raises(ValidationError, match="forbidden provider/cloud secrets"):
         _settings(
