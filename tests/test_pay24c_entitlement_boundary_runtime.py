@@ -535,9 +535,13 @@ def test_pay24d_stage0_authority_remains_blocked_and_entitlement_cannot_transiti
                 cur.execute(
                     """
                     SELECT * FROM app_secure.pay24a_transition_activation(
-                        %s,0,1,'blocked',%s,
+                        CAST(%s AS uuid),
+                        CAST(0 AS bigint),
+                        CAST(1 AS smallint),
+                        CAST('blocked' AS text),
+                        CAST(%s AS uuid),
                         false,false,false,true,false,false,false,false,
-                        'pay24d-forbidden-entitlement-runtime'
+                        CAST('pay24d-forbidden-entitlement-runtime' AS text)
                     )
                     """,
                     (
