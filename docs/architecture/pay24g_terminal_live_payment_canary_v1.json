@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "phase": "PAY-24-G",
+  "title": "Terminal-Controlled Stage-1 Real-Money Internal Payment Canary Package",
+  "predecessor": {
+    "phase": "PAY-24-F",
+    "evidence_sha": "b72b03db0b48018dec15b7c712a9c1ca91b5639a"
+  },
+  "frozen_application": {
+    "sha": "9cef0b8572b8fc1a8345d5c6823729353bee1a34",
+    "tree": "3ea670220715ce924f3bc4310e91ff1551826386",
+    "alembic_head": "zze7d8e9f0a74"
+  },
+  "evidence_head_at_certification": "8b7f05821d47ece4d702121e36b35a6ab28605ca",
+  "certification": {
+    "p2d_run_id": 37114580173,
+    "conclusion": "success",
+    "fresh_postgresql_16": true,
+    "static_contracts": true,
+    "migration_upgrade": true,
+    "migration_pristine_downgrade_reupgrade": true,
+    "runtime_principal_attestation": true,
+    "inherited_pay24c_entitlement_runtime": true,
+    "inherited_pay24f_live_order_boundary": true,
+    "pay24g_live_payment_authority_runtime": true,
+    "adversarial_role_reverification": true
+  },
+  "live_payment_boundary": {
+    "provider": "razorpay",
+    "provider_environment": "live",
+    "terminal_only": true,
+    "public_http_live_route": false,
+    "capture_api_present": false,
+    "loopback_checkout_callback_only": true,
+    "checkout_signature_required": true,
+    "provider_payment_get_required": true,
+    "provider_payment_must_be_captured": true,
+    "finance_reconciliation_runtime_required": true,
+    "app_runtime_live_evidence_allowed": false,
+    "generic_idempotency_helpers_directly_executable_by_reconciliation": false,
+    "pay24a_stage1_internal_organization_required": true,
+    "stage1_rechecked_before_live_evidence_mutation": true,
+    "stage1_rechecked_before_payment_application": true,
+    "existing_finance_payment_application_gate_reused": true,
+    "pay24_entitlement_boundary_reused": true
+  },
+  "canary_limits": {
+    "currency": "INR",
+    "max_amount": "10.00",
+    "interactive_terminal_required": true,
+    "exact_confirmation_phrase_required": true,
+    "existing_pay24f_order_required": true,
+    "trusted_deployed_sha_required": true,
+    "emergency_rollback_required_after_canary": true
+  },
+  "runtime_proofs": {
+    "stage0_live_evidence_denied": true,
+    "app_runtime_live_evidence_denied": true,
+    "stage1_reconciliation_live_captured_evidence_accepted": true,
+    "reconciliation_direct_generic_idempotency_execute_denied": true,
+    "rollback_closing_live_payment_application_denied": true,
+    "reconciliation_sandbox_evidence_denied": true
+  },
+  "ci_safety": {
+    "live_provider_credentials_present": false,
+    "live_provider_network_calls": 0,
+    "real_money_movement": 0,
+    "provider_state_is_synthetic": true
+  },
+  "execution_status": {
+    "real_money_canary": "NOT_EXECUTED",
+    "stage1_transition": "NOT_AUTHORIZED_BY_SOURCE",
+    "live_checkout_browser_payment": "NOT_EXECUTED",
+    "post_canary_rollback": "NOT_APPLICABLE_UNTIL_EXECUTION"
+  },
+  "gates": {
+    "PAY24G_TERMINAL_CANARY_PACKAGE": "PASS",
+    "PAY24G_LIVE_PAYMENT_AUTHORITY": "PASS",
+    "PAY24G_RECONCILIATION_RUNTIME_ISOLATION": "PASS",
+    "PAY24G_SCOPED_NESTED_IDEMPOTENCY": "PASS",
+    "PAY24G_MIGRATION_ROUNDTRIP": "PASS",
+    "PAY24G_PG16_LIVE_PAYMENT_BOUNDARY": "PASS",
+    "PAY24G_STAGE0_LIVE_EVIDENCE": "DENIED",
+    "PAY24G_ROLLBACK_LIVE_APPLICATION": "DENIED",
+    "PAY24G_PUBLIC_LIVE_PAYMENT_ROUTE": "ABSENT",
+    "PAY24G_CAPTURE_API": "ABSENT",
+    "PAY24G_LIVE_PROVIDER_NETWORK_CI": 0,
+    "PAY24G_REAL_MONEY_MOVEMENT_CI": 0,
+    "PAY24G_REAL_MONEY_CANARY": "NOT_EXECUTED",
+    "PAY24_STAGE1_LIVE_ACTIVATION": "NOT_AUTHORIZED",
+    "PAY23_ENTERPRISE_PAYMENT_SYSTEM": "NOT_CERTIFIED"
+  }
+}
