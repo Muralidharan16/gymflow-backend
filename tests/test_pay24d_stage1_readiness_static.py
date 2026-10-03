@@ -3,8 +3,15 @@ from __future__ import annotations
 import ast
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import uuid
 
+import pytest
+
+from app.observability.metrics_bootstrap import (
+    configure_process_runtime_metrics,
+    service_name_for_profile,
+)
 from app.payment_activation.domain import (
     ActivationAuthorization,
     ActivationCapability,
@@ -88,6 +95,23 @@ def test_entitlement_runtime_requires_tls_and_observability() -> None:
     assert "forbidden provider/cloud secrets" in config
     assert '"entitlement_worker"' in bootstrap
     assert "P8_METRICS_OTLP_ENDPOINT" in overlay
+
+
+
+def test_entitlement_observability_bootstrap_is_required_before_worker_start() -> None:
+    settings = SimpleNamespace(
+        is_production=True,
+        process_profile="entitlement_worker",
+        P8_METRICS_OTLP_ENDPOINT="",
+        P8_METRICS_EXPORT_INTERVAL_SECONDS=30.0,
+        P8_METRICS_EXPORT_TIMEOUT_SECONDS=5.0,
+        ENVIRONMENT="production",
+    )
+    with pytest.raises(RuntimeError, match="requires P8_METRICS_OTLP_ENDPOINT"):
+        configure_process_runtime_metrics(settings)
+    assert service_name_for_profile("entitlement_worker") == (
+        "doers-entitlement_worker-runtime"
+    )
 
 
 def test_stage1_tasks_are_explicitly_routed_but_not_scheduled() -> None:

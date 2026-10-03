@@ -373,8 +373,17 @@ def test_pay24d_stage1_readiness_contracts_pass_under_p2d_certification() -> Non
     pay24d.test_pay24d_revision_and_stage0_authority_are_frozen()
     pay24d.test_stage1_entitlement_deployment_template_is_disabled_and_secret_isolated()
     pay24d.test_entitlement_runtime_requires_tls_and_observability()
+    pay24d.test_entitlement_observability_bootstrap_is_required_before_worker_start()
     pay24d.test_stage1_tasks_are_explicitly_routed_but_not_scheduled()
     pay24d.test_pay24d_observability_is_aggregate_and_non_authoritative()
     pay24d.test_stage1_rollback_runbook_is_fail_closed()
+    pay24d.test_stage1_internal_canary_is_exact_sha_authorized_and_kill_switched()
     pay24d.test_zero_money_canary_checklist_preserves_stage0()
+
+    from tests import test_process_database_profile_boundary as process_boundary
+
+    process_boundary.test_entitlement_worker_profile_has_only_entitlement_database_identity()
+    process_boundary.test_entitlement_worker_rejects_other_database_credentials()
+    process_boundary.test_entitlement_worker_requires_verify_full_database_tls()
+    process_boundary.test_entitlement_worker_rejects_unrelated_cloud_and_provider_secrets()
 
