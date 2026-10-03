@@ -1,6 +1,6 @@
 fastapi>=0.111
 uvicorn[standard]
-SQLAlchemy>=2.0
+SQLAlchemy[asyncio]>=2.0
 GeoAlchemy2==0.20.0
 asyncpg
 psycopg[binary]>=3.3,<4
