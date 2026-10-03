@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 import uuid
 
@@ -44,37 +45,39 @@ def _config(**overrides) -> RazorpayLiveConfig:
     return RazorpayLiveConfig(**values)
 
 
-@pytest.mark.asyncio
-async def test_live_order_adapter_builds_one_fixed_origin_order_request() -> None:
-    transport = _FakeTransport()
-    config = _config()
-    adapter = RazorpayLiveCheckoutAdapter(
-        config=config,
-        client=RazorpayLiveOrdersClient(
+def test_live_order_adapter_builds_one_fixed_origin_order_request() -> None:
+    async def scenario() -> None:
+        transport = _FakeTransport()
+        config = _config()
+        adapter = RazorpayLiveCheckoutAdapter(
             config=config,
-            transport=transport,
-        ),
-    )
-    request = ProviderCheckoutIntentRequest(
-        invoice_id=uuid.UUID("24f00000-0000-4000-8000-000000000001"),
-        amount=Decimal("1.00"),
-        currency_code="INR",
-        idempotency_key="pay24f-live-order-fixture",
-    )
+            client=RazorpayLiveOrdersClient(
+                config=config,
+                transport=transport,
+            ),
+        )
+        request = ProviderCheckoutIntentRequest(
+            invoice_id=uuid.UUID("24f00000-0000-4000-8000-000000000001"),
+            amount=Decimal("1.00"),
+            currency_code="INR",
+            idempotency_key="pay24f-live-order-fixture",
+        )
 
-    response = await adapter.create_checkout_intent(request)
+        response = await adapter.create_checkout_intent(request)
 
-    assert response.provider_code == "razorpay"
-    assert response.provider_order_ref == "order_pay24f_live_fixture"
-    assert response.status == "created"
-    assert adapter.environment == "live"
-    assert len(transport.calls) == 1
-    call = transport.calls[0]
-    assert call["url"] == "https://api.razorpay.com/v1/orders"
-    assert call["payload"]["amount"] == 100
-    assert call["payload"]["currency"] == "INR"
-    assert call["payload"]["receipt"].startswith("fin_")
-    assert call["headers"]["Authorization"].startswith("Basic ")
+        assert response.provider_code == "razorpay"
+        assert response.provider_order_ref == "order_pay24f_live_fixture"
+        assert response.status == "created"
+        assert adapter.environment == "live"
+        assert len(transport.calls) == 1
+        call = transport.calls[0]
+        assert call["url"] == "https://api.razorpay.com/v1/orders"
+        assert call["payload"]["amount"] == 100
+        assert call["payload"]["currency"] == "INR"
+        assert call["payload"]["receipt"].startswith("fin_")
+        assert call["headers"]["Authorization"].startswith("Basic ")
+
+    asyncio.run(scenario())
 
 
 def test_live_config_rejects_test_key_before_transport() -> None:
