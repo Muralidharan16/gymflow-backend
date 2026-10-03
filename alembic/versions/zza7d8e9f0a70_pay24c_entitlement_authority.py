@@ -1219,9 +1219,13 @@ def _install_refund_enqueue() -> None:
 
 
 def _install_entitlement_runtime() -> None:
-    op.execute("GRANT USAGE ON SCHEMA app_secure TO entitlement_runtime")
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
+        # app_security_owner owns app_secure; migration_owner intentionally
+        # remains schema-blind.
+        op.execute(
+            "GRANT USAGE ON SCHEMA app_secure TO entitlement_runtime"
+        )
         op.execute(
             r"""
             CREATE FUNCTION app_secure.pay24c_claim_entitlement_commands(
@@ -2179,6 +2183,29 @@ def _install_entitlement_runtime() -> None:
 
 
 def _post_install_proof(bind) -> None:
+    if bool(
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_schema_privilege("
+                "'migration_owner','app_secure','USAGE')"
+            )
+        ).scalar_one()
+    ):
+        raise RuntimeError(
+            "PAY24-C widened migration_owner into app_secure"
+        )
+    if not bool(
+        bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_schema_privilege("
+                "'entitlement_runtime','app_secure','USAGE')"
+            )
+        ).scalar_one()
+    ):
+        raise RuntimeError(
+            "PAY24-C entitlement runtime lacks app_secure USAGE"
+        )
+
     # Runtime roles may execute only their exact PAY-24-C interface and must
     # never receive direct DML on protected entitlement tables.
     protected = (
@@ -2366,6 +2393,9 @@ def downgrade() -> None:
         ).all()
         for signature, definition in definitions:
             op.execute(str(definition))
+        op.execute(
+            "REVOKE USAGE ON SCHEMA app_secure FROM entitlement_runtime"
+        )
     finally:
         op.execute("RESET ROLE")
 
@@ -2378,7 +2408,6 @@ def downgrade() -> None:
         "ON public.member_entitlement_commands"
     )
     op.execute("DROP TABLE public.member_entitlement_commands RESTRICT")
-    op.execute("REVOKE USAGE ON SCHEMA app_secure FROM entitlement_runtime")
 
     rows = bind.execute(
         sa.text(

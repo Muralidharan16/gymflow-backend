@@ -65,6 +65,8 @@ def test_only_entitlement_runtime_receives_apply_command_execute() -> None:
     assert "app_secure.pay24c_apply_entitlement_command(uuid,uuid,bigint)" in source
     assert "TO entitlement_runtime" in source
     assert "GRANT USAGE ON SCHEMA app_secure TO entitlement_runtime" in source
+    assert "PAY24-C widened migration_owner into app_secure" in source
+    assert "PAY24-C entitlement runtime lacks app_secure USAGE" in source
     assert "PAY24-C protected term mutation requires entitlement_runtime" in source
     assert "PAY24-C protected V2 mutation requires entitlement_runtime" in source
     assert "PAY24-C freeze mutation requires entitlement_runtime" in source
