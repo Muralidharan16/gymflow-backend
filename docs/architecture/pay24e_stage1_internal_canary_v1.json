@@ -36,7 +36,7 @@
     "database_credentials": false,
     "provider_credentials": false
   },
-  "status": "certification_candidate",
+  "status": "certified",
   "gates": {
     "stage1_live_activation": "NOT_AUTHORIZED",
     "real_provider_calls": 0,
@@ -48,5 +48,19 @@
     "read_only": true,
     "exact_sha_required": true,
     "stage0_and_stage1_modes": true
+  },
+  "certification": {
+    "frozen_application_sha": "eb4732ac94d3a0eadd9ca9005f2e63665f3377d0",
+    "frozen_application_tree": "7554309f60f4e2d0d0654f57869c8b945d7ee4ad",
+    "certification_run_head_sha": "29099dfdca3ce57df60fefe544ecc1a07abbc612",
+    "p2d_workflow_run_id": 37107265551,
+    "p2d_conclusion": "success",
+    "fresh_postgresql_16": true,
+    "alembic_head": "zzc7d8e9f0a72",
+    "live_runtime_principal_attestation": true,
+    "stage0_commands_durable_but_unclaimable": true,
+    "exact_stage1_internal_org_canary": true,
+    "rollback_closing_blocks_claim_and_mutation": true,
+    "adversarial_role_reverification": true
   }
 }
