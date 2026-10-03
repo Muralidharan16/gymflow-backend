@@ -22,7 +22,29 @@ depends_on = None
 
 _MIGRATION_OWNER = "migration_owner"
 _SECURITY_OWNER = "app_security_owner"
-_RESERVE = "app_secure.reserve_finance_provider_operation(uuid,text,text,text,text,text)"
+_RESERVE_NAME = "reserve_finance_provider_operation"
+_RESERVE_ARGTYPES = "uuid, text, text, text, text, text"
+
+
+def _reserve_definition(bind) -> str | None:
+    return bind.execute(
+        sa.text(
+            """
+            SELECT pg_catalog.pg_get_functiondef(p.oid)
+            FROM pg_catalog.pg_proc AS p
+            JOIN pg_catalog.pg_namespace AS n
+              ON n.oid = p.pronamespace
+            WHERE n.nspname = 'app_secure'
+              AND p.proname = :function_name
+              AND p.prokind = 'f'
+              AND pg_catalog.oidvectortypes(p.proargtypes) = :argtypes
+            """
+        ),
+        {
+            "function_name": _RESERVE_NAME,
+            "argtypes": _RESERVE_ARGTYPES,
+        },
+    ).scalar_one_or_none()
 
 
 def _preflight(bind) -> None:
@@ -48,19 +70,10 @@ def _preflight(bind) -> None:
     if int(live_rows) != 0:
         raise RuntimeError("PAY-24-F unexpected predecessor live operations")
 
-    definition = bind.execute(
-        sa.text(
-            """
-            SELECT pg_catalog.pg_get_functiondef(
-                pg_catalog.to_regprocedure(:signature)
-            )
-            """
-        ),
-        {"signature": _RESERVE},
-    ).scalar_one_or_none()
+    definition = _reserve_definition(bind)
     if not definition:
         raise RuntimeError("PAY-24-F predecessor reserve function missing")
-    if str(definition).count(
+    if definition.count(
         "p_environment NOT IN ('sandbox','test')"
     ) != 1:
         raise RuntimeError("PAY-24-F predecessor environment gate drift")
@@ -72,18 +85,9 @@ def upgrade() -> None:
     op.execute("SET LOCAL statement_timeout='30s'")
     _preflight(bind)
 
-    definition = str(
-        bind.execute(
-            sa.text(
-                """
-                SELECT pg_catalog.pg_get_functiondef(
-                    pg_catalog.to_regprocedure(:signature)
-                )
-                """
-            ),
-            {"signature": _RESERVE},
-        ).scalar_one()
-    )
+    definition = _reserve_definition(bind)
+    if definition is None:
+        raise RuntimeError("PAY-24-F reserve function disappeared")
 
     op.execute(
         "ALTER TABLE finance.provider_operations "
@@ -124,17 +128,10 @@ def upgrade() -> None:
     if "'live'::" not in str(check) and "'live'" not in str(check):
         raise RuntimeError("PAY-24-F live provider-operation constraint missing")
 
-    current = bind.execute(
-        sa.text(
-            """
-            SELECT pg_catalog.pg_get_functiondef(
-                pg_catalog.to_regprocedure(:signature)
-            )
-            """
-        ),
-        {"signature": _RESERVE},
-    ).scalar_one()
-    if "p_environment NOT IN ('sandbox','test','live')" not in str(current):
+    current = _reserve_definition(bind)
+    if current is None:
+        raise RuntimeError("PAY-24-F live reserve function disappeared")
+    if "p_environment NOT IN ('sandbox','test','live')" not in current:
         raise RuntimeError("PAY-24-F live reserve capability missing")
     if "record_provider_webhook" in successor:
         raise RuntimeError("PAY-24-F checkout migration touched webhook authority")
@@ -153,18 +150,9 @@ def downgrade() -> None:
             "PAY-24-F downgrade refused while live provider operations exist"
         )
 
-    current = str(
-        bind.execute(
-            sa.text(
-                """
-                SELECT pg_catalog.pg_get_functiondef(
-                    pg_catalog.to_regprocedure(:signature)
-                )
-                """
-            ),
-            {"signature": _RESERVE},
-        ).scalar_one()
-    )
+    current = _reserve_definition(bind)
+    if current is None:
+        raise RuntimeError("PAY-24-F live reserve function disappeared")
     if current.count(
         "p_environment NOT IN ('sandbox','test','live')"
     ) != 1:
