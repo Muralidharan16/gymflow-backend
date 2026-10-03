@@ -13,10 +13,11 @@ from psycopg.errors import InsufficientPrivilege
 APP_URL=os.environ.get("PAY24G_APP_DATABASE_URL")
 RECON_URL=os.environ.get("PAY24G_RECONCILIATION_DATABASE_URL")
 CONFIG_URL=os.environ.get("PAY24G_CONFIG_DATABASE_URL")
+MIGRATION_URL=os.environ.get("PAY24G_MIGRATION_DATABASE_URL")
 ADMIN_URL=os.environ.get("PAY24G_ADMIN_DATABASE_URL")
 
 pytestmark=pytest.mark.skipif(
-    not (APP_URL and RECON_URL and CONFIG_URL and ADMIN_URL),
+    not (APP_URL and RECON_URL and CONFIG_URL and MIGRATION_URL and ADMIN_URL),
     reason="PAY-24-G fresh PostgreSQL harness is not configured",
 )
 
@@ -166,6 +167,18 @@ def _seed():
 
 def _cleanup():
     _reset_stage0()
+
+    # PAY-2 intentionally preserves immutable-history fixture authority only
+    # for migration_owner.  Use that reduced identity for payment_events
+    # instead of bypassing or disabling the production immutability trigger.
+    with psycopg.connect(MIGRATION_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM finance.payment_events WHERE payment_id=%s",
+                (PAYMENT,),
+            )
+        conn.commit()
+
     with psycopg.connect(ADMIN_URL) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -173,8 +186,10 @@ def _cleanup():
                 (ORG,),
             )
             cur.execute(
-                "DELETE FROM finance.payment_events WHERE payment_id=%s",
-                (PAYMENT,),
+                "DELETE FROM finance.idempotency_keys "
+                "WHERE organization_id=%s "
+                "AND idempotency_key LIKE 'pay24g:%%'",
+                (ORG,),
             )
             cur.execute("DELETE FROM finance.payments WHERE id=%s",(PAYMENT,))
             cur.execute("DELETE FROM finance.legal_entities WHERE id=%s",(ENTITY,))
