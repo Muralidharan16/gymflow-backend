@@ -69,12 +69,22 @@ jobs:
             tests/test_p3a_auth_runtime_decoupling.py \
             tests/test_pay24f_terminal_live_order_static.py \
             tests/test_pay24f_razorpay_live.py \
-            tests/test_pay24f_live_order_pg16.py
+            tests/test_pay24f_live_order_pg16.py \
+            alembic/versions/zze7d8e9f0a74_pay24g_live_payment_authority.py \
+            app/finance_core/services/pay24g_live_payment_evidence.py \
+            scripts/pay24g_terminal_payment_canary.py \
+            tests/test_pay24g_live_payment_static.py \
+            tests/test_pay24g_live_payment_evidence.py \
+            tests/test_pay24g_terminal_canary_static.py \
+            tests/test_pay24g_live_payment_pg16.py
           python -m pytest --noconftest -q \
             tests/test_runtime_principal_attestation.py \
             tests/test_p3a_auth_runtime_decoupling.py \
             tests/test_pay24f_terminal_live_order_static.py \
-            tests/test_pay24f_razorpay_live.py
+            tests/test_pay24f_razorpay_live.py \
+            tests/test_pay24g_live_payment_static.py \
+            tests/test_pay24g_live_payment_evidence.py \
+            tests/test_pay24g_terminal_canary_static.py
           python -s scripts/verify_runtime_identity_routing.py
           bash -n scripts/ci/certify_runtime_principal_negative_paths.sh
 
@@ -178,16 +188,16 @@ jobs:
           DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
         run: python -s -m alembic -c alembic.ini upgrade head
 
-      - name: PAY-24-F pristine migration downgrade and re-upgrade
+      - name: PAY-24-G pristine migration downgrade and re-upgrade
         env:
           DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
         run: |
-          python -s -m alembic -c alembic.ini downgrade zzc7d8e9f0a72
+          python -s -m alembic -c alembic.ini downgrade zzd7d8e9f0a73
           python -s -m alembic -c alembic.ini upgrade head
           psql "postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p2d" \
             -X -v ON_ERROR_STOP=1 -Atc "SELECT version_num FROM alembic_version" \
-            | grep -Fx 'zzd7d8e9f0a73'
-          echo 'PAY24F_MIGRATION_ROUNDTRIP=PASS'
+            | grep -Fx 'zze7d8e9f0a74'
+          echo 'PAY24G_MIGRATION_ROUNDTRIP=PASS'
 
       - name: Verify exact live runtime principal bindings
         env:
@@ -218,6 +228,39 @@ jobs:
           echo 'PAY24F_LIVE_ORDER_PG16=PASS'
           echo 'PAY24F_LIVE_PROVIDER_NETWORK=0'
           echo 'PAY24F_REAL_MONEY_MOVEMENT=0'
+
+      - name: Provision temporary PAY-24-G reconciliation login
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          CREATE ROLE finance_reconciliation_test_runtime LOGIN PASSWORD 'ci-finance-reconciliation-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          ALTER ROLE finance_reconciliation_test_runtime SET row_security = 'on';
+          ALTER ROLE finance_reconciliation_test_runtime SET statement_timeout = '15s';
+          ALTER ROLE finance_reconciliation_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE finance_reconciliation_test_runtime SET idle_in_transaction_session_timeout = '30s';
+          GRANT finance_reconciliation_runtime TO finance_reconciliation_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT CONNECT ON DATABASE gymflow_p2d TO finance_reconciliation_test_runtime;
+          SQL
+
+      - name: PAY-24-G live captured-payment authority on real PG16
+        env:
+          PAY24G_APP_DATABASE_URL: postgresql://app_test_runtime:ci-app-runtime@127.0.0.1:5432/gymflow_p2d
+          PAY24G_RECONCILIATION_DATABASE_URL: postgresql://finance_reconciliation_test_runtime:ci-finance-reconciliation-runtime@127.0.0.1:5432/gymflow_p2d
+          PAY24G_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-finance-config-runtime@127.0.0.1:5432/gymflow_p2d
+          PAY24G_ADMIN_DATABASE_URL: postgresql://postgres:ci-p2d-postgres@127.0.0.1:5432/gymflow_p2d
+        run: |
+          python -m pytest --noconftest -q --maxfail=1 tests/test_pay24g_live_payment_pg16.py
+          echo 'PAY24G_LIVE_PAYMENT_PG16=PASS'
+          echo 'PAY24G_LIVE_PROVIDER_NETWORK=0'
+          echo 'PAY24G_REAL_MONEY_MOVEMENT=0'
+
+      - name: Remove temporary PAY-24-G reconciliation login
+        if: always()
+        run: |
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          REVOKE CONNECT ON DATABASE gymflow_p2d FROM finance_reconciliation_test_runtime;
+          REVOKE finance_reconciliation_runtime FROM finance_reconciliation_test_runtime;
+          DROP ROLE IF EXISTS finance_reconciliation_test_runtime;
+          SQL
 
       - name: Prove runtime principal drift rejects fail closed
         env:
