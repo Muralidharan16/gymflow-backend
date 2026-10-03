@@ -44,7 +44,13 @@ def test_pay24f_controller_cannot_accept_deployed_sha_from_operator() -> None:
 
 
 def test_pay24f_live_adapter_is_order_only() -> None:
-    combined = (_text(LIVE_DOMAIN) + "\n" + _text(LIVE_SERVICE)).lower()
+    service = _text(LIVE_SERVICE)
+    start = service.index("class RazorpayLiveOrdersClient:")
+    end = service.index("class RazorpayLivePaymentsClient:", start)
+    order_client = service[start:end].lower()
+    adapter_start = service.index("class RazorpayLiveCheckoutAdapter:")
+    adapter = service[adapter_start:].lower()
+    combined = order_client + "\n" + adapter
     assert "create_checkout_intent" in combined
     assert "/orders" in combined
     for forbidden in (

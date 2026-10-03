@@ -256,11 +256,26 @@ jobs:
       - name: Remove temporary PAY-24-G reconciliation login
         if: always()
         run: |
-          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-          REVOKE CONNECT ON DATABASE gymflow_p2d FROM finance_reconciliation_test_runtime;
-          REVOKE finance_reconciliation_runtime FROM finance_reconciliation_test_runtime;
-          DROP ROLE IF EXISTS finance_reconciliation_test_runtime;
-          SQL
+          if command -v psql >/dev/null 2>&1 && command -v pg_isready >/dev/null 2>&1 && pg_isready -q; then
+            sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+            DO $cleanup$
+            BEGIN
+              IF EXISTS (
+                SELECT 1 FROM pg_catalog.pg_roles
+                WHERE rolname='finance_reconciliation_test_runtime'
+              ) THEN
+                REVOKE CONNECT ON DATABASE gymflow_p2d
+                  FROM finance_reconciliation_test_runtime;
+                REVOKE finance_reconciliation_runtime
+                  FROM finance_reconciliation_test_runtime;
+                DROP ROLE finance_reconciliation_test_runtime;
+              END IF;
+            END
+            $cleanup$;
+            SQL
+          else
+            echo 'PAY24G_RECONCILIATION_LOGIN_CLEANUP=NOT_NEEDED'
+          fi
 
       - name: Prove runtime principal drift rejects fail closed
         env:

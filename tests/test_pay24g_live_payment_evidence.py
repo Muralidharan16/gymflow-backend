@@ -68,69 +68,28 @@ def _signature(order_id: str, payment_id: str) -> str:
     ).hex()
 
 
-@pytest.mark.asyncio
-async def test_terminal_live_evidence_requires_signature_and_captured_api_state():
-    order_id="order_pay24gfixture"
-    payment_id="pay_pay24gfixture"
-    transport=_FetchTransport({
-        "id": payment_id,
-        "order_id": order_id,
-        "amount": 100,
-        "currency": "INR",
-        "status": "captured",
-        "captured": True,
-    })
-    client=RazorpayLivePaymentsClient(config=_config(),transport=transport)
-    service=FinanceTerminalLivePaymentEvidenceService(
-        object(),
-        key_secret="pay24g-secret-fixture",
-        payments_client=client,
-    )
-    repo=_Repo()
-    service._repo=repo
-
-    result=await service.confirm_captured_payment(
-        ConfirmTerminalLivePaymentCommand(
-            provider_order_ref=order_id,
-            provider_payment_ref=payment_id,
-            checkout_signature=_signature(order_id,payment_id),
-            expected_amount_subunits=100,
-            expected_currency="INR",
-        )
-    )
-
-    assert result.payment_status == "captured"
-    assert len(transport.calls) == 1
-    assert transport.calls[0]["url"].endswith(f"/payments/{payment_id}")
-    assert len(repo.calls) == 1
-    assert repo.calls[0]["provider_code"] == "razorpay"
-    assert repo.calls[0]["event_type"] == "payment.captured"
-
-
-@pytest.mark.asyncio
-async def test_terminal_live_evidence_rejects_authorized_not_captured():
-    order_id="order_pay24gauthorized"
-    payment_id="pay_pay24gauthorized"
-    client=RazorpayLivePaymentsClient(
-        config=_config(),
+def test_terminal_live_evidence_requires_signature_and_captured_api_state():
+    async def scenario():
+        order_id="order_pay24gfixture"
+        payment_id="pay_pay24gfixture"
         transport=_FetchTransport({
             "id": payment_id,
             "order_id": order_id,
             "amount": 100,
             "currency": "INR",
-            "status": "authorized",
-            "captured": False,
-        }),
-    )
-    service=FinanceTerminalLivePaymentEvidenceService(
-        object(),
-        key_secret="pay24g-secret-fixture",
-        payments_client=client,
-    )
-    service._repo=_Repo()
-
-    with pytest.raises(ValueError, match="not captured"):
-        await service.confirm_captured_payment(
+            "status": "captured",
+            "captured": True,
+        })
+        client=RazorpayLivePaymentsClient(config=_config(),transport=transport)
+        service=FinanceTerminalLivePaymentEvidenceService(
+            object(),
+            key_secret="pay24g-secret-fixture",
+            payments_client=client,
+        )
+        repo=_Repo()
+        service._repo=repo
+    
+        result=await service.confirm_captured_payment(
             ConfirmTerminalLivePaymentCommand(
                 provider_order_ref=order_id,
                 provider_payment_ref=payment_id,
@@ -139,4 +98,49 @@ async def test_terminal_live_evidence_rejects_authorized_not_captured():
                 expected_currency="INR",
             )
         )
-    assert service._repo.calls == []
+    
+        assert result.payment_status == "captured"
+        assert len(transport.calls) == 1
+        assert transport.calls[0]["url"].endswith(f"/payments/{payment_id}")
+        assert len(repo.calls) == 1
+        assert repo.calls[0]["provider_code"] == "razorpay"
+        assert repo.calls[0]["event_type"] == "payment.captured"
+    
+
+    asyncio.run(scenario())
+
+def test_terminal_live_evidence_rejects_authorized_not_captured():
+    async def scenario():
+        order_id="order_pay24gauthorized"
+        payment_id="pay_pay24gauthorized"
+        client=RazorpayLivePaymentsClient(
+            config=_config(),
+            transport=_FetchTransport({
+                "id": payment_id,
+                "order_id": order_id,
+                "amount": 100,
+                "currency": "INR",
+                "status": "authorized",
+                "captured": False,
+            }),
+        )
+        service=FinanceTerminalLivePaymentEvidenceService(
+            object(),
+            key_secret="pay24g-secret-fixture",
+            payments_client=client,
+        )
+        service._repo=_Repo()
+    
+        with pytest.raises(ValueError, match="not captured"):
+            await service.confirm_captured_payment(
+                ConfirmTerminalLivePaymentCommand(
+                    provider_order_ref=order_id,
+                    provider_payment_ref=payment_id,
+                    checkout_signature=_signature(order_id,payment_id),
+                    expected_amount_subunits=100,
+                    expected_currency="INR",
+                )
+            )
+        assert service._repo.calls == []
+
+    asyncio.run(scenario())
