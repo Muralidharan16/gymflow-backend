@@ -62,6 +62,7 @@ _QUEUES = frozenset(
     }
 )
 _LIFECYCLE_STATES = frozenset({"pending", "stuck", "failed", "unknown"})
+_ENTITLEMENT_COMMAND_STATES = frozenset({"pending", "processing", "failed", "review_required"})
 _FINANCE_SIGNALS = frozenset(
     {
         "reconciliation_mismatch",
@@ -216,6 +217,18 @@ class RuntimeMetrics:
         self.queue_redeliveries = meter.create_counter("doers.queue.redeliveries", unit="1")
         self.queue_dead_letters = meter.create_gauge("doers.queue.dead_letters", unit="1")
         self.worker_available = meter.create_gauge("doers.queue.worker.available", unit="1")
+
+        # PAY-24-D entitlement readiness. PostgreSQL remains authoritative;
+        # these are aggregate, low-cardinality operational projections only.
+        self.entitlement_commands = meter.create_gauge(
+            "doers.entitlement.commands", unit="1"
+        )
+        self.entitlement_oldest_pending_age = meter.create_gauge(
+            "doers.entitlement.oldest_pending_age", unit="s"
+        )
+        self.entitlement_expired_processing_leases = meter.create_gauge(
+            "doers.entitlement.expired_processing_leases", unit="1"
+        )
 
         # Lifecycle
         self.lifecycle_depth = meter.create_gauge("doers.lifecycle.state.depth", unit="1")
@@ -409,6 +422,38 @@ class RuntimeMetrics:
         return self._safe(
             "worker_state", lambda: self.worker_available.set(1 if available else 0, attrs)
         )
+
+    def entitlement_snapshot(
+        self,
+        *,
+        pending: int,
+        processing: int,
+        failed: int,
+        review_required: int,
+        oldest_pending_age_seconds: float,
+        expired_processing_leases: int,
+    ) -> bool:
+        values = {
+            "pending": pending,
+            "processing": processing,
+            "failed": failed,
+            "review_required": review_required,
+        }
+
+        def _record() -> None:
+            for state, value in values.items():
+                self.entitlement_commands.set(
+                    _count(value),
+                    {"state": _enum(state, _ENTITLEMENT_COMMAND_STATES)},
+                )
+            self.entitlement_oldest_pending_age.set(
+                _finite_non_negative(oldest_pending_age_seconds), {}
+            )
+            self.entitlement_expired_processing_leases.set(
+                _count(expired_processing_leases), {}
+            )
+
+        return self._safe("entitlement_snapshot", _record)
 
     def lifecycle_snapshot(self, *, pending: int, stuck: int, failed: int) -> bool:
         values = {"pending": pending, "stuck": stuck, "failed": failed}

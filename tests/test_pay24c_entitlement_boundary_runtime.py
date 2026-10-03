@@ -475,3 +475,35 @@ def test_succeeded_refund_is_enqueued_then_revokes_entitlement_exactly_once():
     assert pay4._status(term) == "terminated"
     assert _access() is False
     assert _command_count("recompute_refund") == 1
+
+def test_pay24d_readiness_snapshot_is_aggregate_read_only_and_role_fenced():
+    term = _seed_finance_ready()
+    _finance_consume_and_ack(_finance_claim())
+    assert pay4._status(term) == "pending_payment"
+
+    before = _command_count()
+    with psycopg.connect(ENTITLEMENT_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM app_secure.pay24d_entitlement_readiness_snapshot()"
+            )
+            row = cur.fetchone()
+        conn.rollback()
+
+    assert row[0] >= 1
+    assert row[1] == 0
+    assert row[2] == 0
+    assert row[3] == 0
+    assert row[4] >= 0
+    assert row[5] == 0
+    assert _command_count() == before
+    assert pay4._status(term) == "pending_payment"
+
+    with psycopg.connect(WORKER_URL) as conn:
+        with conn.cursor() as cur:
+            with pytest.raises(InsufficientPrivilege):
+                cur.execute(
+                    "SELECT * FROM app_secure.pay24d_entitlement_readiness_snapshot()"
+                )
+        conn.rollback()
+

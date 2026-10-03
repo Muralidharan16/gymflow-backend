@@ -90,6 +90,7 @@ celery_app.conf.update(
             for task_name in MAINTENANCE_TASKS
         },
         "app.tasks.entitlement_dispatcher.run": {"queue": ENTITLEMENT_QUEUE},
+        "app.tasks.refund_entitlement_dispatcher.run": {"queue": WORKER_QUEUE},
     },
 )
 

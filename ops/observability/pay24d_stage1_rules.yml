@@ -1,0 +1,35 @@
+groups:
+  - name: doers-pay24d-stage1-readiness
+    rules:
+      - alert: DoersEntitlementWorkerMissing
+        expr: 'absent_over_time(doers_platform_observability_heartbeat{profile="entitlement_worker"}[5m])'
+        for: 0m
+        labels:
+          severity: critical
+          owner: finance-platform
+        annotations:
+          runbook: docs/runbooks/pay24d/entitlement-stage1.md
+      - alert: DoersEntitlementCommandBacklogOld
+        expr: 'doers_entitlement_oldest_pending_age_seconds > 300'
+        for: 5m
+        labels:
+          severity: critical
+          owner: finance-platform
+        annotations:
+          runbook: docs/runbooks/pay24d/entitlement-stage1.md
+      - alert: DoersEntitlementCommandFailure
+        expr: 'doers_entitlement_commands{state=~"failed|review_required"} > 0'
+        for: 0m
+        labels:
+          severity: critical
+          owner: finance-platform
+        annotations:
+          runbook: docs/runbooks/pay24d/entitlement-stage1.md
+      - alert: DoersEntitlementExpiredProcessingLease
+        expr: 'doers_entitlement_expired_processing_leases > 0'
+        for: 2m
+        labels:
+          severity: critical
+          owner: finance-platform
+        annotations:
+          runbook: docs/runbooks/pay24d/entitlement-stage1.md

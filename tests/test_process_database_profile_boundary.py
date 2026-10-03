@@ -24,7 +24,7 @@ _WORKER = "postgresql+asyncpg://worker_login@localhost/doers"
 _MAINTENANCE = "postgresql+asyncpg://maintenance_login@localhost/doers"
 _FINANCE_CONFIG = "postgresql+psycopg://finance_config_deployment@localhost/doers"
 _PAYMENT = "postgresql+asyncpg://finance_payment_deployment@localhost/doers"
-_ENTITLEMENT = "postgresql+asyncpg://entitlement_deployment@localhost/doers"
+_ENTITLEMENT = "postgresql+asyncpg://entitlement_deployment@db.internal/doers?ssl=verify-full"
 _P4E_METRICS = "https://otel.example.test/v1/metrics"
 
 
@@ -187,6 +187,8 @@ def test_entitlement_worker_profile_has_only_entitlement_database_identity() -> 
         DOERS_PROCESS_PROFILE="entitlement_worker",
         CELERY_WORKER_PROFILE="entitlement",
         ENTITLEMENT_DATABASE_URL=_ENTITLEMENT,
+        AWS_ACCESS_KEY_ID="",
+        AWS_SECRET_ACCESS_KEY="",
     )
     assert settings.ENTITLEMENT_DATABASE_URL == _ENTITLEMENT
     assert settings.AUTH_DATABASE_URL == ""
@@ -208,8 +210,34 @@ def test_entitlement_worker_rejects_other_database_credentials() -> None:
             CELERY_WORKER_PROFILE="entitlement",
             ENTITLEMENT_DATABASE_URL=_ENTITLEMENT,
             WORKER_DATABASE_URL=_WORKER,
+            AWS_ACCESS_KEY_ID="",
+            AWS_SECRET_ACCESS_KEY="",
         )
 
+
+
+def test_entitlement_worker_requires_verify_full_database_tls() -> None:
+    with pytest.raises(ValidationError, match="verify-full"):
+        _settings(
+            DOERS_PROCESS_PROFILE="entitlement_worker",
+            CELERY_WORKER_PROFILE="entitlement",
+            ENTITLEMENT_DATABASE_URL=(
+                "postgresql+asyncpg://entitlement_deployment@db.internal/doers"
+            ),
+            AWS_ACCESS_KEY_ID="",
+            AWS_SECRET_ACCESS_KEY="",
+        )
+
+
+def test_entitlement_worker_rejects_unrelated_cloud_and_provider_secrets() -> None:
+    with pytest.raises(ValidationError, match="forbidden provider/cloud secrets"):
+        _settings(
+            DOERS_PROCESS_PROFILE="entitlement_worker",
+            CELERY_WORKER_PROFILE="entitlement",
+            ENTITLEMENT_DATABASE_URL=_ENTITLEMENT,
+            AWS_ACCESS_KEY_ID="should-not-be-present",
+            AWS_SECRET_ACCESS_KEY="",
+        )
 
 def test_finance_config_profile_rejects_ordinary_database_credentials() -> None:
     with pytest.raises(ValidationError, match="forbidden database variables"):

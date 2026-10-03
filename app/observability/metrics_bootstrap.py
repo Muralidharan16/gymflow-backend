@@ -12,7 +12,7 @@ from typing import Any
 from app.observability.runtime_metrics import configure_runtime_metrics, runtime_metrics
 
 
-_RUNTIME_PROFILES = frozenset({"api", "worker", "maintenance", "beat"})
+_RUNTIME_PROFILES = frozenset({"api", "worker", "maintenance", "entitlement_worker", "beat"})
 
 
 def service_name_for_profile(profile: str) -> str:

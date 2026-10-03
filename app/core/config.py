@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from pydantic import model_validator
 
@@ -40,6 +41,22 @@ def _validate_notification_metrics(endpoint: str, interval: float, timeout: floa
     if not 0 < timeout <= 60:
         raise ValueError(
             "NOTIFICATION_METRICS_EXPORT_TIMEOUT_SECONDS must be in the range (0, 60]"
+        )
+
+
+def _validate_entitlement_database_transport(url: str) -> None:
+    parsed = urlparse(url.strip())
+    if parsed.scheme != "postgresql+asyncpg" or not parsed.hostname:
+        raise ValueError(
+            "production entitlement worker requires a postgresql+asyncpg database URL"
+        )
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    tls_values = query.get("ssl") or query.get("sslmode") or ()
+    tls_mode = str(tls_values[-1] if tls_values else "").strip().lower()
+    if tls_mode != "verify-full":
+        raise ValueError(
+            "production entitlement database transport requires ssl=verify-full "
+            "or sslmode=verify-full"
         )
 
 
@@ -82,11 +99,17 @@ class Settings(DoersSettingsSchema):
                 raise ValueError("application database configuration is required")
             return self
 
+        profile_hint = self.DOERS_PROCESS_PROFILE.strip().lower()
         mandatory_secrets = {
             "SECRET_KEY": self.SECRET_KEY,
-            "AWS_ACCESS_KEY_ID": self.AWS_ACCESS_KEY_ID,
-            "AWS_SECRET_ACCESS_KEY": self.AWS_SECRET_ACCESS_KEY,
         }
+        if profile_hint != "entitlement_worker":
+            mandatory_secrets.update(
+                {
+                    "AWS_ACCESS_KEY_ID": self.AWS_ACCESS_KEY_ID,
+                    "AWS_SECRET_ACCESS_KEY": self.AWS_SECRET_ACCESS_KEY,
+                }
+            )
         missing_secrets = sorted(
             name for name, value in mandatory_secrets.items()
             if not str(value or "").strip()
@@ -167,6 +190,32 @@ class Settings(DoersSettingsSchema):
             )
             raise ValueError("Production database identity configuration is unsafe: " + detail)
 
+        if profile_name == "entitlement_worker":
+            _validate_entitlement_database_transport(
+                self._raw_runtime_value("entitlement")
+            )
+            forbidden_entitlement_secrets = {
+                "AWS_ACCESS_KEY_ID": self.AWS_ACCESS_KEY_ID,
+                "AWS_SECRET_ACCESS_KEY": self.AWS_SECRET_ACCESS_KEY,
+                "P4C_RESEND_API_KEY": self.P4C_RESEND_API_KEY,
+                "RESEND_WEBHOOK_SECRET": self.RESEND_WEBHOOK_SECRET,
+                "WA_ACCESS_TOKEN": self.WA_ACCESS_TOKEN,
+                "GOOGLE_MAPS_SERVER_API_KEY": self.GOOGLE_MAPS_SERVER_API_KEY,
+                "RAZORPAY_KEY_ID": os.environ.get("RAZORPAY_KEY_ID", ""),
+                "RAZORPAY_KEY_SECRET": os.environ.get("RAZORPAY_KEY_SECRET", ""),
+                "RAZORPAY_WEBHOOK_SECRET": os.environ.get("RAZORPAY_WEBHOOK_SECRET", ""),
+            }
+            leaked = sorted(
+                name
+                for name, value in forbidden_entitlement_secrets.items()
+                if str(value or "").strip()
+            )
+            if leaked:
+                raise ValueError(
+                    "entitlement_worker received forbidden provider/cloud secrets: "
+                    + ", ".join(leaked)
+                )
+
         notification_mode = self.NOTIFICATION_EMAIL_PROVIDER_MODE.strip().lower()
         if notification_mode not in {"disabled", "resend"}:
             raise ValueError(
@@ -228,7 +277,7 @@ class Settings(DoersSettingsSchema):
         else:
             if notification_mode != "disabled" or notification_key or webhook_secret or notification_metrics_endpoint:
                 raise ValueError(
-                    "P4C notification provider/webhook/metrics configuration is forbidden for beat profiles"
+                    "P4C notification provider/webhook/metrics configuration is forbidden for this profile"
                 )
 
         p4e_metrics_endpoint = self.P4E_METRICS_OTLP_ENDPOINT.strip()

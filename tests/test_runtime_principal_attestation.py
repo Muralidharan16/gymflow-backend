@@ -367,3 +367,14 @@ def test_pay24c_governance_closed_inventories_pass_under_p2d_certification() -> 
     app_private_contract.test_complete_app_private_ddl_category_allowlist_is_exact()
     app_secure_contract.test_complete_app_secure_ddl_category_allowlist_is_exact()
 
+def test_pay24d_stage1_readiness_contracts_pass_under_p2d_certification() -> None:
+    from tests import test_pay24d_stage1_readiness_static as pay24d
+
+    pay24d.test_pay24d_revision_and_stage0_authority_are_frozen()
+    pay24d.test_stage1_entitlement_deployment_template_is_disabled_and_secret_isolated()
+    pay24d.test_entitlement_runtime_requires_tls_and_observability()
+    pay24d.test_stage1_tasks_are_explicitly_routed_but_not_scheduled()
+    pay24d.test_pay24d_observability_is_aggregate_and_non_authoritative()
+    pay24d.test_stage1_rollback_runbook_is_fail_closed()
+    pay24d.test_zero_money_canary_checklist_preserves_stage0()
+

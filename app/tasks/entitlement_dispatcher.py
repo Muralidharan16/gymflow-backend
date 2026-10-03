@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import uuid
 from typing import Any
@@ -13,12 +14,14 @@ from app.core.database import (
     entitlement_async_session_maker,
     update_session_context,
 )
+from app.observability.runtime_metrics import runtime_metrics
 
 
 _BATCH_SIZE = 100
 _LEASE_SECONDS = 600
 _MAX_BATCHES = 10
 _SAFE_ERROR = re.compile(r"[^A-Za-z0-9:._/-]+")
+logger = logging.getLogger("doers.pay24d.entitlement")
 
 
 def _error_code(error: Exception) -> str:
@@ -123,6 +126,27 @@ async def _apply(command: dict[str, Any], worker_id: uuid.UUID) -> str:
             return str(status)
 
 
+async def _record_readiness_snapshot() -> None:
+    try:
+        async with entitlement_async_session_maker() as session:
+            row = await session.execute(
+                text("SELECT * FROM app_secure.pay24d_entitlement_readiness_snapshot()")
+            )
+            snapshot = dict(row.mappings().one())
+            await session.rollback()
+        runtime_metrics().entitlement_snapshot(
+            pending=snapshot["pending_count"],
+            processing=snapshot["processing_count"],
+            failed=snapshot["failed_count"],
+            review_required=snapshot["review_required_count"],
+            oldest_pending_age_seconds=snapshot["oldest_pending_age_seconds"],
+            expired_processing_leases=snapshot["expired_processing_leases"],
+        )
+    except Exception:
+        # Observability never becomes entitlement business authority.
+        logger.warning("PAY-24-D readiness snapshot unavailable", exc_info=True)
+
+
 async def _run() -> dict[str, int]:
     worker_id = uuid.uuid4()
     summary = {"claimed": 0, "succeeded": 0, "pending": 0, "failed": 0}
@@ -137,6 +161,7 @@ async def _run() -> dict[str, int]:
                 summary[outcome] += 1
         if len(commands) < _BATCH_SIZE:
             break
+    await _record_readiness_snapshot()
     return summary
 
 

@@ -63,7 +63,7 @@ def configure_worker_runtime_metrics(*args, **kwargs) -> None:
     del args, kwargs
     configure_process_runtime_metrics(settings)
     runtime_metrics().worker_state(
-        profile=settings.celery_worker_profile or settings.process_profile,
+        profile=settings.process_profile,
         available=True,
     )
 
@@ -72,7 +72,7 @@ def configure_worker_runtime_metrics(*args, **kwargs) -> None:
 def shutdown_worker_runtime_metrics(*args, **kwargs) -> None:
     del args, kwargs
     runtime_metrics().worker_state(
-        profile=settings.celery_worker_profile or settings.process_profile,
+        profile=settings.process_profile,
         available=False,
     )
     shutdown_runtime_metrics()
