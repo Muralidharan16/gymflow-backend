@@ -348,3 +348,22 @@ def test_repository_runtime_identity_routing_guard_passes() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+def test_pay24c_governance_closed_inventories_pass_under_p2d_certification() -> None:
+    """Evidence-only bridge: execute PAY-24-C closed inventories in P2D CI."""
+    from tests import test_cluster_role_contract_manifests as cluster_contracts
+    from tests import test_dafd_app_private_owner_context_boundary as app_private_contract
+    from tests import test_migration_app_secure_owner_context_boundary as app_secure_contract
+
+    cluster_contracts.test_exact_managed_role_contract()
+    cluster_contracts.test_role_settings_are_exact()
+    cluster_contracts.test_exact_membership_and_grantor_contract()
+    cluster_contracts.test_runtime_capabilities_are_not_migration_owner_memberships()
+    cluster_contracts.test_ownership_manifest_uses_only_allowed_owners()
+    cluster_contracts.test_ownership_manifest_matches_reviewed_projection()
+    cluster_contracts.test_pay24c_entitlement_ownership_projection_is_exact()
+
+    app_private_contract.test_private_and_executor_sensitive_migration_inventories_are_closed()
+    app_private_contract.test_complete_app_private_ddl_category_allowlist_is_exact()
+    app_secure_contract.test_complete_app_secure_ddl_category_allowlist_is_exact()
+
