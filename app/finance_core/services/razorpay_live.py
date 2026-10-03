@@ -14,8 +14,10 @@ from app.finance_core.domain.provider_boundary import (
 )
 from app.finance_core.domain.razorpay_live import (
     RazorpayLiveConfig,
+    RazorpayLivePayment,
     RazorpayLiveProviderError,
     map_razorpay_live_order_response,
+    map_razorpay_live_payment_response,
     validate_razorpay_live_config,
 )
 from app.finance_core.domain.razorpay_sandbox import (
@@ -31,6 +33,15 @@ _APPROVED_API = "https://api.razorpay.com/v1"
 
 
 class RazorpayLiveTransport(Protocol):
+    async def get_json(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        ...
+
     async def post_json(
         self,
         *,
@@ -47,6 +58,77 @@ class RazorpayLiveHTTPTransport:
 
     def __init__(self, *, connection_factory=http.client.HTTPSConnection):
         self._connection_factory = connection_factory
+
+
+    async def get_json(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        if not url.startswith(_APPROVED_API + "/"):
+            raise RazorpayLiveProviderError(
+                "RAZORPAY_URL_UNSAFE",
+                "Razorpay live URL is not approved.",
+                failure_class="final",
+            )
+        if timeout_seconds <= 0 or timeout_seconds > 10:
+            raise RazorpayLiveProviderError(
+                "RAZORPAY_TIMEOUT_UNSAFE",
+                "Razorpay live timeout is invalid.",
+                failure_class="final",
+            )
+        path = url.removeprefix("https://" + _APPROVED_HOST)
+        safe_headers = {"Authorization": headers.get("Authorization", "")}
+        try:
+            connection = self._connection_factory(
+                _APPROVED_HOST,
+                timeout=timeout_seconds,
+            )
+            connection.request("GET", path, headers=safe_headers)
+            response = connection.getresponse()
+            response_body = response.read()
+        except TimeoutError as exc:
+            raise RazorpayLiveProviderError(
+                "RAZORPAY_TIMEOUT",
+                "Razorpay live payment fetch timed out.",
+                failure_class="retryable",
+            ) from exc
+        except RazorpayLiveProviderError:
+            raise
+        except Exception as exc:
+            raise RazorpayLiveProviderError(
+                "RAZORPAY_NETWORK_ERROR",
+                "Razorpay live payment fetch failed.",
+                failure_class="retryable",
+            ) from exc
+        finally:
+            close = getattr(locals().get("connection"), "close", None)
+            if callable(close):
+                close()
+
+        if response.status < 200 or response.status >= 300:
+            raise RazorpayLiveProviderError(
+                "RAZORPAY_HTTP_ERROR",
+                "Razorpay live payment fetch returned a non-success status.",
+                provider_status_code=response.status,
+            )
+        try:
+            parsed = json.loads(response_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RazorpayLiveProviderError(
+                "RAZORPAY_RESPONSE_INVALID",
+                "Razorpay live payment fetch response was invalid.",
+                failure_class="unknown",
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise RazorpayLiveProviderError(
+                "RAZORPAY_RESPONSE_INVALID",
+                "Razorpay live payment fetch response was invalid.",
+                failure_class="unknown",
+            )
+        return parsed
 
     async def post_json(
         self,
@@ -168,6 +250,43 @@ class RazorpayLiveOrdersClient:
             f"{self._config.key_id}:{self._config.key_secret}".encode("utf-8")
         ).decode("ascii")
         return f"Basic {token}"
+
+
+
+class RazorpayLivePaymentsClient:
+    def __init__(
+        self,
+        *,
+        config: RazorpayLiveConfig,
+        transport: RazorpayLiveTransport,
+    ) -> None:
+        self._config = validate_razorpay_live_config(config)
+        self._transport = transport
+
+    async def fetch_payment(self, payment_id: str) -> RazorpayLivePayment:
+        normalized = payment_id.strip() if isinstance(payment_id, str) else ""
+        if (
+            not normalized.startswith("pay_")
+            or len(normalized) > 200
+            or not normalized.replace("_", "").isalnum()
+        ):
+            raise RazorpayLiveProviderError(
+                "RAZORPAY_PAYMENT_ID_INVALID",
+                "Razorpay live payment id was invalid.",
+                failure_class="final",
+            )
+        token = base64.b64encode(
+            f"{self._config.key_id}:{self._config.key_secret}".encode("utf-8")
+        ).decode("ascii")
+        payload = await self._transport.get_json(
+            url=f"{self._config.api_base_url}/payments/{normalized}",
+            headers={"Authorization": f"Basic {token}"},
+            timeout_seconds=float(self._config.timeout_seconds),
+        )
+        return map_razorpay_live_payment_response(
+            payload=payload,
+            expected_payment_id=normalized,
+        )
 
 
 class RazorpayLiveCheckoutAdapter:

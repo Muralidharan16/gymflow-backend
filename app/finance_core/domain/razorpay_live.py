@@ -31,6 +31,16 @@ _MERCHANT_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{2,63}$")
 
 
 @dataclass(frozen=True, slots=True)
+class RazorpayLivePayment:
+    payment_id: str
+    order_id: str
+    amount_subunits: int
+    currency_code: str
+    status: str
+    captured: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RazorpayLiveConfig:
     mode: RazorpayLiveMode
     key_id: str
@@ -165,6 +175,70 @@ def map_razorpay_live_order_response(
         status=status,
     )
 
+
+
+def map_razorpay_live_payment_response(
+    *,
+    payload: dict[str, Any],
+    expected_payment_id: str,
+) -> RazorpayLivePayment:
+    try:
+        payment_id = str(payload["id"])
+        order_id = str(payload["order_id"])
+        amount_subunits = int(payload["amount"])
+        currency_code = str(payload["currency"]).upper()
+        status = str(payload["status"]).lower()
+        captured = payload["captured"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RazorpayLiveProviderError(
+            "RAZORPAY_PAYMENT_RESPONSE_INVALID",
+            "Razorpay live payment response was invalid.",
+            failure_class="unknown",
+        ) from exc
+
+    if payment_id != expected_payment_id:
+        raise RazorpayLiveProviderError(
+            "RAZORPAY_PAYMENT_ID_MISMATCH",
+            "Razorpay live payment id did not match the requested payment.",
+            failure_class="unknown",
+        )
+    if (
+        not payment_id.startswith("pay_")
+        or not payment_id.replace("_", "").isalnum()
+        or not order_id.startswith("order_")
+        or not order_id.replace("_", "").isalnum()
+    ):
+        raise RazorpayLiveProviderError(
+            "RAZORPAY_PAYMENT_REFERENCE_INVALID",
+            "Razorpay live payment references were invalid.",
+            failure_class="unknown",
+        )
+    if amount_subunits < 0 or len(currency_code) != 3 or not currency_code.isalpha():
+        raise RazorpayLiveProviderError(
+            "RAZORPAY_PAYMENT_VALUE_INVALID",
+            "Razorpay live payment value was invalid.",
+            failure_class="unknown",
+        )
+    if status not in {"created", "authorized", "captured", "failed", "refunded"}:
+        raise RazorpayLiveProviderError(
+            "RAZORPAY_PAYMENT_STATUS_INVALID",
+            "Razorpay live payment status was unsupported.",
+            failure_class="unknown",
+        )
+    if type(captured) is not bool:
+        raise RazorpayLiveProviderError(
+            "RAZORPAY_PAYMENT_CAPTURE_FLAG_INVALID",
+            "Razorpay live payment capture flag was invalid.",
+            failure_class="unknown",
+        )
+    return RazorpayLivePayment(
+        payment_id=payment_id,
+        order_id=order_id,
+        amount_subunits=amount_subunits,
+        currency_code=currency_code,
+        status=status,
+        captured=captured,
+    )
 
 def _redact_key_id(value: str) -> str:
     value = str(value or "")
