@@ -58,13 +58,23 @@ jobs:
             app/core/celery_app.py \
             app/core/supervisor.py \
             alembic/versions/c47d8e9f0a1e_p3a_auth_runtime_decoupling.py \
+            alembic/versions/zzd7d8e9f0a73_pay24f_live_checkout_environment.py \
+            app/payment_activation/release_identity.py \
+            app/finance_core/domain/razorpay_live.py \
+            app/finance_core/services/razorpay_live.py \
+            scripts/pay24f_terminal_canary.py \
             scripts/verify_runtime_principal_bindings.py \
             scripts/verify_runtime_identity_routing.py \
             tests/test_runtime_principal_attestation.py \
-            tests/test_p3a_auth_runtime_decoupling.py
+            tests/test_p3a_auth_runtime_decoupling.py \
+            tests/test_pay24f_terminal_live_order_static.py \
+            tests/test_pay24f_razorpay_live.py \
+            tests/test_pay24f_live_order_pg16.py
           python -m pytest --noconftest -q \
             tests/test_runtime_principal_attestation.py \
-            tests/test_p3a_auth_runtime_decoupling.py
+            tests/test_p3a_auth_runtime_decoupling.py \
+            tests/test_pay24f_terminal_live_order_static.py \
+            tests/test_pay24f_razorpay_live.py
           python -s scripts/verify_runtime_identity_routing.py
           bash -n scripts/ci/certify_runtime_principal_negative_paths.sh
 
@@ -168,6 +178,17 @@ jobs:
           DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
         run: python -s -m alembic -c alembic.ini upgrade head
 
+      - name: PAY-24-F pristine migration downgrade and re-upgrade
+        env:
+          DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+        run: |
+          python -s -m alembic -c alembic.ini downgrade zzc7d8e9f0a72
+          python -s -m alembic -c alembic.ini upgrade head
+          psql "postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p2d" \
+            -X -v ON_ERROR_STOP=1 -Atc "SELECT version_num FROM alembic_version" \
+            | grep -Fx 'zzd7d8e9f0a73'
+          echo 'PAY24F_MIGRATION_ROUNDTRIP=PASS'
+
       - name: Verify exact live runtime principal bindings
         env:
           DATABASE_URL: ${{ env.API_DATABASE_URL }}
@@ -186,6 +207,17 @@ jobs:
         run: |
           python -m pytest --noconftest -q --maxfail=1             tests/test_pay24c_entitlement_boundary_runtime.py
           echo 'PAY24C_RUNTIME_PG16=PASS'
+
+      - name: PAY-24-F live-order database boundary on real PG16
+        env:
+          PAY24F_APP_DATABASE_URL: postgresql://app_test_runtime:ci-app-runtime@127.0.0.1:5432/gymflow_p2d
+          PAY24F_PAYMENT_DATABASE_URL: postgresql://finance_payment_test_runtime:ci-finance-payment-runtime@127.0.0.1:5432/gymflow_p2d
+          PAY24F_ADMIN_DATABASE_URL: postgresql://postgres:ci-p2d-postgres@127.0.0.1:5432/gymflow_p2d
+        run: |
+          python -m pytest --noconftest -q --maxfail=1 tests/test_pay24f_live_order_pg16.py
+          echo 'PAY24F_LIVE_ORDER_PG16=PASS'
+          echo 'PAY24F_LIVE_PROVIDER_NETWORK=0'
+          echo 'PAY24F_REAL_MONEY_MOVEMENT=0'
 
       - name: Prove runtime principal drift rejects fail closed
         env:
