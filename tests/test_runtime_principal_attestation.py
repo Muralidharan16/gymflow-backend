@@ -5,9 +5,12 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+from sqlalchemy.engine import make_url
+
 from app.core.cluster_role_contract import load_contract_bundle
 from app.core.runtime_principal_attestation import (
     RuntimePrincipalObservation,
+    _psycopg_url,
     evaluate_runtime_binding_set,
     evaluate_runtime_principal_observation,
     load_runtime_binding_contract,
@@ -68,6 +71,21 @@ def _codes(observation: RuntimePrincipalObservation) -> set[str]:
         item.code
         for item in evaluate_runtime_principal_observation(observation)
     }
+
+
+def test_psycopg_attestation_translates_asyncpg_ssl_to_libpq_sslmode() -> None:
+    raw = (
+        "postgresql+asyncpg://entitlement_login:secret@db.internal/doers"
+        "?ssl=verify-full&application_name=entitlement"
+    )
+    converted = make_url(_psycopg_url(raw))
+
+    assert converted.drivername == "postgresql+psycopg"
+    assert converted.username == "entitlement_login"
+    assert converted.database == "doers"
+    assert "ssl" not in converted.query
+    assert converted.query["sslmode"] == "verify-full"
+    assert converted.query["application_name"] == "entitlement"
 
 
 def test_runtime_binding_contract_matches_p2b_p2c_role_model() -> None:
