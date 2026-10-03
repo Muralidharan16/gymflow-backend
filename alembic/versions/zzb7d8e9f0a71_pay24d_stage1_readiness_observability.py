@@ -72,8 +72,19 @@ def _preflight(bind) -> None:
     for role in (*_ALLOWED, *_DENIED):
         _require_reduced_role(bind, role)
     if bind.execute(
-        sa.text("SELECT pg_catalog.to_regprocedure(:signature) IS NOT NULL"),
-        {"signature": _FUNCTION},
+        sa.text(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM pg_catalog.pg_proc AS p
+                JOIN pg_catalog.pg_namespace AS n
+                  ON n.oid=p.pronamespace
+                WHERE n.nspname='app_secure'
+                  AND p.proname='pay24d_entitlement_readiness_snapshot'
+                  AND p.pronargs=0
+            )
+            """
+        )
     ).scalar_one():
         raise RuntimeError("PAY-24-D readiness snapshot already exists")
 
@@ -160,26 +171,32 @@ def _install() -> None:
 
 
 def _prove(bind) -> None:
-    owner = bind.execute(
+    function_row = bind.execute(
         sa.text(
             """
-            SELECT pg_catalog.pg_get_userbyid(p.proowner)
-            FROM pg_catalog.pg_proc p
-            WHERE p.oid=pg_catalog.to_regprocedure(:signature)
+            SELECT p.oid,pg_catalog.pg_get_userbyid(p.proowner) AS owner
+            FROM pg_catalog.pg_proc AS p
+            JOIN pg_catalog.pg_namespace AS n
+              ON n.oid=p.pronamespace
+            WHERE n.nspname='app_secure'
+              AND p.proname='pay24d_entitlement_readiness_snapshot'
+              AND p.pronargs=0
             """
-        ),
-        {"signature": _FUNCTION},
-    ).scalar_one()
-    if owner != _SECURITY_OWNER:
+        )
+    ).one_or_none()
+    if function_row is None:
+        raise RuntimeError("PAY-24-D readiness function missing after install")
+    function_oid = int(function_row[0])
+    if str(function_row[1]) != _SECURITY_OWNER:
         raise RuntimeError("PAY-24-D readiness function owner drift")
 
     for role in _ALLOWED:
         if not bind.execute(
             sa.text(
                 "SELECT pg_catalog.has_function_privilege("
-                ":role,pg_catalog.to_regprocedure(:signature),'EXECUTE')"
+                ":role,CAST(:oid AS oid),'EXECUTE')"
             ),
-            {"role": role, "signature": _FUNCTION},
+            {"role": role, "oid": function_oid},
         ).scalar_one():
             raise RuntimeError(f"PAY-24-D missing readiness EXECUTE: {role}")
 
@@ -187,9 +204,9 @@ def _prove(bind) -> None:
         if bind.execute(
             sa.text(
                 "SELECT pg_catalog.has_function_privilege("
-                ":role,pg_catalog.to_regprocedure(:signature),'EXECUTE')"
+                ":role,CAST(:oid AS oid),'EXECUTE')"
             ),
-            {"role": role, "signature": _FUNCTION},
+            {"role": role, "oid": function_oid},
         ).scalar_one():
             raise RuntimeError(f"PAY-24-D leaked readiness EXECUTE: {role}")
 
@@ -205,13 +222,13 @@ def _prove(bind) -> None:
                         pg_catalog.acldefault('f',p.proowner)
                     )
                 ) AS acl
-                WHERE p.oid=pg_catalog.to_regprocedure(:signature)
+                WHERE p.oid=CAST(:oid AS oid)
                   AND acl.grantee=0
                   AND acl.privilege_type='EXECUTE'
             )
             """
         ),
-        {"signature": _FUNCTION},
+        {"oid": function_oid},
     ).scalar_one():
         raise RuntimeError("PAY-24-D leaked readiness EXECUTE to PUBLIC")
 
