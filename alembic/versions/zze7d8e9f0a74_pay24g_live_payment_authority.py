@@ -26,6 +26,67 @@ _SECURITY_OWNER = "app_security_owner"
 _RECONCILIATION = "finance_reconciliation_runtime"
 _CONFIRM_NAME = "confirm_finance_provider_evidence"
 _APPLY_NAME = "apply_finance_confirmed_payment"
+_RESERVE_NAME = "reserve_finance_idempotency"
+_COMPLETE_NAME = "complete_finance_idempotency"
+
+_OLD_RESERVE_GATE = """            IF NOT pg_catalog.pg_has_role(session_user, 'app_runtime', 'MEMBER') THEN
+                RAISE EXCEPTION 'P4D finance idempotency requires app_runtime' USING ERRCODE='42501';
+            END IF;
+"""
+
+_NEW_RESERVE_GATE = """            IF NOT pg_catalog.pg_has_role(session_user, 'app_runtime', 'MEMBER') THEN
+                IF NOT (
+                    p_scope = 'finance.provider.capture.confirm'
+                    AND pg_catalog.pg_has_role(
+                        session_user,
+                        'finance_reconciliation_runtime',
+                        'MEMBER'
+                    )
+                ) THEN
+                    RAISE EXCEPTION 'P4D finance idempotency requires app_runtime' USING ERRCODE='42501';
+                END IF;
+            END IF;
+"""
+
+_OLD_COMPLETE_GATE = """            IF NOT pg_catalog.pg_has_role(session_user, 'app_runtime', 'MEMBER') THEN
+                RAISE EXCEPTION 'P4D finance idempotency completion requires app_runtime' USING ERRCODE='42501';
+            END IF;
+"""
+
+_NEW_COMPLETE_GATE = """            IF NOT pg_catalog.pg_has_role(session_user, 'app_runtime', 'MEMBER') THEN
+                IF NOT pg_catalog.pg_has_role(
+                    session_user,
+                    'finance_reconciliation_runtime',
+                    'MEMBER'
+                ) THEN
+                    RAISE EXCEPTION 'P4D finance idempotency completion requires app_runtime' USING ERRCODE='42501';
+                END IF;
+            END IF;
+"""
+
+_COMPLETE_VALIDATION_MARKER = """            IF p_id IS NULL OR p_response_ref IS NULL OR pg_catalog.btrim(p_response_ref) = '' THEN
+                RAISE EXCEPTION 'P4D finance idempotency completion invalid' USING ERRCODE='22023';
+            END IF;
+"""
+
+_COMPLETE_RECON_SCOPE_FENCE = """
+            IF NOT pg_catalog.pg_has_role(
+                session_user,
+                'app_runtime',
+                'MEMBER'
+            ) THEN
+                PERFORM 1
+                FROM finance.idempotency_keys key_data
+                WHERE key_data.id = p_id
+                  AND key_data.organization_id = v_current_org_id
+                  AND key_data.scope = 'finance.provider.capture.confirm';
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION
+                        'PAY-24-G finance idempotency completion scope unavailable'
+                        USING ERRCODE='42501';
+                END IF;
+            END IF;
+"""
 
 _OLD_PROVIDER_GATE = """                IF NOT pg_catalog.pg_has_role(
                     session_user,
@@ -177,7 +238,7 @@ def _replace_once(source: str, old: str, new: str, label: str) -> str:
     return source.replace(old, new, 1)
 
 
-def _preflight(bind) -> tuple[str, str]:
+def _preflight(bind) -> tuple[str, str, str, str]:
     identity = bind.execute(
         sa.text("SELECT session_user::text,current_user::text")
     ).one()
@@ -214,12 +275,20 @@ def _preflight(bind) -> tuple[str, str]:
 
     confirm = _definition(bind, _CONFIRM_NAME, 10)
     apply = _definition(bind, _APPLY_NAME, 6)
+    reserve = _definition(bind, _RESERVE_NAME, 5)
+    complete = _definition(bind, _COMPLETE_NAME, 2)
     if _OLD_PROVIDER_GATE not in confirm:
         raise RuntimeError("PAY-24-G provider-evidence predecessor drift")
     if _LIVE_STAGE_FENCE.strip() in confirm:
         raise RuntimeError("PAY-24-G live evidence fence already exists")
     if _LIVE_APPLY_FENCE.strip() in apply:
         raise RuntimeError("PAY-24-G live application fence already exists")
+    if _OLD_RESERVE_GATE not in reserve:
+        raise RuntimeError("PAY-24-G idempotency reserve predecessor drift")
+    if _OLD_COMPLETE_GATE not in complete:
+        raise RuntimeError("PAY-24-G idempotency completion predecessor drift")
+    if _COMPLETE_RECON_SCOPE_FENCE.strip() in complete:
+        raise RuntimeError("PAY-24-G idempotency completion fence already exists")
 
     live_events = bind.execute(
         sa.text(
@@ -229,14 +298,14 @@ def _preflight(bind) -> tuple[str, str]:
     ).scalar_one()
     if int(live_events) != 0:
         raise RuntimeError("PAY-24-G unexpected predecessor live payment events")
-    return confirm, apply
+    return confirm, apply, reserve, complete
 
 
 def upgrade() -> None:
     bind = op.get_bind()
     op.execute("SET LOCAL lock_timeout='3s'")
     op.execute("SET LOCAL statement_timeout='30s'")
-    confirm, apply = _preflight(bind)
+    confirm, apply, reserve, complete = _preflight(bind)
 
     confirm = _replace_once(
         confirm,
@@ -256,9 +325,29 @@ def upgrade() -> None:
         _APPLY_PAYMENT_MARKER + _LIVE_APPLY_FENCE,
         "live payment application Stage-1 fence",
     )
+    reserve = _replace_once(
+        reserve,
+        _OLD_RESERVE_GATE,
+        _NEW_RESERVE_GATE,
+        "live evidence idempotency reserve gate",
+    )
+    complete = _replace_once(
+        complete,
+        _OLD_COMPLETE_GATE,
+        _NEW_COMPLETE_GATE,
+        "live evidence idempotency completion role gate",
+    )
+    complete = _replace_once(
+        complete,
+        _COMPLETE_VALIDATION_MARKER,
+        _COMPLETE_VALIDATION_MARKER + _COMPLETE_RECON_SCOPE_FENCE,
+        "live evidence idempotency completion scope fence",
+    )
 
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
+        op.execute(reserve)
+        op.execute(complete)
         op.execute(confirm)
         op.execute(apply)
         op.execute(
@@ -279,6 +368,8 @@ def upgrade() -> None:
 
     current_confirm = _definition(bind, _CONFIRM_NAME, 10)
     current_apply = _definition(bind, _APPLY_NAME, 6)
+    current_reserve = _definition(bind, _RESERVE_NAME, 5)
+    current_complete = _definition(bind, _COMPLETE_NAME, 2)
     for token in (
         "finance_reconciliation_runtime",
         "PAY-24-G live provider evidence denied by Stage-1 authority",
@@ -287,6 +378,29 @@ def upgrade() -> None:
             raise RuntimeError(f"PAY-24-G confirm function missing {token}")
     if "PAY-24-G live payment application denied by Stage-1 authority" not in current_apply:
         raise RuntimeError("PAY-24-G apply function fence missing")
+    if "finance.provider.capture.confirm" not in current_reserve:
+        raise RuntimeError("PAY-24-G reserve helper scope fence missing")
+    if "PAY-24-G finance idempotency completion scope unavailable" not in current_complete:
+        raise RuntimeError("PAY-24-G completion helper scope fence missing")
+
+    reserve_signature = (
+        "app_secure.reserve_finance_idempotency("
+        "text,text,text,uuid,timestamp with time zone)"
+    )
+    complete_signature = "app_secure.complete_finance_idempotency(uuid,text)"
+    for signature in (reserve_signature, complete_signature):
+        can_execute = bind.execute(
+            sa.text(
+                "SELECT pg_catalog.has_function_privilege("
+                ":role,:signature,'EXECUTE')"
+            ),
+            {"role": _RECONCILIATION, "signature": signature},
+        ).scalar_one()
+        if can_execute:
+            raise RuntimeError(
+                "PAY-24-G reconciliation must not directly execute "
+                f"generic idempotency helper {signature}"
+            )
 
 
 def downgrade() -> None:
@@ -316,6 +430,8 @@ def downgrade() -> None:
 
     confirm = _definition(bind, _CONFIRM_NAME, 10)
     apply = _definition(bind, _APPLY_NAME, 6)
+    reserve = _definition(bind, _RESERVE_NAME, 5)
+    complete = _definition(bind, _COMPLETE_NAME, 2)
     confirm = _replace_once(
         confirm,
         _NEW_PROVIDER_GATE,
@@ -334,6 +450,24 @@ def downgrade() -> None:
         _APPLY_PAYMENT_MARKER,
         "live payment application fence downgrade",
     )
+    reserve = _replace_once(
+        reserve,
+        _NEW_RESERVE_GATE,
+        _OLD_RESERVE_GATE,
+        "idempotency reserve gate downgrade",
+    )
+    complete = _replace_once(
+        complete,
+        _NEW_COMPLETE_GATE,
+        _OLD_COMPLETE_GATE,
+        "idempotency completion role gate downgrade",
+    )
+    complete = _replace_once(
+        complete,
+        _COMPLETE_VALIDATION_MARKER + _COMPLETE_RECON_SCOPE_FENCE,
+        _COMPLETE_VALIDATION_MARKER,
+        "idempotency completion scope fence downgrade",
+    )
 
     op.execute("SET LOCAL ROLE app_security_owner")
     try:
@@ -350,6 +484,8 @@ def downgrade() -> None:
             "REVOKE USAGE ON SCHEMA app_secure "
             "FROM finance_reconciliation_runtime"
         )
+        op.execute(reserve)
+        op.execute(complete)
         op.execute(confirm)
         op.execute(apply)
     finally:

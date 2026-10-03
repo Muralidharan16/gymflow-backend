@@ -241,6 +241,22 @@ def test_live_evidence_is_role_and_stage_fenced_then_rollback_blocks_apply():
     with pytest.raises(InsufficientPrivilege):
         _confirm(RECON_URL)
 
+    with psycopg.connect(RECON_URL) as conn:
+        with conn.cursor() as cur:
+            _set_org(cur)
+            with pytest.raises(InsufficientPrivilege):
+                cur.execute(
+                    """
+                    SELECT * FROM app_secure.reserve_finance_idempotency(
+                        'finance.provider.capture.confirm',
+                        'pay24g:direct-helper-denied',
+                        %s,%s,clock_timestamp()+interval '7 days'
+                    )
+                    """,
+                    ("e"*64,ORG),
+                )
+        conn.rollback()
+
     _activate_stage1()
     confirmed=_confirm(RECON_URL)
     assert confirmed is not None

@@ -58,3 +58,19 @@ def test_pay24g_adds_no_public_live_http_route() -> None:
     routes=_text(ROUTES)
     assert "FinanceTerminalLivePaymentEvidenceService" not in routes
     assert "RazorpayLivePaymentsClient" not in routes
+
+def test_pay24g_reconciliation_uses_only_nested_scoped_idempotency() -> None:
+    source=_text(MIGRATION)
+    assert "p_scope = 'finance.provider.capture.confirm'" in source
+    assert "PAY-24-G finance idempotency completion scope unavailable" in source
+    assert "has_function_privilege(" in source
+    assert "reconciliation must not directly execute" in source
+    assert (
+        "GRANT EXECUTE ON FUNCTION\n"
+        "                app_secure.reserve_finance_idempotency"
+    ) not in source
+    assert (
+        "GRANT EXECUTE ON FUNCTION\n"
+        "                app_secure.complete_finance_idempotency"
+    ) not in source
+
