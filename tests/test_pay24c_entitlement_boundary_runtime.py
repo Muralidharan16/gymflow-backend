@@ -149,7 +149,8 @@ def _ensure_stage1_canary() -> None:
         """,
         (
             uuid.uuid4(), generation,
-            "pay24e-pg16-stage1", PAY24E_CANARY_SHA,
+            "pay24e-pg16-stage1-" + uuid.uuid4().hex[:12],
+            PAY24E_CANARY_SHA,
             PAY24E_AUTHORIZER, measured_at, PAY24E_ACTOR,
         ),
     )
