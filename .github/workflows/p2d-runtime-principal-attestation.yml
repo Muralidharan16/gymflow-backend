@@ -20,6 +20,7 @@ jobs:
       WORKER_DATABASE_URL: postgresql+asyncpg://worker_test_runtime:ci-worker-runtime@127.0.0.1:5432/gymflow_p2d
       MAINTENANCE_DATABASE_URL: postgresql+asyncpg://maintenance_test_runtime:ci-maintenance-runtime@127.0.0.1:5432/gymflow_p2d
       FINANCE_CONFIG_DATABASE_URL: postgresql://finance_config_deployment:ci-finance-config-runtime@127.0.0.1:5432/gymflow_p2d
+      ENTITLEMENT_DATABASE_URL: postgresql+asyncpg://entitlement_test_runtime:ci-entitlement-runtime@127.0.0.1:5432/gymflow_p2d
       REDIS_URL: redis://127.0.0.1:6379/0
       CELERY_BROKER_URL: redis://127.0.0.1:6379/1
       CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
@@ -86,11 +87,13 @@ jobs:
         run: |
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d postgres <<'SQL'
           ALTER ROLE migration_owner PASSWORD 'ci-migration-owner';
+          ALTER ROLE postgres PASSWORD 'ci-p2d-postgres';
           CREATE ROLE app_test_runtime LOGIN PASSWORD 'ci-app-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE auth_test_runtime LOGIN PASSWORD 'ci-auth-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE worker_test_runtime LOGIN PASSWORD 'ci-worker-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE maintenance_test_runtime LOGIN PASSWORD 'ci-maintenance-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
           CREATE ROLE finance_config_deployment LOGIN PASSWORD 'ci-finance-config-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE entitlement_test_runtime LOGIN PASSWORD 'ci-entitlement-runtime' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
 
           ALTER ROLE app_test_runtime SET row_security = 'on';
           ALTER ROLE app_test_runtime SET statement_timeout = '5s';
@@ -112,6 +115,10 @@ jobs:
           ALTER ROLE finance_config_deployment SET statement_timeout = '15s';
           ALTER ROLE finance_config_deployment SET lock_timeout = '2s';
           ALTER ROLE finance_config_deployment SET idle_in_transaction_session_timeout = '30s';
+          ALTER ROLE entitlement_test_runtime SET row_security = 'on';
+          ALTER ROLE entitlement_test_runtime SET statement_timeout = '15s';
+          ALTER ROLE entitlement_test_runtime SET lock_timeout = '2s';
+          ALTER ROLE entitlement_test_runtime SET idle_in_transaction_session_timeout = '30s';
 
           GRANT app_runtime TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT app_user TO app_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
@@ -120,9 +127,10 @@ jobs:
           GRANT worker_runtime TO worker_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT lifecycle_maintenance_runtime TO maintenance_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
           GRANT finance_config_runtime TO finance_config_deployment WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
+          GRANT entitlement_runtime TO entitlement_test_runtime WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;
 
           CREATE DATABASE gymflow_p2d OWNER migration_owner;
-          GRANT CONNECT ON DATABASE gymflow_p2d TO app_test_runtime, auth_test_runtime, worker_test_runtime, maintenance_test_runtime, finance_config_deployment;
+          GRANT CONNECT ON DATABASE gymflow_p2d TO app_test_runtime, auth_test_runtime, worker_test_runtime, maintenance_test_runtime, finance_config_deployment, entitlement_test_runtime;
           SQL
 
       - name: Verify P2B and P2C cluster contracts before HEAD
@@ -158,6 +166,19 @@ jobs:
           DATABASE_URL: ${{ env.API_DATABASE_URL }}
           ENVIRONMENT: production
         run: python -s scripts/verify_runtime_principal_bindings.py
+
+      - name: PAY-24-C real PG16 entitlement state machine
+        env:
+          PAY4_APP_DATABASE_URL: postgresql://app_test_runtime:ci-app-runtime@127.0.0.1:5432/gymflow_p2d
+          PAY4_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-worker-runtime@127.0.0.1:5432/gymflow_p2d
+          PAY4_MIGRATION_DATABASE_URL: postgresql://migration_owner:ci-migration-owner@127.0.0.1:5432/gymflow_p2d
+          PAY4_ADMIN_DATABASE_URL: postgresql://postgres:ci-p2d-postgres@127.0.0.1:5432/gymflow_p2d
+          PAY24C_WORKER_DATABASE_URL: postgresql://worker_test_runtime:ci-worker-runtime@127.0.0.1:5432/gymflow_p2d
+          PAY24C_ENTITLEMENT_DATABASE_URL: postgresql://entitlement_test_runtime:ci-entitlement-runtime@127.0.0.1:5432/gymflow_p2d
+          PAY24C_ADMIN_DATABASE_URL: postgresql://postgres:ci-p2d-postgres@127.0.0.1:5432/gymflow_p2d
+        run: |
+          python -m pytest --noconftest -q --maxfail=1             tests/test_pay24c_entitlement_boundary_runtime.py
+          echo 'PAY24C_RUNTIME_PG16=PASS'
 
       - name: Prove runtime principal drift rejects fail closed
         env:
