@@ -63,7 +63,8 @@ def test_pay24g_reconciliation_uses_only_nested_scoped_idempotency() -> None:
     source=_text(MIGRATION)
     assert "p_scope = 'finance.provider.capture.confirm'" in source
     assert "PAY-24-G finance idempotency completion scope unavailable" in source
-    assert "has_function_privilege(" in source
+    assert "pg_catalog.aclexplode(" in source
+    assert "acl.privilege_type='EXECUTE'" in source
     assert "reconciliation must not directly execute" in source
     assert (
         "GRANT EXECUTE ON FUNCTION\n"

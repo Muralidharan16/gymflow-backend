@@ -238,6 +238,47 @@ def _replace_once(source: str, old: str, new: str, label: str) -> str:
     return source.replace(old, new, 1)
 
 
+def _has_direct_execute_acl(
+    bind,
+    *,
+    function_name: str,
+    pronargs: int,
+    role_name: str,
+) -> bool:
+    return bool(
+        bind.execute(
+            sa.text(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM pg_catalog.pg_proc p
+                    JOIN pg_catalog.pg_namespace n
+                      ON n.oid=p.pronamespace
+                    CROSS JOIN LATERAL pg_catalog.aclexplode(
+                        coalesce(
+                            p.proacl,
+                            pg_catalog.acldefault('f',p.proowner)
+                        )
+                    ) acl
+                    JOIN pg_catalog.pg_roles grantee
+                      ON grantee.oid=acl.grantee
+                    WHERE n.nspname='app_secure'
+                      AND p.proname=:function_name
+                      AND p.pronargs=:pronargs
+                      AND grantee.rolname=:role_name
+                      AND acl.privilege_type='EXECUTE'
+                )
+                """
+            ),
+            {
+                "function_name": function_name,
+                "pronargs": pronargs,
+                "role_name": role_name,
+            },
+        ).scalar_one()
+    )
+
+
 def _preflight(bind) -> tuple[str, str, str, str]:
     identity = bind.execute(
         sa.text("SELECT session_user::text,current_user::text")
@@ -383,23 +424,19 @@ def upgrade() -> None:
     if "PAY-24-G finance idempotency completion scope unavailable" not in current_complete:
         raise RuntimeError("PAY-24-G completion helper scope fence missing")
 
-    reserve_signature = (
-        "app_secure.reserve_finance_idempotency("
-        "text,text,text,uuid,timestamp with time zone)"
-    )
-    complete_signature = "app_secure.complete_finance_idempotency(uuid,text)"
-    for signature in (reserve_signature, complete_signature):
-        can_execute = bind.execute(
-            sa.text(
-                "SELECT pg_catalog.has_function_privilege("
-                ":role,:signature,'EXECUTE')"
-            ),
-            {"role": _RECONCILIATION, "signature": signature},
-        ).scalar_one()
-        if can_execute:
+    for function_name, pronargs in (
+        (_RESERVE_NAME,5),
+        (_COMPLETE_NAME,2),
+    ):
+        if _has_direct_execute_acl(
+            bind,
+            function_name=function_name,
+            pronargs=pronargs,
+            role_name=_RECONCILIATION,
+        ):
             raise RuntimeError(
                 "PAY-24-G reconciliation must not directly execute "
-                f"generic idempotency helper {signature}"
+                f"generic idempotency helper {function_name}"
             )
 
 
