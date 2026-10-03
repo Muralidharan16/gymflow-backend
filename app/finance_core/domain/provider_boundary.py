@@ -19,7 +19,7 @@ class FinanceProviderConfigError(Exception):
     pass
 
 
-ProviderEnvironment = Literal["sandbox", "test"]
+ProviderEnvironment = Literal["sandbox", "test", "live"]
 ProviderFailureClass = Literal["retryable", "final", "unknown"]
 
 
