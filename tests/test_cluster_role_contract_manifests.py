@@ -20,8 +20,8 @@ OWNERSHIP_MANIFEST = (
     / "ownership.v1.json"
 )
 EXPECTED_OWNERSHIP_SHA256 = (
-    "761640ab44d051d59e485bae110528d3f"
-    "ae584788072ad7d6d9d26e2e698632c"
+    "26391ca386e1a3f67335e21cfd0b8ca6"
+    "a90bfbac275a29658fe55a2b13735cc2"
 )
 
 
@@ -336,7 +336,7 @@ def test_ownership_manifest_matches_reviewed_projection() -> None:
 
     ownership = json.loads(payload.decode("utf-8"))
     objects = ownership["objects"]
-    assert len(objects) == 245
+    assert len(objects) == 247
     assert not any(record["object"] == "IF" for record in objects)
     assert {
         "dynamic": False,
@@ -400,6 +400,20 @@ def test_pay24d_readiness_snapshot_ownership_projection_is_exact() -> None:
     assert record["target_owner"] == "app_security_owner"
     assert record["dynamic"] is False
     assert "aggregate Stage-1 entitlement readiness" in record["policy"]
+
+
+
+def test_pay24e_stage1_function_ownership_projection_is_exact() -> None:
+    bundle = load_contract_bundle()
+    by_name = {record["object"]: record for record in bundle.ownership["objects"]}
+    for name in (
+        "app_secure.pay24e_assert_stage1_entitlement_authority(UUID)",
+        "app_secure.pay24e_claim_entitlement_commands(UUID,INTEGER,INTEGER)",
+    ):
+        record = by_name[name]
+        assert record["object_type"] == "FUNCTION"
+        assert record["target_owner"] == "app_security_owner"
+        assert record["dynamic"] is False
 
 
 def test_cluster_roles_and_memberships_survive_downgrade() -> None:

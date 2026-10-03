@@ -664,6 +664,22 @@
     },
     {
       "dynamic": false,
+      "object": "app_secure.pay24e_assert_stage1_entitlement_authority(UUID)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-24-E Stage-1 entitlement authority assertion executes under app_security_owner and reads only durable PAY-24-A control-plane state.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
+      "object": "app_secure.pay24e_claim_entitlement_commands(UUID,INTEGER,INTEGER)",
+      "object_type": "FUNCTION",
+      "parent_relation": null,
+      "policy": "PAY-24-E Stage-1 canary command claim executes under app_security_owner and is exposed only to entitlement_runtime.",
+      "target_owner": "app_security_owner"
+    },
+    {
+      "dynamic": false,
       "object": "app_secure.pay4_guard_subscription_activation()",
       "object_type": "FUNCTION",
       "parent_relation": null,

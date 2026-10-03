@@ -158,6 +158,9 @@ _PAY24C_ENTITLEMENT_AUTHORITY_MIGRATION = (
 _PAY24D_STAGE1_READINESS_MIGRATION = (
     "zzb7d8e9f0a71_pay24d_stage1_readiness_observability.py"
 )
+_PAY24E_STAGE1_CANARY_MIGRATION = (
+    "zzc7d8e9f0a72_pay24e_stage1_internal_canary.py"
+)
 APP_SECURE_FILES.update(
     {
         _P2D_MIGRATION,
@@ -217,6 +220,7 @@ APP_SECURE_FILES.update(
         _PAY24B_REFUND_ADMISSION_BRIDGE_MIGRATION,
         _PAY24C_ENTITLEMENT_AUTHORITY_MIGRATION,
         _PAY24D_STAGE1_READINESS_MIGRATION,
+        _PAY24E_STAGE1_CANARY_MIGRATION,
     }
 )
 
@@ -482,6 +486,7 @@ def test_complete_app_secure_ddl_category_allowlist_is_exact() -> None:
         # No schema/view/policy DDL is broadened; exact owner and EXECUTE ACLs
         # are certified by PAY-24-D-specific tests and the migration itself.
         _PAY24D_STAGE1_READINESS_MIGRATION: set(),
+        _PAY24E_STAGE1_CANARY_MIGRATION: set(),
         A1.name: view_contract,
     }
     actual = {

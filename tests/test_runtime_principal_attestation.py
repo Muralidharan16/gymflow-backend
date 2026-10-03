@@ -387,3 +387,11 @@ def test_pay24d_stage1_readiness_contracts_pass_under_p2d_certification() -> Non
     process_boundary.test_entitlement_worker_requires_verify_full_database_tls()
     process_boundary.test_entitlement_worker_rejects_unrelated_cloud_and_provider_secrets()
 
+def test_pay24e_stage1_canary_contracts_pass_under_p2d_certification() -> None:
+    from tests import test_pay24e_stage1_canary_static as pay24e
+
+    pay24e.test_pay24e_migration_does_not_activate_stage1()
+    pay24e.test_stage0_claim_is_empty_and_old_claim_is_revoked()
+    pay24e.test_stage1_scope_is_exact_internal_org_and_minimal_four_switches()
+    pay24e.test_protected_mutations_recheck_stage1_authority()
+
