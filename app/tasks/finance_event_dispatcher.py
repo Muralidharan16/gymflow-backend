@@ -107,8 +107,9 @@ async def _consume_business_effect(
             },
         )
         consumed = dict(result.mappings().one())
-        # PAY-5 atomicity boundary: product mutation + consumed-event evidence
-        # commit together. Finance acknowledgement is deliberately separate.
+        # PAY-24-C successor boundary: durable entitlement command + consumed
+        # Finance-event evidence commit together. Entitlement mutation belongs
+        # exclusively to entitlement_runtime and is deliberately separate.
         await session.commit()
         return consumed
 
@@ -208,11 +209,11 @@ async def _process_claimed_event(
     try:
         await _acknowledge_finance(event, worker_id)
     except Exception as exc:
-        # The business mutation and consumption journal may already be durable.
-        # Never issue a compensating mutation or mark the event pending blindly.
-        # Lease expiry/reclaim will replay the consumption record and then ack.
+        # The durable entitlement command and consumption journal may already
+        # be committed. Never duplicate the command or mark Finance pending
+        # blindly. Lease reclaim replays the consumption record and then acks.
         logger.warning(
-            "PAY-5 product commit succeeded but Finance acknowledgement is pending",
+            "PAY-24-C entitlement command commit succeeded but Finance acknowledgement is pending",
             extra={
                 "finance_event_id": str(event["finance_event_id"]),
                 "worker_id": str(worker_id),

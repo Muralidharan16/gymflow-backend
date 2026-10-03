@@ -11,11 +11,12 @@ from app.core.redis_production_readiness import validate_redis_production_settin
 # P6: broker-facing production processes fail closed before Celery constructs a
 # broker connection.  API processes are covered by deployment preflight and do
 # not gain a second business-authority path through this guard.
-if settings.is_production and settings.process_profile in {"worker", "maintenance", "beat"}:
+if settings.is_production and settings.process_profile in {"worker", "maintenance", "entitlement_worker", "beat"}:
     validate_redis_production_settings(settings)
 
 
 WORKER_QUEUE = "worker"
+ENTITLEMENT_QUEUE = "entitlement"
 # Historical queue label retained for deployment compatibility. The process is
 # the isolated maintenance control plane and now hosts both lifecycle and
 # narrowly bounded platform-maintenance tasks.
@@ -79,11 +80,16 @@ celery_app.conf.update(
         "app.tasks.outbox_poller",
         "app.tasks.branch_outbox_poller",
         "app.tasks.finance_event_dispatcher",
+        "app.tasks.refund_entitlement_dispatcher",
+        "app.tasks.entitlement_dispatcher",
         "app.tasks.branch_lifecycle_sweeps",
     ),
     task_routes={
-        task_name: {"queue": MAINTENANCE_QUEUE}
-        for task_name in MAINTENANCE_TASKS
+        **{
+            task_name: {"queue": MAINTENANCE_QUEUE}
+            for task_name in MAINTENANCE_TASKS
+        },
+        "app.tasks.entitlement_dispatcher.run": {"queue": ENTITLEMENT_QUEUE},
     },
 )
 
@@ -98,20 +104,24 @@ class RuntimeDatabaseIdentityBootstep(bootsteps.StartStopStep):
             return
 
         profile = settings.celery_worker_profile
-        if profile not in {"worker", "maintenance"}:
+        if profile not in {"worker", "maintenance", "entitlement"}:
             raise RuntimeError(
                 "Production Celery workers require CELERY_WORKER_PROFILE=worker "
-                "or CELERY_WORKER_PROFILE=maintenance"
+                "or CELERY_WORKER_PROFILE=maintenance/entitlement"
             )
 
         from app.core.runtime_principal_attestation import attest_configured_runtime_bindings
 
-        attest_configured_runtime_bindings((profile,))
+        component = "entitlement" if profile == "entitlement" else profile
+        attest_configured_runtime_bindings((component,))
 
 
 celery_app.steps["worker"].add(RuntimeDatabaseIdentityBootstep)
 celery_app.autodiscover_tasks(["app.tasks"])
 
+# PAY-24-C Stage 0: entitlement/refund entitlement dispatchers are registered
+# but intentionally NOT scheduled by Beat. A reviewed Stage-1 activation must
+# provision the isolated entitlement worker and explicitly enable scheduling.
 celery_app.conf.beat_schedule = {
     "trial-lifecycle-maintenance": {
         "task": "app.tasks.platform_maintenance.advance_trial_lifecycles",

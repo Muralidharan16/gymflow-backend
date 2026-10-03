@@ -59,99 +59,43 @@ class SubscriptionService:
         )
 
     async def freeze_subscription(
-        self, 
-        gym_id: uuid.UUID, 
-        sub_id: uuid.UUID, 
-        days_requested: int, 
-        reason: str, 
-        staff_id: uuid.UUID
+        self,
+        gym_id: uuid.UUID,
+        sub_id: uuid.UUID,
+        days_requested: int,
+        reason: str,
+        staff_id: uuid.UUID,
     ) -> None:
-        """Atomic freeze: Update Sub -> Update Member -> Log Freeze."""
-        sub = await self.sub_repo.get_by_id(sub_id, gym_id)
-        if not sub or sub.status != SubscriptionStatus.active:
-            raise HTTPException(status_code=400, detail="Subscription not active or not found")
+        del gym_id, sub_id, days_requested, reason, staff_id
+        raise RuntimeError(
+            "PAY-24-C legacy entitlement mutation is retired; "
+            "use the canonical entitlement command authority"
+        )
 
-        plan = await self.sub_repo.get_plan_by_id_and_gym(sub.plan_id, gym_id)
-        if sub.total_freeze_days + days_requested > plan.max_freeze_days:
-            raise HTTPException(status_code=400, detail="Max freeze days exceeded for this plan")
+    async def unfreeze_subscription(
+        self,
+        gym_id: uuid.UUID,
+        sub_id: uuid.UUID,
+        staff_id: uuid.UUID,
+    ) -> None:
+        del gym_id, sub_id, staff_id
+        raise RuntimeError(
+            "PAY-24-C legacy entitlement mutation is retired; "
+            "use the canonical entitlement command authority"
+        )
 
-        member = await self.member_repo.get_by_id(sub.member_id, gym_id)
-
-        async with self.session.begin_nested():
-            sub.status = SubscriptionStatus.frozen
-            sub.freeze_start_date = date.today()
-            await self.sub_repo.update(sub)
-
-            member.status = MemberStatus.frozen
-            await self.member_repo.update(member)
-
-            freeze_log = MemberFreezeLog(
-                gym_id=gym_id,
-                member_id=sub.member_id,
-                subscription_id=sub.id,
-                created_by=staff_id,
-                freeze_start=date.today(),
-                reason=reason,
-                status=FreezeStatus.active
-            )
-            self.session.add(freeze_log)
-            await self.session.flush()
-
-        await self._invalidate_cache(member)
-
-    async def unfreeze_subscription(self, gym_id: uuid.UUID, sub_id: uuid.UUID, staff_id: uuid.UUID) -> None:
-        """Atomic unfreeze: Recalculate End Date -> Update Sub -> Update Member -> Complete Log."""
-        sub = await self.sub_repo.get_by_id(sub_id, gym_id)
-        if not sub or sub.status != SubscriptionStatus.frozen:
-            raise HTTPException(status_code=400, detail="Subscription not frozen or not found")
-
-        member = await self.member_repo.get_by_id(sub.member_id, gym_id)
-        actual_days = (date.today() - sub.freeze_start_date).days
-        
-        async with self.session.begin_nested():
-            sub.end_date = sub.end_date + timedelta(days=max(0, actual_days))
-            sub.status = SubscriptionStatus.active
-            sub.freeze_end_date = date.today()
-            sub.total_freeze_days += actual_days
-            await self.sub_repo.update(sub)
-
-            member.status = MemberStatus.active
-            await self.member_repo.update(member)
-
-            from sqlalchemy import select
-            result = await self.session.execute(
-                select(MemberFreezeLog).where(
-                    MemberFreezeLog.subscription_id == sub.id,
-                    MemberFreezeLog.gym_id == gym_id,
-                    MemberFreezeLog.status == FreezeStatus.active
-                )
-            )
-            freeze_log = result.scalar_one_or_none()
-            if freeze_log:
-                freeze_log.status = FreezeStatus.completed
-                freeze_log.freeze_end = date.today()
-                await self.session.flush()
-
-        await self._invalidate_cache(member)
-
-    async def cancel_subscription(self, gym_id: uuid.UUID, sub_id: uuid.UUID, reason: str, staff_id: uuid.UUID) -> None:
-        """Atomic cancellation: Update Sub -> Update Member."""
-        sub = await self.sub_repo.get_by_id(sub_id, gym_id)
-        if not sub or sub.status not in (SubscriptionStatus.active, SubscriptionStatus.frozen):
-            raise HTTPException(status_code=400, detail="Cannot cancel inactive subscription")
-
-        member = await self.member_repo.get_by_id(sub.member_id, gym_id)
-
-        async with self.session.begin_nested():
-            sub.status = SubscriptionStatus.cancelled
-            sub.cancelled_at = date.today()
-            sub.cancellation_reason = reason
-            await self.sub_repo.update(sub)
-
-            member.status = MemberStatus.inactive
-            await self.member_repo.update(member)
-        
-        await self._invalidate_cache(member)
+    async def cancel_subscription(
+        self,
+        gym_id: uuid.UUID,
+        sub_id: uuid.UUID,
+        reason: str,
+        staff_id: uuid.UUID,
+    ) -> None:
+        del gym_id, sub_id, reason, staff_id
+        raise RuntimeError(
+            "PAY-24-C legacy entitlement mutation is retired; "
+            "use the canonical entitlement command authority"
+        )
 
     async def _invalidate_cache(self, member: Member):
         """Invalidate all access tokens in Redis."""
