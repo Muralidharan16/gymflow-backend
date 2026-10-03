@@ -612,8 +612,42 @@ def _psycopg_url(raw_url: str) -> str:
         raise ValueError("runtime database URL must include a database name")
     if not parsed.drivername.startswith("postgresql"):
         raise ValueError("runtime database URL must use PostgreSQL")
+
+    query = dict(parsed.query)
+    if "ssl" in query:
+        if "sslmode" in query:
+            raise ValueError(
+                "runtime database URL must not define both ssl and sslmode"
+            )
+        ssl_value = query.pop("ssl")
+        if not isinstance(ssl_value, str):
+            raise ValueError(
+                "runtime database URL must define exactly one ssl mode"
+            )
+        normalized = ssl_value.strip().lower()
+        aliases = {
+            "true": "require",
+            "1": "require",
+            "false": "disable",
+            "0": "disable",
+        }
+        sslmode = aliases.get(normalized, normalized)
+        if sslmode not in {
+            "disable",
+            "allow",
+            "prefer",
+            "require",
+            "verify-ca",
+            "verify-full",
+        }:
+            raise ValueError(
+                f"runtime database URL has unsupported ssl mode {ssl_value!r}"
+            )
+        query["sslmode"] = sslmode
+
     return parsed.set(
-        drivername="postgresql+psycopg"
+        drivername="postgresql+psycopg",
+        query=query,
     ).render_as_string(hide_password=False)
 
 
